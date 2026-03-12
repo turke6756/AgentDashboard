@@ -1,0 +1,48 @@
+{
+  "name": "agent-dashboard",
+  "version": "0.1.0",
+  "description": "Workspace-centric Claude Agent Dashboard",
+  "main": "dist/main/main/index.js",
+  "scripts": {
+    "dev": "npm run build:main && concurrently -k -n vite,electron \"npm run dev:renderer\" \"node -e \\\"setTimeout(()=>process.exit(),3000)\\\" && npm run start\"",
+    "dev:renderer": "vite --port 5173",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "start": "electron .",
+    "rebuild": "npx @electron/rebuild"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^41.0.0",
+    "node-pty": "^1.1.0",
+    "sql.js": "^1.14.1",
+    "uuid": "^13.0.0",
+    "xterm": "^5.3.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/sql.js": "^1.4.9",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "autoprefixer": "^10.4.27",
+    "concurrently": "^9.2.1",
+    "electron-builder": "^26.8.1",
+    "framer-motion": "^12.35.2",
+    "postcss": "^8.5.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "zustand": "^5.0.11"
+  }
+}
