@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import type { PathType } from '../../../shared/types';
+
+/** Convert \\wsl.localhost\Ubuntu\home\... or \\wsl$\Ubuntu\home\... to /home/... */
+function uncToLinuxPath(p: string): string | null {
+  const match = p.match(/^\\\\wsl[\.\$][^\\]*\\[^\\]+(\\.*)/i);
+  if (!match) return null;
+  return match[1].replace(/\\/g, '/');
+}
 
 export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void }) {
   const { loadWorkspaces, selectWorkspace } = useDashboardStore();
@@ -10,13 +18,18 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
   const [description, setDescription] = useState('');
 
   const handlePickDir = async () => {
-    const dir = await window.api.system.pickDirectory();
+    const dir = await window.api.system.pickDirectory(pathType === 'wsl');
     if (dir) {
-      setDirPath(dir);
-      // Auto-detect path type
-      if (dir.startsWith('/')) {
+      // Auto-detect and convert WSL UNC paths
+      const linuxPath = uncToLinuxPath(dir);
+      if (linuxPath) {
+        setDirPath(linuxPath);
+        setPathType('wsl');
+      } else if (dir.startsWith('/')) {
+        setDirPath(dir);
         setPathType('wsl');
       } else {
+        setDirPath(dir);
         setPathType('windows');
       }
       // Auto-fill title from directory name
@@ -31,10 +44,16 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
     e.preventDefault();
     if (!title.trim() || !dirPath.trim()) return;
 
+    // Final conversion: ensure UNC paths are converted before saving
+    let finalPath = dirPath.trim();
+    const linuxPath = uncToLinuxPath(finalPath);
+    const finalPathType = linuxPath ? 'wsl' as PathType : pathType;
+    if (linuxPath) finalPath = linuxPath;
+
     const ws = await window.api.workspaces.create({
       title: title.trim(),
-      path: dirPath.trim(),
-      pathType,
+      path: finalPath,
+      pathType: finalPathType,
       description: description.trim() || undefined,
     });
     await loadWorkspaces();
@@ -42,7 +61,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
     onClose();
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
         className="bg-surface-2 border border-gray-700 rounded-xl p-6 w-[440px]"
@@ -56,18 +75,41 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
               <input
                 type="text"
                 value={dirPath}
-                onChange={(e) => setDirPath(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDirPath(val);
+                  // Auto-switch path type based on what's typed
+                  if (val.startsWith('/') || /^\\\\wsl[\.\$]/i.test(val)) {
+                    setPathType('wsl');
+                  } else if (/^[A-Za-z]:/.test(val)) {
+                    setPathType('windows');
+                  }
+                }}
+                onBlur={() => {
+                  // Convert UNC WSL paths to Linux paths on blur
+                  const linuxPath = uncToLinuxPath(dirPath);
+                  if (linuxPath) {
+                    setDirPath(linuxPath);
+                    setPathType('wsl');
+                  }
+                }}
                 className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent-blue"
-                placeholder="C:\Projects\myapp or /home/user/project"
+                placeholder={pathType === 'wsl' ? '/home/user/project' : 'C:\\Projects\\myapp'}
               />
               <button
                 type="button"
                 onClick={handlePickDir}
-                className="px-3 py-2 text-sm bg-surface-3 hover:bg-gray-600 rounded-md"
+                className="px-3 py-2 text-sm rounded-md bg-surface-3 hover:bg-gray-600"
+                title={pathType === 'wsl' ? 'Browse (opens at \\\\wsl.localhost)' : 'Browse for directory'}
               >
                 Browse
               </button>
             </div>
+            {pathType === 'wsl' && (
+              <p className="text-[10px] text-gray-500 mt-1 font-mono">
+                Paste a UNC path (\\wsl.localhost\...) or type a Linux path (/home/...)
+              </p>
+            )}
           </div>
 
           <div>
@@ -138,6 +180,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

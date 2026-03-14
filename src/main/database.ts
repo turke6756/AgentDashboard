@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { Agent, AgentStatus, CreateWorkspaceInput, FileActivity, FileOperation, Workspace } from '../shared/types';
-import { DEFAULT_COMMAND } from '../shared/constants';
+import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL } from '../shared/constants';
 
 let db: SqlJsDatabase;
 let dbPath: string;
@@ -163,7 +163,7 @@ export function createWorkspace(input: CreateWorkspaceInput): Workspace {
   run(
     `INSERT INTO workspaces (id, title, path, path_type, description, default_command)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, input.title, input.path, input.pathType, input.description || '', input.defaultCommand || DEFAULT_COMMAND]
+    [id, input.title, input.path, input.pathType, input.description || '', input.defaultCommand || (input.pathType === 'wsl' ? DEFAULT_COMMAND_WSL : DEFAULT_COMMAND)]
   );
   return getWorkspace(id)!;
 }

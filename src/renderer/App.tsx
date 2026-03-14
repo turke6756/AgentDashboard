@@ -23,9 +23,10 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-surface-0 text-gray-100">
+    <div className="flex h-screen bg-surface-0 text-gray-100 grid-bg relative overflow-hidden">
+      <div className="scanlines pointer-events-none" />
       <Sidebar />
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 z-10">
         <div className="flex flex-1 min-h-0">
           <MainContent />
           <DetailPanel />

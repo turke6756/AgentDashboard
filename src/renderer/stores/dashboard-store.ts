@@ -20,6 +20,7 @@ interface DashboardState {
 
   // Actions
   loadWorkspaces: () => Promise<void>;
+  deleteWorkspace: (id: string) => Promise<void>;
   loadAgents: (workspaceId: string) => Promise<void>;
   loadAllAgents: () => Promise<void>;
   selectWorkspace: (id: string | null) => void;
@@ -34,7 +35,7 @@ interface DashboardState {
   addFileActivity: (activity: FileActivity) => void;
   updateWorkspaceHeat: () => void;
   forkAgent: (id: string) => Promise<Agent | null>;
-  queryAgent: (targetAgentId: string, question: string) => Promise<QueryResult | null>;
+  queryAgent: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult | null>;
 }
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
@@ -52,6 +53,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   loadWorkspaces: async () => {
     const workspaces = await window.api.workspaces.list();
     set({ workspaces });
+  },
+
+  deleteWorkspace: async (id: string) => {
+    await window.api.workspaces.delete(id);
+    const { selectedWorkspaceId } = get();
+    if (selectedWorkspaceId === id) {
+      set({ selectedWorkspaceId: null, agents: [], selectedAgentId: null, terminalAgentId: null });
+    }
+    await get().loadWorkspaces();
+    get().updateWorkspaceHeat();
   },
 
   loadAgents: async (workspaceId: string) => {
@@ -122,9 +133,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }
   },
 
-  queryAgent: async (targetAgentId, question) => {
+  queryAgent: async (targetAgentId, question, sourceAgentId?) => {
     try {
-      return await window.api.agents.query(targetAgentId, question);
+      return await window.api.agents.query(targetAgentId, question, sourceAgentId);
     } catch (err) {
       console.error('Query failed:', err);
       return null;

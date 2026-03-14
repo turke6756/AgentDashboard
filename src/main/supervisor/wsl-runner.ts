@@ -1,13 +1,28 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
 import path from 'path';
 import { tmuxNewSession, tmuxKillSession, isTmuxSessionAlive, tmuxCapturePane } from '../wsl-bridge';
 
+/**
+ * Runs a Claude agent inside WSL via node-pty (through pty-host.js).
+ *
+ * Architecture mirrors WindowsRunner: the PTY is spawned at launch time
+ * and stays alive. A tmux session is also created so the agent can survive
+ * dashboard restarts. On reconnect we attach to tmux; on fresh launch we
+ * run the command directly in a PTY for reliable terminal output.
+ */
 export class WslRunner extends EventEmitter {
-  private attachHost: ChildProcess | null = null;
+  private host: ChildProcess | null = null;
   private sessionName: string;
   private _lastOutputTime: number = 0;
+  private _lastMeaningfulBurst: number = 0;
+  private _recentOutputBytes: number = 0;
+  private _outputWindowStart: number = 0;
+  private _pid: number | null = null;
+  private _alive: boolean = false;
   private buffer: string = '';
+  private logStream: fs.WriteStream | null = null;
 
   constructor(sessionName: string) {
     super();
@@ -15,38 +30,69 @@ export class WslRunner extends EventEmitter {
   }
 
   get lastOutputTime(): number {
-    return this._lastOutputTime;
+    return this._lastMeaningfulBurst;
   }
 
+  get pid(): number | null {
+    return this._pid;
+  }
+
+  get isAlive(): boolean {
+    return this._alive;
+  }
+
+  /**
+   * Launch the agent. Spawns pty-host.js running `wsl.exe bash -lc "cd /dir && command"`
+   * directly in a PTY, so terminal data flows from the start (just like WindowsRunner).
+   * Also creates a tmux session for persistence/reconnect.
+   */
   async launch(workDir: string, command: string, logPath: string): Promise<void> {
-    const fullCmd = `${command} 2>&1 | tee -a '${logPath}'`;
-    await tmuxNewSession(this.sessionName, workDir, fullCmd);
-    this._lastOutputTime = Date.now();
+    // Create tmux session for persistence (agent survives dashboard restart)
+    // No tee needed — the PTY logStream captures output directly
+    try {
+      await tmuxNewSession(this.sessionName, workDir, command);
+      console.log(`[WSL] Created tmux session '${this.sessionName}'`);
+    } catch (err) {
+      console.error(`[WSL] Failed to create tmux session:`, err);
+      // Continue anyway — we'll run directly in PTY
+    }
+
+    // Now spawn the PTY that attaches to the tmux session for live terminal output
+    this.spawnPtyHost(workDir, command, logPath, false);
   }
 
-  async isAlive(): Promise<boolean> {
-    return isTmuxSessionAlive(this.sessionName);
+  /**
+   * Reconnect to an existing tmux session (after dashboard restart).
+   */
+  reconnect(logPath: string): void {
+    this.spawnPtyHost('', '', logPath, true);
   }
 
-  async captureOutput(lines = 50): Promise<string> {
-    return tmuxCapturePane(this.sessionName, lines);
-  }
+  private spawnPtyHost(workDir: string, command: string, logPath: string, reconnect: boolean): void {
+    if (this.host) return;
 
-  attach(): void {
-    if (this.attachHost) return;
+    const logDir = path.dirname(logPath);
+    if (logPath && !fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    if (logPath) this.logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
     const ptyHostPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'pty-host.js');
 
     const env = { ...process.env };
     delete env.CLAUDECODE;
+    delete env.ELECTRON_RUN_AS_NODE;
 
-    this.attachHost = spawn('node', [ptyHostPath], {
+    this.host = spawn('node', [ptyHostPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
 
-    this.attachHost.stdout?.setEncoding('utf-8');
-    this.attachHost.stdout?.on('data', (chunk: string) => {
+    this.host.stderr?.setEncoding('utf-8');
+    this.host.stderr?.on('data', (chunk: string) => {
+      console.error(`[pty-host:${this.sessionName}] ${chunk.trim()}`);
+    });
+
+    this.host.stdout?.setEncoding('utf-8');
+    this.host.stdout?.on('data', (chunk: string) => {
       this.buffer += chunk;
       const lines = this.buffer.split('\n');
       this.buffer = lines.pop() || '';
@@ -55,58 +101,131 @@ export class WslRunner extends EventEmitter {
         if (!line.trim()) continue;
         try {
           const msg = JSON.parse(line);
-          this.handleAttachMessage(msg);
+          this.handleMessage(msg);
         } catch {}
       }
     });
 
-    this.attachHost.on('exit', () => {
-      this.attachHost = null;
-      this.emit('detached');
+    this.host.on('exit', (code) => {
+      console.log(`[pty-host:${this.sessionName}] exited with code ${code}`);
+      if (this._alive) {
+        this._alive = false;
+        this.logStream?.end();
+        this.logStream = null;
+        this.emit('exit', code ?? 1, null);
+      }
+      this.host = null;
     });
 
-    // Once ready, spawn wsl tmux attach
+    // Build the WSL command
+    let bashCmd: string;
+    if (reconnect) {
+      // Reconnect: attach to existing tmux session
+      bashCmd = `tmux attach -t '${this.sessionName}'`;
+    } else {
+      // Fresh launch: attach to the tmux session we just created
+      bashCmd = `tmux attach -t '${this.sessionName}'`;
+    }
+
     this.sendToHost({
       type: 'spawn',
       command: 'wsl.exe',
-      args: ['bash', '-lc', `tmux attach -t '${this.sessionName}'`],
+      args: ['bash', '-lc', bashCmd],
       cols: 120,
       rows: 40,
     });
+
+    this._alive = true;
+    this._lastOutputTime = Date.now();
   }
 
-  private handleAttachMessage(msg: any): void {
+  private handleMessage(msg: any): void {
     switch (msg.type) {
       case 'data':
         this._lastOutputTime = Date.now();
+        if (this.hasMeaningfulContent(msg.data)) {
+          const now = Date.now();
+          if (now - this._outputWindowStart > 3000) {
+            this._outputWindowStart = now;
+            this._recentOutputBytes = 0;
+          }
+          this._recentOutputBytes += msg.data.length;
+          if (this._recentOutputBytes > 200) {
+            this._lastMeaningfulBurst = now;
+          }
+        }
+        this.logStream?.write(msg.data);
         this.emit('data', msg.data);
         break;
+
+      case 'pid':
+        this._pid = msg.pid;
+        console.log(`[pty-host:${this.sessionName}] PTY pid: ${msg.pid}`);
+        break;
+
       case 'exit':
-        this.attachHost = null;
-        this.emit('detached');
+        console.log(`[pty-host:${this.sessionName}] PTY exited: code=${msg.exitCode} signal=${msg.signal}`);
+        this._alive = false;
+        this.logStream?.end();
+        this.logStream = null;
+        this.emit('exit', msg.exitCode ?? 1, msg.signal);
+        if (this.host && !this.host.killed) {
+          this.host.kill();
+        }
+        this.host = null;
+        break;
+
+      case 'ready':
+        console.log(`[pty-host:${this.sessionName}] ready`);
+        break;
+
+      case 'error':
+        console.error(`[pty-host:${this.sessionName}] error: ${msg.error}`);
         break;
     }
   }
 
-  private sendToHost(msg: any): void {
-    if (this.attachHost?.stdin?.writable) {
-      this.attachHost.stdin.write(JSON.stringify(msg) + '\n');
+  private hasMeaningfulContent(data: string): boolean {
+    const stripped = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+                        .replace(/\x1b\][^\x07]*\x07/g, '')
+                        .replace(/\x1b[()][0-9A-Z]/g, '')
+                        .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '')
+                        .replace(/[\x00-\x1f]/g, '');
+    return stripped.trim().length > 0;
+  }
+
+  async isStillAlive(): Promise<boolean> {
+    // Check PTY host first
+    if (this._alive && this.host) return true;
+    // Fallback: check tmux session
+    return isTmuxSessionAlive(this.sessionName);
+  }
+
+  async captureOutput(lines = 50): Promise<string> {
+    return tmuxCapturePane(this.sessionName, lines);
+  }
+
+  /**
+   * attach() is now a no-op for initial data flow (PTY runs from launch).
+   * It exists so attachAgent() in the supervisor still works — the caller
+   * just hooks up an onData listener via the returned bridge.
+   */
+  attach(): void {
+    // If PTY host died but tmux session is still alive, reconnect
+    if (!this.host) {
+      console.log(`[WSL] Re-attaching to tmux session '${this.sessionName}'`);
+      this.spawnPtyHost('', '', '', true);
     }
   }
 
   detach(): void {
-    if (this.attachHost) {
-      // Send tmux detach key
-      this.sendToHost({ type: 'write', data: '\x02d' });
-      setTimeout(() => {
-        this.sendToHost({ type: 'kill' });
-        setTimeout(() => {
-          if (this.attachHost && !this.attachHost.killed) {
-            this.attachHost.kill();
-          }
-          this.attachHost = null;
-        }, 500);
-      }, 500);
+    // No-op — we keep the PTY running so data keeps flowing.
+    // The IPC layer handles adding/removing listeners.
+  }
+
+  private sendToHost(msg: any): void {
+    if (this.host?.stdin?.writable) {
+      this.host.stdin.write(JSON.stringify(msg) + '\n');
     }
   }
 
@@ -119,7 +238,18 @@ export class WslRunner extends EventEmitter {
   }
 
   async kill(): Promise<void> {
-    this.detach();
+    this._alive = false;
+    // Kill the PTY host
+    this.sendToHost({ type: 'kill' });
+    setTimeout(() => {
+      if (this.host && !this.host.killed) {
+        this.host.kill();
+      }
+      this.host = null;
+    }, 1000);
+    this.logStream?.end();
+    this.logStream = null;
+    // Kill the tmux session
     await tmuxKillSession(this.sessionName);
   }
 }

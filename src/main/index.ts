@@ -4,6 +4,10 @@ import { initDatabase } from './database';
 import { AgentSupervisor } from './supervisor';
 import { registerIpcHandlers } from './ipc-handlers';
 
+// Prevent EPIPE crashes when stdout/stderr pipe is closed (e.g. parent shell exits)
+process.stdout?.on?.('error', () => {});
+process.stderr?.on?.('error', () => {});
+
 let mainWindow: BrowserWindow | null = null;
 let supervisor: AgentSupervisor | null = null;
 
@@ -13,6 +17,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    center: true,
     title: 'Agent Dashboard',
     backgroundColor: '#0a0a0f',
     webPreferences: {
@@ -22,17 +27,21 @@ function createWindow(): void {
     },
   });
 
-  // Try Vite dev server first, fall back to built files
-  const devUrl = 'http://localhost:5173';
+  // Try Vite dev server first (check multiple ports), fall back to built files
   const builtFile = path.join(__dirname, '..', '..', 'renderer', 'index.html');
 
   if (process.env.NODE_ENV === 'production' || app.isPackaged) {
     mainWindow.loadFile(builtFile);
   } else {
-    mainWindow.loadURL(devUrl).catch(() => {
-      console.log('Dev server not available, loading built files');
-      mainWindow!.loadFile(builtFile);
-    });
+    // Vite may use 5173 or 5174+ if port is taken
+    mainWindow.loadURL('http://localhost:5173').catch(() =>
+      mainWindow!.loadURL('http://localhost:5174').catch(() =>
+        mainWindow!.loadURL('http://localhost:5175').catch(() => {
+          console.log('Dev server not available, loading built files');
+          mainWindow!.loadFile(builtFile);
+        })
+      )
+    );
   }
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {

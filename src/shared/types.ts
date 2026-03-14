@@ -111,7 +111,8 @@ export interface IpcApi {
     getFileActivities: (agentId: string, operation?: FileOperation) => Promise<FileActivity[]>;
     onFileActivity: (callback: (activity: FileActivity) => void) => () => void;
     fork: (id: string) => Promise<Agent>;
-    query: (targetAgentId: string, question: string) => Promise<QueryResult>;
+    query: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult>;
+    sendInput: (agentId: string, text: string) => Promise<void>;
   };
   terminal: {
     attach: (agentId: string) => Promise<void>;
@@ -121,7 +122,7 @@ export interface IpcApi {
     onData: (callback: (agentId: string, data: string) => void) => () => void;
   };
   system: {
-    pickDirectory: () => Promise<string | null>;
+    pickDirectory: (startInWsl?: boolean) => Promise<string | null>;
     healthCheck: () => Promise<HealthCheck>;
     openFile: (filePath: string, pathType: PathType) => Promise<void>;
   };

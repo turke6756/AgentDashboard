@@ -1,22 +1,112 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
-import { execFileSync, execFile } from 'child_process';
+import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { Agent, AgentStatus, LaunchAgentInput, QueryResult } from '../../shared/types';
-import { TMUX_SESSION_PREFIX } from '../../shared/constants';
+import { TMUX_SESSION_PREFIX, DEFAULT_COMMAND, DEFAULT_COMMAND_WSL } from '../../shared/constants';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
 import { StatusMonitor } from './status-monitor';
 import { FileActivityTracker } from './file-activity-tracker';
 import {
-  createAgent, getAgent, getActiveAgents, getWorkspace, updateAgentStatus, updateAgentPid,
+  createAgent, getAgent, getActiveAgents, getAllAgents, getWorkspace, updateAgentStatus, updateAgentPid,
   updateAgentExitCode, incrementRestartCount, updateAgentLastOutput,
   updateAgentAttached, addEvent, deleteAgent as dbDeleteAgent,
   updateAgentResumeSessionId
 } from '../database';
-import { detectPathType, windowsToWslPath } from '../path-utils';
-import { tmuxListSessions } from '../wsl-bridge';
+import { detectPathType, windowsToWslPath, uncToWslPath } from '../path-utils';
+import { tmuxListSessions, tmuxSendKeys } from '../wsl-bridge';
+
+function parseQueryResponse(stdout: string): QueryResult {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return { result: '', sessionId: '', isError: false };
+  }
+
+  // Try parsing the whole output as JSON first (works for Windows/clean stdout)
+  try {
+    const parsed = JSON.parse(trimmed);
+    return {
+      result: parsed.result || trimmed,
+      sessionId: parsed.session_id || '',
+      isError: false,
+    };
+  } catch {
+    // WSL: login shell profile scripts may print to stdout before the JSON.
+    // Scan backwards for the last line that looks like JSON.
+    const lines = trimmed.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(line);
+          return {
+            result: parsed.result || line,
+            sessionId: parsed.session_id || '',
+            isError: false,
+          };
+        } catch {
+          continue;
+        }
+      }
+    }
+    // No JSON found — return raw output as the result
+    return { result: trimmed, sessionId: '', isError: false };
+  }
+}
+
+function formatQueryError(err: Error | null, stdout: string, stderr: string): QueryResult {
+  const parts = [stderr.trim(), stdout.trim(), err?.message || ''].filter(Boolean);
+  return {
+    result: parts.join('\n') || 'Query failed',
+    sessionId: '',
+    isError: true,
+  };
+}
+
+function encodePowerShell(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+function getWindowsSystemPath(...parts: string[]): string {
+  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  return path.win32.join(systemRoot, 'System32', ...parts);
+}
+
+function findWindowsClaudePath(_env: NodeJS.ProcessEnv): Promise<string> {
+  // Use known install path directly — avoids all PATH/shell resolution issues in Electron
+  const knownPath = path.join(process.env.USERPROFILE || 'C:\\Users\\turke', '.local', 'bin', 'claude.exe');
+  if (fs.existsSync(knownPath)) {
+    return Promise.resolve(knownPath);
+  }
+
+  // Fallback: try where.exe through cmd.exe
+  return new Promise<string>((resolve, reject) => {
+    execFile(getWindowsSystemPath('cmd.exe'), ['/c', 'where', 'claude'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr?.trim() || err.message || 'Failed to locate claude'));
+        return;
+      }
+
+      const match = stdout
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .find(line => /claude(\.exe)?$/i.test(line));
+
+      if (!match) {
+        reject(new Error('Failed to locate claude'));
+        return;
+      }
+
+      resolve(match);
+    });
+  });
+}
 
 export class AgentSupervisor extends EventEmitter {
   private windowsRunners = new Map<string, WindowsRunner>();
@@ -44,6 +134,10 @@ export class AgentSupervisor extends EventEmitter {
         this.handleAutoRestart(agent);
       }
     });
+
+    // Update registry whenever any status changes
+    this.on('statusChanged', () => this.writeAgentRegistry());
+    this.on('agentDeleted', () => this.writeAgentRegistry());
   }
 
   start(): void {
@@ -54,13 +148,42 @@ export class AgentSupervisor extends EventEmitter {
     this.monitor.stop();
   }
 
+  /** Write ~/.claude/agent-registry.json so other Claude instances can discover agents */
+  private writeAgentRegistry(): void {
+    try {
+      const agents = getAllAgents();
+      const registry = {
+        updatedAt: new Date().toISOString(),
+        agents: agents
+          .filter(a => a.resumeSessionId && a.status !== 'done')
+          .map(a => ({
+            id: a.id,
+            title: a.title,
+            status: a.status,
+            sessionId: a.resumeSessionId,
+            workingDirectory: a.workingDirectory,
+            roleDescription: a.roleDescription || '',
+          })),
+      };
+      const registryPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'agent-registry.json');
+      fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    } catch (err) {
+      console.error('[registry] Failed to write agent registry:', err);
+    }
+  }
+
   async launchAgent(input: LaunchAgentInput): Promise<Agent> {
     const workspace = getWorkspace(input.workspaceId);
     if (!workspace) throw new Error('Workspace not found');
 
-    const workDir = input.workingDirectory || workspace.path;
+    let workDir = input.workingDirectory || workspace.path;
     const pathType = detectPathType(workDir);
-    const command = input.command || workspace.defaultCommand;
+    // Convert UNC WSL paths (\\wsl.localhost\...) to Linux paths (/home/...)
+    if (pathType === 'wsl' && workDir.startsWith('\\\\')) {
+      workDir = uncToWslPath(workDir);
+    }
+    const defaultCmd = pathType === 'wsl' ? DEFAULT_COMMAND_WSL : DEFAULT_COMMAND;
+    const command = input.command || (workspace.defaultCommand === DEFAULT_COMMAND ? defaultCmd : workspace.defaultCommand);
     const agentId = uuidv4().substring(0, 8);
     const logPath = path.join(this.logsDir, `${agentId}.log`);
 
@@ -223,16 +346,17 @@ export class AgentSupervisor extends EventEmitter {
     const wslWorkDir = agent.workingDirectory; // Already a WSL path
 
     let command = overrideCommand || agent.command;
+    const isClaudeCmd = command.includes('claude');
 
     if (!overrideCommand) {
       // Add session ID on fresh launch
-      if (!resume && sessionId && command.startsWith('claude')) {
+      if (!resume && sessionId && isClaudeCmd) {
         command += ` --session-id ${sessionId}`;
         console.log(`[WSL] Fresh launch ${agent.title} (${agent.id}) with session-id: ${sessionId}`);
       }
 
       // Use --resume with session ID if available, else fall back to --continue
-      if (resume && command.startsWith('claude') && !command.includes('--continue') && !command.includes('-c ')) {
+      if (resume && isClaudeCmd && !command.includes('--continue') && !command.includes('-c ')) {
         const latest = getAgent(agent.id);
         if (latest?.resumeSessionId) {
           command += ` --resume ${latest.resumeSessionId}`;
@@ -250,9 +374,30 @@ export class AgentSupervisor extends EventEmitter {
       }
     }
 
-    // Setup file activity tracker (WSL agents emit data when attached)
-    this.setupFileTracker(agent.id, agent.workingDirectory);
+    // Setup file activity tracker
+    const tracker = this.setupFileTracker(agent.id, agent.workingDirectory);
 
+    runner.on('data', (data: string) => {
+      updateAgentLastOutput(agent.id);
+      tracker.processData(data);
+    });
+
+    runner.on('exit', (exitCode: number) => {
+      updateAgentExitCode(agent.id, exitCode);
+      this.wslRunners.delete(agent.id);
+      const status: AgentStatus = exitCode === 0 ? 'done' : 'crashed';
+      updateAgentStatus(agent.id, status);
+      addEvent(agent.id, status, JSON.stringify({ exitCode }));
+      this.emit('statusChanged', { agentId: agent.id, status });
+
+      const latest = getAgent(agent.id);
+      if (latest && status === 'crashed' && latest.autoRestartEnabled) {
+        this.handleAutoRestart(latest);
+      }
+    });
+
+    console.log(`[WSL] Launching agent '${agent.tmuxSessionName}' in ${wslWorkDir}`);
+    console.log(`[WSL] Command: ${command}`);
     await runner.launch(wslWorkDir, command, wslLogPath);
     updateAgentStatus(agent.id, 'working');
     this.emit('statusChanged', { agentId: agent.id, status: 'working' });
@@ -334,53 +479,167 @@ export class AgentSupervisor extends EventEmitter {
     return getAgent(newAgent.id)!;
   }
 
-  async queryAgent(targetAgentId: string, question: string): Promise<QueryResult> {
+  async queryAgent(targetAgentId: string, question: string, sourceAgentId?: string): Promise<QueryResult> {
     const target = getAgent(targetAgentId);
     if (!target) throw new Error('Target agent not found');
     if (!target.resumeSessionId) throw new Error('Target agent has no session ID — cannot query');
 
+    const source = sourceAgentId ? getAgent(sourceAgentId) : null;
+
+    // Strong identity-anchored prompt to prevent history pattern-matching
+    const sourceRef = source ? ` ("${source.title}")` : '';
+    const prefixedQuestion = [
+      `You are "${target.title}" — a Claude Code agent being consulted by another agent${sourceRef} in the same workspace.`,
+      '',
+      'This is NOT a task. Do NOT perform actions, use tools, run commands, or delegate work.',
+      '',
+      'You are being asked a question. Answer it directly from what you already know — your conversation history, the files you have read, the context you have built up. Everything you need is already in your memory.',
+      '',
+      'NOTE: Your conversation history may contain previous /query-agent skill invocations where you queried OTHER agents. Ignore those patterns. You are not running a query right now — you are ANSWERING one.',
+      '',
+      `Question: ${question}`,
+    ].join('\n');
+
     const pathType = detectPathType(target.workingDirectory);
 
-    return new Promise<QueryResult>((resolve) => {
-      const env = { ...process.env };
-      delete env.CLAUDECODE;
+    const runQuery = (resumeArgs: string[]): Promise<QueryResult> => {
+      return new Promise<QueryResult>((resolve) => {
+        // Build a clean env: inherit everything but remove vars that block Claude
+        const env = { ...process.env };
+        delete env.CLAUDECODE;
+        delete env.ELECTRON_RUN_AS_NODE;
+        // Ensure the env vars are truly absent, not empty strings
+        if ('CLAUDECODE' in env) delete env.CLAUDECODE;
 
-      if (pathType === 'windows') {
-        execFile('claude', ['-p', question, '--resume', target.resumeSessionId!, '--fork-session', '--output-format', 'json'], {
-          cwd: target.workingDirectory,
-          timeout: 60000,
-          env,
-        }, (err, stdout, stderr) => {
-          if (err) {
-            resolve({ result: err.message || stderr || 'Query failed', sessionId: '', isError: true });
-            return;
+        const mode = resumeArgs[0] === '--resume' ? 'resume' : 'continue';
+        const resumeValue = resumeArgs[1] || '';
+
+        if (pathType === 'windows') {
+          const claudePath = path.join(process.env.USERPROFILE || '', '.local', 'bin', 'claude.exe');
+          const args = ['-p', prefixedQuestion];
+          if (mode === 'resume') {
+            args.push('--resume', resumeValue);
+          } else {
+            args.push('--continue');
           }
-          try {
-            const parsed = JSON.parse(stdout);
-            resolve({ result: parsed.result || stdout, sessionId: parsed.session_id || '', isError: false });
-          } catch {
-            resolve({ result: stdout, sessionId: '', isError: false });
-          }
-        });
-      } else {
-        const escaped = question.replace(/'/g, "'\\''");
-        execFile('wsl.exe', ['bash', '-lc', `claude -p '${escaped}' --resume ${target.resumeSessionId} --fork-session --output-format json`], {
-          timeout: 60000,
-          env,
-        }, (err, stdout, stderr) => {
-          if (err) {
-            resolve({ result: err.message || stderr || 'Query failed', sessionId: '', isError: true });
-            return;
-          }
-          try {
-            const parsed = JSON.parse(stdout);
-            resolve({ result: parsed.result || stdout, sessionId: parsed.session_id || '', isError: false });
-          } catch {
-            resolve({ result: stdout, sessionId: '', isError: false });
-          }
-        });
+          args.push('--fork-session', '--dangerously-skip-permissions', '--max-turns', '1', '--output-format', 'json');
+
+          console.log('[query] Spawning:', claudePath, args.join(' '), 'cwd:', target.workingDirectory);
+
+          // Use spawn so we can close stdin — claude -p hangs if stdin stays open
+          const child = spawn(claudePath, args, {
+            cwd: target.workingDirectory,
+            windowsHide: true,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+
+          let stdout = '';
+          let stderr = '';
+          child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+          child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+          const timer = setTimeout(() => { child.kill(); }, 60000);
+
+          child.on('close', (code: number | null) => {
+            clearTimeout(timer);
+            if (code !== 0) {
+              console.error('[query] Windows exit code:', code, 'stderr:', stderr, 'stdout:', stdout.substring(0, 200));
+              resolve(formatQueryError(new Error(`Exit code ${code}`), stdout, stderr));
+              return;
+            }
+            resolve(parseQueryResponse(stdout));
+          });
+
+          child.on('error', (err: Error) => {
+            clearTimeout(timer);
+            console.error('[query] Windows spawn error:', err.message);
+            resolve(formatQueryError(err, '', ''));
+          });
+        } else {
+          // Use spawn with stdin closed — same fix as Windows.
+          // claude -p hangs if stdin stays open (execFile keeps it open as a pipe).
+          const script = [
+            'set -e',
+            'cd "$AGENT_DASHBOARD_WORKDIR"',
+            'args=(-p "$AGENT_DASHBOARD_QUERY")',
+            'if [ "$AGENT_DASHBOARD_RESUME_MODE" = "resume" ]; then',
+            '  args+=(--resume "$AGENT_DASHBOARD_RESUME_VALUE")',
+            'else',
+            '  args+=(--continue)',
+            'fi',
+            'args+=(--fork-session --dangerously-skip-permissions --max-turns 1 --output-format json)',
+            'claude "${args[@]}"',
+          ].join('\n');
+
+          // Declare WSLENV so custom env vars reliably propagate into WSL
+          // (default sharing can be disabled via /etc/wsl.conf interop settings)
+          const queryVars = 'AGENT_DASHBOARD_WORKDIR:AGENT_DASHBOARD_QUERY:AGENT_DASHBOARD_RESUME_MODE:AGENT_DASHBOARD_RESUME_VALUE';
+          const currentWslenv = env.WSLENV || '';
+          const wslenv = currentWslenv ? `${currentWslenv}:${queryVars}` : queryVars;
+
+          const child = spawn(getWindowsSystemPath('wsl.exe'), ['bash', '-lc', script], {
+            windowsHide: true,
+            env: {
+              ...env,
+              WSLENV: wslenv,
+              AGENT_DASHBOARD_WORKDIR: target.workingDirectory,
+              AGENT_DASHBOARD_QUERY: prefixedQuestion,
+              AGENT_DASHBOARD_RESUME_MODE: mode,
+              AGENT_DASHBOARD_RESUME_VALUE: resumeValue,
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+
+          let stdout = '';
+          let stderr = '';
+          child.stdout!.on('data', (d: Buffer) => { stdout += d.toString(); });
+          child.stderr!.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+          const timer = setTimeout(() => { child.kill(); }, 60000);
+
+          child.on('close', (code: number | null) => {
+            clearTimeout(timer);
+            if (code !== 0) {
+              console.error('[query] WSL exit code:', code, 'stderr:', stderr, 'stdout:', stdout.substring(0, 200));
+              resolve(formatQueryError(new Error(`Exit code ${code}`), stdout, stderr));
+              return;
+            }
+            resolve(parseQueryResponse(stdout));
+          });
+
+          child.on('error', (err: Error) => {
+            clearTimeout(timer);
+            console.error('[query] WSL spawn error:', err.message);
+            resolve(formatQueryError(err, '', ''));
+          });
+        }
+      });
+    };
+
+    // Try --resume first; fall back to --continue if session not found
+    let result = await runQuery(['--resume', target.resumeSessionId!]);
+    if (result.isError && /conversation|session|not found/i.test(result.result)) {
+      console.log('[query] --resume failed, falling back to --continue for', target.title);
+      result = await runQuery(['--continue']);
+    }
+
+    // Auto-inject response into the source agent's terminal so it has context
+    if (source && !result.isError && result.result) {
+      const injection = `[INTER-AGENT RESPONSE from "${target.title}"]: ${result.result}`;
+      const winRunner = this.windowsRunners.get(sourceAgentId!);
+      if (winRunner) {
+        winRunner.write(injection + '\n');
+        console.log('[query] Injected response into', source.title);
       }
-    });
+      const wslRunner = this.wslRunners.get(sourceAgentId!);
+      if (wslRunner) {
+        wslRunner.write(injection + '\n');
+        console.log('[query] Injected response into', source.title, '(WSL)');
+      }
+    }
+
+    return result;
   }
 
   async stopAgent(agentId: string): Promise<void> {
@@ -480,6 +739,37 @@ export class AgentSupervisor extends EventEmitter {
     if (wslRunner) { wslRunner.write(data); }
   }
 
+  async sendInput(agentId: string, text: string): Promise<void> {
+    // For WSL agents, use tmux send-keys (reliable, doesn't need PTY host)
+    const wslRunner = this.wslRunners.get(agentId);
+    if (wslRunner) {
+      const agent = getAgent(agentId);
+      if (agent?.tmuxSessionName) {
+        await tmuxSendKeys(agent.tmuxSessionName, text);
+        return;
+      }
+    }
+    // For Windows agents, write directly with \r for Enter
+    const winRunner = this.windowsRunners.get(agentId);
+    if (winRunner) {
+      winRunner.write(text + '\r');
+      return;
+    }
+  }
+
+  removeAgentListener(agentId: string, listener: (data: string) => void): void {
+    const winRunner = this.windowsRunners.get(agentId);
+    if (winRunner) {
+      winRunner.off('data', listener);
+      return;
+    }
+    const wslRunner = this.wslRunners.get(agentId);
+    if (wslRunner) {
+      wslRunner.off('data', listener);
+      return;
+    }
+  }
+
   resizeAgent(agentId: string, cols: number, rows: number): void {
     const winRunner = this.windowsRunners.get(agentId);
     if (winRunner) { winRunner.resize(cols, rows); return; }
@@ -524,7 +814,7 @@ export class AgentSupervisor extends EventEmitter {
     if (agent.tmuxSessionName) {
       const wslRunner = this.wslRunners.get(agent.id);
       if (!wslRunner) return false;
-      return wslRunner.isAlive();
+      return wslRunner.isStillAlive();
     } else {
       return this.windowsRunners.has(agent.id);
     }

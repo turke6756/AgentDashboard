@@ -22,7 +22,7 @@ export default function QueryDialog({ sourceAgent, onClose }: QueryDialogProps) 
     if (!targetId || !question.trim()) return;
     setLoading(true);
     setResult(null);
-    const res = await queryAgent(targetId, question.trim());
+    const res = await queryAgent(targetId, question.trim(), sourceAgent.id);
     setResult(res);
     setLoading(false);
   };

@@ -32,15 +32,18 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:get-file-activities', (_e, agentId, operation) => getFileActivities(agentId, operation));
   ipcMain.handle('agent:delete', (_e, id) => supervisor.deleteAgent(id));
   ipcMain.handle('agent:fork', (_e, id) => supervisor.forkAgent(id));
-  ipcMain.handle('agent:query', (_e, targetAgentId, question) => supervisor.queryAgent(targetAgentId, question));
+  ipcMain.handle('agent:query', (_e, targetAgentId, question, sourceAgentId) => supervisor.queryAgent(targetAgentId, question, sourceAgentId));
+  ipcMain.handle('agent:send-input', (_e, agentId, text) => supervisor.sendInput(agentId, text));
   ipcMain.handle('agent:check-agent-md', (_e, workingDirectory, pathType) => checkAgentMdExists(workingDirectory, pathType));
   ipcMain.handle('agent:workspace-heat', () => getWorkspaceAgentSummary());
 
   // Terminal handlers - track attached agents and their data listeners
-  const attachedAgents = new Set<string>();
+  // Map<agentId, listenerFunction>
+  const activeListeners = new Map<string, (data: string) => void>();
+  const attachedAgents = new Set<string>(); // Keep for backward compatibility/quick checks
 
   ipcMain.handle('terminal:attach', (_e, agentId) => {
-    if (attachedAgents.has(agentId)) return; // already attached
+    if (activeListeners.has(agentId)) return { ok: true }; // already attached
 
     try {
       const bridge = supervisor.attachAgent(agentId);
@@ -50,14 +53,25 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
           mainWindow.webContents.send('terminal:data', agentId, data);
         }
       };
+
       bridge.onData(listener);
+      activeListeners.set(agentId, listener);
       attachedAgents.add(agentId);
+      return { ok: true };
     } catch (err: any) {
       console.error('Failed to attach:', err.message);
+      return { ok: false, error: err.message };
     }
   });
 
   ipcMain.handle('terminal:detach', (_e, agentId) => {
+    const listener = activeListeners.get(agentId);
+    if (listener) {
+      supervisor.removeAgentListener(agentId, listener);
+      activeListeners.delete(agentId);
+    }
+    
+    // Original detach logic (wsl runner detach)
     supervisor.detachAgent(agentId);
     attachedAgents.delete(agentId);
   });
@@ -71,10 +85,17 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   });
 
   // System handlers
-  ipcMain.handle('system:pick-directory', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('system:pick-directory', async (_e, startInWsl?: boolean) => {
+    // Don't parent to mainWindow — on multi-monitor setups the dialog
+    // can appear on the wrong screen. Let the OS place it centrally.
+    const opts: Electron.OpenDialogOptions = {
       properties: ['openDirectory'],
-    });
+    };
+    // When WSL mode is selected, start the dialog in \\wsl.localhost\
+    if (startInWsl) {
+      opts.defaultPath = '\\\\wsl.localhost\\';
+    }
+    const result = await dialog.showOpenDialog(opts);
     if (result.canceled) return null;
     return result.filePaths[0] || null;
   });

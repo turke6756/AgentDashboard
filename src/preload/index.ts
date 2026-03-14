@@ -19,7 +19,8 @@ const api: IpcApi = {
     checkAgentMd: (workingDirectory, pathType) => ipcRenderer.invoke('agent:check-agent-md', workingDirectory, pathType),
     getFileActivities: (agentId, operation) => ipcRenderer.invoke('agent:get-file-activities', agentId, operation),
     fork: (id) => ipcRenderer.invoke('agent:fork', id),
-    query: (targetAgentId, question) => ipcRenderer.invoke('agent:query', targetAgentId, question),
+    query: (targetAgentId, question, sourceAgentId) => ipcRenderer.invoke('agent:query', targetAgentId, question, sourceAgentId),
+    sendInput: (agentId, text) => ipcRenderer.invoke('agent:send-input', agentId, text),
     onFileActivity: (callback) => {
       const listener = (_event: any, activity: any) => callback(activity);
       ipcRenderer.on('agent:file-activity', listener);
@@ -38,7 +39,7 @@ const api: IpcApi = {
     },
   },
   system: {
-    pickDirectory: () => ipcRenderer.invoke('system:pick-directory'),
+    pickDirectory: (startInWsl?: boolean) => ipcRenderer.invoke('system:pick-directory', startInWsl),
     healthCheck: () => ipcRenderer.invoke('system:health-check'),
     openFile: (filePath, pathType) => ipcRenderer.invoke('system:open-file', filePath, pathType),
   },
