@@ -4,6 +4,12 @@ import type { Agent } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 function timeAgo(dateStr: string | null): string {
   if (!dateStr) return 'NEVER';
   const diff = Date.now() - new Date(dateStr + 'Z').getTime();
@@ -34,7 +40,7 @@ const GLOW_COLORS: Record<string, string> = {
 };
 
 export default function AgentCard({ agent }: { agent: Agent }) {
-  const { selectAgent, selectedAgentId, terminalAgentId, setTerminalAgent, deleteAgent, forkAgent, queryAgent } = useDashboardStore();
+  const { selectAgent, selectedAgentId, terminalAgentId, setTerminalAgent, deleteAgent, forkAgent, queryAgent, contextStats } = useDashboardStore();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [forking, setForking] = useState(false);
@@ -46,6 +52,15 @@ export default function AgentCard({ agent }: { agent: Agent }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Fetch initial context stats on mount (covers app restart / pre-existing JSONL data)
+  useEffect(() => {
+    window.api.agents.getContextStats(agent.id).then(stats => {
+      if (stats) {
+        useDashboardStore.getState().updateContextStats(stats);
+      }
+    });
+  }, [agent.id]);
 
   const isSelected = selectedAgentId === agent.id;
   const isTerminalActive = terminalAgentId === agent.id;
@@ -279,6 +294,25 @@ export default function AgentCard({ agent }: { agent: Agent }) {
            <p className="opacity-50 italic">{'> NO ROLE ASSIGNED'}</p>
         )}
       </div>
+
+      {/* Context Stats Bar */}
+      {contextStats[agent.id] && (() => {
+        const cs = contextStats[agent.id];
+        const pct = cs.contextPercentage;
+        const barColor = pct > 85 ? 'bg-accent-red' : pct > 60 ? 'bg-accent-orange' : 'bg-accent-blue';
+        const barGlow = pct > 85 ? 'shadow-[0_0_6px_rgba(239,68,68,0.6)]' : '';
+        return (
+          <div className="mb-2">
+            <div className="flex items-center justify-between text-[9px] font-mono text-gray-500 uppercase mb-0.5">
+              <span className={pct > 85 ? 'text-accent-red' : pct > 60 ? 'text-accent-orange' : 'text-accent-blue'}>CTX: {pct}%</span>
+              <span>T:{cs.turnCount} OUT:{formatTokenCount(cs.totalOutputTokens)}</span>
+            </div>
+            <div className="w-full h-[2px] bg-gray-800 rounded-full overflow-hidden">
+              <div className={`h-full ${barColor} ${barGlow} transition-all duration-500`} style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Footer Meta */}
       <div className="flex items-center justify-between text-[9px] font-mono text-gray-500 uppercase tracking-tight">

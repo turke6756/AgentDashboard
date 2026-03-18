@@ -43,6 +43,12 @@ function handleMessage(msg) {
 
       const env = { ...process.env };
       delete env.CLAUDECODE;
+      
+      // Force CLI tools like Claude Code to output ANSI colors even when wrapped
+      // inside cmd.exe under node-pty on Windows.
+      env.FORCE_COLOR = '3';
+      env.CLICOLOR_FORCE = '1';
+      env.TERM = 'xterm-256color';
 
       // On Windows, node-pty can't resolve commands from PATH directly.
       // Spawn via cmd.exe /c so the shell resolves the command.

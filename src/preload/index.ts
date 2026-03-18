@@ -26,6 +26,12 @@ const api: IpcApi = {
       ipcRenderer.on('agent:file-activity', listener);
       return () => ipcRenderer.removeListener('agent:file-activity', listener);
     },
+    getContextStats: (agentId) => ipcRenderer.invoke('agent:get-context-stats', agentId),
+    onContextStatsChanged: (callback) => {
+      const listener = (_event: any, stats: any) => callback(stats);
+      ipcRenderer.on('agent:context-stats-changed', listener);
+      return () => ipcRenderer.removeListener('agent:context-stats-changed', listener);
+    },
   },
   terminal: {
     attach: (agentId) => ipcRenderer.invoke('terminal:attach', agentId),

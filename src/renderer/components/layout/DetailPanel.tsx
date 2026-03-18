@@ -5,7 +5,7 @@ import DetailPaneContext from '../detail/DetailPaneContext';
 import DetailPaneProducts from '../detail/DetailPaneProducts';
 import DetailPaneLog from '../detail/DetailPaneLog';
 import QueryDialog from '../agent/QueryDialog';
-import type { PathType } from '../../../shared/types';
+import type { PathType, ContextStats } from '../../../shared/types';
 
 const TABS = [
   { label: 'CONTEXT', icon: '📖' },
@@ -38,7 +38,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 export default function DetailPanel() {
-  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces } = useDashboardStore();
+  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats } = useDashboardStore();
   const [contextCount, setContextCount] = useState(0);
   const [productsCount, setProductsCount] = useState(0);
   const [showMeta, setShowMeta] = useState(false);
@@ -165,6 +165,60 @@ export default function DetailPanel() {
             )}
           </div>
         )}
+
+        {showMeta && contextStats[agent.id] && (() => {
+          const cs = contextStats[agent.id];
+          const pct = cs.contextPercentage;
+          const pctColor = pct > 85 ? 'text-accent-red' : pct > 60 ? 'text-accent-orange' : 'text-accent-blue';
+          const barColor = pct > 85 ? 'bg-accent-red' : pct > 60 ? 'bg-accent-orange' : 'bg-accent-blue';
+          const barGlow = pct > 85 ? 'shadow-[0_0_6px_rgba(239,68,68,0.6)]' : '';
+          const fmt = (n: number) => {
+            if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+            if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+            return String(n);
+          };
+          return (
+            <div className="mt-2 space-y-1 text-[10px] text-gray-400 bg-black/40 border border-gray-800 p-2 font-mono">
+              <div className="flex items-center justify-between border-b border-gray-800 pb-1 mb-1">
+                <span className="text-accent-blue">CONTEXT_WINDOW</span>
+                <span className={`px-1 text-[9px] font-bold ${pctColor} border ${pct > 85 ? 'border-accent-red/50' : pct > 60 ? 'border-accent-orange/50' : 'border-accent-blue/50'}`}>
+                  {pct}%
+                </span>
+              </div>
+              <div className="w-full h-[2px] bg-gray-800 rounded-full overflow-hidden mb-1">
+                <div className={`h-full ${barColor} ${barGlow} transition-all duration-500`} style={{ width: `${pct}%` }} />
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">MODEL:</span>
+                <span className="text-gray-300">{cs.model}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">INPUT:</span>
+                <span className="text-gray-300">{fmt(cs.inputTokens)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">CACHE+:</span>
+                <span className="text-gray-300">{fmt(cs.cacheCreationTokens)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">CACHE~:</span>
+                <span className="text-gray-300">{fmt(cs.cacheReadTokens)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">OUT_T:</span>
+                <span className="text-gray-300">{fmt(cs.totalOutputTokens)}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">TURNS:</span>
+                <span className="text-gray-300">{cs.turnCount}</span>
+              </div>
+              <div className="flex items-center">
+                <span className="text-gray-600 w-16 shrink-0">WINDOW:</span>
+                <span className="text-gray-300">{fmt(cs.totalContextTokens)}/{fmt(cs.contextWindowMax)}</span>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Controls */}

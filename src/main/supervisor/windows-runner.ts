@@ -18,6 +18,11 @@ export class WindowsRunner extends EventEmitter {
   private _pid: number | null = null;
   private _alive: boolean = false;
   private buffer: string = '';
+  // In-memory ring buffer for instant log retrieval (avoids fs.createWriteStream flush delays)
+  private outputRing: string[] = [];
+  private static readonly MAX_RING_LINES = 500;
+  private _dataCount: number = 0;
+  private _totalBytes: number = 0;
 
   get pid(): number | null {
     return this._pid;
@@ -98,6 +103,11 @@ export class WindowsRunner extends EventEmitter {
   private handleMessage(msg: any): void {
     switch (msg.type) {
       case 'data':
+        this._dataCount++;
+        this._totalBytes += (msg.data?.length || 0);
+        if (this._dataCount === 1 || this._dataCount === 10 || this._dataCount === 100) {
+          console.log(`[WindowsRunner] data event #${this._dataCount}, total ${this._totalBytes} bytes, ring ${this.outputRing.length} lines`);
+        }
         this._lastOutputTime = Date.now();
         // Track output volume to distinguish active generation from idle echo.
         // When Claude is working, it streams lots of text quickly (>200 bytes in 3s).
@@ -115,11 +125,27 @@ export class WindowsRunner extends EventEmitter {
           }
         }
         this.logStream?.write(msg.data);
+        // Append to in-memory ring buffer for instant log reads
+        const newLines = msg.data.split('\n');
+        if (this.outputRing.length > 0 && newLines.length > 0) {
+          // Append first chunk to last existing line (partial line continuation)
+          this.outputRing[this.outputRing.length - 1] += newLines[0];
+          for (let i = 1; i < newLines.length; i++) {
+            this.outputRing.push(newLines[i]);
+          }
+        } else {
+          this.outputRing.push(...newLines);
+        }
+        // Trim ring buffer
+        if (this.outputRing.length > WindowsRunner.MAX_RING_LINES) {
+          this.outputRing.splice(0, this.outputRing.length - WindowsRunner.MAX_RING_LINES);
+        }
         this.emit('data', msg.data);
         break;
 
       case 'pid':
         this._pid = msg.pid;
+        console.log(`[WindowsRunner] PTY pid: ${msg.pid}`);
         break;
 
       case 'exit':
@@ -135,7 +161,7 @@ export class WindowsRunner extends EventEmitter {
         break;
 
       case 'ready':
-        // pty-host is ready
+        console.log('[WindowsRunner] pty-host ready');
         break;
     }
   }
@@ -154,6 +180,24 @@ export class WindowsRunner extends EventEmitter {
     if (this.host?.stdin?.writable) {
       this.host.stdin.write(JSON.stringify(msg) + '\n');
     }
+  }
+
+  /** Return the last N lines from the in-memory ring buffer (instant, no disk I/O). */
+  captureOutput(lines = 50): string {
+    // If ring buffer is empty, fall back to log file for initial data
+    if (this.outputRing.length === 0 && this.logStream) {
+      // Ring buffer empty — try reading last bytes from log file directly
+      const logPath = (this.logStream as any).path as string;
+      if (logPath && fs.existsSync(logPath)) {
+        try {
+          const content = fs.readFileSync(logPath, 'utf-8');
+          const allLines = content.split('\n');
+          return allLines.slice(-lines).join('\n');
+        } catch { /* ignore */ }
+      }
+    }
+    const start = Math.max(0, this.outputRing.length - lines);
+    return this.outputRing.slice(start).join('\n');
   }
 
   write(data: string): void {

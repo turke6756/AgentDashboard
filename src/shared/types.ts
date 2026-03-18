@@ -92,6 +92,22 @@ export interface HealthCheck {
   claudeWslAvailable: boolean;
 }
 
+export interface ContextStats {
+  agentId: string;
+  sessionId: string;
+  model: string;
+  inputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  totalOutputTokens: number;
+  totalContextTokens: number;
+  contextWindowMax: number;
+  contextPercentage: number;
+  turnCount: number;
+  lastUpdatedAt: string;
+}
+
 export interface IpcApi {
   workspaces: {
     list: () => Promise<Workspace[]>;
@@ -110,6 +126,8 @@ export interface IpcApi {
     checkAgentMd: (workingDirectory: string, pathType: PathType) => Promise<{ found: boolean; fileName: string | null }>;
     getFileActivities: (agentId: string, operation?: FileOperation) => Promise<FileActivity[]>;
     onFileActivity: (callback: (activity: FileActivity) => void) => () => void;
+    getContextStats: (agentId: string) => Promise<ContextStats | null>;
+    onContextStatsChanged: (callback: (stats: ContextStats) => void) => () => void;
     fork: (id: string) => Promise<Agent>;
     query: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult>;
     sendInput: (agentId: string, text: string) => Promise<void>;

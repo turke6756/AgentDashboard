@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult } from '../../shared/types';
+import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats } from '../../shared/types';
 
 interface WorkspaceHeat {
   activeCount: number;
@@ -17,6 +17,7 @@ interface DashboardState {
   detailPane: 0 | 1 | 2;
   fileActivities: FileActivity[];
   workspaceHeat: Record<string, WorkspaceHeat>;
+  contextStats: Record<string, ContextStats>;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -34,6 +35,7 @@ interface DashboardState {
   setFileActivities: (activities: FileActivity[]) => void;
   addFileActivity: (activity: FileActivity) => void;
   updateWorkspaceHeat: () => void;
+  updateContextStats: (stats: ContextStats) => void;
   forkAgent: (id: string) => Promise<Agent | null>;
   queryAgent: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult | null>;
 }
@@ -49,6 +51,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   detailPane: 2, // Default to Log tab
   fileActivities: [],
   workspaceHeat: {},
+  contextStats: {},
 
   loadWorkspaces: async () => {
     const workspaces = await window.api.workspaces.list();
@@ -78,7 +81,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   selectWorkspace: (id) => {
-    set({ selectedWorkspaceId: id, selectedAgentId: null });
+    set({ selectedWorkspaceId: id, selectedAgentId: null, terminalAgentId: null });
     if (id) get().loadAgents(id);
   },
 
@@ -140,6 +143,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       console.error('Query failed:', err);
       return null;
     }
+  },
+
+  updateContextStats: (stats: ContextStats) => {
+    set((state) => ({
+      contextStats: { ...state.contextStats, [stats.agentId]: stats },
+    }));
   },
 
   updateWorkspaceHeat: () => {

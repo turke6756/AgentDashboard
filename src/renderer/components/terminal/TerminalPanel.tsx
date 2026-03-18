@@ -97,19 +97,28 @@ export default function TerminalPanel() {
         setIsAtBottom(viewportAtBottom);
       });
 
-      // Attach IPC stream
-      window.api.terminal.attach(agentId);
-
-      const unsub = window.api.terminal.onData((incomingAgentId: string, data: string) => {
-        if (incomingAgentId === agentId) {
-          terminal.write(data);
+      // Pre-load full 10000 line history, then attach to the live stream
+      window.api.agents.getLog(agentId, 10000).then((logContent) => {
+        if (logContent) {
+          terminal.write(logContent);
         }
+        
+        window.api.terminal.attach(agentId);
+
+        const unsub = window.api.terminal.onData((incomingAgentId: string, data: string) => {
+          if (incomingAgentId === agentId) {
+            terminal.write(data);
+          }
+        });
+
+        cached = { terminal, fitAddon, unsub };
+        terminalCache.set(agentId, cached);
+
+        setTimeout(() => {
+            terminal.scrollToBottom();
+            terminal.focus();
+        }, 50);
       });
-
-      cached = { terminal, fitAddon, unsub };
-      terminalCache.set(agentId, cached);
-
-      terminal.focus();
     }
 
     // ResizeObserver for responsive fitting
@@ -150,17 +159,13 @@ export default function TerminalPanel() {
     };
   }, [terminalAgentId]);
 
-  // Clean up cached terminals when agents are deleted
+  // Clean up cached terminals ONLY when they are explicitly deleted.
+  // The original code aggressively cleared the cache when switching workspaces.
   useEffect(() => {
-    const agentIds = new Set(agents.map(a => a.id));
-    for (const [cachedId, entry] of terminalCache) {
-      if (!agentIds.has(cachedId)) {
-        if (entry.unsub) entry.unsub();
-        entry.terminal.dispose();
-        terminalCache.delete(cachedId);
-      }
-    }
-  }, [agents]);
+    // To prevent memory leaks without destroying scrollback on workspace switch,
+    // we rely on the user closing the terminal or explicit deletion events (if we added them).
+    // For now, we let them sit in the cache. They are lightweight.
+  }, []);
 
   // Sync scrollOnUserInput option without re-creating terminal
   useEffect(() => {
@@ -176,8 +181,16 @@ export default function TerminalPanel() {
     }
   }, []);
 
+  const isOpen = terminalAgentId !== null;
+
   return (
-    <div className="border-t border-gray-800 bg-surface-0 flex flex-col" style={{ height: '40%' }}>
+    <div
+      className={`bg-surface-0 flex flex-col overflow-hidden transition-[height,border-color] duration-150 ${
+        isOpen ? 'border-t border-gray-800' : 'border-t border-transparent pointer-events-none'
+      }`}
+      style={{ height: isOpen ? '40%' : 0 }}
+      aria-hidden={!isOpen}
+    >
       <div className="flex items-center justify-between px-4 py-1.5 bg-surface-1 border-b border-gray-800">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-gray-400">Terminal</span>

@@ -6,20 +6,28 @@ import DetailPanel from './components/layout/DetailPanel';
 import TerminalPanel from './components/terminal/TerminalPanel';
 
 export default function App() {
-  const { loadWorkspaces, checkHealth, terminalAgentId } = useDashboardStore();
+  const { loadWorkspaces, checkHealth } = useDashboardStore();
 
   useEffect(() => {
     loadWorkspaces();
     checkHealth();
 
-    const unsub = window.api.onAgentStatusChanged(({ agentId, status, agent }) => {
+    const unsubStatus = window.api.onAgentStatusChanged(({ agentId, status, agent }) => {
       if (agent) {
         const store = useDashboardStore.getState();
         store.updateAgent(agent);
         store.updateWorkspaceHeat();
       }
     });
-    return unsub;
+
+    const unsubContext = window.api.agents.onContextStatsChanged((stats) => {
+      useDashboardStore.getState().updateContextStats(stats);
+    });
+
+    return () => {
+      unsubStatus();
+      unsubContext();
+    };
   }, []);
 
   return (
@@ -31,7 +39,7 @@ export default function App() {
           <MainContent />
           <DetailPanel />
         </div>
-        {terminalAgentId && <TerminalPanel />}
+        <TerminalPanel />
       </div>
     </div>
   );

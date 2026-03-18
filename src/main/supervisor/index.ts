@@ -3,17 +3,18 @@ import path from 'path';
 import fs from 'fs';
 import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentStatus, LaunchAgentInput, QueryResult } from '../../shared/types';
+import { Agent, AgentStatus, ContextStats, LaunchAgentInput, QueryResult } from '../../shared/types';
 import { TMUX_SESSION_PREFIX, DEFAULT_COMMAND, DEFAULT_COMMAND_WSL } from '../../shared/constants';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
 import { StatusMonitor } from './status-monitor';
+import { ContextStatsMonitor, JsonlFileActivity } from './context-stats-monitor';
 import { FileActivityTracker } from './file-activity-tracker';
 import {
   createAgent, getAgent, getActiveAgents, getAllAgents, getWorkspace, updateAgentStatus, updateAgentPid,
   updateAgentExitCode, incrementRestartCount, updateAgentLastOutput,
   updateAgentAttached, addEvent, deleteAgent as dbDeleteAgent,
-  updateAgentResumeSessionId
+  updateAgentResumeSessionId, addFileActivity
 } from '../database';
 import { detectPathType, windowsToWslPath, uncToWslPath } from '../path-utils';
 import { tmuxListSessions, tmuxSendKeys } from '../wsl-bridge';
@@ -113,6 +114,7 @@ export class AgentSupervisor extends EventEmitter {
   private wslRunners = new Map<string, WslRunner>();
   private fileTrackers = new Map<string, FileActivityTracker>();
   private monitor: StatusMonitor;
+  private contextStatsMonitor: ContextStatsMonitor;
   private logsDir: string;
 
   constructor() {
@@ -135,6 +137,29 @@ export class AgentSupervisor extends EventEmitter {
       }
     });
 
+    this.contextStatsMonitor = new ContextStatsMonitor(() => {
+      const agents = getActiveAgents();
+      return agents
+        .filter(a => a.resumeSessionId)
+        .map(a => ({
+          agentId: a.id,
+          sessionId: a.resumeSessionId!,
+          workingDirectory: a.workingDirectory,
+        }));
+    });
+
+    this.contextStatsMonitor.on('statsChanged', (stats: ContextStats) => {
+      this.emit('contextStatsChanged', stats);
+    });
+
+    // JSONL-based file activity tracking (reliable for both Windows and WSL agents)
+    this.contextStatsMonitor.on('fileActivity', (activity: JsonlFileActivity) => {
+      const dbActivity = addFileActivity(activity.agentId, activity.filePath, activity.operation);
+      if (dbActivity) {
+        this.emit('fileActivity', dbActivity);
+      }
+    });
+
     // Update registry whenever any status changes
     this.on('statusChanged', () => this.writeAgentRegistry());
     this.on('agentDeleted', () => this.writeAgentRegistry());
@@ -142,10 +167,16 @@ export class AgentSupervisor extends EventEmitter {
 
   start(): void {
     this.monitor.start();
+    this.contextStatsMonitor.start();
   }
 
   stop(): void {
     this.monitor.stop();
+    this.contextStatsMonitor.stop();
+  }
+
+  getContextStats(agentId: string): ContextStats | null {
+    return this.contextStatsMonitor.getStats(agentId);
   }
 
   /** Write ~/.claude/agent-registry.json so other Claude instances can discover agents */
@@ -341,8 +372,8 @@ export class AgentSupervisor extends EventEmitter {
     const runner = new WslRunner(agent.tmuxSessionName);
     this.wslRunners.set(agent.id, runner);
 
-    // Convert log path to WSL-accessible path
-    const wslLogPath = windowsToWslPath(agent.logPath || '');
+    // Do not convert log path to WSL; WslRunner runs in Windows Node.js and needs a native path.
+    const nativeLogPath = agent.logPath || '';
     const wslWorkDir = agent.workingDirectory; // Already a WSL path
 
     let command = overrideCommand || agent.command;
@@ -398,7 +429,7 @@ export class AgentSupervisor extends EventEmitter {
 
     console.log(`[WSL] Launching agent '${agent.tmuxSessionName}' in ${wslWorkDir}`);
     console.log(`[WSL] Command: ${command}`);
-    await runner.launch(wslWorkDir, command, wslLogPath);
+    await runner.launch(wslWorkDir, command, nativeLogPath);
     updateAgentStatus(agent.id, 'working');
     this.emit('statusChanged', { agentId: agent.id, status: 'working' });
   }
@@ -790,7 +821,22 @@ export class AgentSupervisor extends EventEmitter {
     const agent = getAgent(agentId);
     if (!agent) return '';
 
-    // For WSL agents, try tmux capture first
+    // If requesting a large history (like TerminalPanel does with 500+ lines),
+    // always prefer the raw log file on disk. The log file contains the full,
+    // persistent history with all raw ANSI color codes intact.
+    // tmux capture-pane strips colors and is limited by the pane buffer.
+    // Windows in-memory ring buffer is also limited.
+    if (lines >= 500 && agent.logPath && fs.existsSync(agent.logPath)) {
+      try {
+        const content = fs.readFileSync(agent.logPath, 'utf-8');
+        const allLines = content.split('\n');
+        return allLines.slice(-lines).join('\n');
+      } catch (err) {
+        console.error(`[getAgentLog] Failed to read large log from disk for agent ${agentId}:`, err);
+      }
+    }
+
+    // For WSL agents, try tmux capture first (always current)
     const wslRunner = this.wslRunners.get(agentId);
     if (wslRunner) {
       try {
@@ -800,7 +846,13 @@ export class AgentSupervisor extends EventEmitter {
       }
     }
 
-    // Read from log file
+    // For Windows agents, use in-memory ring buffer (instant, avoids file flush delays)
+    const winRunner = this.windowsRunners.get(agentId);
+    if (winRunner) {
+      return winRunner.captureOutput(lines);
+    }
+
+    // Fallback: read from log file
     if (agent.logPath && fs.existsSync(agent.logPath)) {
       const content = fs.readFileSync(agent.logPath, 'utf-8');
       const allLines = content.split('\n');
@@ -867,5 +919,9 @@ export class AgentSupervisor extends EventEmitter {
     } catch {
       // WSL might not be available
     }
+
+    // Now that agents are active, do an immediate context stats poll
+    // so data is available before the first interval tick.
+    this.contextStatsMonitor.pollNow();
   }
 }

@@ -36,6 +36,7 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:send-input', (_e, agentId, text) => supervisor.sendInput(agentId, text));
   ipcMain.handle('agent:check-agent-md', (_e, workingDirectory, pathType) => checkAgentMdExists(workingDirectory, pathType));
   ipcMain.handle('agent:workspace-heat', () => getWorkspaceAgentSummary());
+  ipcMain.handle('agent:get-context-stats', (_e, agentId) => supervisor.getContextStats(agentId));
 
   // Terminal handlers - track attached agents and their data listeners
   // Map<agentId, listenerFunction>
@@ -137,6 +138,13 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   supervisor.on('fileActivity', (activity) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('agent:file-activity', activity);
+    }
+  });
+
+  // Forward context stats changes to renderer
+  supervisor.on('contextStatsChanged', (stats) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('agent:context-stats-changed', stats);
     }
   });
 }
