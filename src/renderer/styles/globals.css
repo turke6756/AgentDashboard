@@ -139,3 +139,11 @@ body {
   height: 100%;
   opacity: 0.5;
 }
+
+/* Resize cursor overrides — applied to body during drag */
+.resizing-h * {
+  cursor: col-resize !important;
+}
+.resizing-v * {
+  cursor: row-resize !important;
+}

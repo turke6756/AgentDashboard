@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import WorkspaceCreateDialog from '../workspace/WorkspaceCreateDialog';
+import CollapseButton from './CollapseButton';
 
 function HeatDot({ activeCount, workingCount }: { activeCount: number; workingCount: number }) {
   let colorClass = 'bg-gray-800';
@@ -27,13 +28,18 @@ function HeatDot({ activeCount, workingCount }: { activeCount: number; workingCo
   );
 }
 
-export default function Sidebar() {
-  const { workspaces, selectedWorkspaceId, selectWorkspace, loadWorkspaces, deleteWorkspace, health, workspaceHeat } = useDashboardStore();
+interface SidebarProps {
+  width: number;
+}
+
+export default function Sidebar({ width }: SidebarProps) {
+  const { workspaces, selectedWorkspaceId, selectWorkspace, loadWorkspaces, deleteWorkspace, health, workspaceHeat, panelLayout, togglePanelCollapsed, resetLayout, openDirectoryTab } = useDashboardStore();
   const [showCreate, setShowCreate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; wsId: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const collapsed = panelLayout.sidebarCollapsed;
 
   // Close context menu on outside click
   useEffect(() => {
@@ -94,13 +100,43 @@ export default function Sidebar() {
     await deleteWorkspace(wsId);
   };
 
+  // Collapsed sidebar: thin strip with expand button
+  if (collapsed) {
+    return (
+      <div
+        className="bg-surface-1/90 backdrop-blur-sm border-r border-gray-800 flex flex-col items-center z-20 shadow-2xl py-2"
+        style={{ width }}
+      >
+        <CollapseButton collapsed direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
+        <div className="mt-2 text-[9px] font-mono text-accent-blue writing-mode-vertical" style={{ writingMode: 'vertical-rl' }}>
+          SECTORS
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="w-64 bg-surface-1/90 backdrop-blur-sm border-r border-gray-800 flex flex-col z-20 shadow-2xl">
+    <div
+      className="bg-surface-1/90 backdrop-blur-sm border-r border-gray-800 flex flex-col z-20 shadow-2xl"
+      style={{ width }}
+    >
       {/* Header */}
       <div className="p-4 border-b border-gray-800 bg-surface-0/50">
-        <h1 className="text-xl font-bold tracking-widest uppercase glow-text">
-          <span className="text-accent-blue">AGENT</span>_OS
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold tracking-widest uppercase glow-text">
+            <span className="text-accent-blue">AGENT</span>_OS
+          </h1>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={resetLayout}
+              className="text-[8px] font-mono text-gray-600 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
+              title="Reset all panel sizes to defaults"
+            >
+              RST
+            </button>
+            <CollapseButton collapsed={false} direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
+          </div>
+        </div>
         <div className="text-[10px] text-gray-500 font-mono mt-1 tracking-widest">
           V1.0.0 // SYSTEM_READY
         </div>
@@ -137,6 +173,7 @@ export default function Sidebar() {
               <button
                 key={ws.id}
                 onClick={() => selectWorkspace(ws.id)}
+                onDoubleClick={() => openDirectoryTab(ws.path, ws.pathType)}
                 onContextMenu={(e) => handleContextMenu(e, ws.id)}
                 className={`w-full text-left px-3 py-3 relative group transition-all duration-200 border-l-2 ${
                   isSelected

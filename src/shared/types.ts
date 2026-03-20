@@ -92,6 +92,41 @@ export interface HealthCheck {
   claudeWslAvailable: boolean;
 }
 
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size: number;
+}
+
+export interface FileContent {
+  path: string;
+  content: string;
+  encoding: string;
+  size: number;
+  error?: string;
+}
+
+export interface FileTab {
+  id: string;
+  filePath: string;        // empty string for directory-only tabs
+  rootDirectory: string;   // tree root (agent workingDirectory or workspace path)
+  pathType: PathType;
+  agentId?: string;
+  label: string;           // display name (filename or dirname/)
+}
+
+export interface PanelLayout {
+  sidebarWidth: number;
+  detailPanelWidth: number;
+  terminalHeight: number;
+  directoryTreeWidth: number;
+  sidebarCollapsed: boolean;
+  detailPanelCollapsed: boolean;
+  terminalCollapsed: boolean;
+  directoryTreeCollapsed: boolean;
+}
+
 export interface ContextStats {
   agentId: string;
   sessionId: string;
@@ -139,10 +174,15 @@ export interface IpcApi {
     resize: (agentId: string, cols: number, rows: number) => Promise<void>;
     onData: (callback: (agentId: string, data: string) => void) => () => void;
   };
+  files: {
+    readFile: (filePath: string, pathType: PathType) => Promise<FileContent>;
+    listDirectory: (dirPath: string, pathType: PathType) => Promise<DirectoryEntry[]>;
+  };
   system: {
     pickDirectory: (startInWsl?: boolean) => Promise<string | null>;
     healthCheck: () => Promise<HealthCheck>;
     openFile: (filePath: string, pathType: PathType) => Promise<void>;
+    openFileInWorkspace: (filePath: string, workspaceDir: string, pathType: PathType) => Promise<void>;
   };
   onAgentStatusChanged: (callback: (data: { agentId: string; status: AgentStatus; agent: Agent }) => void) => () => void;
 }

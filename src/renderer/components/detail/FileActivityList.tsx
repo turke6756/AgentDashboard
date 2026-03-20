@@ -1,9 +1,13 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import type { FileActivity, PathType } from '../../../shared/types';
+import { useDashboardStore } from '../../stores/dashboard-store';
+import FileContextMenu from '../shared/FileContextMenu';
+import { fileDragStart } from '../../utils/drag-file';
 
 interface Props {
   activities: FileActivity[];
   pathType?: PathType;
+  agentId?: string;
 }
 
 function timeAgo(timestamp: string): string {
@@ -55,8 +59,17 @@ function groupByFile(activities: FileActivity[]): FileActivity[] {
   return Array.from(seen.values());
 }
 
-export default function FileActivityList({ activities, pathType }: Props) {
+export default function FileActivityList({ activities, pathType, agentId }: Props) {
+  const { openFileViewer, agents, workspaces } = useDashboardStore();
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
   const grouped = groupByFile(activities);
+
+  // Resolve workspace context for this agent
+  const agent = agentId ? agents.find((a) => a.id === agentId) : null;
+  const workspace = agent ? workspaces.find((w) => w.id === agent.workspaceId) : null;
+  const workingDirectory = agent?.workingDirectory || '';
+  const resolvedPathType = workspace?.pathType || pathType || 'wsl';
 
   if (grouped.length === 0) {
     return (
@@ -66,8 +79,53 @@ export default function FileActivityList({ activities, pathType }: Props) {
     );
   }
 
+  const openInWorkspaceVSCode = (filePath: string) => {
+    if (workingDirectory) {
+      window.api.system.openFileInWorkspace(filePath, workingDirectory, resolvedPathType);
+    } else {
+      window.api.system.openFile(filePath, resolvedPathType);
+    }
+  };
+
   const handleClick = (filePath: string) => {
-    window.api.system.openFile(filePath, pathType || 'windows');
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+      return; // double-click already fired
+    }
+    clickTimer.current = setTimeout(() => {
+      clickTimer.current = null;
+      if (agentId) {
+        openFileViewer(filePath, agentId);
+      } else {
+        window.api.system.openFile(filePath, resolvedPathType);
+      }
+    }, 250);
+  };
+
+  const handleDoubleClick = (filePath: string) => {
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    openInWorkspaceVSCode(filePath);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, filePath: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, filePath });
+  };
+
+  const handleRevealInTree = () => {
+    if (agentId && contextMenu) {
+      openFileViewer(contextMenu.filePath, agentId);
+    }
+  };
+
+  const handleVSCode = (e: React.MouseEvent, filePath: string) => {
+    e.stopPropagation();
+    openInWorkspaceVSCode(filePath);
   };
 
   return (
@@ -78,6 +136,10 @@ export default function FileActivityList({ activities, pathType }: Props) {
           <button
             key={`${activity.filePath}-${activity.operation}-${activity.id}`}
             onClick={() => handleClick(activity.filePath)}
+            onDoubleClick={() => handleDoubleClick(activity.filePath)}
+            onContextMenu={(e) => handleContextMenu(e, activity.filePath)}
+            draggable
+            onDragStart={(e) => fileDragStart(e, activity.filePath)}
             className="w-full text-left px-4 py-2 hover:bg-surface-2 transition-colors flex items-start gap-2 group"
           >
             <span className="text-gray-500 text-sm mt-0.5 shrink-0">
@@ -94,12 +156,32 @@ export default function FileActivityList({ activities, pathType }: Props) {
               </div>
               <div className="text-[11px] text-gray-600 truncate">{dirPath(activity.filePath)}</div>
             </div>
+            <span
+              onClick={(e) => handleVSCode(e, activity.filePath)}
+              className="text-[10px] font-mono font-bold text-accent-blue/40 hover:text-accent-blue opacity-0 group-hover:opacity-100 transition-all shrink-0 mt-0.5 px-1 border border-transparent hover:border-accent-blue/30 cursor-pointer"
+              title="Open in VS Code"
+            >
+              VS
+            </span>
             <span className="text-[10px] text-gray-600 shrink-0 mt-1">
               {timeAgo(activity.timestamp)}
             </span>
           </button>
         );
       })}
+
+      {contextMenu && (
+        <FileContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          filePath={contextMenu.filePath}
+          workingDirectory={workingDirectory}
+          pathType={resolvedPathType}
+          showRevealInTree={!!agentId}
+          onClose={() => setContextMenu(null)}
+          onRevealInTree={handleRevealInTree}
+        />
+      )}
     </div>
   );
 }

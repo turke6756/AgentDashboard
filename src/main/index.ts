@@ -1,8 +1,11 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, protocol, net } from 'electron';
 import path from 'path';
 import { initDatabase } from './database';
 import { AgentSupervisor } from './supervisor';
 import { registerIpcHandlers } from './ipc-handlers';
+import { WsServer } from './ws-server';
+import { pathToFileURL } from 'url';
+import { wslToWindowsPath } from './path-utils';
 
 // Prevent EPIPE crashes when stdout/stderr pipe is closed (e.g. parent shell exits)
 process.stdout?.on?.('error', () => {});
@@ -10,6 +13,12 @@ process.stderr?.on?.('error', () => {});
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: AgentSupervisor | null = null;
+let wsServer: WsServer | null = null;
+
+// Register media protocol before app is ready
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'media', privileges: { standard: true, secure: true, supportFetchAPI: true, bypassCSP: true, stream: true } }
+]);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -24,6 +33,7 @@ function createWindow(): void {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      webSecurity: true, // Keep enabled but use custom protocol
     },
   });
 
@@ -33,15 +43,26 @@ function createWindow(): void {
   if (process.env.NODE_ENV === 'production' || app.isPackaged) {
     mainWindow.loadFile(builtFile);
   } else {
-    // Vite may use 5173 or 5174+ if port is taken
-    mainWindow.loadURL('http://localhost:5173').catch(() =>
-      mainWindow!.loadURL('http://localhost:5174').catch(() =>
-        mainWindow!.loadURL('http://localhost:5175').catch(() => {
-          console.log('Dev server not available, loading built files');
-          mainWindow!.loadFile(builtFile);
-        })
-      )
-    );
+    // Check if a Vite dev server is running before trying to connect
+    const http = require('http');
+    const tryPort = (port: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        const req = http.get(`http://localhost:${port}`, () => resolve(true));
+        req.on('error', () => resolve(false));
+        req.setTimeout(500, () => { req.destroy(); resolve(false); });
+      });
+
+    (async () => {
+      for (const port of [5173, 5174, 5175]) {
+        if (await tryPort(port)) {
+          console.log(`Dev server found on port ${port}`);
+          mainWindow!.loadURL(`http://localhost:${port}`);
+          return;
+        }
+      }
+      console.log('No dev server found, loading built files');
+      mainWindow!.loadFile(builtFile);
+    })();
   }
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
@@ -54,6 +75,51 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  // Handle media:// protocol — URLs are media://file/<encodedPath>
+  protocol.handle('media', async (request) => {
+    const urlObj = new URL(request.url);
+    // Path is /<encodedFilePath>, strip leading slash and decode
+    const decodedUrl = decodeURIComponent(urlObj.pathname.slice(1));
+
+    let filePath = decodedUrl;
+    
+    if (process.platform === 'win32' && filePath.startsWith('/')) {
+      filePath = wslToWindowsPath(filePath);
+    }
+
+    try {
+      const response = await net.fetch(pathToFileURL(filePath).toString());
+      const headers = new Headers(response.headers);
+      
+      // Explicitly set Content-Type based on extension if missing or generic
+      const ext = path.extname(filePath).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.pdf': 'application/pdf',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.avif': 'image/avif',
+        '.bmp': 'image/bmp',
+        '.ico': 'image/x-icon',
+        '.svg': 'image/svg+xml',
+      };
+      if (mimeMap[ext]) {
+        headers.set('Content-Type', mimeMap[ext]);
+      }
+
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    } catch (err) {
+      console.error('Failed to fetch media:', err);
+      return new Response('File not found', { status: 404 });
+    }
+  });
+
   try {
     console.log('Initializing database...');
     await initDatabase();
@@ -63,6 +129,8 @@ app.whenReady().then(async () => {
     createWindow();
     registerIpcHandlers(supervisor, mainWindow!);
     supervisor.start();
+    wsServer = new WsServer(supervisor);
+    wsServer.start();
     supervisor.reconcile();
     console.log('App ready');
   } catch (err: any) {
@@ -73,6 +141,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  wsServer?.stop();
   supervisor?.stop();
   app.quit();
 });

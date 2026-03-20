@@ -5,10 +5,11 @@ import {
   getAgentsByWorkspace, getAllAgents, getAgent, getFileActivities, getWorkspaceAgentSummary,
   checkAgentMdExists
 } from './database';
-import { openInVSCode, openFileInVSCode } from './vscode-launcher';
+import { openInVSCode, openFileInVSCode, openFileInWorkspace } from './vscode-launcher';
 import { isWslAvailable, isTmuxAvailable, isClaudeAvailableInWsl } from './wsl-bridge';
 import { execFileSync } from 'child_process';
 import { detectPathType } from './path-utils';
+import { readFileContents, listDirectoryEntries } from './file-reader';
 
 export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: BrowserWindow): void {
   // Workspace handlers
@@ -121,9 +122,22 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
     return { wslAvailable, tmuxAvailable, claudeWindowsAvailable, claudeWslAvailable };
   });
 
+  // File viewer handlers
+  ipcMain.handle('files:read', (_e, filePath, pathType) => {
+    return readFileContents(filePath, pathType || detectPathType(filePath));
+  });
+
+  ipcMain.handle('files:list-directory', (_e, dirPath, pathType) => {
+    return listDirectoryEntries(dirPath, pathType || detectPathType(dirPath));
+  });
+
   // File open handler
   ipcMain.handle('system:open-file', (_e, filePath, pathType) => {
     openFileInVSCode(filePath, pathType || detectPathType(filePath));
+  });
+
+  ipcMain.handle('system:open-file-in-workspace', (_e, filePath, workspaceDir, pathType) => {
+    openFileInWorkspace(filePath, workspaceDir, pathType || detectPathType(filePath));
   });
 
   // Forward supervisor status changes to renderer

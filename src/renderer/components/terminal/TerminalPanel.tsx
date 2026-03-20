@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import { shellEscapePath } from '../../utils/drag-file';
 
 interface CachedTerminal {
   terminal: Terminal;
@@ -13,7 +14,11 @@ interface CachedTerminal {
 // Module-level cache — survives re-renders, preserves scrollback
 const terminalCache = new Map<string, CachedTerminal>();
 
-export default function TerminalPanel() {
+interface TerminalPanelProps {
+  height: number;
+}
+
+export default function TerminalPanel({ height }: TerminalPanelProps) {
   const { terminalAgentId, setTerminalAgent, agents } = useDashboardStore();
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -21,8 +26,10 @@ export default function TerminalPanel() {
   const scrollLockedRef = useRef(false);
   const [scrollLocked, setScrollLocked] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const agent = agents.find(a => a.id === terminalAgentId);
+  const isOpen = terminalAgentId !== null;
 
   // Keep scrollLocked ref in sync
   useEffect(() => {
@@ -102,7 +109,7 @@ export default function TerminalPanel() {
         if (logContent) {
           terminal.write(logContent);
         }
-        
+
         window.api.terminal.attach(agentId);
 
         const unsub = window.api.terminal.onData((incomingAgentId: string, data: string) => {
@@ -159,14 +166,6 @@ export default function TerminalPanel() {
     };
   }, [terminalAgentId]);
 
-  // Clean up cached terminals ONLY when they are explicitly deleted.
-  // The original code aggressively cleared the cache when switching workspaces.
-  useEffect(() => {
-    // To prevent memory leaks without destroying scrollback on workspace switch,
-    // we rely on the user closing the terminal or explicit deletion events (if we added them).
-    // For now, we let them sit in the cache. They are lightweight.
-  }, []);
-
   // Sync scrollOnUserInput option without re-creating terminal
   useEffect(() => {
     if (xtermRef.current) {
@@ -181,14 +180,12 @@ export default function TerminalPanel() {
     }
   }, []);
 
-  const isOpen = terminalAgentId !== null;
-
   return (
     <div
-      className={`bg-surface-0 flex flex-col overflow-hidden transition-[height,border-color] duration-150 ${
+      className={`bg-surface-0 flex flex-col overflow-hidden transition-[border-color] duration-150 ${
         isOpen ? 'border-t border-gray-800' : 'border-t border-transparent pointer-events-none'
       }`}
-      style={{ height: isOpen ? '40%' : 0 }}
+      style={{ height: isOpen ? height : 0 }}
       aria-hidden={!isOpen}
     >
       <div className="flex items-center justify-between px-4 py-1.5 bg-surface-1 border-b border-gray-800">
@@ -226,7 +223,20 @@ export default function TerminalPanel() {
             </button>
         </div>
       </div>
-      <div className="relative flex-1 overflow-hidden">
+      <div
+        className={`relative flex-1 overflow-hidden transition-shadow ${isDragOver ? 'ring-1 ring-accent-blue/50' : ''}`}
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragOver(false);
+          const filePath = e.dataTransfer.getData('application/x-file-path') || e.dataTransfer.getData('text/plain');
+          if (filePath && terminalAgentId) {
+            window.api.terminal.write(terminalAgentId, shellEscapePath(filePath));
+            xtermRef.current?.focus();
+          }
+        }}
+      >
         <div ref={termRef} className="w-full h-full" onClick={() => xtermRef.current?.focus()} />
         {!isAtBottom && !scrollLocked && (
           <button

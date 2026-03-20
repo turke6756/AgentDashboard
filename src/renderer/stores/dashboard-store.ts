@@ -1,9 +1,37 @@
 import { create } from 'zustand';
-import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats } from '../../shared/types';
+import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout } from '../../shared/types';
 
 interface WorkspaceHeat {
   activeCount: number;
   workingCount: number;
+}
+
+const DEFAULT_LAYOUT: PanelLayout = {
+  sidebarWidth: 256,
+  detailPanelWidth: 384,
+  terminalHeight: 300,
+  directoryTreeWidth: 250,
+  sidebarCollapsed: false,
+  detailPanelCollapsed: false,
+  terminalCollapsed: false,
+  directoryTreeCollapsed: false,
+};
+
+function loadLayout(): PanelLayout {
+  try {
+    const stored = localStorage.getItem('panelLayout');
+    if (stored) return { ...DEFAULT_LAYOUT, ...JSON.parse(stored) };
+  } catch { /* ignore */ }
+  return { ...DEFAULT_LAYOUT };
+}
+
+function saveLayout(layout: PanelLayout) {
+  localStorage.setItem('panelLayout', JSON.stringify(layout));
+}
+
+let tabIdCounter = 0;
+function nextTabId(): string {
+  return `tab-${++tabIdCounter}`;
 }
 
 interface DashboardState {
@@ -18,6 +46,17 @@ interface DashboardState {
   fileActivities: FileActivity[];
   workspaceHeat: Record<string, WorkspaceHeat>;
   contextStats: Record<string, ContextStats>;
+
+  // Panel layout
+  panelLayout: PanelLayout;
+  setPanelSize: (key: keyof PanelLayout, value: number) => void;
+  togglePanelCollapsed: (key: keyof PanelLayout) => void;
+  resetLayout: () => void;
+
+  // Tabbed file viewer
+  openTabs: FileTab[];
+  activeTabId: string | null;
+  fileViewerOpen: boolean;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -38,6 +77,17 @@ interface DashboardState {
   updateContextStats: (stats: ContextStats) => void;
   forkAgent: (id: string) => Promise<Agent | null>;
   queryAgent: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult | null>;
+
+  // Tab actions
+  openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string) => void;
+  openDirectoryTab: (rootDirectory: string, pathType: PathType) => void;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  closeAllTabs: () => void;
+
+  // Backward-compat shims
+  openFileViewer: (filePath: string, agentId: string) => void;
+  closeFileViewer: () => void;
 }
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
@@ -48,10 +98,138 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   terminalAgentId: null,
   health: null,
   loading: false,
-  detailPane: 2, // Default to Log tab
+  detailPane: 2,
   fileActivities: [],
   workspaceHeat: {},
   contextStats: {},
+
+  // Panel layout
+  panelLayout: loadLayout(),
+
+  setPanelSize: (key, value) => {
+    set((state) => {
+      const layout = { ...state.panelLayout, [key]: value };
+      saveLayout(layout);
+      return { panelLayout: layout };
+    });
+  },
+
+  togglePanelCollapsed: (key) => {
+    set((state) => {
+      const layout = { ...state.panelLayout, [key]: !state.panelLayout[key] };
+      saveLayout(layout);
+      return { panelLayout: layout };
+    });
+  },
+
+  resetLayout: () => {
+    const layout = { ...DEFAULT_LAYOUT };
+    saveLayout(layout);
+    set({ panelLayout: layout });
+  },
+
+  // Tabbed file viewer
+  openTabs: [],
+  activeTabId: null,
+  fileViewerOpen: false,
+
+  openTab: (filePath, rootDirectory, pathType, agentId?) => {
+    const { openTabs } = get();
+    // Check if tab already exists for this file+root combo
+    const existing = openTabs.find(
+      (t) => t.filePath === filePath && t.rootDirectory === rootDirectory
+    );
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return;
+    }
+
+    const normalized = filePath.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    const label = segments[segments.length - 1] || filePath;
+
+    const tab: FileTab = {
+      id: nextTabId(),
+      filePath,
+      rootDirectory,
+      pathType,
+      agentId,
+      label,
+    };
+    set((state) => ({
+      openTabs: [...state.openTabs, tab],
+      activeTabId: tab.id,
+      fileViewerOpen: true,
+    }));
+  },
+
+  openDirectoryTab: (rootDirectory, pathType) => {
+    const { openTabs } = get();
+    // Check if a directory-only tab already exists for this root
+    const existing = openTabs.find(
+      (t) => t.filePath === '' && t.rootDirectory === rootDirectory
+    );
+    if (existing) {
+      set({ activeTabId: existing.id, fileViewerOpen: true });
+      return;
+    }
+
+    const normalized = rootDirectory.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    const label = (segments[segments.length - 1] || rootDirectory) + '/';
+
+    const tab: FileTab = {
+      id: nextTabId(),
+      filePath: '',
+      rootDirectory,
+      pathType,
+      label,
+    };
+    set((state) => ({
+      openTabs: [...state.openTabs, tab],
+      activeTabId: tab.id,
+      fileViewerOpen: true,
+    }));
+  },
+
+  closeTab: (tabId) => {
+    set((state) => {
+      const idx = state.openTabs.findIndex((t) => t.id === tabId);
+      if (idx === -1) return state;
+      const newTabs = state.openTabs.filter((t) => t.id !== tabId);
+      let newActive = state.activeTabId;
+      if (state.activeTabId === tabId) {
+        // Activate neighbor
+        if (newTabs.length === 0) {
+          newActive = null;
+        } else if (idx < newTabs.length) {
+          newActive = newTabs[idx].id;
+        } else {
+          newActive = newTabs[newTabs.length - 1].id;
+        }
+      }
+      return {
+        openTabs: newTabs,
+        activeTabId: newActive,
+        fileViewerOpen: newTabs.length > 0,
+      };
+    });
+  },
+
+  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+
+  closeAllTabs: () => set({ openTabs: [], activeTabId: null, fileViewerOpen: false }),
+
+  // Backward-compat shim: openFileViewer calls openTab
+  openFileViewer: (filePath, agentId) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    if (!agent) return;
+    const workspace = get().workspaces.find((w) => w.id === agent.workspaceId);
+    const pathType = workspace?.pathType || 'wsl';
+    get().openTab(filePath, agent.workingDirectory, pathType, agentId);
+  },
+
+  closeFileViewer: () => get().closeAllTabs(),
 
   loadWorkspaces: async () => {
     const workspaces = await window.api.workspaces.list();
@@ -91,13 +269,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   updateAgent: (agent) => {
     set((state) => ({
-      agents: state.agents.map(a => a.id === agent.id ? agent : a),
+      agents: state.agents.map((a) => (a.id === agent.id ? agent : a)),
     }));
   },
 
   removeAgent: (id) => {
     set((state) => ({
-      agents: state.agents.filter(a => a.id !== id),
+      agents: state.agents.filter((a) => a.id !== id),
       selectedAgentId: state.selectedAgentId === id ? null : state.selectedAgentId,
       terminalAgentId: state.terminalAgentId === id ? null : state.terminalAgentId,
     }));
@@ -153,7 +331,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   updateWorkspaceHeat: () => {
     const agents = get().agents;
-    // Also compute from all agents we know about
     const heat: Record<string, WorkspaceHeat> = {};
     for (const agent of agents) {
       if (agent.status === 'done' || agent.status === 'crashed') continue;

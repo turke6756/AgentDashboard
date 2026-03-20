@@ -2,7 +2,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import path from 'path';
-import { tmuxNewSession, tmuxKillSession, isTmuxSessionAlive, tmuxCapturePane } from '../wsl-bridge';
+import { tmuxNewSession, tmuxKillSession, isTmuxSessionAlive, tmuxCapturePane, wslExec } from '../wsl-bridge';
 
 /**
  * Runs a Claude agent inside WSL via node-pty (through pty-host.js).
@@ -239,6 +239,31 @@ export class WslRunner extends EventEmitter {
 
   async kill(): Promise<void> {
     this._alive = false;
+
+    // Graceful shutdown attempt: try to save session state
+    if (await isTmuxSessionAlive(this.sessionName)) {
+      try {
+        console.log(`[WSL] Gracefully stopping agent in '${this.sessionName}'...`);
+        // Send Ctrl+C to interrupt any running generation/prompt
+        await wslExec(`tmux send-keys -t '${this.sessionName}' C-c`);
+        await new Promise(r => setTimeout(r, 500));
+        
+        // Send /exit to trigger clean shutdown and state save
+        await wslExec(`tmux send-keys -t '${this.sessionName}' /exit Enter`);
+        
+        // Wait up to 3s for session to vanish (clean exit)
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          if (!(await isTmuxSessionAlive(this.sessionName))) {
+            console.log(`[WSL] Agent exited cleanly.`);
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn(`[WSL] Graceful shutdown failed:`, err);
+      }
+    }
+
     // Kill the PTY host
     this.sendToHost({ type: 'kill' });
     setTimeout(() => {
@@ -249,7 +274,7 @@ export class WslRunner extends EventEmitter {
     }, 1000);
     this.logStream?.end();
     this.logStream = null;
-    // Kill the tmux session
+    // Force kill the tmux session if it's still there
     await tmuxKillSession(this.sessionName);
   }
 }

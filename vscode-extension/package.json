@@ -1,0 +1,54 @@
+{
+  "name": "agentdashboard-companion",
+  "displayName": "AgentDashboard Companion",
+  "description": "Mirrors live agent terminal sessions from AgentDashboard into VS Code",
+  "version": "0.1.0",
+  "publisher": "agentdashboard",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "extensionKind": ["ui", "workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentdashboard.reconnect",
+        "title": "AgentDashboard: Reconnect"
+      },
+      {
+        "command": "agentdashboard.disconnect",
+        "title": "AgentDashboard: Disconnect"
+      }
+    ],
+    "configuration": {
+      "title": "AgentDashboard",
+      "properties": {
+        "agentdashboard.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to AgentDashboard on startup"
+        },
+        "agentdashboard.port": {
+          "type": "number",
+          "default": 4545,
+          "description": "WebSocket port for AgentDashboard connection"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

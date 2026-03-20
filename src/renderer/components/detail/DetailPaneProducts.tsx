@@ -32,5 +32,5 @@ export default function DetailPaneProducts({ agentId, pathType }: Props) {
     };
   }, [agentId]);
 
-  return <FileActivityList activities={activities} pathType={pathType} />;
+  return <FileActivityList activities={activities} pathType={pathType} agentId={agentId} />;
 }

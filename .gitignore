@@ -4,3 +4,6 @@ logs/
 *.db
 .env
 process.exit()
+*.log
+*.vsix
+vscode-extension/out/

@@ -160,30 +160,357 @@ A worker agent has been implementing a feature for 45 minutes. Context is at 88%
 6. New agent picks up at 5% context with full awareness of what was done
 7. Old agent is retired
 
+## Context Digest: What the Supervisor Sees
+
+### The Problem
+
+When the Supervisor gets pinged that an agent stopped, it needs to understand what happened — fast. The raw log contains everything (tool outputs, ANSI sequences, intermediate reasoning), but 90% of it is noise for decision-making. The Supervisor needs a **compressed, structured view** that answers:
+
+1. **What was the agent's task?** (the original user instruction)
+2. **What did it accomplish?** (progress so far)
+3. **Why did it stop?** (the final output — a question? an error? completion?)
+4. **What files were involved?** (reads, writes, creates — with context about *why*)
+
+### Data Source: JSONL Session Files
+
+We're already parsing Claude Code's JSONL session files for context stats and file activities. These files contain the **full structured conversation** — every user message, every assistant response, every tool call with parameters and results. This is far richer than scraping the PTY log.
+
+From the JSONL we extract:
+- `human` turns → user inputs (what the user asked for)
+- `assistant` turns with text content → agent reasoning/responses
+- `assistant` turns with `tool_use` blocks → tool calls (Read, Write, Edit, Bash, etc.)
+- `tool_result` blocks → tool outputs (file contents, command results)
+- `message.usage` → token counts (already extracted for context stats)
+
+### The Context Digest Structure
+
+```typescript
+interface AgentContextDigest {
+  agentId: string;
+  updatedAt: string;
+
+  // === TASK ===
+  // The first user input — what kicked this agent off
+  task: string;
+
+  // === LATEST STATUS ===
+  // The last assistant text block — what the agent said most recently.
+  // This is the most critical field. If the agent is waiting, this tells
+  // the supervisor WHY ("Phase 1 complete. Should I proceed?", "I hit an
+  // error in auth.ts", "All tests pass. Done.")
+  latestOutput: string;
+
+  // === USER INPUTS ===
+  // All human turns, in order. These represent the user's instructions
+  // and decisions throughout the session.
+  userInputs: {
+    text: string;          // The user's message (truncated to ~200 chars)
+    timestamp: string;
+    turnIndex: number;     // Position in conversation
+  }[];
+
+  // === KEY AGENT RESPONSES ===
+  // Not every assistant turn — just the ones that mark progress:
+  // task completions, decisions made, questions asked, errors hit.
+  // Filtered by heuristics (see below).
+  keyResponses: {
+    text: string;          // The agent's message (truncated to ~500 chars)
+    timestamp: string;
+    turnIndex: number;
+    category: 'progress' | 'decision' | 'question' | 'error' | 'completion';
+  }[];
+
+  // === FILE ACTIVITY ===
+  // Files the agent interacted with, enriched with context.
+  filesWritten: {
+    path: string;
+    operation: 'write' | 'create';
+    timestamp: string;
+    context?: string;      // What the agent said about this file (see below)
+  }[];
+
+  filesRead: {
+    path: string;
+    timestamp: string;
+    context?: string;
+  }[];
+
+  // === TOOL SUMMARY ===
+  // Aggregated tool usage — gives a quick sense of what the agent did.
+  // e.g., { Read: 12, Edit: 5, Write: 2, Bash: 8, Grep: 3 }
+  toolCounts: Record<string, number>;
+
+  // === CONTEXT STATS ===
+  // Already have this — token usage, model, turns, percentage.
+  contextStats: ContextStats | null;
+}
+```
+
+### How We Get File Descriptions
+
+The hardest part: how do we know *why* an agent read or wrote a file? Two approaches:
+
+**Approach 1: Adjacent Model Text (Recommended)**
+When the agent calls `Write(src/auth.ts)`, there's usually model text immediately before it: "Let me create the authentication handler..." We capture the model text that precedes each tool call and attach it as `context`. This is cheap — we're already iterating through the JSONL blocks.
+
+**Approach 2: File Metadata Only (Fallback)**
+If there's no useful adjacent text, we fall back to what we can infer:
+- File extension → type (`auth.ts` = TypeScript module)
+- Path segments → role (`src/main/` = Electron main process code)
+- Operation → what happened (`create` = new file, `write` = modified existing)
+
+We do NOT read file contents for descriptions. That's expensive and the supervisor doesn't need it. The file *name* plus the agent's own description of what it was doing is enough.
+
+### Filtering Key Responses
+
+Not every agent response goes into `keyResponses`. We filter using heuristics:
+
+- **Progress markers**: Text containing phrases like "complete", "done", "finished", "implemented", "created", "phase N"
+- **Questions**: Text ending with `?` (the agent is asking something)
+- **Errors**: Text containing "error", "failed", "issue", "problem", "bug"
+- **Decisions**: Text containing "I'll use", "going with", "choosing", "decided"
+- **First and last**: Always include the first agent response (initial plan) and the last (current state)
+
+This keeps the digest focused. A 50-turn conversation might compress down to 8-12 key responses.
+
+### UI: Redesigned Context Tab
+
+The Context tab transforms from a flat file list to a structured digest view:
+
+```
+┌─────────────────────────────────────────┐
+│  TASK                                   │
+│  "Implement user authentication with    │
+│   JWT tokens per the PRD spec"          │
+├─────────────────────────────────────────┤
+│  LATEST STATUS                    ● idle│
+│  "Phase 2 complete. All auth endpoints  │
+│   pass tests. Ready for phase 3 —       │
+│   should I proceed to the admin panel?" │
+├─────────────────────────────────────────┤
+│  TIMELINE                               │
+│  ┊ 14:02  User: "implement auth..."     │
+│  ┊ 14:05  ✓ Created auth module         │
+│  ┊ 14:12  ✓ JWT middleware done         │
+│  ┊ 14:18  ✓ Login/logout endpoints      │
+│  ┊ 14:23  ? "Proceed to phase 3?"       │
+├─────────────────────────────────────────┤
+│  FILES MODIFIED           5 written     │
+│  ▸ src/auth/handler.ts    (created)     │
+│    "JWT authentication handler"         │
+│  ▸ src/auth/middleware.ts (created)     │
+│    "Express middleware for token..."    │
+│  ▸ src/routes/index.ts    (modified)    │
+│    "Added auth routes"                  │
+├─────────────────────────────────────────┤
+│  FILES READ               12 read      │
+│  ▸ docs/PRD.md                          │
+│  ▸ src/routes/index.ts                  │
+│  ▸ package.json                         │
+│  ▸ +9 more...                           │
+├─────────────────────────────────────────┤
+│  TOOLS  Read:12 Edit:5 Write:2 Bash:8  │
+│  CONTEXT  67% (134k/200k) · 23 turns   │
+└─────────────────────────────────────────┘
+```
+
+### Tiered Retrieval: Controlling What the Supervisor Sees
+
+The Supervisor must not re-read the entire context history every time an agent stops. If we expose the full digest and tell the model "only read the latest," it will consume the entire tool response anyway — the model doesn't control tool output size. **The API itself must enforce what gets returned at each tier.**
+
+Three layers, from cheapest to most expensive:
+
+#### Layer 1: Event Payload (~150-300 tokens) — Push Model
+
+When an agent's status changes, the daemon constructs a tiny structured message and **pushes** it to the Supervisor. The Supervisor doesn't call anything — it receives exactly this:
+
+```typescript
+interface AgentEvent {
+  agentId: string;
+  agentTitle: string;
+  workspaceId: string;
+
+  // What happened
+  previousStatus: AgentStatus;
+  newStatus: AgentStatus;
+  trigger: 'status_change' | 'context_threshold' | 'rate_limit' | 'crash';
+
+  // The two most important fields — enough for 90% of decisions
+  lastUserInput: string;     // What the user last told the agent (~200 chars)
+  lastAgentOutput: string;   // What the agent last said (~500 chars)
+
+  // Quick stats
+  contextPercentage: number;
+  turnCount: number;
+  model: string;
+}
+```
+
+Example of what the Supervisor actually receives:
+
+```
+Agent: "auth-implementer" (agent-abc123)
+Status: idle (was: working)
+Trigger: status_change
+Last user input: "Implement JWT authentication per the PRD spec.
+  Use bcrypt for password hashing."
+Last agent output: "Phase 2 complete. All auth endpoints pass
+  tests. Should I proceed to the admin panel?"
+Context: 67% (134k/200k) · 23 turns · opus-4
+```
+
+For ~90% of cases (routine continuations, simple approvals), the Supervisor reads this, says "yes proceed," and goes back to sleep. **Total cost: ~300 tokens in + ~100 tokens out.**
+
+The Supervisor never sees Layer 2 or 3 unless it explicitly requests them.
+
+#### Layer 2: Context Digest (~1500-3000 tokens) — Pull Model
+
+Only when the Supervisor can't decide from Layer 1. It calls `getContextDigest(agentId)` and gets the full structured digest — task, timeline, files, key responses. This covers complex-but-resolvable cases (e.g., the agent hit an error and the Supervisor needs to understand what it was working on).
+
+```typescript
+// Daemon API
+getAgentContextDigest(agentId: string): AgentContextDigest
+```
+
+#### Layer 3: Raw Log (variable) — Pull Model
+
+Only for deep investigation. The Supervisor calls `getAgentLog(agentId, lines)` for the raw terminal output. Almost never needed — reserved for crash debugging or situations where the structured data doesn't capture enough.
+
+```typescript
+// Daemon API
+getAgentLog(agentId: string, lines?: number): string
+```
+
+#### Incremental Digest: Append-Only Event Log
+
+To support repeated check-ins without re-reading the full digest, the daemon also maintains an **append-only event log** per agent. Each time the agent completes a significant action, the daemon appends a small entry:
+
+```typescript
+interface DigestEntry {
+  id: number;              // Auto-incrementing, monotonic
+  agentId: string;
+  timestamp: string;
+  type: 'user_input' | 'agent_response' | 'file_write' | 'file_create'
+       | 'file_read' | 'error' | 'tool_use' | 'status_change';
+  summary: string;         // Short text (~100 chars max)
+  turnIndex: number;
+}
+```
+
+The Supervisor can then request only entries it hasn't seen:
+
+```typescript
+// "Give me everything since entry #42"
+getDigestEntries(agentId: string, sinceId: number): DigestEntry[]
+```
+
+This solves the re-reading problem completely. On first check-in, the Supervisor gets the Layer 1 event payload. If it needs more, it pulls the full digest (Layer 2). On subsequent check-ins for the same agent, it only pulls new entries since its last read. The `sinceId` cursor is tracked per-agent in the Supervisor's own state.
+
+#### The Event Flow
+
+```
+Agent status changes
+  → Daemon detects (status poll, every 2.5s)
+  → Daemon builds Layer 1 event payload (tiny, ~200 tokens)
+  → Daemon sends to Supervisor via sendInput() or structured message
+  → Supervisor reads payload, decides:
+     ├─ ROUTINE → approve via sendInput(workerId, "yes"), done
+     ├─ NEED MORE CONTEXT → pull Layer 2 digest, then decide
+     ├─ NEED RAW DETAILS → pull Layer 3 log, then decide
+     └─ NEED HUMAN → escalate via notifyUser()
+```
+
+The Supervisor is **not polling**. It's asleep until the daemon wakes it with a Layer 1 payload. The daemon is the only thing that polls (agent status every 2.5s, context stats every 5s — both already implemented).
+
+#### Why Not Just Tell the Model to "Only Read the Latest"?
+
+This doesn't work reliably for three reasons:
+
+1. **Tool output is atomic.** When a tool returns 5000 tokens, the model consumes all 5000 tokens whether it "needs" them or not. You can't tell the model to skip part of a tool response.
+
+2. **Models are thorough by nature.** If you give a model access to `getFullLog()` and say "only read the last 10 lines," it might comply... or it might read everything "to be safe." You can't enforce behavioral constraints on tool usage — you can only enforce data constraints on tool output.
+
+3. **Token cost is real.** Even if the model "ignores" earlier content, it still pays for it in the context window. A 10,000-token digest that the model "skips past" still costs 10,000 input tokens.
+
+The solution is architectural: **the API returns only what's needed at each tier.** The model never gets the chance to over-read because the data simply isn't there unless explicitly requested.
+
+### Supervisor API Summary
+
+| Endpoint | Layer | Tokens | When Used |
+|----------|-------|--------|-----------|
+| Event payload (pushed) | 1 | ~200 | Every status change — automatic |
+| `getContextDigest(agentId)` | 2 | ~2000 | Supervisor needs full picture |
+| `getDigestEntries(agentId, sinceId)` | 2.5 | ~100-500 | Incremental updates between checks |
+| `getAgentLog(agentId, lines)` | 3 | variable | Deep investigation, crash debugging |
+| `sendInput(agentId, text)` | — | — | Send approval/instruction to worker |
+| `notifyUser(message, urgency)` | — | — | Escalate to human |
+
+### Existing Files Tab → Outputs Tab
+
+The current "Context" tab (which just lists files read) moves into the digest view above. The "Outputs" tab stays as-is — it's already useful for seeing what files were created/modified. We may enrich it later with file diffs or previews, but that's separate scope.
+
 ## Implementation Path
 
-### Phase 1: Foundation
-- Add `supervised` flag to agent configuration
-- Add `onAgentStatusChange` event subscription to daemon API
+### Build Order Rationale: Context Digest Before Supervisor CLI
+
+**The Context Digest must be built and validated before exposing the app to the Supervisor over CLI.** This is a hard dependency, not a preference. Three reasons:
+
+1. **The digest IS the supervisor's eyes.** Without it, the supervisor has nothing to read except raw terminal logs — thousands of lines of ANSI-stripped tool output, intermediate reasoning, and noise. Exposing the CLI first would mean building the supervisor against an unstable, unstructured data source, then rebuilding it when the digest lands. That's double the work.
+
+2. **The UI is our testing ground.** Building the Context tab first lets us iterate on what information is actually useful by looking at it ourselves. We'll see immediately if the key response filtering is too aggressive, if file descriptions are missing, if the timeline is noisy. Once we're happy with what the UI shows, that exact data structure becomes what the supervisor reads — no guesswork about what a model "needs."
+
+3. **The structured data layer must exist before the API layer.** The tiered retrieval system (Layer 1 events, Layer 2 digest, Layer 2.5 incremental entries) all depend on the same underlying JSONL parser and digest builder. The CLI endpoints are thin wrappers around this core. Build the core first, then the wrappers are trivial.
+
+**Concretely: Phase 1 ships a working Context tab in the dashboard UI. Phase 2 exposes that same data over CLI/API for the supervisor. Phase 3+ builds the supervisor itself.** Do not skip ahead — a supervisor reading raw logs will make worse decisions, cost more tokens, and be harder to debug than one reading structured digests.
+
+---
+
+### Phase 1: Context Digest — Data Layer + UI
+*Build the structured data extraction and validate it visually in the dashboard.*
+
+- Build JSONL deep parser — extract user inputs, assistant text, tool calls with adjacent context
+- Implement `AgentContextDigest` structure and builder
+- Implement `DigestEntry` append-only event log
+- Key response filtering heuristics (progress/question/error/decision/completion)
+- File activity enrichment — attach agent's description text to file operations
+- Redesign Context tab UI from flat file list to structured digest view
+- Validate by running real agents and reviewing the digest output in the UI
+- Iterate on filtering, truncation, and categorization until the digest is reliably useful
+
+### Phase 2: Supervisor Data API — Expose Digest Over CLI
+*Make the digest and tiered retrieval available to external consumers (the supervisor).*
+
+- Expose `getContextDigest(agentId)` via IPC bridge and CLI-accessible API
+- Expose `getDigestEntries(agentId, sinceId)` for incremental reads
+- Implement `AgentEvent` payload builder for Layer 1 push events
+- Wire `onAgentStatusChange` event subscription to daemon
+- Add `getAgentConfig(agentId)` for supervised flag and thresholds
+- Test the full tiered retrieval flow: event → digest → log fallback
+
+### Phase 3: Supervisor Foundation
+*Now that the data layer is solid, build the supervisor itself.*
+
+- Add `supervised` flag to agent configuration UI
 - Build notification bridge (Telegram webhook — ~100 lines)
 - Create the Supervisor agent's base CLAUDE.md
+- Implement Supervisor wake/sleep lifecycle tied to agent events
 
-### Phase 2: Core Autonomy
+### Phase 4: Core Autonomy
 - Implement Tier 1 behaviors (routine approval, rate limit handling)
 - Context threshold monitoring and alerts
 - Basic crash recovery intelligence
 
-### Phase 3: Context Management
+### Phase 5: Context Management
 - Automated context compaction and agent forking
-- Worker summary extraction for handoffs
+- Worker summary extraction for handoffs (uses Context Digest)
 - Cost tracking for Supervisor token usage
 
-### Phase 4: Deep Assistance
+### Phase 6: Deep Assistance
 - Sub-agent spawning for complex decisions
 - Deep research integration
 - Tier 2 → Tier 3 escalation logic with confidence thresholds
 
-### Phase 5: Notification and Remote Control
+### Phase 7: Notification and Remote Control
 - Telegram/Discord bidirectional messaging
 - User reply → agent input pipeline
 - Quiet hours and notification batching

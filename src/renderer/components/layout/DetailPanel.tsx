@@ -5,12 +5,13 @@ import DetailPaneContext from '../detail/DetailPaneContext';
 import DetailPaneProducts from '../detail/DetailPaneProducts';
 import DetailPaneLog from '../detail/DetailPaneLog';
 import QueryDialog from '../agent/QueryDialog';
+import CollapseButton from './CollapseButton';
 import type { PathType, ContextStats } from '../../../shared/types';
 
 const TABS = [
-  { label: 'CONTEXT', icon: '📖' },
-  { label: 'OUTPUTS', icon: '📦' },
-  { label: 'LOGS', icon: '📋' },
+  { label: 'CONTEXT', icon: '\u{1F4D6}' },
+  { label: 'OUTPUTS', icon: '\u{1F4E6}' },
+  { label: 'LOGS', icon: '\u{1F4CB}' },
 ] as const;
 
 function CopyButton({ text }: { text: string }) {
@@ -37,12 +38,17 @@ function formatDate(dateStr: string | null): string {
   return d.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 }
 
-export default function DetailPanel() {
-  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats } = useDashboardStore();
+interface DetailPanelProps {
+  width: number;
+}
+
+export default function DetailPanel({ width }: DetailPanelProps) {
+  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats, panelLayout, togglePanelCollapsed } = useDashboardStore();
   const [contextCount, setContextCount] = useState(0);
   const [productsCount, setProductsCount] = useState(0);
   const [showMeta, setShowMeta] = useState(false);
   const [showQuery, setShowQuery] = useState(false);
+  const collapsed = panelLayout.detailPanelCollapsed;
 
   const agent = agents.find((a) => a.id === selectedAgentId);
   const workspace = agent ? workspaces.find((w) => w.id === agent.workspaceId) : null;
@@ -79,10 +85,33 @@ export default function DetailPanel() {
     };
   }, [agent?.id]);
 
+  // Collapsed detail panel: thin strip with expand button
+  if (collapsed) {
+    return (
+      <div
+        className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col items-center z-20 shadow-2xl py-2"
+        style={{ width }}
+      >
+        <CollapseButton collapsed direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
+        <div className="mt-2 text-[9px] font-mono text-accent-blue" style={{ writingMode: 'vertical-rl' }}>
+          DETAIL
+        </div>
+      </div>
+    );
+  }
+
   if (!agent) {
     return (
-      <div className="w-96 bg-surface-1/90 backdrop-blur border-l border-gray-800 flex items-center justify-center text-gray-600 font-mono text-xs uppercase tracking-widest p-4">
-        [NO_DATA_STREAM_SELECTED]
+      <div
+        className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col z-20 shadow-2xl"
+        style={{ width }}
+      >
+        <div className="flex items-center justify-end p-1 border-b border-gray-800">
+          <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
+        </div>
+        <div className="flex-1 flex items-center justify-center text-gray-600 font-mono text-xs uppercase tracking-widest p-4">
+          [NO_DATA_STREAM_SELECTED]
+        </div>
       </div>
     );
   }
@@ -91,7 +120,10 @@ export default function DetailPanel() {
   const tabCounts = [contextCount, productsCount, null];
 
   return (
-    <div className="w-96 bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col font-mono relative shadow-2xl z-20">
+    <div
+      className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col font-mono relative shadow-2xl z-20"
+      style={{ width }}
+    >
       {/* Decorative line */}
       <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-accent-blue/50 via-transparent to-accent-blue/50" />
 
@@ -106,9 +138,12 @@ export default function DetailPanel() {
 
         <div className="flex items-center justify-between mb-3 relative z-10">
           <h3 className="font-bold text-lg truncate uppercase tracking-wider text-white glow-text">{agent.title}</h3>
-          <StatusBadge status={agent.status} />
+          <div className="flex items-center gap-1">
+            <StatusBadge status={agent.status} />
+            <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
+          </div>
         </div>
-        
+
         <div className="space-y-1 text-[10px] text-gray-400 font-mono uppercase tracking-tight relative z-10">
           <div className="flex">
             <span className="text-accent-blue w-16 shrink-0 opacity-70">DIR::</span>
@@ -131,7 +166,7 @@ export default function DetailPanel() {
         >
           {showMeta ? '[-] COLLAPSE_META' : '[+] EXPAND_META'}
         </button>
-        
+
         {showMeta && (
           <div className="mt-2 space-y-1 text-[10px] text-gray-400 bg-black/40 border border-gray-800 p-2 font-mono">
             <div className="flex items-center justify-between border-b border-gray-800 pb-1 mb-1">
@@ -274,7 +309,7 @@ export default function DetailPanel() {
                 </span>
                 )}
             </div>
-            
+
             {detailPane === index && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue shadow-[0_0_8px_currentColor]" />
             )}

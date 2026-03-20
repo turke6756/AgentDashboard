@@ -2,12 +2,18 @@ import React, { useState } from 'react';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import AgentGrid from '../agent/AgentGrid';
 import AgentLaunchDialog from '../agent/AgentLaunchDialog';
+import FileViewerPanel from '../fileviewer/FileViewerPanel';
 
 export default function MainContent() {
-  const { workspaces, selectedWorkspaceId, agents } = useDashboardStore();
+  const { workspaces, selectedWorkspaceId, agents, fileViewerOpen } = useDashboardStore();
   const [showLaunch, setShowLaunch] = useState(false);
 
   const workspace = workspaces.find((w) => w.id === selectedWorkspaceId);
+
+  // File viewer takes over the center panel
+  if (fileViewerOpen) {
+    return <FileViewerPanel />;
+  }
 
   if (!workspace) {
     return (
@@ -45,7 +51,7 @@ export default function MainContent() {
               </h2>
               <span className="text-accent-blue font-mono text-lg">]</span>
             </div>
-            
+
             <div className="flex items-center gap-4 mt-2">
               <span className="text-[10px] text-accent-blue/70 font-mono tracking-wider border border-accent-blue/30 px-1 rounded-sm">
                 PATH: {workspace.path}
@@ -70,8 +76,8 @@ export default function MainContent() {
                   <span className="text-accent-green">{loadPercentage}%</span>
                </div>
                <div className="w-32 h-1 bg-gray-800 relative overflow-hidden">
-                  <div 
-                    className="h-full bg-accent-blue shadow-[0_0_5px_currentColor]" 
+                  <div
+                    className="h-full bg-accent-blue shadow-[0_0_5px_currentColor]"
                     style={{ width: `${loadPercentage}%` }}
                   />
                </div>

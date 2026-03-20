@@ -44,10 +44,16 @@ const api: IpcApi = {
       return () => ipcRenderer.removeListener('terminal:data', listener);
     },
   },
+  files: {
+    readFile: (filePath, pathType) => ipcRenderer.invoke('files:read', filePath, pathType),
+    listDirectory: (dirPath, pathType) => ipcRenderer.invoke('files:list-directory', dirPath, pathType),
+  },
   system: {
     pickDirectory: (startInWsl?: boolean) => ipcRenderer.invoke('system:pick-directory', startInWsl),
     healthCheck: () => ipcRenderer.invoke('system:health-check'),
     openFile: (filePath, pathType) => ipcRenderer.invoke('system:open-file', filePath, pathType),
+    openFileInWorkspace: (filePath, workspaceDir, pathType) =>
+      ipcRenderer.invoke('system:open-file-in-workspace', filePath, workspaceDir, pathType),
   },
   onAgentStatusChanged: (callback) => {
     const listener = (_event: any, data: any) => callback(data);
