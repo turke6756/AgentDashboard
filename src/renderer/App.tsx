@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { useDashboardStore } from './stores/dashboard-store';
 import Sidebar from './components/layout/Sidebar';
 import MainContent from './components/layout/MainContent';
@@ -7,8 +7,45 @@ import TerminalPanel from './components/terminal/TerminalPanel';
 import ResizeDivider from './components/layout/ResizeDivider';
 import { useResize } from './hooks/useResize';
 
-export default function App() {
-  const { loadWorkspaces, checkHealth, panelLayout, setPanelSize } = useDashboardStore();
+// Error boundary to catch React render crashes and show the error instead of white screen
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ErrorBoundary] Caught:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex items-center justify-center h-screen bg-surface-0 text-gray-100 p-8">
+          <div className="max-w-lg bg-surface-2 border border-accent-red/50 rounded-lg p-6">
+            <h2 className="text-accent-red font-bold text-lg mb-3">Render Error</h2>
+            <pre className="text-sm text-gray-300 whitespace-pre-wrap break-words mb-4 font-mono bg-surface-0 p-3 rounded max-h-60 overflow-auto">
+              {this.state.error.message}
+              {'\n\n'}
+              {this.state.error.stack}
+            </pre>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="px-4 py-2 bg-accent-blue text-white rounded font-medium text-sm"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppInner() {
+  const { loadWorkspaces, checkHealth, panelLayout, setPanelSize, terminalAgentId } = useDashboardStore();
 
   useEffect(() => {
     loadWorkspaces();
@@ -88,32 +125,44 @@ export default function App() {
         />
       )}
 
-      {/* Center + Detail + Terminal */}
-      <div className="flex flex-col flex-1 min-w-0 z-10">
-        <div className="flex flex-1 min-h-0">
+      {/* Center + Detail */}
+      <div className="flex flex-1 min-w-0 min-h-0 z-10">
+        {/* Main content column (with terminal below) */}
+        <div className="flex flex-col flex-1 min-w-0 min-h-0">
           <MainContent />
 
-          {/* Detail resize divider */}
-          {!detailCollapsed && (
+          {/* Terminal resize divider (above terminal) — hidden when collapsed */}
+          {terminalAgentId !== null && !panelLayout.terminalCollapsed && (
             <ResizeDivider
-              direction="horizontal"
-              isResizing={detailResize.isResizing}
-              onMouseDown={detailResize.handleMouseDown}
+              direction="vertical"
+              isResizing={terminalResize.isResizing}
+              onMouseDown={terminalResize.handleMouseDown}
             />
           )}
 
-          <DetailPanel width={detailCollapsed ? 40 : detailResize.size} />
+          <TerminalPanel height={terminalResize.size} />
         </div>
 
-        {/* Terminal resize divider (above terminal) */}
-        <ResizeDivider
-          direction="vertical"
-          isResizing={terminalResize.isResizing}
-          onMouseDown={terminalResize.handleMouseDown}
-        />
+        {/* Detail resize divider */}
+        {!detailCollapsed && (
+          <ResizeDivider
+            direction="horizontal"
+            isResizing={detailResize.isResizing}
+            onMouseDown={detailResize.handleMouseDown}
+          />
+        )}
 
-        <TerminalPanel height={terminalResize.size} />
+        {/* Detail panel — full height, independent of terminal */}
+        <DetailPanel width={detailCollapsed ? 40 : detailResize.size} />
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }

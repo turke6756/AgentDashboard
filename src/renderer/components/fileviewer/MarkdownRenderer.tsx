@@ -2,13 +2,17 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useThemeStore } from '../../stores/theme-store';
 
 interface Props {
   content: string;
 }
 
 export default function MarkdownRenderer({ content }: Props) {
+  const theme = useThemeStore((s) => s.theme);
+  const isLight = theme === 'light';
+
   return (
     <div className="overflow-auto h-full p-6">
       <div className="max-w-3xl mx-auto prose-custom">
@@ -16,20 +20,20 @@ export default function MarkdownRenderer({ content }: Props) {
           remarkPlugins={[remarkGfm]}
           components={{
             h1: ({ children }) => (
-              <h1 className="text-2xl font-bold font-mono text-white mb-4 mt-6 pb-2 border-b border-accent-blue/30">
+              <h1 className="text-2xl font-bold font-sans text-gray-50 mb-4 mt-6 pb-2 border-b border-accent-blue/30">
                 {children}
               </h1>
             ),
             h2: ({ children }) => (
-              <h2 className="text-xl font-bold font-mono text-white mb-3 mt-5 pb-1 border-b border-accent-blue/20">
+              <h2 className="text-xl font-bold font-sans text-gray-50 mb-3 mt-5 pb-1 border-b dark:border-white/10 light:border-black/10">
                 {children}
               </h2>
             ),
             h3: ({ children }) => (
-              <h3 className="text-lg font-bold font-mono text-gray-200 mb-2 mt-4">{children}</h3>
+              <h3 className="text-lg font-bold font-sans text-gray-200 mb-2 mt-4">{children}</h3>
             ),
             h4: ({ children }) => (
-              <h4 className="text-base font-bold font-mono text-gray-300 mb-2 mt-3">{children}</h4>
+              <h4 className="text-base font-bold font-sans text-gray-300 mb-2 mt-3">{children}</h4>
             ),
             p: ({ children }) => (
               <p className="text-gray-300 mb-3 leading-relaxed text-sm">{children}</p>
@@ -57,12 +61,12 @@ export default function MarkdownRenderer({ content }: Props) {
               </div>
             ),
             thead: ({ children }) => (
-              <thead className="bg-surface-2 text-gray-300 font-mono text-xs uppercase tracking-wider">
+              <thead className="bg-surface-2 text-gray-300 font-sans text-[13px]  ">
                 {children}
               </thead>
             ),
             th: ({ children }) => (
-              <th className="px-3 py-2 text-left border-b border-accent-blue/20">{children}</th>
+              <th className="px-3 py-2 text-left border-b dark:border-white/10 light:border-black/10">{children}</th>
             ),
             td: ({ children }) => (
               <td className="px-3 py-2 text-gray-400 border-b border-surface-2">{children}</td>
@@ -73,20 +77,20 @@ export default function MarkdownRenderer({ content }: Props) {
               const inline = !className;
               if (inline) {
                 return (
-                  <code className="bg-surface-2 text-accent-orange px-1.5 py-0.5 rounded text-[13px] font-mono">
+                  <code className={`px-1.5 py-0.5 rounded text-[13px] font-sans ${isLight ? 'bg-[#e5e7eb] text-[#ab3f11]' : 'bg-surface-2 text-accent-orange'}`}>
                     {children}
                   </code>
                 );
               }
               return (
-                <div className="my-3 rounded border border-surface-2 overflow-hidden">
+                <div className={`my-3 rounded border overflow-hidden ${isLight ? 'border-gray-300 bg-[#f3f4f6]' : 'border-surface-2 bg-[rgba(0,0,0,0.3)]'}`}>
                   <SyntaxHighlighter
                     language={match?.[1] || 'text'}
-                    style={vscDarkPlus}
+                    style={isLight ? vs : vscDarkPlus}
                     customStyle={{
                       margin: 0,
                       padding: '1rem',
-                      background: 'rgba(0,0,0,0.3)',
+                      background: 'transparent',
                       fontSize: '0.8125rem',
                     }}
                   >

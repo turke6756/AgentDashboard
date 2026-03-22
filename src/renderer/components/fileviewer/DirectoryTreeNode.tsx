@@ -78,7 +78,7 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
         onContextMenu={handleContextMenu}
         draggable={!entry.isDirectory}
         onDragStart={(e) => { if (!entry.isDirectory) fileDragStart(e, entry.path); }}
-        className={`w-full text-left flex items-center gap-1.5 py-1 px-2 text-[12px] font-mono hover:bg-surface-2/60 transition-colors group ${
+        className={`w-full text-left flex items-center gap-1.5 py-1 px-2 text-[13px] font-sans hover:bg-surface-2/60 transition-colors group ${
           isActive ? 'bg-accent-blue/10 text-accent-blue' : 'text-gray-400'
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
@@ -86,12 +86,12 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
         <span className="shrink-0 w-4 flex items-center justify-center">
           {entry.isDirectory ? (
             loading ? (
-              <Icons.Loader2 className="w-3 h-3 animate-spin text-gray-500" />
+              <Icons.Loader2 className="w-3 h-3 animate-spin text-gray-300" />
             ) : (
-              <FolderIcon className="w-3 h-3 text-gray-500 group-hover:text-gray-300" />
+              <FolderIcon className="w-3 h-3 text-gray-300 group-hover:text-gray-300" />
             )
           ) : (
-            <IconComponent className={`w-3.5 h-3.5 ${isActive ? 'text-accent-blue' : 'text-gray-500'}`} />
+            <IconComponent className={`w-3.5 h-3.5 ${isActive ? 'text-accent-blue' : 'text-gray-300'}`} />
           )}
         </span>
         <span className={`truncate ${entry.isDirectory ? 'text-accent-blue/70 font-medium' : ''}`}>

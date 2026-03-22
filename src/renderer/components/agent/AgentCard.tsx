@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import type { Agent } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
+import { PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
 function formatTokenCount(n: number): string {
@@ -67,9 +68,9 @@ export default function AgentCard({ agent }: { agent: Agent }) {
   
   const borderColor = BORDER_COLORS[agent.status] || 'border-gray-700';
   
-  // Backlit effect for active terminal agent (white glow from behind)
-  const backlitClass = isTerminalActive 
-    ? 'shadow-[0_0_50px_rgba(255,255,255,0.3),_inset_0_0_20px_rgba(255,255,255,0.1)] bg-white/[0.08] border-white/40 z-10 scale-[1.02] ring-1 ring-white/20' 
+  // Backlit effect for active terminal agent
+  const backlitClass = isTerminalActive
+    ? 'shadow-[0_0_50px_rgba(0,68,170,0.25),_inset_0_0_20px_rgba(0,68,170,0.08)] dark:shadow-[0_0_50px_rgba(255,255,255,0.3),_inset_0_0_20px_rgba(255,255,255,0.1)] bg-accent-blue/[0.06] dark:bg-white/[0.08] border-accent-blue/40 dark:border-white/40 z-10 scale-[1.02] ring-1 ring-accent-blue/20 dark:ring-white/20'
     : '';
 
   // Standard glow for selected agent (status-colored) - only if not backlit
@@ -183,7 +184,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       e.preventDefault();
       setDragOver(false);
       const sourceId = e.dataTransfer?.getData('text/agentId');
-      if (sourceId && sourceId !== agent.id && agent.resumeSessionId) {
+      if (sourceId && sourceId !== agent.id && agent.resumeSessionId && (agent.provider || 'claude') === 'claude') {
         setDragQuery({ sourceId });
       }
     };
@@ -215,9 +216,10 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       layout
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className={`relative glass-panel rounded-sm p-4 cursor-pointer transition-all duration-300 group
+      className={`relative glass-panel rounded-sm p-4 cursor-pointer transition-all duration-200 group interactive
         border-l-4 ${isSelected ? borderColor : 'border-l-gray-700 border-t-transparent border-r-transparent border-b-transparent'}
-        ${isSelected ? 'bg-surface-2' : 'hover:bg-surface-2'}
+        ${isSelected ? 'bg-surface-2 ring-1 ring-black/5 dark:ring-white/5 shadow-lg' : 'hover:bg-surface-2/80'}
+        ${agent.status === 'working' ? 'bg-accent-green/5' : ''}
         ${glowClass}
         ${backlitClass}
         ${dragOver ? 'ring-2 ring-accent-purple shadow-[0_0_20px_rgba(168,85,247,0.4)]' : ''}
@@ -234,29 +236,37 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       <div className="flex items-start justify-between mb-3 relative z-10">
         <div className="flex-1 min-w-0 pr-2">
            <div className="flex items-center gap-2 mb-1">
-             <span className="text-[9px] text-gray-500 font-mono">ID::{agent.id.substring(0,6).toUpperCase()}</span>
+             <span className="text-[13px] text-gray-400 font-sans font-bold">#{agent.id.substring(0,6)}</span>
+             {(() => {
+               const meta = PROVIDER_META[agent.provider || 'claude'];
+               return (
+                 <span className={`text-[13px] font-sans font-bold px-1.5 py-0.5 rounded ${meta.bgClass} ${meta.textClass}`}>
+                   {meta.label}
+                 </span>
+               );
+             })()}
              {agent.isAttached && (
-                <span className="text-[9px] text-accent-green font-mono animate-pulse">● LIVE_FEED</span>
+                <span className="text-[13px] text-accent-green font-sans animate-pulse font-bold">● Live</span>
              )}
            </div>
-           <h4 className={`font-mono font-bold text-sm truncate uppercase tracking-wider ${isSelected ? 'text-accent-blue glow-text' : 'text-gray-300 group-hover:text-white'}`}>
+           <h4 className={`font-sans font-bold text-sm truncate   ${isSelected ? 'text-accent-blue glow-text' : 'text-gray-100 group-hover:text-gray-50'}`}>
              {agent.title}
            </h4>
         </div>
         
         <div className="flex items-center gap-2">
-           {forking && <span className="text-[9px] text-accent-purple animate-pulse">FORKING...</span>}
-           {forkError && <span className="text-[9px] text-accent-red">{forkError}</span>}
+           {forking && <span className="text-[13px] text-accent-purple animate-pulse font-bold">FORKING...</span>}
+           {forkError && <span className="text-[13px] text-accent-red font-bold">{forkError}</span>}
            <StatusBadge status={agent.status} />
            
            {!confirmDelete && (
             <button
               onClick={handleDelete}
-              className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red transition-all transform hover:scale-110"
+              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-accent-red transition-all transform hover:scale-110 active:scale-95"
               title="Terminate Agent"
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
-                <path d="M1 1L9 9M9 1L1 9" strokeWidth="1.5" />
+                <path d="M1 1L9 9M9 1L1 9" strokeWidth="2" />
               </svg>
             </button>
            )}
@@ -264,68 +274,88 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       </div>
 
       {confirmDelete && (
-        <div className="absolute inset-0 bg-surface-1/90 backdrop-blur-sm z-20 flex items-center justify-center flex-col p-4 border border-accent-red">
-          <span className="text-accent-red font-bold text-xs uppercase mb-2 animate-pulse">CONFIRM TERMINATION?</span>
+        <div className="absolute inset-0 bg-surface-1/95 backdrop-blur-md z-20 flex items-center justify-center flex-col p-4 border-2 border-accent-red shadow-2xl">
+          <span className="text-accent-red font-bold text-sm  mb-3 animate-pulse">Stop this agent?</span>
           <div className="flex gap-4">
             <button
               onClick={handleDelete}
-              className="text-accent-red hover:bg-accent-red/10 px-3 py-1 text-xs border border-accent-red"
+              className="text-white bg-accent-red hover:bg-accent-red/90 px-6 py-2 text-[13px] font-bold transition-all shadow-md active:scale-95"
             >
-              YES
+              Confirm
             </button>
             <button
               onClick={handleCancelDelete}
-              className="text-gray-400 hover:text-white px-3 py-1 text-xs"
+              className="text-gray-400 hover:text-gray-50 px-6 py-2 text-[13px] font-bold transition-colors active:scale-95"
             >
-              NO
+              Cancel
             </button>
           </div>
         </div>
       )}
 
       {/* Role / Output Preview */}
-      <div className="mb-3 h-16 relative overflow-hidden bg-black/40 border border-gray-800 p-2 font-mono text-[10px] text-accent-green/80">
+      <div className="mb-3 h-16 relative overflow-hidden log-surface border border-gray-800/20 p-2 font-sans text-[13px] shadow-inner">
         {/* Fake scanline for the log window */}
         <div className="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent opacity-10 pointer-events-none" />
         
         {agent.roleDescription ? (
-           <p className="line-clamp-3 opacity-80">{'>'} {agent.roleDescription}</p>
+           <p className="line-clamp-3 leading-tight font-medium">{'>'} {agent.roleDescription}</p>
         ) : (
-           <p className="opacity-50 italic">{'> NO ROLE ASSIGNED'}</p>
+           <p className="opacity-40 italic">No role assigned</p>
         )}
       </div>
 
-      {/* Context Stats Bar */}
-      {contextStats[agent.id] && (() => {
+      {/* Context Stats Bar (Claude only — other providers don't emit JSONL stats) */}
+      {(agent.provider || 'claude') === 'claude' && contextStats[agent.id] && (() => {
         const cs = contextStats[agent.id];
         const pct = cs.contextPercentage;
-        const barColor = pct > 85 ? 'bg-accent-red' : pct > 60 ? 'bg-accent-orange' : 'bg-accent-blue';
-        const barGlow = pct > 85 ? 'shadow-[0_0_6px_rgba(239,68,68,0.6)]' : '';
+        const isWarning = pct > 60;
+        const isCritical = pct > 85;
+        const barColor = isCritical ? 'bg-accent-red' : isWarning ? 'bg-accent-orange' : 'bg-accent-blue';
+        const textColor = isCritical ? 'text-accent-red' : isWarning ? 'text-accent-orange' : 'text-accent-blue';
+        const barGlow = isCritical ? 'shadow-[0_0_8px_rgba(239,68,68,0.6)]' : isWarning ? 'shadow-[0_0_4px_rgba(249,115,22,0.3)]' : '';
         return (
           <div className="mb-2">
-            <div className="flex items-center justify-between text-[9px] font-mono text-gray-500 uppercase mb-0.5">
-              <span className={pct > 85 ? 'text-accent-red' : pct > 60 ? 'text-accent-orange' : 'text-accent-blue'}>CTX: {pct}%</span>
-              <span>T:{cs.turnCount} OUT:{formatTokenCount(cs.totalOutputTokens)}</span>
+            <div className="flex items-center justify-between text-[13px] font-sans text-gray-300  mb-1">
+              <span className={`${textColor} ${isCritical ? 'animate-pulse font-bold' : 'font-medium'}`}>
+                {isCritical ? '!! ' : ''}Ctx {formatTokenCount(cs.totalContextTokens)}/{formatTokenCount(cs.contextWindowMax)}
+              </span>
+              <span>Turns: {cs.turnCount} Out: {formatTokenCount(cs.totalOutputTokens)}</span>
             </div>
-            <div className="w-full h-[2px] bg-gray-800 rounded-full overflow-hidden">
-              <div className={`h-full ${barColor} ${barGlow} transition-all duration-500`} style={{ width: `${pct}%` }} />
+            <div className="relative w-full h-[6px] bg-gray-800/80 overflow-hidden border border-gray-700/50">
+              {/* Quarter markers */}
+              <div className="absolute top-0 bottom-0 left-1/4 w-px bg-gray-600/30 z-10" />
+              <div className="absolute top-0 bottom-0 left-1/2 w-px bg-gray-600/40 z-10" />
+              <div className="absolute top-0 bottom-0 left-3/4 w-px bg-gray-600/30 z-10" />
+              {/* Fill bar */}
+              <div
+                className={`h-full ${barColor} ${barGlow} transition-all duration-700 ease-out`}
+                style={{ width: `${pct}%` }}
+              />
+              {/* Scanline overlay */}
+              <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent pointer-events-none" />
+            </div>
+            {/* Model tag */}
+            <div className="flex items-center justify-between mt-0.5">
+              <span className="text-[13px] font-sans text-gray-400  truncate">{cs.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+              <span className={`text-[13px] font-sans ${textColor} font-bold`}>{pct}%</span>
             </div>
           </div>
         );
       })()}
 
       {/* Footer Meta */}
-      <div className="flex items-center justify-between text-[9px] font-mono text-gray-500 uppercase tracking-tight">
+      <div className="flex items-center justify-between text-[13px] font-sans text-gray-300  ">
         <div className="flex items-center gap-2">
-            <span className="truncate max-w-[100px] border-b border-gray-800 pb-0.5" title={agent.workingDirectory}>
-            DIR: ...{agent.workingDirectory.split(/[/\\]/).slice(-1)[0]}
+            <span className="truncate max-w-[100px] border- dark:border-white/10 light:border-black/10 pb-0.5" title={agent.workingDirectory}>
+            ...{agent.workingDirectory.split(/[/\\]/).slice(-1)[0]}
             </span>
             {agent.restartCount > 0 && (
-                <span className="text-accent-orange">RST:{agent.restartCount}</span>
+                <span className="text-accent-orange">Restarts: {agent.restartCount}</span>
             )}
         </div>
         <span className={isSelected ? 'text-accent-blue' : ''}>
-            ACT: {timeAgo(agent.lastOutputAt || agent.createdAt)}
+            Active: {timeAgo(agent.lastOutputAt || agent.createdAt)}
         </span>
       </div>
 
@@ -336,15 +366,15 @@ export default function AgentCard({ agent }: { agent: Agent }) {
           className="fixed z-50 bg-surface-2 border border-accent-blue/30 shadow-[0_0_15px_rgba(0,0,0,0.8)] min-w-[160px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <div className="bg-accent-blue/10 px-2 py-1 text-[9px] text-accent-blue font-mono border-b border-accent-blue/20">
-             AGENT_OPERATIONS
+          <div className="bg-accent-blue/10 px-2 py-1 text-[13px] text-accent-blue font-sans border-b dark:border-white/10 light:border-black/10">
+             Agent Actions
           </div>
           <button
             onClick={handleFork}
-            disabled={!agent.resumeSessionId}
-            className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-accent-blue/20 hover:text-accent-blue transition-colors disabled:opacity-30 disabled:cursor-not-allowed uppercase"
+            disabled={!agent.resumeSessionId || (agent.provider || 'claude') !== 'claude'}
+            className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-blue/20 hover:text-accent-blue transition-colors disabled:opacity-30 disabled:cursor-not-allowed "
           >
-            Fork_Agent {!agent.resumeSessionId && '[NO_SESSION]'}
+            Fork Agent {(agent.provider || 'claude') !== 'claude' ? '(Claude only)' : !agent.resumeSessionId ? '(no session)' : ''}
           </button>
         </div>
       )}
@@ -356,12 +386,12 @@ export default function AgentCard({ agent }: { agent: Agent }) {
           className="absolute inset-0 z-30 bg-surface-1 border border-accent-purple shadow-xl p-3 flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="text-[10px] text-accent-purple mb-2 font-mono uppercase tracking-wider animate-pulse">{'>> INTER-AGENT QUERY DETECTED'}</div>
+          <div className="text-[13px] text-accent-purple mb-2 font-sans   animate-pulse">Inter-Agent Query</div>
           <textarea
             value={dragQueryText}
             onChange={(e) => setDragQueryText(e.target.value)}
-            placeholder="Transmit data packet..."
-            className="w-full bg-black border border-accent-purple/30 rounded-none text-xs p-2 resize-none flex-1 focus:outline-none focus:border-accent-purple text-accent-purple font-mono"
+            placeholder="Ask this agent a question..."
+            className="w-full bg-surface-0 border border-accent-purple/30 rounded-none text-[13px] p-2 resize-none flex-1 focus:outline-none focus:border-accent-purple text-accent-purple font-sans"
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -374,19 +404,19 @@ export default function AgentCard({ agent }: { agent: Agent }) {
             <button
               onClick={handleDragQuerySubmit}
               disabled={dragQuerying || !dragQueryText.trim()}
-              className="flex-1 py-1 text-[10px] bg-accent-purple text-black font-bold uppercase hover:bg-white transition-colors disabled:opacity-50"
+              className="flex-1 py-1 text-[13px] bg-accent-purple text-black font-bold  hover:brightness-125 dark:hover:bg-white transition-colors disabled:"
             >
-              {dragQuerying ? 'SENDING...' : 'TRANSMIT'}
+              {dragQuerying ? 'Sending...' : 'Send'}
             </button>
             <button
               onClick={closeDragQuery}
-              className="px-2 py-1 text-[10px] text-gray-500 hover:text-gray-300 border border-gray-700 uppercase"
+              className="px-2 py-1 text-[13px] text-gray-300 hover:text-gray-300 border border-gray-700 "
             >
-              ABORT
+              Cancel
             </button>
           </div>
           {dragQueryResult && (
-            <div className="mt-2 p-2 bg-black border-t border-accent-purple/30 text-[10px] text-accent-purple max-h-24 overflow-y-auto font-mono whitespace-pre-wrap">
+            <div className="mt-2 p-2 bg-surface-0 border-t border-accent-purple/30 text-[13px] text-accent-purple max-h-24 overflow-y-auto font-sans whitespace-pre-wrap">
               {dragQueryResult}
             </div>
           )}

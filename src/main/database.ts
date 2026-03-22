@@ -2,7 +2,7 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentStatus, CreateWorkspaceInput, FileActivity, FileOperation, Workspace } from '../shared/types';
+import { Agent, AgentProvider, AgentStatus, CreateWorkspaceInput, FileActivity, FileOperation, Workspace } from '../shared/types';
 import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL } from '../shared/constants';
 
 let db: SqlJsDatabase;
@@ -80,6 +80,12 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // Migration: add provider column to existing agents tables
+  try { db.run(`ALTER TABLE agents ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'`); } catch { /* column already exists */ }
+
+  // Migration: add is_supervisor column
+  try { db.run(`ALTER TABLE agents ADD COLUMN is_supervisor INTEGER NOT NULL DEFAULT 0`); } catch { /* column already exists */ }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +126,8 @@ function rowToAgent(row: any): Agent {
     roleDescription: row.role_description,
     workingDirectory: row.working_directory,
     command: row.command,
+    provider: (row.provider || 'claude') as AgentProvider,
+    isSupervisor: !!row.is_supervisor,
     tmuxSessionName: row.tmux_session_name,
     autoRestartEnabled: !!row.auto_restart_enabled,
     resumeSessionId: row.resume_session_id,
@@ -193,6 +201,8 @@ export function createAgent(data: {
   roleDescription: string;
   workingDirectory: string;
   command: string;
+  provider?: AgentProvider;
+  isSupervisor?: boolean;
   tmuxSessionName: string | null;
   autoRestartEnabled: boolean;
   logPath: string;
@@ -201,10 +211,10 @@ export function createAgent(data: {
   const slug = slugify(data.title);
   run(
     `INSERT INTO agents (id, workspace_id, title, slug, role_description, working_directory,
-      command, tmux_session_name, auto_restart_enabled, log_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      command, provider, is_supervisor, tmux_session_name, auto_restart_enabled, log_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, data.workspaceId, data.title, slug, data.roleDescription, data.workingDirectory,
-      data.command, data.tmuxSessionName, data.autoRestartEnabled ? 1 : 0, data.logPath]
+      data.command, data.provider || 'claude', data.isSupervisor ? 1 : 0, data.tmuxSessionName, data.autoRestartEnabled ? 1 : 0, data.logPath]
   );
   return getAgent(id)!;
 }
@@ -220,6 +230,11 @@ export function getAgentsByWorkspace(workspaceId: string): Agent[] {
 
 export function getAllAgents(): Agent[] {
   return queryAll('SELECT * FROM agents ORDER BY created_at DESC').map(rowToAgent);
+}
+
+export function getSupervisorAgent(workspaceId: string): Agent | null {
+  const row = queryOne('SELECT * FROM agents WHERE workspace_id = ? AND is_supervisor = 1 ORDER BY created_at DESC LIMIT 1', [workspaceId]);
+  return row ? rowToAgent(row) : null;
 }
 
 export function getActiveAgents(): Agent[] {

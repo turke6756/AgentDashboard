@@ -8,7 +8,7 @@ export default function AgentGrid() {
 
   if (agents.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-600">
+      <div className="flex items-center justify-center h-full text-gray-400">
         <div className="text-center">
           <div className="text-2xl mb-2">No agents running</div>
           <div className="text-sm">Click "Launch Agent" to start one</div>

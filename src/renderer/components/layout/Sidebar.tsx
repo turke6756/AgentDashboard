@@ -1,7 +1,71 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import { useThemeStore } from '../../stores/theme-store';
 import WorkspaceCreateDialog from '../workspace/WorkspaceCreateDialog';
 import CollapseButton from './CollapseButton';
+import * as Icons from 'lucide-react';
+import DirectoryTreeNode from '../fileviewer/DirectoryTreeNode';
+import type { DirectoryEntry, PathType } from '../../../shared/types';
+
+function InlineWorkspaceTree({ rootPath, pathType }: { rootPath: string; pathType: PathType }) {
+  const [rootEntries, setRootEntries] = useState<DirectoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const cache = useRef(new Map<string, DirectoryEntry[]>());
+  const { openTab, activeTabId, openTabs } = useDashboardStore();
+  const { theme } = useThemeStore();
+  const isLight = theme === 'light';
+
+  const activeFilePath = openTabs.find(t => t.id === activeTabId)?.filePath || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    cache.current.clear();
+    window.api.files.listDirectory(rootPath, pathType).then((entries) => {
+      if (!cancelled) {
+        cache.current.set(rootPath, entries);
+        setRootEntries(entries);
+        setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [rootPath, pathType]);
+
+  const loadChildren = useCallback(async (dirPath: string): Promise<DirectoryEntry[]> => {
+    const cached = cache.current.get(dirPath);
+    if (cached) return cached;
+    const entries = await window.api.files.listDirectory(dirPath, pathType);
+    cache.current.set(dirPath, entries);
+    return entries;
+  }, [pathType]);
+
+  const handleFileSelect = useCallback((filePath: string) => {
+    openTab(filePath, rootPath, pathType);
+  }, [openTab, rootPath, pathType]);
+
+  return (
+    <div className={`pl-3 py-1 shadow-inner ${isLight ? 'bg-black/5' : 'bg-black/40'}`}>
+      {loading ? (
+        <div className="px-4 py-2 text-[13px] text-gray-300 font-sans animate-pulse">Loading...</div>
+      ) : rootEntries.length === 0 ? (
+        <div className="px-4 py-2 text-[13px] text-gray-300 font-sans">Empty directory</div>
+      ) : (
+        rootEntries.map((entry) => (
+          <DirectoryTreeNode
+            key={entry.path}
+            entry={entry}
+            depth={0}
+            activeFilePath={activeFilePath}
+            pathType={pathType}
+            workingDirectory={rootPath}
+            onFileSelect={handleFileSelect}
+            loadChildren={loadChildren}
+          />
+        ))
+      )}
+    </div>
+  );
+}
 
 function HeatDot({ activeCount, workingCount }: { activeCount: number; workingCount: number }) {
   let colorClass = 'bg-gray-800';
@@ -33,13 +97,25 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ width }: SidebarProps) {
-  const { workspaces, selectedWorkspaceId, selectWorkspace, loadWorkspaces, deleteWorkspace, health, workspaceHeat, panelLayout, togglePanelCollapsed, resetLayout, openDirectoryTab } = useDashboardStore();
+  const { workspaces, selectedWorkspaceId, selectWorkspace, loadWorkspaces, deleteWorkspace, health, workspaceHeat, panelLayout, togglePanelCollapsed, resetLayout } = useDashboardStore();
+  const { theme, toggleTheme } = useThemeStore();
   const [showCreate, setShowCreate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; wsId: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set());
   const menuRef = useRef<HTMLDivElement>(null);
   const collapsed = panelLayout.sidebarCollapsed;
+
+  const toggleWorkspace = (wsId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedWorkspaces(prev => {
+      const next = new Set(prev);
+      if (next.has(wsId)) next.delete(wsId);
+      else next.add(wsId);
+      return next;
+    });
+  };
 
   // Close context menu on outside click
   useEffect(() => {
@@ -104,12 +180,12 @@ export default function Sidebar({ width }: SidebarProps) {
   if (collapsed) {
     return (
       <div
-        className="bg-surface-1/90 backdrop-blur-sm border-r border-gray-800 flex flex-col items-center z-20 shadow-2xl py-2"
+        className="bg-surface-1/90 dark:backdrop-blur-sm border- dark:border-white/10 light:border-black/10 flex flex-col items-center z-20 dark:shadow-2xl light:shadow-none py-2"
         style={{ width }}
       >
         <CollapseButton collapsed direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
-        <div className="mt-2 text-[9px] font-mono text-accent-blue writing-mode-vertical" style={{ writingMode: 'vertical-rl' }}>
-          SECTORS
+        <div className="mt-2 text-[13px] font-sans text-accent-blue writing-mode-vertical" style={{ writingMode: 'vertical-rl' }}>
+          Workspaces
         </div>
       </div>
     );
@@ -117,28 +193,35 @@ export default function Sidebar({ width }: SidebarProps) {
 
   return (
     <div
-      className="bg-surface-1/90 backdrop-blur-sm border-r border-gray-800 flex flex-col z-20 shadow-2xl"
+      className="bg-surface-1/90 dark:backdrop-blur-sm border- dark:border-white/10 light:border-black/10 flex flex-col z-20 dark:shadow-2xl light:shadow-none"
       style={{ width }}
     >
       {/* Header */}
-      <div className="p-4 border-b border-gray-800 bg-surface-0/50">
+      <div className="p-4 border- dark:border-white/10 light:border-black/10 bg-surface-0">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold tracking-widest uppercase glow-text">
-            <span className="text-accent-blue">AGENT</span>_OS
+          <h1 className="text-xl font-bold   glow-text">
+            <span className="text-accent-blue">Agent</span> OS
           </h1>
           <div className="flex items-center gap-1">
             <button
               onClick={resetLayout}
-              className="text-[8px] font-mono text-gray-600 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
+              className="text-[13px] font-sans text-gray-400 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
               title="Reset all panel sizes to defaults"
             >
-              RST
+              Reset
+            </button>
+            <button
+              onClick={toggleTheme}
+              className="text-[13px] font-sans text-gray-400 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {theme === 'dark' ? 'Light' : 'Dark'}
             </button>
             <CollapseButton collapsed={false} direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
           </div>
         </div>
-        <div className="text-[10px] text-gray-500 font-mono mt-1 tracking-widest">
-          V1.0.0 // SYSTEM_READY
+        <div className="text-[13px] text-gray-300 font-sans mt-1 ">
+          v1.0.0
         </div>
       </div>
 
@@ -151,16 +234,16 @@ export default function Sidebar({ width }: SidebarProps) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="flex items-center justify-between px-2 py-2 mb-2 border-b border-gray-800/50">
-          <span className="text-[10px] font-bold text-accent-blue uppercase tracking-widest opacity-70">
-            Sector_List
+        <div className="flex items-center justify-between px-2 py-2 mb-2 border- dark:border-white/10 light:border-black/10/50">
+          <span className="text-[13px] font-sans font-medium text-accent-blue   ">
+            Workspaces
           </span>
           <button
             onClick={() => setShowCreate(true)}
-            className="text-accent-blue hover:text-white text-lg leading-none transition-colors hover:glow-text"
-            title="Initialize New Sector"
+            className="text-accent-blue hover:text-white transition-colors"
+            title="Add Workspace"
           >
-            [+]
+            <Icons.Plus className="w-4 h-4" />
           </button>
         </div>
 
@@ -168,60 +251,71 @@ export default function Sidebar({ width }: SidebarProps) {
           {workspaces.map((ws) => {
             const heat = workspaceHeat[ws.id];
             const isSelected = selectedWorkspaceId === ws.id;
+            const isExpanded = expandedWorkspaces.has(ws.id);
 
             return (
-              <button
-                key={ws.id}
-                onClick={() => selectWorkspace(ws.id)}
-                onDoubleClick={() => openDirectoryTab(ws.path, ws.pathType)}
-                onContextMenu={(e) => handleContextMenu(e, ws.id)}
-                className={`w-full text-left px-3 py-3 relative group transition-all duration-200 border-l-2 ${
-                  isSelected
-                    ? 'bg-surface-2 border-accent-blue text-white shadow-[inset_10px_0_20px_-10px_rgba(0,243,255,0.1)]'
-                    : 'border-transparent hover:bg-surface-2 hover:border-gray-600 text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className={`font-mono text-xs font-bold uppercase tracking-wider ${isSelected ? 'text-accent-blue glow-text' : ''}`}>
-                    {ws.title}
-                  </span>
-                  {heat && <HeatDot activeCount={heat.activeCount} workingCount={heat.workingCount} />}
-                </div>
+              <div key={ws.id}>
+                <button
+                  onClick={() => selectWorkspace(ws.id)}
+                  onDoubleClick={(e) => toggleWorkspace(ws.id, e)}
+                  onContextMenu={(e) => handleContextMenu(e, ws.id)}
+                  className={`w-full text-left px-2 py-2.5 relative group transition-all duration-200 border-l-2 flex flex-col ${
+                    isSelected
+                      ? 'bg-surface-2 border-accent-blue dark:text-gray-50 text-gray-900 dark:shadow-[inset_10px_0_20px_-10px_rgba(0,243,255,0.1)] light:shadow-none light:bg-[#ddeefe]'
+                      : 'border-transparent hover:bg-surface-2 dark:hover:border-gray-500 light:hover:border-gray-900 dark:text-gray-400 text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1 w-full mb-1">
+                    <div 
+                      className="p-1 shrink-0 cursor-pointer text-gray-300 hover:text-gray-300 transition-colors"
+                      onClick={(e) => toggleWorkspace(ws.id, e)}
+                    >
+                      {isExpanded ? <Icons.ChevronDown className="w-3.5 h-3.5" /> : <Icons.ChevronRight className="w-3.5 h-3.5" />}
+                    </div>
+                    <span className={`flex-1 font-sans text-[13px] font-medium truncate ${isSelected ? 'text-accent-blue' : ''}`}>
+                      {ws.title}
+                    </span>
+                    {heat && <HeatDot activeCount={heat.activeCount} workingCount={heat.workingCount} />}
+                  </div>
 
-                <div className="flex items-center text-[9px] font-mono text-gray-600 uppercase tracking-tight">
-                  <span className={`mr-2 ${ws.pathType === 'wsl' ? 'text-accent-orange' : 'text-blue-400'}`}>
-                    {ws.pathType}
-                  </span>
-                  <span className="truncate opacity-50 max-w-[120px]">{ws.path}</span>
-                </div>
+                  <div className="flex items-center text-[13px] font-sans text-gray-300 pl-6">
+                    <span className={`mr-2  text-[13px] ${ws.pathType === 'wsl' ? 'text-accent-orange' : 'text-blue-400'}`}>
+                      {ws.pathType}
+                    </span>
+                    <span className="truncate  max-w-[120px]">{ws.path}</span>
+                  </div>
 
-                {/* Decoration corners for active item */}
-                {isSelected && (
-                  <>
-                    <div className="absolute top-0 right-0 w-1 h-1 border-t border-r border-accent-blue" />
-                    <div className="absolute bottom-0 right-0 w-1 h-1 border-b border-r border-accent-blue" />
-                  </>
+                  {/* Decoration corners for active item */}
+                  {isSelected && (
+                    <>
+                      <div className="absolute top-0 right-0 w-1 h-1 border-t border-r border-accent-blue" />
+                      <div className="absolute bottom-0 right-0 w-1 h-1 border-b border-r border-accent-blue" />
+                    </>
+                  )}
+                </button>
+                {isExpanded && (
+                  <InlineWorkspaceTree rootPath={ws.path} pathType={ws.pathType} />
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
 
         {dragOver && (
-          <div className="mt-4 px-3 py-4 text-center border border-dashed border-accent-blue text-accent-blue/70 text-xs font-mono animate-pulse">
-            {'>> INITIATE DOCKING SEQUENCE <<'}
+          <div className="mt-4 px-3 py-4 text-center border border-dashed border-accent-blue text-accent-blue/70 text-[13px] font-sans animate-pulse">
+            Drop folder here to add workspace
           </div>
         )}
 
         {workspaces.length === 0 && !dragOver && (
-          <div className="px-3 py-12 text-center text-gray-600 text-xs font-mono">
-            [NO SECTORS FOUND]
+          <div className="px-3 py-12 text-center text-gray-400 text-[13px] font-sans">
+            No workspaces found
             <br />
             <button
               onClick={() => setShowCreate(true)}
-              className="text-accent-blue hover:underline mt-4 uppercase tracking-wider"
+              className="text-accent-blue hover:underline mt-4 "
             >
-              Initialize_Sector
+              Add Workspace
             </button>
           </div>
         )}
@@ -234,22 +328,22 @@ export default function Sidebar({ width }: SidebarProps) {
           className="fixed z-50 bg-surface-2 border border-accent-red/30 shadow-[0_0_15px_rgba(0,0,0,0.8)] min-w-[160px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <div className="bg-accent-red/10 px-2 py-1 text-[9px] text-accent-red font-mono border-b border-accent-red/20 uppercase">
-            Sector_Operations
+          <div className="bg-accent-red/10 px-2 py-1 text-[13px] text-accent-red font-sans font-medium border-b border-accent-red/20 ">
+            Workspace Options
           </div>
           {confirmDelete === contextMenu.wsId ? (
             <div className="px-3 py-2">
-              <p className="text-[10px] text-accent-red font-mono mb-2">Confirm delete?</p>
+              <p className="text-[13px] text-accent-red font-sans mb-2">Confirm delete?</p>
               <div className="flex gap-2">
                 <button
                   onClick={() => handleDelete(contextMenu.wsId)}
-                  className="px-2 py-1 text-[10px] font-mono bg-accent-red/20 text-accent-red hover:bg-accent-red/40 border border-accent-red/50 uppercase"
+                  className="px-2 py-1 text-[13px] font-sans bg-accent-red/20 text-accent-red hover:bg-accent-red/40 border border-accent-red/50 "
                 >
                   Yes
                 </button>
                 <button
                   onClick={() => { setConfirmDelete(null); setContextMenu(null); }}
-                  className="px-2 py-1 text-[10px] font-mono bg-surface-3 text-gray-400 hover:text-white border border-gray-700 uppercase"
+                  className="px-2 py-1 text-[13px] font-sans bg-surface-3 text-gray-400 hover:text-white border border-gray-700 "
                 >
                   No
                 </button>
@@ -262,15 +356,15 @@ export default function Sidebar({ width }: SidebarProps) {
                   window.api.workspaces.openInVSCode(contextMenu.wsId);
                   setContextMenu(null);
                 }}
-                className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-accent-blue/20 hover:text-accent-blue transition-colors uppercase"
+                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-blue/20 hover:text-accent-blue transition-colors "
               >
-                Open_VS_Code
+                Open VS Code
               </button>
               <button
                 onClick={() => setConfirmDelete(contextMenu.wsId)}
-                className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-accent-red/20 hover:text-accent-red transition-colors uppercase"
+                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-red/20 hover:text-accent-red transition-colors "
               >
-                Delete_Sector
+                Delete Workspace
               </button>
             </>
           )}
@@ -278,18 +372,18 @@ export default function Sidebar({ width }: SidebarProps) {
       )}
 
       {/* Footer Status Ticker */}
-      <div className="p-2 border-t border-gray-800 bg-surface-0 text-[9px] font-mono text-gray-500 uppercase flex justify-between items-center">
+      <div className="p-2 border- dark:border-white/10 light:border-black/10 bg-surface-0 text-[13px] font-sans text-gray-300  flex justify-between items-center">
         {health ? (
           <>
             <div className="flex gap-2">
-              <span className={health.claudeWindowsAvailable ? 'text-accent-green' : 'text-gray-700'}>W:OK</span>
-              <span className={health.wslAvailable ? 'text-accent-green' : 'text-gray-700'}>L:OK</span>
-              <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>T:OK</span>
+              <span className={health.claudeWindowsAvailable ? 'text-accent-green' : 'text-gray-700'}>Win</span>
+              <span className={health.wslAvailable ? 'text-accent-green' : 'text-gray-700'}>WSL</span>
+              <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>Tmux</span>
             </div>
-            <div className="animate-pulse text-accent-blue">ONLINE</div>
+            <div className="animate-pulse text-accent-blue">Connected</div>
           </>
         ) : (
-          <span className="text-accent-red animate-pulse">SYSTEM CHECK...</span>
+          <span className="text-accent-red animate-pulse">Checking...</span>
         )}
       </div>
 

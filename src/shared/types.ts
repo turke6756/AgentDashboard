@@ -1,4 +1,5 @@
 export type PathType = 'windows' | 'wsl';
+export type AgentProvider = 'claude' | 'gemini' | 'codex';
 
 export type AgentStatus =
   | 'launching'
@@ -29,6 +30,8 @@ export interface Agent {
   roleDescription: string;
   workingDirectory: string;
   command: string;
+  provider: AgentProvider;
+  isSupervisor: boolean;
   tmuxSessionName: string | null;
   autoRestartEnabled: boolean;
   resumeSessionId: string | null;
@@ -76,7 +79,9 @@ export interface LaunchAgentInput {
   roleDescription?: string;
   workingDirectory?: string;
   command?: string;
+  provider?: AgentProvider;
   autoRestartEnabled?: boolean;
+  isSupervisor?: boolean;
 }
 
 export interface QueryResult {
@@ -166,6 +171,7 @@ export interface IpcApi {
     fork: (id: string) => Promise<Agent>;
     query: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult>;
     sendInput: (agentId: string, text: string) => Promise<void>;
+    getSupervisor: (workspaceId: string) => Promise<Agent | null>;
   };
   terminal: {
     attach: (agentId: string) => Promise<void>;

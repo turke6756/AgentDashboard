@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { ContextStats, FileOperation } from '../../shared/types';
-import { CONTEXT_STATS_POLL_INTERVAL_MS, DEFAULT_CONTEXT_WINDOW_TOKENS } from '../../shared/constants';
+import { CONTEXT_STATS_POLL_INTERVAL_MS, DEFAULT_CONTEXT_WINDOW_TOKENS, getContextWindowForModel } from '../../shared/constants';
 
 interface AgentSession {
   agentId: string;
@@ -198,6 +198,7 @@ export class ContextStatsMonitor extends EventEmitter {
     }
 
     stats.model = model;
+    stats.contextWindowMax = getContextWindowForModel(model);
     stats.inputTokens = usage.input_tokens || 0;
     stats.cacheCreationTokens = usage.cache_creation_input_tokens || 0;
     stats.cacheReadTokens = usage.cache_read_input_tokens || 0;

@@ -40,18 +40,18 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
   const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
 
   return (
-    <div className="h-full flex flex-col border-r border-accent-blue/10 bg-surface-0/40">
-      <div className="px-3 py-2 border-b border-accent-blue/10">
-        <div className="text-[10px] font-mono uppercase tracking-wider text-gray-500">Explorer</div>
-        <div className="text-[11px] font-mono text-accent-blue/70 truncate mt-0.5" title={rootPath}>
+    <div className="h-full flex flex-col border-r dark:border-white/10 light:border-black/10 bg-surface-0/40">
+      <div className="px-3 py-2 border-b dark:border-white/10 light:border-black/10">
+        <div className="text-[13px] font-sans   text-gray-300">Explorer</div>
+        <div className="text-[13px] font-sans text-accent-blue/70 truncate mt-0.5" title={rootPath}>
           {rootName}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden py-1 scrollbar-thin">
         {loading ? (
-          <div className="px-3 py-4 text-[11px] text-gray-600 font-mono animate-pulse">Loading...</div>
+          <div className="px-3 py-4 text-[13px] text-gray-400 font-sans animate-pulse">Loading...</div>
         ) : rootEntries.length === 0 ? (
-          <div className="px-3 py-4 text-[11px] text-gray-600 font-mono">Empty directory</div>
+          <div className="px-3 py-4 text-[13px] text-gray-400 font-sans">Empty directory</div>
         ) : (
           rootEntries.map((entry) => (
             <DirectoryTreeNode

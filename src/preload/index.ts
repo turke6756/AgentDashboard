@@ -21,6 +21,7 @@ const api: IpcApi = {
     fork: (id) => ipcRenderer.invoke('agent:fork', id),
     query: (targetAgentId, question, sourceAgentId) => ipcRenderer.invoke('agent:query', targetAgentId, question, sourceAgentId),
     sendInput: (agentId, text) => ipcRenderer.invoke('agent:send-input', agentId, text),
+    getSupervisor: (workspaceId) => ipcRenderer.invoke('agent:get-supervisor', workspaceId),
     onFileActivity: (callback) => {
       const listener = (_event: any, activity: any) => callback(activity);
       ipcRenderer.on('agent:file-activity', listener);

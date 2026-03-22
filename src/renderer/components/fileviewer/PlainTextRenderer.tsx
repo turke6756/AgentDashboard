@@ -9,12 +9,12 @@ export default function PlainTextRenderer({ content }: Props) {
   const gutterWidth = String(lines.length).length;
 
   return (
-    <div className="overflow-auto h-full font-mono text-sm">
+    <div className="overflow-auto h-full font-sans text-sm">
       <pre className="p-4">
         {lines.map((line, i) => (
           <div key={i} className="flex">
             <span
-              className="select-none text-gray-600 text-right pr-4 shrink-0"
+              className="select-none text-gray-400 text-right pr-4 shrink-0"
               style={{ minWidth: `${gutterWidth + 2}ch` }}
             >
               {i + 1}

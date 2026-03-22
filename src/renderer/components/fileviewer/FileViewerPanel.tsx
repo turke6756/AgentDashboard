@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef } from 'react';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useResize } from '../../hooks/useResize';
 import FileViewerHeader from './FileViewerHeader';
@@ -10,6 +10,21 @@ import CollapseButton from '../layout/CollapseButton';
 import { evictTabCache } from './useFileContentCache';
 import { ArrowLeft } from 'lucide-react';
 
+function useSwipeRight(onSwipe: () => void) {
+  const startRef = useRef<{ x: number; y: number } | null>(null);
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    startRef.current = { x: e.clientX, y: e.clientY };
+  }, []);
+  const onPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!startRef.current) return;
+    const dx = e.clientX - startRef.current.x;
+    const dy = Math.abs(e.clientY - startRef.current.y);
+    startRef.current = null;
+    if (dx > 80 && dy < 60) onSwipe();
+  }, [onSwipe]);
+  return { onPointerDown, onPointerUp };
+}
+
 export default function FileViewerPanel() {
   const {
     openTabs,
@@ -17,10 +32,13 @@ export default function FileViewerPanel() {
     closeTab,
     setActiveTab,
     closeAllTabs,
+    hideFileViewer,
     openTab,
     panelLayout,
     togglePanelCollapsed,
   } = useDashboardStore();
+
+  const swipeToAgents = useSwipeRight(hideFileViewer);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
 
@@ -89,19 +107,19 @@ export default function FileViewerPanel() {
   const dirName = treeRoot.split('/').filter(Boolean).pop() || treeRoot;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-surface-0/20">
+    <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-surface-0" {...swipeToAgents}>
       {/* Persistent Back Bar — always visible */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-accent-blue/20 bg-surface-1/60 backdrop-blur-md shrink-0">
+      <div className="flex items-center gap-3 px-4 py-2 border-b dark:border-white/10 light:border-black/10 bg-surface-1/60 backdrop-blur-md shrink-0">
         <button
-          onClick={closeAllTabs}
-          className="flex items-center gap-1.5 text-gray-400 hover:text-white transition-colors text-xs font-mono shrink-0 group"
+          onClick={hideFileViewer}
+          className="flex items-center gap-1.5 text-gray-400 hover:text-white transition-colors text-[13px] font-sans shrink-0 group"
           title="Back to agents"
         >
           <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
-          <span>BACK</span>
+          <span>Back</span>
         </button>
         <div className="h-4 w-px bg-accent-blue/20 shrink-0" />
-        <span className="text-[11px] font-mono text-gray-500 truncate">{dirName}</span>
+        <span className="text-[13px] font-sans text-gray-300 truncate">{dirName}</span>
       </div>
 
       {/* Tab Bar */}
@@ -126,10 +144,10 @@ export default function FileViewerPanel() {
       <div className="flex-1 flex min-h-0">
         {/* Directory Tree Sidebar */}
         {treeCollapsed ? (
-          <div className="shrink-0 bg-surface-0/40 border-r border-accent-blue/10 flex flex-col items-center py-2" style={{ width: 32 }}>
+          <div className="shrink-0 bg-surface-0/40 border-r dark:border-white/10 light:border-black/10 flex flex-col items-center py-2" style={{ width: 32 }}>
             <CollapseButton collapsed direction="left" onClick={() => togglePanelCollapsed('directoryTreeCollapsed')} />
-            <div className="mt-2 text-[9px] font-mono text-gray-600" style={{ writingMode: 'vertical-rl' }}>
-              TREE
+            <div className="mt-2 text-[13px] font-sans text-gray-400" style={{ writingMode: 'vertical-rl' }}>
+              Files
             </div>
           </div>
         ) : (
@@ -163,8 +181,8 @@ export default function FileViewerPanel() {
             />
           ) : (
             <div className="flex items-center justify-center h-full">
-              <div className="text-gray-600 font-mono text-sm uppercase tracking-wider">
-                Select a file from the tree
+              <div className="text-gray-400 font-sans text-sm  ">
+                Select a file to view
               </div>
             </div>
           )}

@@ -13,9 +13,9 @@ export default function ResizeDivider({ direction, isResizing, onMouseDown }: Pr
       onMouseDown={onMouseDown}
       className={`shrink-0 relative group z-30 ${
         isHoriz
-          ? 'w-[4px] cursor-col-resize hover:bg-accent-blue/40'
-          : 'h-[4px] cursor-row-resize hover:bg-accent-blue/40'
-      } ${isResizing ? 'bg-accent-blue/60' : 'bg-transparent'} transition-colors`}
+          ? 'w-[4px] cursor-col-resize hover:bg-gray-500/20'
+          : 'h-[4px] cursor-row-resize hover:bg-gray-500/20'
+      } ${isResizing ? 'bg-gray-500/40' : 'bg-transparent'} transition-colors`}
     >
       {/* Extended hit area */}
       <div
@@ -31,8 +31,8 @@ export default function ResizeDivider({ direction, isResizing, onMouseDown }: Pr
           isHoriz
             ? 'top-0 bottom-0 left-[1px] w-[1px]'
             : 'left-0 right-0 top-[1px] h-[1px]'
-        } bg-gray-800 group-hover:bg-accent-blue/60 ${
-          isResizing ? 'bg-accent-blue/80' : ''
+        } dark:bg-white/10 light:bg-black/10 group-hover:bg-gray-400 ${
+          isResizing ? 'bg-gray-300' : ''
         } transition-colors`}
       />
     </div>

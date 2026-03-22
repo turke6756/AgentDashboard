@@ -1,0 +1,1182 @@
+# Knowledge Graph: Workspace-Aware Relationship Map
+
+## Vision
+
+The knowledge graph is a living map of relationships between files, agents, skills, and concepts within and across workspaces. It serves two audiences:
+
+1. **The user** — a visual, explorable graph embedded in the dashboard that reveals how a workspace is structured, where agents are working, what's tightly coupled, and where hotspots exist.
+2. **The supervisor agent** — a structured, query-able data layer that gives the supervisor spatial awareness of the workspace without reading raw files or holding agent context in memory.
+
+The graph has three layers:
+- A **static skeleton** built by parsing the codebase (imports, test relationships, directory structure)
+- A **dynamic activity layer** built continuously from agent behavior (reads, writes, co-modifications, backtracks, skill usage)
+- A **metadata enrichment layer** that extracts structured semantic information from code (descriptions, tags, exports, complexity signals) and stores it as queryable JSON on graph nodes
+
+The static layer gives the graph its shape. The dynamic layer makes it alive — edges thicken with use, nodes glow with activity, patterns emerge from how agents actually work with the code. The metadata layer gives nodes meaning — the supervisor can understand *what* a file does, not just where it sits in the dependency tree.
+
+### Prior Art: mcp-crawl4ai-rag
+
+Several patterns in this design are adapted from an existing project (`mcp-crawl4ai-rag`) that implements knowledge graph querying and RAG over crawled content. The transferable pieces are:
+
+- **AST-based code structure extraction** — The project's `AIScriptAnalyzer` walks Python ASTs to extract imports, class definitions, method signatures, and function calls into structured dataclasses. Our Skeleton Builder adapts this pattern for TypeScript/JavaScript, extracting the same categories of structural information into graph nodes and metadata.
+- **Tiered graph query design** — The project's `query_knowledge_graph.py` implements a pattern of index → detail → deep-inspect queries (`get_module_info`, `get_class_details`, `search_by_name`). Our supervisor query tools follow the same tiered workup philosophy.
+- **Metadata enrichment at write time** — The project's contextual embeddings feature generates LLM context for each chunk before storage. We adapt this as an optional enrichment pass that generates structured metadata (descriptions, tags) for file nodes, stored as JSON rather than embeddings.
+- **MCP tool exposure** — The project wraps its knowledge graph queries as MCP tools via FastMCP, making them available to external AI agents. We include an optional MCP server mode so external Claude instances can query the workspace graph.
+
+---
+
+## Architecture
+
+### Supervisor, Enricher, and Work-Agents
+
+The system distinguishes between three categories of agent:
+
+**Supervisor agent** — a Claude Code agent running in the workspace (just another AgentCard) with a specialized CLAUDE.md and **MCP tools** that bridge to dashboard functionality. It receives events from the dashboard when supervised work-agents go idle, queries the knowledge graph via MCP tools, and sends directives to work-agents via `send_message_to_agent`. See `SUPERVISOR_AGENT_PROPOSAL.md` for full details.
+
+**Metadata Enricher** — a lightweight in-process job using the **Anthropic API directly** (`@anthropic-ai/sdk`). It runs in the dashboard's main process, not as a separate agent. When new/changed file nodes appear in the graph, it reads file content, sends it to a Haiku-class model with a structured prompt, and writes the returned metadata (description, tags, purpose, complexity) to `kg_nodes.metadata`. This is a batch job, not an interactive agent — the direct API gives full control over cost (batching, caching, rate limiting) without subprocess overhead.
+
+**Work-agents** — user-spawned Claude Code sessions doing actual coding in workspace directories. They don't know the knowledge graph exists. Their JSONL logs are the raw input that feeds the dynamic activity layer.
+
+> **Architecture decision (2026-03-21):** Research into the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) found that it spawns a child process running the Claude Code CLI for every `query()` call — it's a wrapper around the CLI, not a pure in-process library. This makes it overpowered for the enricher (which just needs a single API call per file batch) and unnecessary for the supervisor (which is already a Claude Code agent with MCP tools). The direct API (`@anthropic-ai/sdk` v0.80.0) is the better fit for in-process LLM work. The supervisor uses Claude Code natively as an agent card.
+
+```
+Dashboard Main Process (Electron / Node.js)
+  │
+  ├── Supervisor Agent (Claude Code process via node-pty)
+  │     - Another AgentCard in the sidebar — uses existing infrastructure
+  │     - Has MCP tools bridging to dashboard methods
+  │     - Receives events via sendInput() when supervised agents change status
+  │     - Queries knowledge graph via MCP tools
+  │     - Sends directives to work-agents via send_message_to_agent MCP tool
+  │     - Reads temporal trajectory to understand project momentum
+  │
+  ├── Metadata Enricher (in-process, direct Anthropic API)
+  │     - Triggered when new/changed file nodes appear in the graph
+  │     - Reads file content, calls Haiku via @anthropic-ai/sdk
+  │     - Returns structured JSON metadata (description, tags, purpose)
+  │     - Writes directly to kg_nodes.metadata
+  │     - Batched, rate-limited, cost-controlled (~$0.05-0.10 per 500 files)
+  │
+  ├── Pure Code Processes (no LLM)
+  │   ├── Skeleton Builder + AST Extractor
+  │   │     - Parses source files → nodes + import edges + structural metadata
+  │   │     - Runs on workspace open, git pull, file save
+  │   │
+  │   ├── JSONL Log Processor (extends existing context-stats-monitor.ts)
+  │   │     - The app already parses JSONL logs for context stats and file activities
+  │   │     - KG extension: additionally extracts tool call sequences, backtracks,
+  │   │       co-modifications, and co-investigations into agent-attributed edges
+  │   │     - Feeds edge events into temporal event log
+  │   │
+  │   └── Activity Processor + Weight Decay
+  │         - Processes real-time events from FileActivityTracker (already exists)
+  │         - Periodic weight decay on stale edges
+  │         - Conflict detection between concurrent agents
+  │
+  ├── Knowledge Graph (SQLite — same sql.js database)
+  │     - Supervisor queries via MCP tools (read-only from supervisor's perspective)
+  │     - Enricher writes metadata via direct DB access (in-process)
+  │     - Pure code processes write nodes, edges, events directly
+  │     - Temporal event log captures all edge mutations
+  │
+  ├── MCP Server (in-process, exposes tools to supervisor agent)
+  │     - Bridges supervisor's MCP tool calls to dashboard methods
+  │     - Agent inspection: list_agents, get_context_digest, get_agent_last_output
+  │     - Agent communication: send_message_to_agent (with status safety gate)
+  │     - Agent lifecycle: launch_agent, fork_agent, stop_agent
+  │     - KG queries: query_knowledge_graph, get_impact_radius, get_conflict_risks
+  │     - Escalation: notify_user
+  │
+  └── Work-Agent Monitor (extends existing StatusMonitor + ContextStatsMonitor)
+        - Watches user-spawned Claude Code sessions (already exists)
+        - Detects new JSONL log files → feeds to JSONL Log Processor
+        - When supervised agents change status → sends event to supervisor agent
+        - Work-agents have no knowledge of the graph or the supervisor
+```
+
+### Storage: Extending the Existing SQLite Database
+
+### Storage: Extending the Existing SQLite Database
+
+The graph lives in the same `sql.js` database that already stores workspaces, agents, and file activities (`src/main/database.ts`). Five core tables plus a temporal event log:
+
+```sql
+-- ═══════════════════════════════════════════════════════════
+-- CORE GRAPH TABLES
+-- ═══════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS kg_nodes (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  type TEXT NOT NULL,          -- 'file', 'agent', 'skill', 'concept', 'intent'
+  label TEXT NOT NULL,         -- human-readable name
+  metadata TEXT,               -- JSON blob: structural + enriched metadata (see Metadata Schema)
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
+CREATE TABLE IF NOT EXISTS kg_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id TEXT NOT NULL,
+  from_node TEXT NOT NULL,
+  to_node TEXT NOT NULL,
+  type TEXT NOT NULL,          -- 'imports', 'co_modified', 'read', 'wrote', etc.
+  agent_id TEXT,               -- NULL for static (skeleton) edges, set for agent-discovered edges
+  weight REAL DEFAULT 1.0,
+  interaction_count INTEGER DEFAULT 1,
+  first_seen TEXT NOT NULL,    -- when this edge was first created
+  last_seen TEXT NOT NULL,     -- most recent reinforcement
+  metadata TEXT,               -- JSON blob (tool sequence, backtrack count, etc.)
+  FOREIGN KEY (from_node) REFERENCES kg_nodes(id),
+  FOREIGN KEY (to_node) REFERENCES kg_nodes(id),
+  UNIQUE(from_node, to_node, type, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS kg_concepts (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  label TEXT NOT NULL,         -- 'authentication', 'IPC bridge', etc.
+  file_paths TEXT NOT NULL,    -- JSON array of file paths in this cluster
+  inferred_by TEXT,            -- 'parser' or 'model'
+  confidence REAL DEFAULT 1.0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ═══════════════════════════════════════════════════════════
+-- TEMPORAL TABLES
+-- ═══════════════════════════════════════════════════════════
+
+-- Append-only event log for all edge mutations.
+-- The current edge weight is a materialized view over this log.
+-- Enables "show me the graph as it was at time T" by replaying events.
+CREATE TABLE IF NOT EXISTS kg_edge_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  edge_id INTEGER NOT NULL,
+  agent_id TEXT,               -- which agent caused this event (NULL for decay/skeleton)
+  event_type TEXT NOT NULL,    -- 'created', 'strengthened', 'weakened', 'decayed', 'pruned'
+  timestamp TEXT NOT NULL,
+  weight_before REAL,
+  weight_after REAL,
+  metadata TEXT,               -- JSON: what caused this (tool call, build result, decay tick, etc.)
+  FOREIGN KEY (edge_id) REFERENCES kg_edges(id)
+);
+
+-- Periodic snapshots of graph state for trajectory analysis.
+-- Taken on meaningful events (agent completion, phase shift) and on a timer.
+CREATE TABLE IF NOT EXISTS kg_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  trigger TEXT NOT NULL,        -- 'periodic', 'agent_completed', 'phase_shift', 'manual'
+  summary TEXT NOT NULL,        -- JSON: {node_count, edge_count, active_agents, top_concepts, hotspots}
+  node_state TEXT,              -- compressed JSON: all nodes + metadata at this point (nullable for lightweight snapshots)
+  edge_state TEXT,              -- compressed JSON: all edges + weights at this point (nullable for lightweight snapshots)
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+```
+
+**Key schema change: agent-attributed edges.** The `UNIQUE(from_node, to_node, type, agent_id)` constraint means the same file→file connection can exist multiple times — once per agent that discovered or strengthened it. Static edges (from the skeleton builder) have `agent_id = NULL`. This enables:
+
+- `WHERE agent_id = 'agent-3'` — one agent's view of the codebase
+- `WHERE agent_id IS NULL` — static structure only
+- `GROUP BY from_node, to_node, type` with `COUNT(DISTINCT agent_id)` — edges confirmed by multiple agents are stronger signals
+- The **breadth** component of edge weight (reinforced by multiple agents) becomes a real query, not a precomputed heuristic
+
+#### Node Metadata Schema
+
+The `metadata` JSON blob on `kg_nodes` has two tiers: **structural metadata** extracted by the parser (free, always available) and **enriched metadata** generated by an optional LLM pass (cheap, async).
+
+```jsonc
+// File node metadata — structural (parser-extracted)
+{
+  "exports": ["workspaceAPI", "agentAPI"],       // exported symbols
+  "classes": ["WorkspaceManager"],                // class definitions
+  "functions": ["initWorkspace", "cleanupIPC"],   // top-level functions
+  "imports_from": ["electron", "./database"],     // import sources
+  "line_count": 245,
+  "language": "typescript",
+  "has_tests": true,                              // matched test file exists
+
+  // Enriched (LLM-generated, added async — may be absent on new nodes)
+  "description": "Preload script exposing IPC bridge to renderer",
+  "tags": ["ipc", "security", "preload"],
+  "purpose": "bridge",                            // functional role classification
+  "complexity": "low"                             // low | medium | high
+}
+
+// Agent node metadata
+{
+  "description": "Refactoring the IPC layer to support bidirectional messaging",
+  "tags": ["ipc", "refactor"],
+  "primary_files": ["src/main/ipc/bridge.ts", "src/preload/index.ts"],
+  "context_usage_pct": 72
+}
+
+// Concept node metadata
+{
+  "description": "All IPC communication between main and renderer processes",
+  "key_patterns": ["ipcMain.handle", "contextBridge.exposeInMainWorld"],
+  "entry_points": ["src/main/ipc/bridge.ts"]
+}
+```
+
+This design is adapted from the contextual embeddings pattern in `mcp-crawl4ai-rag`, where each chunk is enriched with LLM-generated context before storage. The key difference: we store structured JSON fields queryable via `json_extract()`, not vector embeddings. The supervisor can filter and search metadata with normal SQL rather than requiring similarity search infrastructure.
+
+Indexes on `from_node`, `to_node`, `type`, and `weight DESC` for the query patterns the supervisor will use. Recursive CTEs handle multi-hop traversal (impact radius, path finding).
+
+> **Open question:** Is SQLite sufficient long-term, or does this eventually want a dedicated graph store? For hundreds to low-thousands of nodes per workspace, SQLite with recursive CTEs is fast enough. Revisit if graph sizes grow significantly or if cross-workspace queries become a bottleneck.
+
+### File Structure
+
+```
+src/main/supervisor/
+  knowledge-graph/
+    index.ts                  — KnowledgeGraph class: owns schema, CRUD, queries, temporal queries
+    skeleton-builder.ts       — Static analysis: parse files → nodes + import edges
+    ast-extractor.ts          — AST-based structural metadata extraction (exports, classes, functions)
+    jsonl-log-processor.ts    — Replay agent JSONL logs → agent-attributed edges + sequence detection
+                                (extends patterns from existing context-stats-monitor.ts)
+    activity-processor.ts     — Real-time event processing: agent events → edges, conflict detection
+                                (hooks into existing FileActivityTracker events)
+    weight-decay.ts           — Periodic: decay old edges, prune dead nodes
+    temporal-engine.ts        — Edge event logging, snapshot creation, trajectory analysis
+    concept-inferrer.ts       — Concept clustering (rule-based initially, model later)
+    metadata-enricher.ts      — In-process metadata enrichment using direct Anthropic API
+                                (@anthropic-ai/sdk, Haiku model, batch processing)
+  mcp/
+    supervisor-mcp-server.ts  — MCP server exposing tools to the supervisor agent:
+                                agent inspection, agent communication, KG queries,
+                                lifecycle management, escalation
+    external-mcp-server.ts    — Optional (Phase 7): expose KG queries as MCP tools
+                                for external Claude Code agents
+```
+
+> **Note:** The supervisor agent itself has no code in this directory — it's a Claude Code process launched as an AgentCard with a CLAUDE.md defining its role. Its capabilities come entirely from MCP tools hosted by `supervisor-mcp-server.ts`.
+
+---
+
+## Node Types
+
+| Type | ID Format | What It Represents |
+|------|-----------|-------------------|
+| `file` | `file:{relative_path}` | A source file in the workspace |
+| `agent` | `agent:{agent_id}` | An agent session (active, retired, or forked) |
+| `skill` | `skill:{name}` | A Claude Code skill (local or global) |
+| `concept` | `concept:{label}` | An inferred cluster of related files |
+| `intent` | `intent:{hash}` | A distinct user goal or task |
+
+## Edge Types
+
+| Edge | Between | Meaning | Source |
+|------|---------|---------|--------|
+| `imports` | file → file | Static import/require dependency | Skeleton builder (agent_id: NULL) |
+| `tests` | file → file | Test file → source file relationship | Skeleton builder (agent_id: NULL) |
+| `co_modified` | file ↔ file | Files edited together by an agent (causal) | JSONL log processor (agent-attributed) |
+| `co_investigated` | file ↔ file | Files read in sequence by an agent (discovered connection) | JSONL log processor (agent-attributed) |
+| `informed_by` | file → file | Agent read A as context before editing B | JSONL log processor (agent-attributed) |
+| `data_flows_to` | file → file | Output of one consumed by another | Inferred (needs research) |
+| `read` | agent → file | Agent read this file | Activity processor / JSONL log processor |
+| `wrote` | agent → file | Agent created or modified this file | Activity processor / JSONL log processor |
+| `struggled_with` | agent → file | Agent had high backtrack rate on this file | JSONL log processor (edit→error→re-edit cycles) |
+| `forked_from` | agent → agent | Session fork relationship | Supervisor action |
+| `continued_from` | agent → agent | Context compaction handoff | Supervisor action |
+| `conflicted_with` | agent ↔ agent | Agents touched same files with different intent | Activity processor (temporal overlap check) |
+| `used` | agent → skill | Agent invoked this skill | JSONL log processor (tool_use blocks) |
+| `encompasses` | concept → file | Concept cluster membership | Concept inferrer |
+| `targets` | intent → concept | User goal relates to this concept area | Supervisor inference |
+| `assigned_to` | intent → agent | This intent was given to this agent | Agent launch event |
+
+### Edge Weight
+
+Weight is a composite signal, not a simple counter:
+
+```
+weight = frequency × recency × significance × breadth
+```
+
+- **Frequency**: interaction count
+- **Recency**: decay factor based on `last_seen` (recent = stronger)
+- **Significance**: writes weighted higher than reads
+- **Breadth**: edges reinforced by multiple different agents are stronger
+
+Edges decay over time if not reinforced. The `weight-decay.ts` module runs periodically and reduces weights on stale edges. Dead edges (weight below threshold) are pruned.
+
+> **Open question:** What are the right decay constants? This needs tuning with real usage data. Start with a half-life of ~24 hours for dynamic edges, no decay for static edges (imports).
+
+---
+
+## Skeleton Builder
+
+The skeleton builder runs on workspace open and incrementally on file changes. It uses the existing `symbol-parser.ts` (`src/renderer/utils/symbol-parser.ts`) to extract structure from source files.
+
+**What it does:**
+1. Glob all source files in the workspace
+2. For each file, create a `file` node
+3. Parse imports → create `imports` edges to resolved targets
+4. Run AST extraction → populate structural metadata (exports, classes, functions, signatures)
+5. Detect test files by naming convention → create `tests` edges
+6. Group files by directory → create initial `concept` clusters
+
+**Incremental updates:** When a file changes (detected via existing `FileActivityTracker` or a file watcher), the builder re-parses only that file — removes its old `imports` edges, re-extracts structural metadata, and creates new edges.
+
+> **Open question:** The symbol parser currently lives in the renderer (`src/renderer/utils/`). It may need to be moved to shared or main process code so the skeleton builder can use it server-side. Alternatively, the skeleton builder could use a simpler regex-based import extractor that doesn't need the full parser.
+
+### AST-Based Structural Extraction
+
+Adapted from the `AIScriptAnalyzer` pattern in `mcp-crawl4ai-rag`, which uses Python's `ast` module to extract imports, class definitions, method signatures, and function calls into structured dataclasses. Our TypeScript equivalent (`ast-extractor.ts`) does the same for JS/TS files using a lightweight parser (e.g., `@swc/core` in parse-only mode, or TypeScript's own compiler API).
+
+**Extracted structure per file:**
+
+```typescript
+interface FileStructure {
+  imports: { source: string; symbols: string[]; isDefault: boolean }[];
+  exports: { name: string; kind: 'function' | 'class' | 'const' | 'type' | 'default' }[];
+  classes: {
+    name: string;
+    methods: { name: string; params: string[]; isAsync: boolean }[];
+    properties: string[];
+  }[];
+  functions: { name: string; params: string[]; isAsync: boolean; isExported: boolean }[];
+  typeDefinitions: { name: string; kind: 'interface' | 'type' | 'enum' }[];
+}
+```
+
+This structural data is stored in `kg_nodes.metadata` as JSON and is available without any LLM cost. It gives the supervisor visibility into *what symbols a file provides* — useful for knowledge routing ("which file defines `WorkspaceManager`?") and impact analysis ("which exported functions changed?").
+
+The key difference from `mcp-crawl4ai-rag`: that project extracts structure to validate AI-generated code against a Neo4j graph. We extract structure to give the supervisor spatial awareness of the codebase — same extraction pattern, different consumer.
+
+### Metadata Enrichment (Optional LLM Pass)
+
+The `metadata-enricher.ts` module runs as an optional, async **in-process** background job using the direct Anthropic API (`@anthropic-ai/sdk`). It adds human-readable descriptions and semantic tags to file nodes. It is **not required** for the graph to function — structural metadata from the AST extractor is always available.
+
+> **Architecture decision (2026-03-21):** The enricher uses the direct API rather than the Claude Agent SDK or a Claude Code subprocess because it's a simple batch job — read file, call Haiku, write JSON. The direct API runs entirely in-process with no subprocess overhead, gives full control over batching and prompt caching, and costs ~$0.05-0.10 per 500 files.
+
+**How it works:**
+1. Picks file nodes that have no `description` field in metadata (new or changed files)
+2. Reads the file content (or a truncated version for large files)
+3. Calls Haiku via `@anthropic-ai/sdk` with a structured prompt: "Given this file, return a JSON object with description, tags, purpose, and complexity"
+4. Merges the response into `kg_nodes.metadata`
+5. Uses prompt caching (`cache_control: { type: "ephemeral" }`) on the system prompt to reduce cost across batches
+
+**Cost control:**
+- Only runs on files that lack enrichment or whose content hash changed since last enrichment
+- Batches requests (e.g., 10 files per batch)
+- Rate-limited to avoid blocking the event loop
+- Prompt caching reduces per-file cost (system prompt + schema cached across batch)
+- Can be disabled entirely via config (`ENABLE_METADATA_ENRICHMENT=false`)
+- Total cost for a ~500 file workspace: roughly $0.05-0.10 with Haiku
+
+**What enrichment enables:**
+- Supervisor can ask "which files deal with authentication?" and get results from `tags` and `description` fields via `json_extract()` queries
+- Concept inference becomes more accurate — enriched descriptions help the concept inferrer group files that share purpose but not directory structure
+- Graph visualization can show meaningful tooltips instead of just file paths
+
+### Concept Inference
+
+Initial approach is rule-based: directory structure → concept labels. `src/main/ipc/*` becomes "IPC Bridge", `src/renderer/components/agent/*` becomes "Agent UI", etc.
+
+Later, a small model (Haiku) could analyze the graph structure and infer cross-cutting concepts that don't follow directory boundaries — files that are always co-modified but live in different directories.
+
+> **Open question:** How frequently should model-based concept inference run? It costs tokens. Probably on-demand or on a long interval (once per day, or triggered by significant graph changes).
+
+---
+
+## JSONL Log Processor
+
+Agent JSONL session logs are the richest data source for the knowledge graph. Every tool call, file read, file write, build command, and backtrack is recorded. The `jsonl-log-processor.ts` module replays these logs to extract agent-attributed edges and behavioral patterns.
+
+> **Implementation note:** The app already parses JSONL logs in `context-stats-monitor.ts` — it tracks file offsets for incremental reads, extracts `tool_use` blocks, maps tool names to operations (Read→'read', Edit/Write→'write'), and stores `FileActivity` records in SQLite. The KG log processor **extends this existing pipeline** rather than replacing it. The current parser extracts file activities; the KG extension additionally extracts tool call sequences, co-modifications, backtracks, and behavioral patterns into agent-attributed graph edges.
+
+### What the logs contain
+
+Each Claude Code session produces a JSONL file with entries for every conversation turn, tool call, and result. From a single agent session, the processor extracts:
+
+```
+Tool call: Read("src/main/ipc/bridge.ts")     → agent needed to understand this file
+Tool call: Read("src/preload/index.ts")        → agent saw a connection to preload
+Tool call: Edit("src/main/ipc/bridge.ts")      → agent modified the IPC layer
+Tool call: Read("src/main/ipc/bridge.ts")      → agent re-read its own change (verification)
+Tool call: Bash("npm run build")               → agent tested the change
+Tool call: Edit("src/preload/index.ts")        → agent updated the coupled file
+```
+
+### Edge extraction pipeline
+
+```
+Agent JSONL log
+  │
+  ├── Parse tool_use blocks
+  │     ├── Read(path)  → agent→file "read" edge
+  │     ├── Edit(path)  → agent→file "wrote" edge
+  │     ├── Write(path) → agent→file "wrote" edge
+  │     ├── Bash(cmd)   → extract file paths from command args → weaker "touched" edges
+  │     └── Skill(name) → agent→skill "used" edge
+  │
+  ├── Detect sequences (sliding window over tool calls)
+  │     ├── Read A → Read B (within N seconds)
+  │     │     → file↔file "co_investigated" edge (agent discovered a connection)
+  │     ├── Read A → Edit A → Read B → Edit B
+  │     │     → file↔file "co_modified" edge with causal ordering metadata
+  │     ├── Edit A → Bash(build/test) → error → Edit A
+  │     │     → agent→file "struggled_with" edge, weighted by cycle count
+  │     └── Read A → Edit B (where A is imported by B)
+  │           → file→file "informed_by" edge (A was context for modifying B)
+  │
+  ├── All edges tagged with agent_id + timestamp range
+  │
+  └── All edge mutations logged to kg_edge_events (temporal event log)
+```
+
+### Per-agent graph views
+
+Because edges carry an `agent_id`, the graph supports **agent-scoped projections**:
+
+- **Single agent view** (`WHERE agent_id = 'agent-3'`): "Show me what Agent 3 thinks the codebase looks like" — the files it read, the connections it discovered, the modifications it made.
+- **Agent comparison** (overlay two agent views): Where do they overlap (shared understanding)? Where do they diverge (different mental models)? Where do they conflict (both edited same files differently)?
+- **Consensus view** (`GROUP BY from_node, to_node, type HAVING COUNT(DISTINCT agent_id) >= 2`): Edges confirmed by multiple independent agents are high-confidence structural relationships that the static skeleton might not capture.
+- **Static-only view** (`WHERE agent_id IS NULL`): Pure import/test structure with no behavioral signal.
+
+### Session replay for visualization
+
+The JSONL processor can also emit a **timestamped event stream** for visualization:
+
+```typescript
+interface SessionReplayEvent {
+  timestamp: string;
+  agentId: string;
+  type: 'read' | 'write' | 'build' | 'error' | 'backtrack';
+  filePath: string;
+  metadata?: Record<string, unknown>;
+}
+```
+
+The graph visualization can "play back" an agent's session — nodes light up as the agent reads them, edges form as it discovers connections, modifications pulse as it writes. This gives the user (and supervisor) a visual narrative of how an agent approached a task.
+
+---
+
+## Activity Processor (Real-Time)
+
+While the JSONL Log Processor handles completed sessions by replaying logs, the Activity Processor handles **live events** from currently-running agents. It hooks into existing event systems — no new infrastructure needed.
+
+**Hooks into existing systems:**
+- `FileActivityTracker` → file read/write events → `read`/`wrote` edges (agent-attributed)
+- `StatusMonitor` → agent status changes → agent node updates
+- `ContextStatsMonitor` → context usage → agent node metadata
+
+**Co-modification detection:** When an agent writes to file A, the processor checks if the same agent wrote to another file within the last N seconds. If so, it creates or strengthens a `co_modified` edge between those files, attributed to that agent. Over time, files that are always changed together develop thick co-modification edges — and if multiple agents independently create the same co-modification edge, that's a very strong signal.
+
+**Conflict detection:** When two agents write to the same file (or files connected by strong edges), the processor creates a `conflicted_with` edge between the agents. The supervisor can query for active conflicts.
+
+**Event logging:** Every edge creation or weight change is recorded in `kg_edge_events` with a timestamp, enabling temporal queries and graph replay.
+
+---
+
+## Temporal Model
+
+The knowledge graph is not just a snapshot of current state — it captures the **trajectory** of a project over time. Agents come and go, connections strengthen and weaken, concepts emerge and are completed or abandoned. The temporal model lets the supervisor (and the user) understand *momentum* — is the project progressing, churning, or stalled?
+
+### Why Temporality Matters
+
+Without temporal awareness, the supervisor sees:
+> "Agent 3 is working on IPC files. Agent 5 is also touching IPC files. Conflict risk."
+
+With temporal awareness, the supervisor sees:
+> "Agent 3 finished the IPC refactor 2 hours ago (concept went active→stale). Agent 5 just started touching IPC files — this is likely follow-up work, not a conflict. The co_modified edges Agent 3 created tell Agent 5 which files usually change together."
+
+The difference: the supervisor can distinguish between **concurrent conflict** and **sequential continuation**, which is impossible without timestamps on edges and an event log.
+
+### Two Temporal Layers
+
+**Layer 1: Edge Event Log (`kg_edge_events`)**
+
+Every edge mutation is recorded as an append-only event. The current edge weight in `kg_edges` is a materialized view over this log. The event log enables:
+
+- **Point-in-time reconstruction**: "Show me the graph as it was at 3pm yesterday" — replay events up to that timestamp
+- **Rate-of-change analysis**: "Which edges are strengthening fastest?" — recent event density
+- **Backtrack detection**: Edit→error→re-edit cycles recorded as rapid strengthen-weaken-strengthen patterns
+- **Agent attribution over time**: "Agent 3 created this edge, then Agent 5 reinforced it 2 hours later"
+
+**Layer 2: Graph Snapshots (`kg_snapshots`)**
+
+Periodic snapshots capture the full graph state at meaningful moments. Two types:
+
+- **Lightweight snapshots** (frequent, ~hourly): just the `summary` JSON — node count, edge count, active agents, top concepts, hotspots. Used for trajectory trending.
+- **Full snapshots** (on agent completion, phase shifts): include `node_state` and `edge_state` — compressed JSON of the entire graph. Used for diffing.
+
+Snapshot triggers:
+- Periodic timer (configurable, default 1 hour)
+- Agent session completed (work-agent went idle/terminated)
+- Phase shift detected (significant change in which concepts are active)
+- Manual (user or supervisor requests a checkpoint)
+
+### Temporal Queries
+
+```typescript
+// "What changed in the graph recently?"
+getGraphDelta(since: string): {
+  newNodes: { id: string; type: NodeType; addedBy: string }[];
+  removedNodes: { id: string; type: NodeType; lastAgent: string }[];
+  strengthenedEdges: { from: string; to: string; type: EdgeType; weightDelta: number }[];
+  weakenedEdges: { from: string; to: string; type: EdgeType; weightDelta: number }[];
+  newConcepts: string[];
+  completedWork: string[];     // concepts that went from active → stale
+}
+
+// "What's the arc of work on this concept?"
+getConceptTimeline(conceptId: string): {
+  phases: {
+    timeRange: { from: string; to: string };
+    activeAgents: string[];
+    filesModified: string[];
+    intensity: number;          // edge events per hour
+    outcome: 'ongoing' | 'completed' | 'abandoned' | 'blocked';
+  }[];
+  currentState: 'active' | 'stale' | 'abandoned';
+  totalAgentSessions: number;
+}
+
+// "Is this project moving forward or stuck?"
+getWorkspaceTrajectory(timeRange: { from: string; to: string }): {
+  activeConcepts: number;
+  completedConcepts: number;
+  abandonedConcepts: number;
+  agentThroughput: number;     // completed agent sessions per day
+  hotspotChurn: number;        // how often the same files keep getting re-modified
+  trajectorySignal: 'progressing' | 'churning' | 'stalled' | 'wrapping_up';
+}
+
+// "Show me what one agent did over time"
+getAgentJourney(agentId: string): {
+  events: {
+    timestamp: string;
+    type: 'read' | 'wrote' | 'struggled' | 'discovered_connection';
+    target: string;            // file or edge
+    metadata?: Record<string, unknown>;
+  }[];
+  filesRead: string[];
+  filesModified: string[];
+  connectionsDiscovered: { from: string; to: string; type: EdgeType }[];
+  conceptsWorkedOn: string[];
+  duration: { start: string; end: string };
+}
+
+// "Compare two snapshots — what shifted?"
+diffSnapshots(snapshotA: number, snapshotB: number): {
+  nodesAdded: string[];
+  nodesRemoved: string[];
+  edgesStrengthened: { edge: string; before: number; after: number }[];
+  edgesWeakened: { edge: string; before: number; after: number }[];
+  conceptsActivated: string[];
+  conceptsCompleted: string[];
+  conceptsAbandoned: string[];
+}
+```
+
+### Temporal Decay Revisited
+
+The existing `weight-decay.ts` module now operates on the temporal event log rather than directly mutating edge weights:
+
+1. Decay tick fires (configurable interval, default every 30 minutes)
+2. For each dynamic edge, compute time since `last_seen`
+3. Apply decay function: `new_weight = weight × e^(-λ × hours_since_last_seen)`
+4. If weight drops below threshold → log a `pruned` event, mark edge inactive
+5. Record the decay as an event in `kg_edge_events` (type: `decayed`)
+6. Static edges (imports, tests) are exempt from decay — they only change when the skeleton builder re-parses
+
+Decay constants (starting points, need tuning):
+- Dynamic edges (read/wrote/co_modified): half-life ~24 hours
+- Agent-discovered structural edges (co_investigated, informed_by): half-life ~72 hours
+- Conflict edges: half-life ~4 hours (conflicts are urgent or irrelevant)
+- Struggled_with edges: half-life ~48 hours (useful for the supervisor to know what was hard recently)
+
+### How the Supervisor Uses Temporality
+
+The temporal model gives the supervisor several new capabilities:
+
+- **Sequential vs concurrent detection**: Two agents touching the same files is only a conflict if they overlap in time. If Agent 3 finished 2 hours ago and Agent 5 just started, the supervisor routes Agent 5 to Agent 3's discovered connections instead of flagging a conflict.
+- **Completion inference**: A concept area where edge activity has dropped to near-zero after a period of high activity → work is likely done there. The supervisor can mark it complete or ask the user to verify.
+- **Stall detection**: A concept area where agents keep reading the same files but not writing → investigation loop, possibly stuck. The supervisor can intervene.
+- **Trajectory briefing**: On workspace open, the supervisor can summarize "here's what changed since you last looked" using `getGraphDelta` and `getWorkspaceTrajectory`.
+
+---
+
+## Supervisor Query Tools (MCP)
+
+The supervisor is a Claude Code agent with **MCP tools** that bridge to the knowledge graph (see `SUPERVISOR_AGENT_PROPOSAL.md`). While the supervisor *can* read files as a Claude Code agent, its CLAUDE.md constrains it to prefer graph queries for structural awareness — bounded, token-efficient, and pre-structured. The MCP server in the dashboard's main process hosts these tools and calls the `KnowledgeGraph` class methods directly.
+
+### Design Philosophy: Tiered Workup
+
+Every MCP query tool returns bounded output at the cheapest level first. The supervisor asks for more detail only when needed.
+
+```
+Level 0: Index/listing    (~50-100 tokens)
+Level 1: Summary          (~200-500 tokens)
+Level 2: Detailed view    (~1500-3000 tokens)
+Level 3: Deep inspection  (~3000+ tokens, capped)
+```
+
+### Graph-Specific MCP Tools
+
+These are the MCP tools the supervisor agent calls to query the knowledge graph. They are hosted by the MCP server in the dashboard's main process and complement the agent-awareness MCP tools defined in the supervisor proposal (list_agents, get_context_digest, send_message_to_agent, etc.).
+
+```typescript
+// "What's connected to this file and how?"
+getFileNeighbors(filePath: string, options?: {
+  edgeTypes?: EdgeType[];     // filter by relationship type
+  minWeight?: number;         // only strong connections
+  depth?: number;             // default 1, max 3
+  maxResults?: number;        // default 10
+}): {
+  nodes: { id: string; type: NodeType; label: string }[];
+  edges: { from: string; to: string; type: EdgeType; weight: number }[];
+}
+
+// "Which files change together?"
+getCoModificationClusters(options?: {
+  minClusterWeight?: number;
+  maxClusters?: number;       // default 5
+}): {
+  cluster: string[];          // file paths
+  totalWeight: number;
+  lastModified: string;
+  primaryAgents: string[];    // which agents drove this pattern
+}[]
+
+// "Where are the hotspots?"
+getHotspots(timeRange?: { from: string; to: string }): {
+  filePath: string;
+  weightedDegree: number;
+  readCount: number;
+  writeCount: number;
+  agentCount: number;
+  conflictRisk: 'low' | 'medium' | 'high';
+}[]
+
+// "What concept areas exist and what's their status?"
+getConceptMap(): {
+  concept: string;
+  files: string[];
+  activeAgents: string[];
+  lastActivity: string;
+  healthSignal: 'active' | 'stale' | 'abandoned';
+}[]
+
+// "If I change this file, what's the blast radius?"
+getImpactRadius(filePath: string): {
+  directDependents: string[];
+  coModifiedFiles: string[];
+  affectedConcepts: string[];
+  activeAgentsInRadius: string[];
+  estimatedScope: 'small' | 'medium' | 'large';
+}
+
+// "Are any agents working on coupled files?"
+getConflictRisks(): {
+  agents: [string, string];
+  sharedFiles: string[];
+  couplingWeight: number;
+  risk: 'low' | 'medium' | 'high';
+}[]
+
+// "Which agents have touched this file?"
+getFileHistory(filePath: string): {
+  agentId: string;
+  agentTitle: string;
+  operations: { type: string; timestamp: string; description: string }[];
+}[]
+
+// "What's the path between two nodes?"
+getPath(fromNode: string, toNode: string, maxDepth?: number): {
+  path: { id: string; type: NodeType; label: string }[];
+  edges: { type: EdgeType; weight: number }[];
+} | null
+
+// "Which files match this description or purpose?"
+// Queries enriched metadata — falls back to structural metadata if enrichment unavailable
+searchByMetadata(query: {
+  tags?: string[];             // match any of these tags
+  purpose?: string;            // e.g., 'bridge', 'config', 'test'
+  descriptionContains?: string;// substring match on description
+  exportsSymbol?: string;      // file exports this symbol name
+  language?: string;           // filter by language
+}): {
+  filePath: string;
+  description: string | null;
+  tags: string[];
+  matchedOn: string;           // which field matched
+}[]
+
+// "What does this file do and what does it expose?"
+// Returns structural + enriched metadata for a single node
+getNodeDetail(nodeId: string): {
+  id: string;
+  type: NodeType;
+  label: string;
+  metadata: Record<string, unknown>;  // full metadata blob
+  edges: { type: EdgeType; direction: 'in' | 'out'; target: string; weight: number }[];
+  concepts: string[];                  // concept clusters this node belongs to
+}
+
+// ─── Temporal Query Tools ───────────────────────────────
+
+// "What changed in the graph recently?"
+getGraphDelta(since: string): {
+  newNodes: { id: string; type: NodeType; addedBy: string }[];
+  removedNodes: { id: string; type: NodeType; lastAgent: string }[];
+  strengthenedEdges: { from: string; to: string; type: EdgeType; weightDelta: number }[];
+  weakenedEdges: { from: string; to: string; type: EdgeType; weightDelta: number }[];
+  newConcepts: string[];
+  completedWork: string[];     // concepts that went from active → stale
+}
+
+// "What's the arc of work on this concept?"
+getConceptTimeline(conceptId: string): {
+  phases: {
+    timeRange: { from: string; to: string };
+    activeAgents: string[];
+    filesModified: string[];
+    intensity: number;          // edge events per hour
+    outcome: 'ongoing' | 'completed' | 'abandoned' | 'blocked';
+  }[];
+  currentState: 'active' | 'stale' | 'abandoned';
+  totalAgentSessions: number;
+}
+
+// "Is this project moving forward or stuck?"
+getWorkspaceTrajectory(timeRange: { from: string; to: string }): {
+  activeConcepts: number;
+  completedConcepts: number;
+  abandonedConcepts: number;
+  agentThroughput: number;     // completed agent sessions per day
+  hotspotChurn: number;        // how often the same files keep getting re-modified
+  trajectorySignal: 'progressing' | 'churning' | 'stalled' | 'wrapping_up';
+}
+
+// "Show me what one agent did over time"
+getAgentJourney(agentId: string): {
+  events: {
+    timestamp: string;
+    type: 'read' | 'wrote' | 'struggled' | 'discovered_connection';
+    target: string;            // file or edge
+    metadata?: Record<string, unknown>;
+  }[];
+  filesRead: string[];
+  filesModified: string[];
+  connectionsDiscovered: { from: string; to: string; type: EdgeType }[];
+  conceptsWorkedOn: string[];
+  duration: { start: string; end: string };
+}
+
+// "Compare two points in time — what shifted?"
+diffSnapshots(snapshotA: number, snapshotB: number): {
+  nodesAdded: string[];
+  nodesRemoved: string[];
+  edgesStrengthened: { edge: string; before: number; after: number }[];
+  edgesWeakened: { edge: string; before: number; after: number }[];
+  conceptsActivated: string[];
+  conceptsCompleted: string[];
+  conceptsAbandoned: string[];
+}
+```
+
+### Example: Supervisor Using The Graph
+
+**Scenario 1: Anomaly detection with structural awareness**
+```
+Event: Agent 3 went idle after modifying bridge.ts
+
+Supervisor:
+  1. getFileNeighbors("src/main/ipc/bridge.ts", { depth: 1 })
+     → sees bridge.ts is strongly co_modified with preload/index.ts
+     → Agent 3 didn't touch preload — anomalous
+
+  2. getConflictRisks()
+     → no other agents are in the IPC area
+
+  3. Decision: "Agent 3, you updated bridge.ts but the preload
+     script usually changes alongside it. Should you update
+     preload/index.ts too?"
+```
+
+**Scenario 2: Temporal awareness prevents false conflict**
+```
+Event: Agent 5 started reading IPC-related files
+
+Supervisor:
+  1. getConflictRisks()
+     → Agent 5 is in the IPC area, but Agent 3 also has edges there
+
+  2. getAgentJourney("agent-3")
+     → Agent 3 finished 2 hours ago, session is terminated
+     → Agent 3's co_modified edges show bridge.ts + preload/index.ts
+
+  3. Decision: NOT a conflict (sequential, not concurrent).
+     Route Agent 5 to Agent 3's discovered connections:
+     "Agent 5, a previous agent found that bridge.ts and
+     preload/index.ts are tightly coupled. Check both."
+```
+
+**Scenario 3: Trajectory briefing on workspace open**
+```
+Event: User opens dashboard after being away for 4 hours
+
+Supervisor:
+  1. getGraphDelta(since: "4 hours ago")
+     → 2 agents completed sessions
+     → IPC concept area: 12 edge events, now stale (activity dropped)
+     → Database concept area: 3 edge events, still active (Agent 7 working)
+     → New concept cluster emerged: "theme-system" (3 new files)
+
+  2. getWorkspaceTrajectory({ from: "4h ago", to: "now" })
+     → trajectorySignal: 'progressing'
+     → 2 concepts completed, 1 new concept activated, 0 stalled
+
+  3. Briefing: "While you were away: IPC refactor appears complete
+     (2 agents finished, activity wound down). Agent 7 is still
+     working on database changes. A new 'theme-system' area
+     emerged with 3 new files. Overall: progressing."
+```
+
+---
+
+## MCP Servers: Internal and External
+
+### Internal MCP Server (Phase 3-4) — `supervisor-mcp-server.ts`
+
+The **internal MCP server** runs in the dashboard's main process and exposes tools to the supervisor agent. It provides both agent management tools (list agents, send messages, lifecycle) and knowledge graph query tools. This is the primary consumer of the KG.
+
+The supervisor agent connects to this MCP server when launched. The MCP server has direct access to the supervisor class, database, and knowledge graph — MCP tool handlers are thin wrappers around existing methods.
+
+See `SUPERVISOR_AGENT_PROPOSAL.md` for the full list of agent management MCP tools. The KG-specific tools added in Phase 4 are the graph query tools defined in the "Supervisor Query Tools (MCP)" section above.
+
+### External MCP Server (Phase 7) — `external-mcp-server.ts`
+
+Adapted from the `mcp-crawl4ai-rag` project's FastMCP server pattern, the **external MCP server** exposes KG query tools to external Claude Code instances (or other MCP-compatible agents) that aren't managed by the dashboard. This allows any Claude Code agent working in a terminal to query the workspace graph.
+
+**Use case:** A Claude Code agent working in a terminal wants to understand the workspace structure before making changes. Instead of reading dozens of files, it queries the knowledge graph MCP server:
+
+```
+Agent → MCP call: searchByMetadata({ tags: ["ipc"] })
+       ← Returns: 4 files tagged "ipc" with descriptions
+
+Agent → MCP call: getImpactRadius("src/main/ipc/bridge.ts")
+       ← Returns: 3 direct dependents, 2 co-modified files, 1 active agent in radius
+```
+
+**Implementation (`external-mcp-server.ts`):**
+- Wraps the same `KnowledgeGraph` query methods the supervisor uses via the internal MCP server
+- Runs as a local STDIO or SSE server (following the `mcp-crawl4ai-rag` transport pattern)
+- Started on-demand when enabled in dashboard settings
+- **Read-only** — external agents can query but not modify the graph, and cannot access agent management tools (send_message, launch, stop)
+- Each query tool maps 1:1 to an internal MCP tool (same bounded output, same tiered workup)
+
+**Available external MCP tools:**
+
+| Tool | Maps To |
+|------|---------|
+| `kg_file_neighbors` | `getFileNeighbors()` |
+| `kg_hotspots` | `getHotspots()` |
+| `kg_impact_radius` | `getImpactRadius()` |
+| `kg_concept_map` | `getConceptMap()` |
+| `kg_search_metadata` | `searchByMetadata()` |
+| `kg_node_detail` | `getNodeDetail()` |
+| `kg_conflict_risks` | `getConflictRisks()` |
+| `kg_graph_delta` | `getGraphDelta()` |
+| `kg_concept_timeline` | `getConceptTimeline()` |
+| `kg_workspace_trajectory` | `getWorkspaceTrajectory()` |
+| `kg_agent_journey` | `getAgentJourney()` |
+
+This is a Phase 7 feature. The internal supervisor MCP server (Phase 3-4) comes first and validates the query tool designs before exposing them externally.
+
+---
+
+## Dashboard Visualization
+
+### Placement: MainContent Toggle
+
+The knowledge graph lives inside the main content area as an alternative view to the agent grid. A toggle in the workspace header switches between them.
+
+```
+┌──────┬─[Agents]─[⬡ Graph]────┬──────────┐
+│      │                        │ Detail   │
+│ Side │   Cytoscape.js graph   │ Panel    │
+│ bar  │   filling center area  │ (shows   │
+│      │                        │  selected│
+│      │                        │  node    │
+│      │                        │  details)│
+├──────┴────────────────────────┴──────────┤
+│              Terminal Panel               │
+└──────────────────────────────────────────┘
+```
+
+**Workspace scoping:** When you toggle to the graph view, it opens scoped to whatever workspace is currently selected in the sidebar. A "zoom out" control (or breadcrumb) lets you pull back to see all workspaces in the dashboard at once. Workspaces may appear as separate clusters or may have cross-workspace connections if agents or files bridge them.
+
+**Interaction with existing panels:**
+- **Detail Panel** becomes the graph inspector. Click a node → Detail Panel shows that node's properties, edges, connected agents, concept membership. This reuses the existing Detail Panel infrastructure with a new content component for graph node details.
+- **File Viewer** integration: double-click a file node → opens it in the File Viewer (same as today's file opening flow).
+- **Agent selection**: click an agent node → selects it in the sidebar/grid, Detail Panel shows agent info as normal. The graph highlights that agent's file neighborhood.
+- **Terminal Panel** is unaffected — remains available below the graph.
+
+### Visual Language
+
+**Edge thickness = connection strength:**
+```
+━━━━━━  weight > 0.8  (always modified together, strong import chain)
+────    weight 0.4-0.8 (frequently related)
+╌╌╌╌    weight < 0.4   (occasional connection, fading)
+```
+
+**Edge color = relationship type:**
+```
+blue    = imports (static, structural)
+orange  = co_modified (behavioral, learned from agents)
+red     = conflict risk (multiple agents writing)
+green   = agent → file (read/wrote)
+gray    = weak/old connections
+```
+
+**Node size = activity level (weighted degree).** More connections and more recent activity = larger node. Hotspot files are visually prominent.
+
+**Node color/shape = type:**
+```
+⬡ hexagon, blue   = file node
+◆ diamond, green   = active agent
+◇ diamond, gray    = retired/dormant agent
+▣ rounded rect, purple = concept cluster (expandable/collapsible)
+◉ circle, yellow   = skill
+○ circle, white    = user intent
+```
+
+**Concept clusters** are compound nodes (Cytoscape supports this natively) — a concept like "IPC Bridge" visually wraps its member file nodes. Click to expand/collapse.
+
+### Graph Controls
+
+- **Search bar**: type a filename, agent name, or concept → graph centers on it with neighborhood highlighted
+- **Edge type toggles**: show/hide imports, co_modified, co_investigated, agent activity, etc.
+- **Agent filter**: select one or more agents → show only their edges (agent-scoped projection). "All agents" shows the merged graph. "Static only" shows skeleton edges.
+- **Agent comparison mode**: select two agents → overlay their edge sets with different colors to see shared understanding vs divergence
+- **Weight threshold slider**: hide weak connections to reduce noise
+- **Time range slider**: only show activity from a time window (graph animates as you drag, powered by `kg_edge_events`)
+- **Heatmap toggle**: color nodes by recency — cool blue (stale) through hot red (active now)
+- **Session replay**: select an agent → play back their session as a graph animation (nodes light up, edges form, modifications pulse)
+- **Layout switcher**: force-directed (default), hierarchical, circular
+- **Zoom-out button**: expand from single workspace view to all-workspaces view
+
+### Technology
+
+**Cytoscape.js** for the graph rendering:
+- Purpose-built for network/knowledge graph visualization
+- Compound nodes (concept clusters that contain file nodes)
+- Edge thickness, color mapping are native features
+- Force-directed layout via `cytoscape-fcose` extension
+- Pan, zoom, box select, tap-to-inspect built in
+- ~300KB + ~40KB for layout extension
+
+**Renderer components:**
+```
+src/renderer/components/
+  knowledge-graph/
+    KnowledgeGraphView.tsx     — MainContent mode, full graph explorer
+    GraphCanvas.tsx            — Cytoscape wrapper, reusable core
+    GraphControls.tsx          — Filters, search, layout, agent filter, zoom-out toggle
+    GraphTimeline.tsx          — Time range slider + session replay controls
+    AgentFilterPanel.tsx       — Agent selection, comparison mode, static-only toggle
+    GraphTooltip.tsx           — Hover details on nodes/edges
+    NodeInspector.tsx          — Detail Panel content for selected graph nodes
+    TrajectoryPanel.tsx        — Workspace trajectory dashboard (concept completion over time)
+    useGraphData.ts            — Hook: fetches graph from main, subscribes to updates
+    useTemporalGraph.ts        — Hook: temporal queries, snapshot diffs, agent journeys
+    graph-styles.ts            — Cytoscape stylesheet (theme-matched to dashboard)
+```
+
+**IPC bridge:** New handlers in `src/main/ipc-handlers.ts` to expose graph queries to the renderer. Same pattern as existing workspace/agent handlers.
+
+---
+
+## Cross-Workspace View
+
+When the user zooms out from a single workspace, the graph shows all workspaces as distinct clusters. Each workspace is a compound node containing its own file/agent/concept subgraph.
+
+Potential cross-workspace signals:
+- Same user intent spanning multiple workspaces ("building a frontend that consumes the API")
+- Shared dependencies (both workspaces import from a common library)
+- Agent activity patterns (user frequently switches between these two workspaces)
+
+> **This area needs significant further design.** Cross-workspace relationships are speculative at this stage. The single-workspace graph should be built and validated first. Cross-workspace is a later phase that may require the Machine Manager (see supervisor proposal) to provide the connecting intelligence.
+
+---
+
+## Relationship to Supervisor Proposal
+
+The knowledge graph is a **data layer** that the supervisor queries but does not own. The graph is maintained by pure-code processes (skeleton builder, JSONL log processor, activity processor) that run as part of the dashboard daemon regardless of whether a supervisor is active.
+
+The supervisor is a **Claude Code agent running as an AgentCard** in the workspace (see `SUPERVISOR_AGENT_PROPOSAL.md`). It queries the graph through **MCP tools** hosted by an MCP server in the dashboard's main process. The metadata enricher runs **in-process** using the direct Anthropic API (`@anthropic-ai/sdk`) — no subprocess overhead.
+
+```
+Supervisor Agent (Claude Code process, AgentCard)
+  │  queries via MCP tools
+  │  reads temporal trajectory via MCP tools
+  │  receives events from dashboard via sendInput()
+  │  sends directives to work-agents via send_message_to_agent MCP tool
+  │
+  ▼
+MCP Server (dashboard main process)
+  │  bridges MCP tool calls to KnowledgeGraph class methods
+  │  returns bounded, structured output at tiered workup levels
+  │
+  ▼
+Knowledge Graph (SQLite — same sql.js database)
+  ▲           ▲            ▲            ▲
+  │           │            │            │
+Skeleton    JSONL Log    Activity     Metadata
+Builder     Processor    Processor    Enricher
+  │           │            │            │
+Source      Completed    Live agent    Direct API
+Files       session      events       (@anthropic-ai/sdk)
+            JSONL logs   (existing     Haiku, in-process
+            (extends     FileActivity  batch job
+            existing     Tracker,
+            context-     StatusMonitor)
+            stats-
+            monitor.ts)
+```
+
+The supervisor's MCP tools return bounded, structured output at the appropriate workup level. The supervisor never sees raw graph data — it gets pre-formatted summaries. Each KG query tool maps to a method on the `KnowledgeGraph` class, wrapped by the MCP server with output formatting and token budgets.
+
+### What The Graph Gives The Supervisor That It Didn't Have Before
+
+Without the graph, the supervisor answers: **"What happened?"** (agent X modified file Y)
+
+With the graph, the supervisor answers: **"What does it mean?"** (agent X modified file Y, which is tightly coupled with file Z that agent X didn't touch — this is anomalous and likely incomplete work)
+
+With temporality, the supervisor answers: **"Where is this going?"** (the IPC concept area has had 3 agents work on it over the past 6 hours, activity is declining, remaining work is isolated to test files — this is nearly complete)
+
+Key supervisor capabilities enabled by the graph:
+- **Conflict detection**: two agents working on coupled files simultaneously (temporal: only flagged if overlapping in time)
+- **Impact prediction**: estimating blast radius before approving a task
+- **Knowledge routing**: knowing which forked session has context for a given concept area (temporal: which agent *most recently* worked there)
+- **Anomaly detection**: an agent modifying one file in a co-modification cluster but not the others
+- **Skill effectiveness**: tracking which skills touch which files and how often they cause backtracks
+- **Trajectory briefing**: summarizing what changed since the user last looked, which concepts are progressing vs stalled
+- **Completion inference**: detecting when a concept area's activity has wound down → flagging it as likely complete
+- **Stall detection**: agents reading the same files repeatedly without writing → possible investigation loop, supervisor can intervene
+- **Agent journey review**: understanding *how* an agent approached a task by replaying its edge-creation sequence
+
+---
+
+## Implementation Path
+
+### Phase 1: Schema + Skeleton Builder + AST Extraction
+- Add `kg_nodes`, `kg_edges`, `kg_concepts`, `kg_edge_events`, `kg_snapshots` tables to `database.ts`
+- Build `KnowledgeGraph` class with CRUD operations, core queries, and temporal queries
+- Build `SkeletonBuilder` using existing symbol parser for import edges (agent_id: NULL)
+- Build `ast-extractor.ts` — extract exports, classes, functions, type definitions into node metadata
+- Rule-based concept clustering from directory structure
+- Validate by querying the graph (including `json_extract()` on metadata) from the main process
+
+### Phase 2: JSONL Log Processor + Activity Processor
+- Build `jsonl-log-processor.ts` — replay completed agent session logs into agent-attributed edges
+- Implement sequence detection: co_modified, co_investigated, informed_by, struggled_with
+- Hook `activity-processor.ts` into live `FileActivityTracker` events for real-time edges
+- Build `temporal-engine.ts` — edge event logging, basic weight decay
+- Conflict detection with temporal overlap checking (concurrent vs sequential)
+
+### Phase 3: Dashboard Visualization
+- Add Cytoscape.js dependency
+- Build `GraphCanvas.tsx` and `KnowledgeGraphView.tsx`
+- MainContent toggle between Agent Grid and Graph
+- Node click → Detail Panel integration (show structural metadata: exports, classes, functions)
+- **Agent filter control** — toggle to show only one agent's edges (agent-scoped projection)
+- Basic controls (search, edge type filters, weight threshold)
+
+### Phase 4: Supervisor Integration via MCP Tools
+- Build `supervisor-mcp-server.ts` — MCP server hosting KG query tools for the supervisor agent
+- Add KG MCP tools: `query_knowledge_graph`, `get_impact_radius`, `get_conflict_risks`, `get_hotspots`, `get_concept_map`
+- Add metadata query tools: `search_by_metadata`, `get_node_detail`
+- Add temporal query tools: `get_graph_delta`, `get_workspace_trajectory`, `get_agent_journey`
+- Wire MCP server into the supervisor agent's launch configuration
+- Test supervisor decision-making with graph context + temporal awareness vs. without
+- Tune MCP tool output formats for token efficiency (bounded responses, tiered workup)
+- **Depends on:** Supervisor Phase 3 (MCP server + agent card infrastructure) from `SUPERVISOR_AGENT_PROPOSAL.md`
+
+### Phase 5: Metadata Enrichment (Direct API)
+- Build `metadata-enricher.ts` — in-process enrichment using `@anthropic-ai/sdk` with Haiku
+- Background processing with cost controls (batching, prompt caching, rate limiting, content hash dedup)
+- Enriched metadata improves concept inference and supervisor KG query results
+- Config toggle: `ENABLE_METADATA_ENRICHMENT`
+
+### Phase 6: Temporal Visualization + Session Replay
+- Time-range slider with graph animation (scrub through graph history using `kg_edge_events`)
+- Agent journey replay — play back an agent's session as graph animation
+- Phase boundary markers on timeline (detected via snapshot diffs)
+- Heatmap mode — color nodes by recency (cool blue → hot red)
+- Snapshot-based trajectory dashboard (concept completion over time)
+
+### Phase 7: External MCP Server + Cross-Workspace + Advanced Features
+- Build `external-mcp-server.ts` — expose KG query tools as MCP tools for external Claude Code agents
+  (distinct from `supervisor-mcp-server.ts` which serves the internal supervisor)
+- Support STDIO and SSE transports (following `mcp-crawl4ai-rag` pattern)
+- Model-based concept inference via direct API (Haiku, informed by enriched metadata)
+- Zoom-out to all-workspaces view
+- Cross-workspace relationship inference
+- Real-time activity animation (edge pulses, node glows)
+
+---
+
+## Open Questions & Areas For Further Research
+
+These are explicitly deferred — important to think through but not blocking the core design:
+
+### Graph Infrastructure
+
+1. **Decay constants.** What's the right half-life for each edge type? Starting points: dynamic edges ~24h, structural discoveries ~72h, conflicts ~4h, struggled_with ~48h. Needs tuning with real usage data. The temporal event log makes it possible to experiment with different decay functions retroactively.
+
+2. **Symbol parser placement.** Currently in `src/renderer/utils/`. The skeleton builder runs in the main process. Options: move to shared, duplicate logic, or use a simpler regex-based extractor for main process. The AST extractor (`ast-extractor.ts`) is a new module in main — it may subsume or replace parts of the existing symbol parser.
+
+3. **AST parser choice.** The `ast-extractor.ts` needs a JS/TS parser that runs in Node.js (main process). Options: TypeScript compiler API (heavy but complete), `@swc/core` in parse-only mode (fast, good TS support), `acorn` (lightweight but JS-only). The `mcp-crawl4ai-rag` project uses Python's built-in `ast` module which has no equivalent in Node — we need to choose a third-party parser. `@swc/core` is the likely best fit (fast, supports TS, available as native addon).
+
+4. **Graph scale.** A large monorepo could have thousands of files. Does the visualization still work? Does SQLite still perform? The temporal event log grows linearly with agent activity — may need periodic compaction (roll up old events into summary records). Metadata enrichment cost also scales linearly with file count — may need to prioritize high-activity files.
+
+5. **Data freshness.** The skeleton (static layer) can become stale if files change outside of agent activity (manual edits, git pulls). Need a file watcher or git hook to trigger re-scans. The existing `FileActivityTracker` only tracks agent-driven changes. Metadata enrichment should track a content hash to know when re-enrichment is needed.
+
+### Agent & Enricher Architecture
+
+6. **Supervisor MCP server design.** The supervisor is a Claude Code agent with MCP tools bridging to the dashboard. Key questions: What's the latency of MCP tool calls from a Claude Code process back to the host Electron process? Can the MCP server handle concurrent tool calls if the supervisor issues multiple queries? How does the MCP server lifecycle tie to the supervisor agent's lifecycle (start when supervisor launches, stop when it stops)?
+
+7. **Enricher triggering.** The enricher runs in-process using the direct Anthropic API. When should it fire? Options: on file watcher events (chokidar), when the skeleton builder creates/updates file nodes, or on a periodic sweep. The enricher should only run when there's work to do (new/changed files with no enrichment or stale content hash). Need a simple job queue or debounced trigger.
+
+8. **Enrichment model choice.** Haiku is the default for metadata enrichment, but the prompt is simple enough that even smaller/cheaper models could work. The `mcp-crawl4ai-rag` project uses GPT-4 nano for its contextual embeddings — a similar tier would suffice here. Should be configurable.
+
+9. **Supervisor model choice.** The supervisor runs as a Claude Code agent — its model is set in the agent's launch config or CLAUDE.md. A cost-effective model (Haiku) handles 90% of routine decisions; the supervisor's CLAUDE.md could instruct it to flag events that need deeper reasoning for human review rather than trying to reason about them itself. Need to profile real decision quality vs cost.
+
+### JSONL Log Processing
+
+10. **Log processing timing.** Should logs be processed in real-time (streaming as the agent writes) or after session completion (batch replay)? Real-time gives the supervisor immediate awareness but adds complexity. Batch is simpler but introduces lag. Probably both: the Activity Processor handles live events from `FileActivityTracker`, and the JSONL Log Processor does a full replay on session completion to catch sequences and patterns missed by the real-time processor.
+
+11. **Sequence detection window.** The JSONL log processor uses a sliding window to detect tool call sequences (Read→Read = co_investigated, Read→Edit→Read→Edit = co_modified). What's the right window size? Too small and you miss connections. Too large and you create false correlations. Probably time-based (30-60 seconds) rather than count-based.
+
+12. **Log volume.** A long agent session can produce thousands of tool calls. Processing all of them into edges could create a very noisy graph. May need significance thresholds — e.g., only create `co_investigated` edges if the same file pair is read in sequence at least twice, or weight by how close together the reads were.
+
+### Temporality
+
+13. **Event log compaction.** The `kg_edge_events` table grows indefinitely. Need a compaction strategy: roll up events older than N days into summary records (e.g., "edge X had 47 events in March, net weight change +0.3"). Keep full resolution for recent history (last 7 days?), summaries for older history.
+
+14. **Snapshot storage.** Full snapshots (with `node_state` and `edge_state`) could be large for big workspaces. Compressed JSON helps but still grows. How many full snapshots to retain? Probably keep the last N full snapshots and delete the rest, retaining only lightweight summary snapshots for older history.
+
+15. **Phase detection.** The snapshot trigger `phase_shift` requires detecting when the graph structure has changed significantly. What's the right heuristic? Options: number of new/removed edges exceeds threshold, active concept set changed, new agent entered a previously-quiet concept area. This is probably a supervisor judgment call rather than a hard rule.
+
+16. **Trajectory signals.** The `trajectorySignal` in `getWorkspaceTrajectory` ('progressing', 'churning', 'stalled', 'wrapping_up') needs well-defined criteria. Suggestions: 'progressing' = new concepts being activated, completion rate > churn rate; 'churning' = same files being re-modified repeatedly without completion; 'stalled' = low edge event rate across all concepts; 'wrapping_up' = concepts completing faster than new ones activating.
+
+### Visualization & UX
+
+17. **Cross-workspace semantics.** What does it mean for two workspaces to be "connected"? Through shared user intent? Shared files? This is the Machine Manager's domain and needs its own design pass.
+
+18. **Real-time animation.** Visually compelling but potentially distracting. Should be toggleable. Need to figure out the right event pipeline — probably WebSocket from main to renderer for live edge/node updates.
+
+19. **Agent journey replay UX.** Playing back an agent's session as a graph animation could be very powerful but needs careful UX. Speed control? Ability to pause and inspect? Jump to specific moments? This is Phase 6 territory but worth thinking about early.
+
+20. **Visualization library alternatives.** Cytoscape.js is the current recommendation. React Flow was considered but is better suited for flowcharts than network graphs. D3-force offers maximum control but at 3-5x development cost. Sigma.js is overkill for this scale. Decision should be revisited after prototyping with Cytoscape.
+
+21. **Privacy/scope.** If the supervisor can query the graph, and the graph contains file paths and agent activity, is there anything sensitive that should be filtered? Probably not for local-only usage, but worth considering if the dashboard ever supports remote workspaces. The MCP server mode (Phase 7) makes this more relevant — external agents querying the graph should respect the same workspace scoping as the supervisor.

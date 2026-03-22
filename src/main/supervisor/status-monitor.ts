@@ -37,12 +37,13 @@ export class StatusMonitor extends EventEmitter {
       try {
         const newStatus = await this.inferStatus(agent);
         if (newStatus && newStatus !== agent.status) {
-          // Debounce: hold a status for at least 5 seconds before allowing change
+          // Debounce: hold a status for a short period to prevent rapid flipping
           const holdUntil = this.statusHoldUntil.get(agent.id) || 0;
           if (Date.now() < holdUntil) continue;
 
           updateAgentStatus(agent.id, newStatus);
-          this.statusHoldUntil.set(agent.id, Date.now() + 5000);
+          // Shorter hold for idle transitions (agent finished), longer for working
+          this.statusHoldUntil.set(agent.id, Date.now() + (newStatus === 'idle' ? 1500 : 2500));
           addEvent(agent.id, 'status_change', JSON.stringify({ from: agent.status, to: newStatus }));
           this.emit('statusChanged', { agentId: agent.id, status: newStatus });
         }

@@ -37,9 +37,11 @@ function nextTabId(): string {
 interface DashboardState {
   workspaces: Workspace[];
   agents: Agent[];
+  supervisorAgent: Agent | null;
   selectedWorkspaceId: string | null;
   selectedAgentId: string | null;
   terminalAgentId: string | null;
+  terminalPinned: boolean;
   health: HealthCheck | null;
   loading: boolean;
   detailPane: 0 | 1 | 2;
@@ -66,6 +68,7 @@ interface DashboardState {
   selectWorkspace: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
   setTerminalAgent: (id: string | null) => void;
+  toggleTerminalPinned: () => void;
   updateAgent: (agent: Agent) => void;
   removeAgent: (id: string) => void;
   deleteAgent: (id: string) => Promise<void>;
@@ -77,6 +80,8 @@ interface DashboardState {
   updateContextStats: (stats: ContextStats) => void;
   forkAgent: (id: string) => Promise<Agent | null>;
   queryAgent: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult | null>;
+  loadSupervisor: (workspaceId: string) => Promise<void>;
+  launchSupervisor: (workspaceId: string) => Promise<Agent | null>;
 
   // Tab actions
   openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string) => void;
@@ -84,6 +89,9 @@ interface DashboardState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   closeAllTabs: () => void;
+  hideFileViewer: () => void;
+  showFileViewer: () => void;
+  toggleFileViewer: () => void;
 
   // Backward-compat shims
   openFileViewer: (filePath: string, agentId: string) => void;
@@ -93,9 +101,11 @@ interface DashboardState {
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   workspaces: [],
   agents: [],
+  supervisorAgent: null,
   selectedWorkspaceId: null,
   selectedAgentId: null,
   terminalAgentId: null,
+  terminalPinned: false,
   health: null,
   loading: false,
   detailPane: 2,
@@ -164,13 +174,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   openDirectoryTab: (rootDirectory, pathType) => {
-    const { openTabs } = get();
-    // Check if a directory-only tab already exists for this root
-    const existing = openTabs.find(
-      (t) => t.filePath === '' && t.rootDirectory === rootDirectory
-    );
-    if (existing) {
-      set({ activeTabId: existing.id, fileViewerOpen: true });
+    const { openTabs, activeTabId } = get();
+    // If any tabs already exist for this root, just re-show the file viewer
+    // and keep the current active tab if it belongs to this root
+    const tabsForRoot = openTabs.filter((t) => t.rootDirectory === rootDirectory);
+    if (tabsForRoot.length > 0) {
+      const currentActive = tabsForRoot.find((t) => t.id === activeTabId);
+      set({ activeTabId: currentActive?.id || tabsForRoot[0].id, fileViewerOpen: true });
       return;
     }
 
@@ -220,6 +230,30 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   closeAllTabs: () => set({ openTabs: [], activeTabId: null, fileViewerOpen: false }),
 
+  // Hide file viewer without destroying tabs (for back navigation)
+  hideFileViewer: () => set({ fileViewerOpen: false }),
+
+  // Show file viewer — restore existing tabs or open workspace directory
+  showFileViewer: () => {
+    const { openTabs, selectedWorkspaceId, workspaces } = get();
+    if (openTabs.length > 0) {
+      set({ fileViewerOpen: true });
+    } else {
+      const workspace = workspaces.find((w) => w.id === selectedWorkspaceId);
+      if (workspace) {
+        get().openDirectoryTab(workspace.path, workspace.pathType);
+      }
+    }
+  },
+
+  toggleFileViewer: () => {
+    if (get().fileViewerOpen) {
+      get().hideFileViewer();
+    } else {
+      get().showFileViewer();
+    }
+  },
+
   // Backward-compat shim: openFileViewer calls openTab
   openFileViewer: (filePath, agentId) => {
     const agent = get().agents.find((a) => a.id === agentId);
@@ -247,35 +281,49 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   loadAgents: async (workspaceId: string) => {
-    const agents = await window.api.agents.list(workspaceId);
-    set({ agents });
+    const allAgents = await window.api.agents.list(workspaceId);
+    const agents = allAgents.filter((a) => !a.isSupervisor);
+    const supervisorAgent = allAgents.find((a) => a.isSupervisor) || null;
+    set({ agents, supervisorAgent });
     get().updateWorkspaceHeat();
   },
 
   loadAllAgents: async () => {
-    const agents = await window.api.agents.listAll();
+    const allAgents = await window.api.agents.listAll();
+    const agents = allAgents.filter((a) => !a.isSupervisor);
     set({ agents });
     get().updateWorkspaceHeat();
   },
 
   selectWorkspace: (id) => {
-    set({ selectedWorkspaceId: id, selectedAgentId: null, terminalAgentId: null });
+    if (!get().terminalPinned) {
+      set({ selectedWorkspaceId: id, selectedAgentId: null, terminalAgentId: null });
+    } else {
+      set({ selectedWorkspaceId: id, selectedAgentId: null });
+    }
     if (id) get().loadAgents(id);
   },
 
   selectAgent: (id) => set({ selectedAgentId: id }),
 
   setTerminalAgent: (id) => set({ terminalAgentId: id }),
+  
+  toggleTerminalPinned: () => set((state) => ({ terminalPinned: !state.terminalPinned })),
 
   updateAgent: (agent) => {
-    set((state) => ({
-      agents: state.agents.map((a) => (a.id === agent.id ? agent : a)),
-    }));
+    if (agent.isSupervisor) {
+      set({ supervisorAgent: agent });
+    } else {
+      set((state) => ({
+        agents: state.agents.map((a) => (a.id === agent.id ? agent : a)),
+      }));
+    }
   },
 
   removeAgent: (id) => {
     set((state) => ({
       agents: state.agents.filter((a) => a.id !== id),
+      supervisorAgent: state.supervisorAgent?.id === id ? null : state.supervisorAgent,
       selectedAgentId: state.selectedAgentId === id ? null : state.selectedAgentId,
       terminalAgentId: state.terminalAgentId === id ? null : state.terminalAgentId,
     }));
@@ -319,6 +367,43 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       return await window.api.agents.query(targetAgentId, question, sourceAgentId);
     } catch (err) {
       console.error('Query failed:', err);
+      return null;
+    }
+  },
+
+  loadSupervisor: async (workspaceId: string) => {
+    try {
+      const sup = await window.api.agents.getSupervisor(workspaceId);
+      set({ supervisorAgent: sup });
+    } catch (err) {
+      console.error('Failed to load supervisor:', err);
+    }
+  },
+
+  launchSupervisor: async (workspaceId: string) => {
+    // If one already exists and is alive, just select it
+    const existing = get().supervisorAgent;
+    if (existing && !['done', 'crashed'].includes(existing.status)) {
+      get().selectAgent(existing.id);
+      get().setTerminalAgent(existing.id);
+      return existing;
+    }
+
+    try {
+      const agent = await window.api.agents.launch({
+        workspaceId,
+        title: 'Supervisor',
+        roleDescription: 'Autonomous supervisor agent — coordinates workers, approves continuations, manages context.',
+        isSupervisor: true,
+        provider: 'claude',
+        autoRestartEnabled: true,
+      });
+      set({ supervisorAgent: agent });
+      return agent;
+    } catch (err) {
+      console.error('Failed to launch supervisor:', err);
+      // Refresh in case it was already running but our state was stale
+      await get().loadSupervisor(workspaceId);
       return null;
     }
   },

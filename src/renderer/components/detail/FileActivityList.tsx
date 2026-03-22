@@ -73,7 +73,7 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
 
   if (grouped.length === 0) {
     return (
-      <div className="px-4 py-8 text-center text-gray-600 text-sm">
+      <div className="px-4 py-8 text-center text-gray-400 text-sm">
         No file activity yet...
       </div>
     );
@@ -142,7 +142,7 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
             onDragStart={(e) => fileDragStart(e, activity.filePath)}
             className="w-full text-left px-4 py-2 hover:bg-surface-2 transition-colors flex items-start gap-2 group"
           >
-            <span className="text-gray-500 text-sm mt-0.5 shrink-0">
+            <span className="text-gray-300 text-sm mt-0.5 shrink-0">
               {activity.operation === 'read' ? '📖' : activity.operation === 'create' ? '📝' : '✏️'}
             </span>
             <div className="flex-1 min-w-0">
@@ -150,20 +150,20 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
                 <span className="text-sm font-medium text-gray-200 truncate group-hover:text-white">
                   {fileName(activity.filePath)}
                 </span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${badge.className}`}>
+                <span className={`text-[13px] px-1.5 py-0.5 rounded-full shrink-0 ${badge.className}`}>
                   {badge.label}
                 </span>
               </div>
-              <div className="text-[11px] text-gray-600 truncate">{dirPath(activity.filePath)}</div>
+              <div className="text-[13px] text-gray-400 truncate">{dirPath(activity.filePath)}</div>
             </div>
             <span
               onClick={(e) => handleVSCode(e, activity.filePath)}
-              className="text-[10px] font-mono font-bold text-accent-blue/40 hover:text-accent-blue opacity-0 group-hover:opacity-100 transition-all shrink-0 mt-0.5 px-1 border border-transparent hover:border-accent-blue/30 cursor-pointer"
+              className="text-[13px] font-sans font-bold text-accent-blue/40 hover:text-accent-blue opacity-0 group-hover:opacity-100 transition-all shrink-0 mt-0.5 px-1 border border-transparent hover:border-accent-blue/30 cursor-pointer"
               title="Open in VS Code"
             >
               VS
             </span>
-            <span className="text-[10px] text-gray-600 shrink-0 mt-1">
+            <span className="text-[13px] text-gray-400 shrink-0 mt-1">
               {timeAgo(activity.timestamp)}
             </span>
           </button>

@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { Workspace } from '../../../shared/types';
+import type { AgentProvider, Workspace } from '../../../shared/types';
+import { PROVIDER_COMMANDS, PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
+
+const PROVIDERS: AgentProvider[] = ['claude', 'gemini', 'codex'];
 
 interface Props {
   workspace: Workspace;
@@ -12,11 +15,17 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   const [title, setTitle] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [workingDirectory, setWorkingDirectory] = useState(workspace.path);
-  const [command, setCommand] = useState(workspace.defaultCommand);
+  const [provider, setProvider] = useState<AgentProvider>('claude');
+  const [command, setCommand] = useState(PROVIDER_COMMANDS.claude[workspace.pathType]);
   const [autoRestart, setAutoRestart] = useState(true);
   const [launching, setLaunching] = useState(false);
   const [agentMd, setAgentMd] = useState<{ found: boolean; fileName: string | null } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Update command when provider changes
+  useEffect(() => {
+    setCommand(PROVIDER_COMMANDS[provider][workspace.pathType]);
+  }, [provider, workspace.pathType]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -47,6 +56,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
         roleDescription: roleDescription.trim(),
         workingDirectory: workingDirectory.trim(),
         command: command.trim(),
+        provider,
         autoRestartEnabled: autoRestart,
       });
       await loadAgents(workspace.id);
@@ -71,7 +81,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
         <h3 className="text-lg font-bold mb-4">Launch Agent</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Agent Title *</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Agent Title *</label>
             <input
               type="text"
               value={title}
@@ -83,7 +93,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Role Description</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Role Description</label>
             <textarea
               value={roleDescription}
               onChange={(e) => setRoleDescription(e.target.value)}
@@ -94,13 +104,13 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Working Directory</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Working Directory</label>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={workingDirectory}
                 onChange={(e) => setWorkingDirectory(e.target.value)}
-                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent-blue"
+                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
               />
               <button
                 type="button"
@@ -111,25 +121,50 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
               </button>
             </div>
             {agentMd && agentMd.found && (
-              <div className="mt-1.5 inline-flex items-center gap-1 bg-green-500/15 text-green-400 text-[11px] px-2 py-0.5 rounded-full">
+              <div className="mt-1.5 inline-flex items-center gap-1 bg-green-500/15 text-green-400 text-[13px] px-2 py-0.5 rounded-full">
                 <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
                 {agentMd.fileName} found
               </div>
             )}
             {agentMd && !agentMd.found && (
-              <div className="mt-1.5 text-[11px] text-gray-600">
+              <div className="mt-1.5 text-[13px] text-gray-400">
                 No agent.md
               </div>
             )}
           </div>
 
+          {/* Provider selector */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Command</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Provider</label>
+            <div className="flex gap-1">
+              {PROVIDERS.map((p) => {
+                const meta = PROVIDER_META[p];
+                const isActive = provider === p;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setProvider(p)}
+                    className={`flex-1 px-3 py-2 text-[13px] font-sans font-bold  rounded-md border transition-all
+                      ${isActive
+                        ? `${meta.bgClass} ${meta.textClass} border-current`
+                        : 'bg-surface-0 text-gray-300 border-gray-700 hover:bg-surface-3 hover:text-gray-300'
+                      }`}
+                  >
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[13px] text-gray-400 mb-1">Command</label>
             <input
               type="text"
               value={command}
               onChange={(e) => setCommand(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent-blue"
+              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
             />
           </div>
 
@@ -157,7 +192,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             <button
               type="submit"
               disabled={!title.trim() || launching}
-              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:opacity-50"
+              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:"
             >
               {launching ? 'Launching...' : 'Launch'}
             </button>

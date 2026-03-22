@@ -9,9 +9,9 @@ import CollapseButton from './CollapseButton';
 import type { PathType, ContextStats } from '../../../shared/types';
 
 const TABS = [
-  { label: 'CONTEXT', icon: '\u{1F4D6}' },
-  { label: 'OUTPUTS', icon: '\u{1F4E6}' },
-  { label: 'LOGS', icon: '\u{1F4CB}' },
+  { label: 'Context', icon: '\u{1F4D6}' },
+  { label: 'Outputs', icon: '\u{1F4E6}' },
+  { label: 'Logs', icon: '\u{1F4CB}' },
 ] as const;
 
 function CopyButton({ text }: { text: string }) {
@@ -24,10 +24,10 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="text-[9px] text-accent-blue hover:text-white ml-2 transition-colors uppercase border border-accent-blue/30 px-1 rounded-sm"
+      className="text-[13px] text-accent-blue hover:text-white ml-2 transition-colors  border border-accent-blue/30 px-1 rounded-sm"
       title="Copy to clipboard"
     >
-      {copied ? 'COPIED' : 'CPY'}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   );
 }
@@ -89,12 +89,12 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   if (collapsed) {
     return (
       <div
-        className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col items-center z-20 shadow-2xl py-2"
+        className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col items-center z-20 shadow-2xl py-2"
         style={{ width }}
       >
         <CollapseButton collapsed direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
-        <div className="mt-2 text-[9px] font-mono text-accent-blue" style={{ writingMode: 'vertical-rl' }}>
-          DETAIL
+        <div className="mt-2 text-[13px] font-sans text-accent-blue" style={{ writingMode: 'vertical-rl' }}>
+          Details
         </div>
       </div>
     );
@@ -103,14 +103,14 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   if (!agent) {
     return (
       <div
-        className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col z-20 shadow-2xl"
+        className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col z-20 shadow-2xl"
         style={{ width }}
       >
-        <div className="flex items-center justify-end p-1 border-b border-gray-800">
+        <div className="flex items-center justify-end p-1 border- dark:border-white/10 light:border-black/10">
           <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
         </div>
-        <div className="flex-1 flex items-center justify-center text-gray-600 font-mono text-xs uppercase tracking-widest p-4">
-          [NO_DATA_STREAM_SELECTED]
+        <div className="flex-1 flex items-center justify-center text-gray-300 font-sans text-sm p-4">
+          No agent selected
         </div>
       </div>
     );
@@ -121,14 +121,14 @@ export default function DetailPanel({ width }: DetailPanelProps) {
 
   return (
     <div
-      className="bg-surface-1/90 backdrop-blur border-l border-gray-800 flex flex-col font-mono relative shadow-2xl z-20"
+      className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col font-sans relative shadow-2xl z-20"
       style={{ width }}
     >
       {/* Decorative line */}
       <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-accent-blue/50 via-transparent to-accent-blue/50" />
 
       {/* Agent info header */}
-      <div className="p-4 border-b border-gray-800 relative overflow-hidden">
+      <div className="p-4 border- dark:border-white/10 light:border-black/10 relative overflow-hidden">
         <div className="absolute top-0 right-0 p-1 opacity-20 pointer-events-none">
              <svg width="60" height="60" viewBox="0 0 100 100" fill="none" stroke="currentColor" className="text-accent-blue">
                  <circle cx="50" cy="50" r="40" strokeWidth="1" strokeDasharray="4 4" />
@@ -137,63 +137,63 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         </div>
 
         <div className="flex items-center justify-between mb-3 relative z-10">
-          <h3 className="font-bold text-lg truncate uppercase tracking-wider text-white glow-text">{agent.title}</h3>
+          <h3 className="font-bold text-lg truncate   text-gray-50 glow-text font-black">{agent.title}</h3>
           <div className="flex items-center gap-1">
             <StatusBadge status={agent.status} />
             <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
           </div>
         </div>
 
-        <div className="space-y-1 text-[10px] text-gray-400 font-mono uppercase tracking-tight relative z-10">
+        <div className="space-y-1 text-[13px] text-gray-400 font-sans   relative z-10">
           <div className="flex">
-            <span className="text-accent-blue w-16 shrink-0 opacity-70">DIR::</span>
-            <span className="truncate text-gray-300">{agent.workingDirectory}</span>
+            <span className="text-accent-blue w-16 shrink-0 ">Directory</span>
+            <span className="truncate text-gray-200">{agent.workingDirectory}</span>
           </div>
           <div className="flex">
-            <span className="text-accent-blue w-16 shrink-0 opacity-70">CMD::</span>
-            <span className="truncate text-gray-300">{agent.command}</span>
+            <span className="text-accent-blue w-16 shrink-0 ">Command</span>
+            <span className="truncate text-gray-200">{agent.command}</span>
           </div>
           <div className="flex">
-             <span className="text-accent-blue w-16 shrink-0 opacity-70">SES::</span>
-             <span className="truncate text-gray-300">{agent.tmuxSessionName || 'N/A'}</span>
+             <span className="text-accent-blue w-16 shrink-0 ">Session</span>
+             <span className="truncate text-gray-200">{agent.tmuxSessionName || 'N/A'}</span>
           </div>
         </div>
 
         {/* Collapsible Metadata */}
         <button
           onClick={() => setShowMeta(!showMeta)}
-          className="mt-3 w-full text-[9px] border border-gray-800 hover:border-accent-blue/50 text-gray-500 hover:text-accent-blue transition-colors uppercase py-1 flex justify-center items-center gap-2"
+          className="mt-3 w-full text-[13px] border border-gray-800 hover:border-accent-blue/50 text-gray-300 hover:text-accent-blue transition-colors py-1 flex justify-center items-center gap-2 font-sans"
         >
-          {showMeta ? '[-] COLLAPSE_META' : '[+] EXPAND_META'}
+          {showMeta ? 'Collapse Meta' : 'Expand Meta'}
         </button>
 
         {showMeta && (
-          <div className="mt-2 space-y-1 text-[10px] text-gray-400 bg-black/40 border border-gray-800 p-2 font-mono">
-            <div className="flex items-center justify-between border-b border-gray-800 pb-1 mb-1">
-               <span className="text-accent-blue">SYSTEM_METRICS</span>
+          <div className="mt-2 space-y-1 text-[13px] text-gray-400 bg-surface-0/40 border border-gray-800 p-2 font-sans">
+            <div className="flex items-center justify-between border- dark:border-white/10 light:border-black/10 pb-1 mb-1">
+               <span className="text-accent-blue">System Info</span>
             </div>
             <div className="flex items-center">
-              <span className="text-gray-600 w-16 shrink-0">UUID:</span>
+              <span className="text-gray-400 w-16 shrink-0">ID</span>
               <span className="truncate text-gray-300">{agent.id}</span>
               <CopyButton text={agent.id} />
             </div>
             {agent.pid && (
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">PID:</span>
+                <span className="text-gray-400 w-16 shrink-0">PID</span>
                 <span className="text-accent-green">{agent.pid}</span>
               </div>
             )}
             <div className="flex items-center">
-              <span className="text-gray-600 w-16 shrink-0">INIT:</span>
+              <span className="text-gray-400 w-16 shrink-0">Created</span>
               <span>{formatDate(agent.createdAt)}</span>
             </div>
             <div className="flex items-center">
-              <span className="text-gray-600 w-16 shrink-0">LAST_OP:</span>
+              <span className="text-gray-400 w-16 shrink-0">Last Op</span>
               <span>{formatDate(agent.lastOutputAt)}</span>
             </div>
             {agent.resumeSessionId && (
-              <div className="flex items-center pt-1 border-t border-gray-800 mt-1">
-                <span className="text-accent-purple w-16 shrink-0">RESUME:</span>
+              <div className="flex items-center pt-1 border- dark:border-white/10 light:border-black/10 mt-1">
+                <span className="text-accent-purple w-16 shrink-0">Resume</span>
                 <span className="truncate text-accent-purple">{agent.resumeSessionId}</span>
                 <CopyButton text={agent.resumeSessionId} />
               </div>
@@ -213,10 +213,10 @@ export default function DetailPanel({ width }: DetailPanelProps) {
             return String(n);
           };
           return (
-            <div className="mt-2 space-y-1 text-[10px] text-gray-400 bg-black/40 border border-gray-800 p-2 font-mono">
-              <div className="flex items-center justify-between border-b border-gray-800 pb-1 mb-1">
-                <span className="text-accent-blue">CONTEXT_WINDOW</span>
-                <span className={`px-1 text-[9px] font-bold ${pctColor} border ${pct > 85 ? 'border-accent-red/50' : pct > 60 ? 'border-accent-orange/50' : 'border-accent-blue/50'}`}>
+            <div className="mt-2 space-y-1 text-[13px] text-gray-400 bg-surface-0/40 border border-gray-800 p-2 font-sans">
+              <div className="flex items-center justify-between border- dark:border-white/10 light:border-black/10 pb-1 mb-1">
+                <span className="text-accent-blue">Context Window</span>
+                <span className={`px-1 text-[13px] font-bold ${pctColor} border ${pct > 85 ? 'border-accent-red/50' : pct > 60 ? 'border-accent-orange/50' : 'border-accent-blue/50'}`}>
                   {pct}%
                 </span>
               </div>
@@ -224,31 +224,31 @@ export default function DetailPanel({ width }: DetailPanelProps) {
                 <div className={`h-full ${barColor} ${barGlow} transition-all duration-500`} style={{ width: `${pct}%` }} />
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">MODEL:</span>
+                <span className="text-gray-400 w-16 shrink-0">Model</span>
                 <span className="text-gray-300">{cs.model}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">INPUT:</span>
+                <span className="text-gray-400 w-16 shrink-0">Input</span>
                 <span className="text-gray-300">{fmt(cs.inputTokens)}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">CACHE+:</span>
+                <span className="text-gray-400 w-20 shrink-0">Cache Write</span>
                 <span className="text-gray-300">{fmt(cs.cacheCreationTokens)}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">CACHE~:</span>
+                <span className="text-gray-400 w-20 shrink-0">Cache Read</span>
                 <span className="text-gray-300">{fmt(cs.cacheReadTokens)}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">OUT_T:</span>
+                <span className="text-gray-400 w-16 shrink-0">Output</span>
                 <span className="text-gray-300">{fmt(cs.totalOutputTokens)}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">TURNS:</span>
+                <span className="text-gray-400 w-16 shrink-0">Turns</span>
                 <span className="text-gray-300">{cs.turnCount}</span>
               </div>
               <div className="flex items-center">
-                <span className="text-gray-600 w-16 shrink-0">WINDOW:</span>
+                <span className="text-gray-400 w-16 shrink-0">Window</span>
                 <span className="text-gray-300">{fmt(cs.totalContextTokens)}/{fmt(cs.contextWindowMax)}</span>
               </div>
             </div>
@@ -257,54 +257,54 @@ export default function DetailPanel({ width }: DetailPanelProps) {
       </div>
 
       {/* Controls */}
-      <div className="p-3 border-b border-gray-800 grid grid-cols-2 gap-2 bg-surface-0/30">
+      <div className="p-3 border- dark:border-white/10 light:border-black/10 grid grid-cols-2 gap-2 bg-surface-0/30">
         <button
           onClick={() => setTerminalAgent(isAttached ? null : agent.id)}
-          className={`px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition-all border ${
+          className={`px-2 py-2 text-[13px] font-bold   transition-all border ${
             isAttached
-              ? 'bg-accent-green text-black border-accent-green hover:bg-white'
+              ? 'bg-accent-green text-black border-accent-green hover:brightness-125 dark:hover:bg-white'
               : 'bg-transparent text-accent-green border-accent-green/50 hover:bg-accent-green/10'
           }`}
         >
-          {isAttached ? '>> DETACH_FEED' : '>> ATTACH_FEED'}
+          {isAttached ? 'Detach Terminal' : 'Attach Terminal'}
         </button>
         <button
           onClick={() => setShowQuery(true)}
           disabled={!agent.resumeSessionId}
-          className="px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition-all border border-accent-purple/50 text-accent-purple hover:bg-accent-purple/10 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-purple/50 text-accent-purple hover:bg-accent-purple/10 disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          Query_Agent
+          Query Agent
         </button>
         <button
           onClick={() => window.api.agents.restart(agent.id)}
-          className="px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition-all border border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
         >
-          REBOOT_SYS
+          Restart
         </button>
         <button
           onClick={() => window.api.agents.stop(agent.id)}
-          className="px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition-all border border-accent-red/50 text-accent-red hover:bg-accent-red/10 hover:shadow-[0_0_10px_rgba(255,0,85,0.4)]"
+          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-red/50 text-accent-red hover:bg-accent-red/10 hover:shadow-[0_0_10px_rgba(255,0,85,0.4)]"
         >
-          KILL_PROC
+          Stop
         </button>
       </div>
 
       {/* Tab strip */}
-      <div className="flex border-b border-gray-800 bg-surface-0">
+      <div className="flex border- dark:border-white/10 light:border-black/10 bg-surface-0">
         {TABS.map((tab, index) => (
           <button
             key={tab.label}
             onClick={() => setDetailPane(index as 0 | 1 | 2)}
-            className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-wider relative transition-all border-r border-gray-900 ${
+            className={`flex-1 py-3 text-[13px] font-bold   relative transition-all border-r border-gray-900 ${
               detailPane === index
                 ? 'text-accent-blue bg-surface-2'
-                : 'text-gray-600 hover:text-gray-400 hover:bg-surface-1'
+                : 'text-gray-400 hover:text-gray-400 hover:bg-surface-1'
             }`}
           >
             <div className="flex items-center justify-center gap-1">
                 <span>{tab.label}</span>
                 {tabCounts[index] !== null && tabCounts[index]! > 0 && (
-                <span className={`ml-1 px-1 rounded-sm text-[9px] ${detailPane === index ? 'bg-accent-blue text-black' : 'bg-gray-700 text-gray-300'}`}>
+                <span className={`ml-1 px-1 rounded-sm text-[13px] ${detailPane === index ? 'bg-accent-blue text-black' : 'bg-gray-700 text-gray-300'}`}>
                     {tabCounts[index]}
                 </span>
                 )}

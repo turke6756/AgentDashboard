@@ -1,16 +1,16 @@
 @import "tailwindcss";
 
 @theme {
-  --color-surface-0: #050505;
-  --color-surface-1: #0a0a0f;
-  --color-surface-2: #12121a;
-  --color-surface-3: #1a1a26;
-  --color-accent-blue: #00f3ff;
-  --color-accent-green: #0aff00;
-  --color-accent-yellow: #fcee0a;
-  --color-accent-orange: #ffaa00;
-  --color-accent-red: #ff0055;
-  --color-accent-purple: #bc13fe;
+  --color-surface-0: #1e1e1e;
+  --color-surface-1: #252526;
+  --color-surface-2: #2d2d2d;
+  --color-surface-3: #3e3e42;
+  --color-accent-blue: #007acc;
+  --color-accent-green: #89d185;
+  --color-accent-yellow: #cca700;
+  --color-accent-orange: #d18616;
+  --color-accent-red: #f14c4c;
+  --color-accent-purple: #c586c0;
 
   --animate-scanline: scanline 8s linear infinite;
   --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
@@ -44,100 +44,248 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   background-color: var(--color-surface-0);
-  color: #e0e0e0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #cccccc;
+  font-family: "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "Roboto", sans-serif;
+  font-size: 13px;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-surface-0);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #333;
-  border: 1px solid #00f3ff;
+  background: #464646;
+  border: 2px solid var(--color-surface-0);
   border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #00f3ff;
+  background: #555555;
 }
 
 /* Utilities */
 
 .grid-bg {
-  background-image: 
-    linear-gradient(rgba(0, 243, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 243, 255, 0.03) 1px, transparent 1px);
-  background-size: 20px 20px;
+  background-image: none;
+  background-color: var(--color-surface-0);
 }
 
 .scanlines {
-  background: linear-gradient(
-    to bottom,
-    rgba(255,255,255,0),
-    rgba(255,255,255,0) 50%,
-    rgba(0,0,0,0.2) 50%,
-    rgba(0,0,0,0.2)
-  );
-  background-size: 100% 4px;
-  animation: scanline 1s linear infinite;
-  pointer-events: none;
-  z-index: 9999;
-  position: fixed;
-  inset: 0;
-  opacity: 0.6;
+  display: none;
 }
 
 .glow-text {
-  text-shadow: 0 0 5px currentColor;
+  text-shadow: none;
 }
 
 .glow-box {
-  box-shadow: 0 0 10px rgba(0, 243, 255, 0.2), inset 0 0 5px rgba(0, 243, 255, 0.1);
+  box-shadow: none;
+  border: 1px solid var(--color-surface-3);
 }
 
 .glass-panel {
-  background: rgba(10, 10, 15, 0.7);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(0, 243, 255, 0.1);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-surface-3);
 }
 
 .hud-border {
-  position: relative;
-  border: 1px solid rgba(0, 243, 255, 0.2);
+  border: 1px solid var(--color-surface-3);
 }
 
-.hud-border::before,
-.hud-border::after {
-  content: '';
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border: 1px solid var(--color-accent-blue);
-  transition: all 0.3s ease;
+/* ── Light theme overrides ───────────────────────────────── */
+.light {
+  --color-surface-0: #f0f0f0;  /* App Background - Neutral Gray */
+  --color-surface-1: #f5f5f5;  /* Panels/Sidebars */
+  --color-surface-2: #ffffff;  /* Content Areas/Terminal */
+  --color-surface-3: #e5e5e5;  /* Panel Headers */
+  
+  --color-accent-blue: #005e9e; /* ArcGIS Blue */
+  --color-accent-green: #2e7d32;
+  --color-accent-yellow: #f57f17;
+  --color-accent-orange: #e65100;
+  --color-accent-red: #c62828;
+  --color-accent-purple: #6a1b9a;
+
+  --color-gray-50: #000000;
+  --color-gray-100: #1a1a1a;
+  --color-gray-200: #333333;
+  --color-gray-300: #4d4d4d;
+  --color-gray-400: #666666;
+  --color-gray-500: #808080;
+  --color-gray-600: #999999;
+  --color-gray-700: #b3b3b3;
+  --color-gray-800: #cccccc;
+  --color-gray-900: #d1d1d1;  /* Crisp 1px borders */
+  --color-gray-950: #e5e5e5;
 }
 
-.hud-border::before {
-  top: -1px;
-  left: -1px;
-  border-right: none;
-  border-bottom: none;
+/* ArcGIS Style active tabs & selections */
+.light .bg-surface-2.border-accent-blue {
+  background-color: #ddeefe !important;
+  border-color: #005e9e !important;
+  color: #000000 !important;
+  box-shadow: none !important;
 }
 
-.hud-border::after {
-  bottom: -1px;
-  right: -1px;
-  border-left: none;
-  border-top: none;
+.light .bg-surface-2.border-b-accent-blue {
+  background-color: #005e9e !important;
+  border-bottom-color: #005e9e !important;
+  color: #ffffff !important;
 }
 
-.hud-border:hover::before,
-.hud-border:hover::after {
-  width: 100%;
-  height: 100%;
-  opacity: 0.5;
+/* Ensure selected tree items look right */
+.light .bg-accent-blue\/10.text-accent-blue {
+  background-color: #d1e4f6 !important;
+  color: #005e9e !important;
+  font-weight: 500;
+}
+
+.light body,
+html.light body {
+  background-color: var(--color-surface-0);
+  color: var(--color-gray-100);
+}
+
+/* Log background that flips correctly */
+.log-surface {
+  background: rgba(0, 0, 0, 0.05);
+  color: #1a1a2e;
+}
+.dark .log-surface {
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--color-accent-green);
+}
+
+/* Global Interactive States for Light Mode */
+.light .interactive:hover {
+  background-color: var(--color-gray-900);
+  filter: brightness(0.96);
+}
+.light .interactive:active {
+  background-color: var(--color-gray-800);
+}
+
+html.light ::-webkit-scrollbar-track {
+  background: var(--color-surface-1);
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: var(--color-gray-600);
+  border: 1px solid var(--color-gray-700);
+  border-radius: 4px;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-500);
+}
+
+.light .grid-bg {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.light .scanlines {
+  display: none;
+}
+
+.light .glow-text {
+  text-shadow: none;
+  color: var(--color-accent-blue);
+  font-weight: 800;
+}
+
+.light .bg-surface-2 {
+  background-color: var(--color-surface-2);
+  box-shadow: none;
+  border: 1px solid var(--color-gray-900);
+}
+
+.light .glow-box {
+  box-shadow: none;
+  border-color: var(--color-gray-900);
+}
+
+.light .glass-panel {
+  background: #ffffff;
+  border: 1px solid var(--color-gray-900);
+  box-shadow: none;
+}
+
+.light .hud-border {
+  border: 1px solid var(--color-gray-700);
+}
+
+.light .hud-border::before,
+.light .hud-border::after {
+  border-color: var(--color-accent-blue);
+  opacity: 0.6;
+}
+
+/* Prevent hud-border hover corners from flooding light backgrounds */
+.light .hud-border:hover::before,
+.light .hud-border:hover::after {
+  width: 12px;
+  height: 12px;
+  opacity: 0.8;
+}
+
+/* Boost text weight in light mode for better contrast */
+.light {
+  -webkit-font-smoothing: auto;
+}
+.light .font-mono {
+  -webkit-text-stroke: 0.2px currentColor;
+}
+
+/* Fix hover states that go to white (invisible on light bg) */
+.light .hover\:text-white:hover {
+  color: var(--color-gray-50) !important;
+}
+.light .hover\:bg-white:hover {
+  background-color: var(--color-gray-900) !important;
+}
+.light .group:hover .group-hover\:text-gray-50 {
+  color: var(--color-gray-50);
+}
+
+/* White overlays → dark overlays in light mode */
+.light .bg-white\/5,
+.light .bg-white\/10,
+.light .hover\:bg-white\/5:hover,
+.light .hover\:bg-white\/10:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+}
+.light .bg-white\/70 {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+.light .text-white\/70 {
+  color: var(--color-gray-200);
+}
+.light .border-white\/5,
+.light .border-white\/10 {
+  border-color: var(--color-gray-700);
+}
+
+/* Separator dividers in light mode */
+.light .bg-white\/\[0\.02\] {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.shadow-soft {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+.dark .shadow-soft {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+}
+
+/* ── Light terminal viewport — dark bg even in light mode ── */
+.terminal-viewport-light {
+  background: #1e1e2e;
+}
+.terminal-viewport-light .xterm-viewport {
+  background: #1e1e2e !important;
 }
 
 /* Resize cursor overrides — applied to body during drag */

@@ -52,8 +52,10 @@ function handleMessage(msg) {
 
       // On Windows, node-pty can't resolve commands from PATH directly.
       // Spawn via cmd.exe /c so the shell resolves the command.
+      // If msg.directSpawn is set, skip cmd.exe wrapping (needed when args
+      // contain multiline strings that cmd.exe would mangle).
       let spawnCmd, spawnArgs;
-      if (process.platform === 'win32' && msg.command !== 'cmd.exe' && msg.command !== 'wsl.exe') {
+      if (process.platform === 'win32' && !msg.directSpawn && msg.command !== 'cmd.exe' && msg.command !== 'wsl.exe') {
         spawnCmd = 'cmd.exe';
         const fullCommand = [msg.command, ...(msg.args || [])].join(' ');
         spawnArgs = ['/c', fullCommand];

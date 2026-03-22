@@ -35,7 +35,7 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
   const FileIcon = (Icons as any)[fileIconName] || Icons.File;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-accent-blue/20 bg-surface-1/40 backdrop-blur-md shrink-0">
+    <div className="flex items-center gap-3 px-4 py-2.5 border-b dark:border-white/10 light:border-black/10 bg-surface-1/40 backdrop-blur-md shrink-0">
       {/* Breadcrumb */}
       <div className="flex items-center gap-0.5 min-w-0 overflow-hidden flex-1">
         {breadcrumbs.map((crumb, i) => {
@@ -43,19 +43,19 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
           const isFirst = i === 0;
           return (
             <React.Fragment key={i}>
-              {i > 0 && <Icons.ChevronRight className="w-3 h-3 text-gray-600 shrink-0" />}
+              {i > 0 && <Icons.ChevronRight className="w-3 h-3 text-gray-400 shrink-0" />}
               <div className="flex items-center gap-1.5 min-w-0">
                 {isLast ? (
                   <>
                     <FileIcon className="w-3.5 h-3.5 text-accent-blue shrink-0" />
-                    <span className="text-white text-[12px] font-mono font-medium truncate">{crumb.label}</span>
+                    <span className="text-gray-50 text-[13px] font-sans font-medium truncate">{crumb.label}</span>
                   </>
                 ) : (
                   <>
-                    {isFirst ? <Icons.Folder className="w-3 h-3 text-gray-500 shrink-0" /> : null}
+                    {isFirst ? <Icons.Folder className="w-3 h-3 text-gray-300 shrink-0" /> : null}
                     <button
                       onClick={() => onNavigate(crumb.path)}
-                      className="text-gray-500 hover:text-accent-blue text-[11px] font-mono truncate transition-colors shrink-0 max-w-[120px]"
+                      className="text-gray-300 hover:text-accent-blue text-[13px] font-sans truncate transition-colors shrink-0 max-w-[120px]"
                     >
                       {crumb.label}
                     </button>
@@ -70,13 +70,13 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
       {/* Labels */}
       <div className="flex items-center gap-3 shrink-0">
         <div className="flex items-center gap-1.5 px-2 py-0.5 bg-accent-blue/5 border border-accent-blue/20 rounded-sm">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-accent-blue font-bold">
+          <span className="text-[13px] font-sans   text-accent-blue font-bold">
             {language}
           </span>
         </div>
         
         {fileSize > 0 && (
-          <span className="text-[10px] font-mono text-gray-500 flex items-center gap-1">
+          <span className="text-[13px] font-sans text-gray-300 flex items-center gap-1">
             <Icons.Database className="w-3 h-3" />
             {formatFileSize(fileSize)}
           </span>
@@ -84,7 +84,7 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
 
         <button
           onClick={handleOpenInVSCode}
-          className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors rounded-sm"
+          className="flex items-center gap-1.5 px-3 py-1 text-[13px] font-sans font-bold   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors rounded-sm"
         >
           <Icons.ExternalLink className="w-3 h-3" />
           VS Code

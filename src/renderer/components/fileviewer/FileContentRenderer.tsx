@@ -19,11 +19,11 @@ export default function FileContentRenderer({ content, filePath, pathType, error
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center p-8">
-          <div className="text-3xl mb-4 opacity-50">&#x26A0;</div>
-          <div className="text-gray-400 font-mono text-sm mb-2">{error}</div>
+          <div className="text-3xl mb-4 ">&#x26A0;</div>
+          <div className="text-gray-400 font-sans text-sm mb-2">{error}</div>
           <button
             onClick={() => window.api.system.openFile(filePath, pathType)}
-            className="mt-4 px-4 py-2 text-xs font-mono uppercase tracking-wider text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
+            className="mt-4 px-4 py-2 text-[13px] font-sans   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
           >
             Open in VS Code
           </button>
@@ -38,11 +38,11 @@ export default function FileContentRenderer({ content, filePath, pathType, error
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center p-8">
-          <div className="text-3xl mb-4 opacity-50">&#x1F4E6;</div>
-          <div className="text-gray-400 font-mono text-sm mb-2">Binary file — cannot display inline</div>
+          <div className="text-3xl mb-4 ">&#x1F4E6;</div>
+          <div className="text-gray-400 font-sans text-sm mb-2">Binary file — cannot display inline</div>
           <button
             onClick={() => window.api.system.openFile(filePath, pathType)}
-            className="mt-4 px-4 py-2 text-xs font-mono uppercase tracking-wider text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
+            className="mt-4 px-4 py-2 text-[13px] font-sans   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
           >
             Open in VS Code
           </button>

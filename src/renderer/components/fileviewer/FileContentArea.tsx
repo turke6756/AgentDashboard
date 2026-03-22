@@ -22,7 +22,7 @@ export default function FileContentArea({ tabId, filePath, pathType }: Props) {
   if (!filePath) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-gray-600 font-mono text-sm uppercase tracking-wider">
+        <div className="text-gray-400 font-sans text-sm  ">
           Select a file from the tree
         </div>
       </div>
@@ -40,7 +40,7 @@ export default function FileContentArea({ tabId, filePath, pathType }: Props) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-gray-500 font-mono text-sm animate-pulse">Loading file...</div>
+        <div className="text-gray-300 font-sans text-sm animate-pulse">Loading file...</div>
       </div>
     );
   }

@@ -70,7 +70,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
         <h3 className="text-lg font-bold mb-4">New Workspace</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Directory</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Directory</label>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -93,7 +93,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
                     setPathType('wsl');
                   }
                 }}
-                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent-blue"
+                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
                 placeholder={pathType === 'wsl' ? '/home/user/project' : 'C:\\Projects\\myapp'}
               />
               <button
@@ -106,22 +106,22 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
               </button>
             </div>
             {pathType === 'wsl' && (
-              <p className="text-[10px] text-gray-500 mt-1 font-mono">
+              <p className="text-[13px] text-gray-300 mt-1 font-sans">
                 Paste a UNC path (\\wsl.localhost\...) or type a Linux path (/home/...)
               </p>
             )}
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Path Type</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Path Type</label>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => setPathType('windows')}
-                className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                className={`px-3 py-1.5 text-[13px] rounded-md font-medium transition-colors ${
                   pathType === 'windows'
                     ? 'bg-blue-500/30 text-blue-300 border border-blue-500/50'
-                    : 'bg-surface-0 text-gray-500 border border-gray-700'
+                    : 'bg-surface-0 text-gray-300 border border-gray-700'
                 }`}
               >
                 Windows
@@ -129,10 +129,10 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
               <button
                 type="button"
                 onClick={() => setPathType('wsl')}
-                className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                className={`px-3 py-1.5 text-[13px] rounded-md font-medium transition-colors ${
                   pathType === 'wsl'
                     ? 'bg-orange-500/30 text-orange-300 border border-orange-500/50'
-                    : 'bg-surface-0 text-gray-500 border border-gray-700'
+                    : 'bg-surface-0 text-gray-300 border border-gray-700'
                 }`}
               >
                 WSL
@@ -141,7 +141,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Title *</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Title *</label>
             <input
               type="text"
               value={title}
@@ -152,7 +152,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Description</label>
+            <label className="block text-[13px] text-gray-400 mb-1">Description</label>
             <input
               type="text"
               value={description}
@@ -173,7 +173,7 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
             <button
               type="submit"
               disabled={!title.trim() || !dirPath.trim()}
-              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:opacity-50"
+              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:"
             >
               Create
             </button>

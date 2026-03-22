@@ -46,7 +46,7 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
   };
 
   return (
-    <div className="flex items-stretch border-b border-gray-800 bg-surface-0 shrink-0 overflow-hidden">
+    <div className="flex items-stretch border- dark:border-white/10 light:border-black/10 bg-surface-0 shrink-0 overflow-hidden">
       <div
         ref={scrollRef}
         className="flex items-stretch overflow-x-auto scrollbar-hide flex-1"
@@ -62,13 +62,13 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
               onMouseDown={(e) => handleMouseDown(e, tab.id)}
               draggable={!!tab.filePath}
               onDragStart={(e) => { if (tab.filePath) fileDragStart(e, tab.filePath); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 cursor-pointer shrink-0 max-w-[180px] border-r border-gray-800/50 transition-colors group ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 cursor-pointer shrink-0 max-w-[180px] border- dark:border-white/10 light:border-black/10/50 transition-colors group ${
                 isActive
-                  ? 'bg-surface-2 border-b-2 border-b-accent-blue text-white'
-                  : 'text-gray-500 hover:bg-surface-1 hover:text-gray-300 border-b-2 border-b-transparent'
+                  ? 'bg-surface-2 border-b-2 border-b-accent-blue text-gray-50'
+                  : 'text-gray-300 hover:bg-surface-1 hover:text-gray-300 border-b-2 border-b-transparent'
               }`}
             >
-              <span className="text-[11px] font-mono truncate select-none">
+              <span className="text-[13px] font-sans truncate select-none">
                 {displayLabel}
               </span>
               <button
@@ -76,9 +76,9 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
                   e.stopPropagation();
                   onCloseTab(tab.id);
                 }}
-                className={`text-[10px] leading-none px-0.5 rounded-sm shrink-0 transition-colors ${
+                className={`text-[13px] leading-none px-0.5 rounded-sm shrink-0 transition-colors ${
                   isActive
-                    ? 'text-gray-500 hover:text-white hover:bg-gray-700'
+                    ? 'text-gray-300 hover:text-gray-50 hover:bg-gray-700'
                     : 'text-gray-700 hover:text-gray-400 hover:bg-gray-800 opacity-0 group-hover:opacity-100'
                 }`}
                 title="Close tab"

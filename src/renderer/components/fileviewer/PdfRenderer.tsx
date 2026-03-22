@@ -41,12 +41,12 @@ export default function PdfRenderer({ filePath, pathType }: Props) {
     return (
       <div className="flex items-center justify-center h-full bg-[#525659]">
         <div className="text-center p-8">
-          <Icons.FileWarning className="w-10 h-10 text-gray-500 mx-auto mb-4" />
-          <div className="text-gray-300 font-mono text-sm mb-2">Failed to load PDF</div>
-          <div className="text-gray-500 font-mono text-xs mb-4 max-w-md break-all">{error}</div>
+          <Icons.FileWarning className="w-10 h-10 text-gray-300 mx-auto mb-4" />
+          <div className="text-gray-300 font-sans text-sm mb-2">Failed to load PDF</div>
+          <div className="text-gray-300 font-sans text-[13px] mb-4 max-w-md break-all">{error}</div>
           <button
             onClick={() => window.api.system.openFile(filePath, pathType)}
-            className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
+            className="px-4 py-2 text-[13px] font-sans   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
           >
             Open externally
           </button>
@@ -60,7 +60,7 @@ export default function PdfRenderer({ filePath, pathType }: Props) {
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 bg-[#323639] text-gray-200 border-b border-black/20 shadow-sm shrink-0 z-10">
         <div className="flex items-center gap-4">
-          <div className="flex items-center bg-black/20 rounded p-0.5">
+          <div className="flex items-center bg-surface-0/20 rounded p-0.5">
             <button
               onClick={handlePrevPage}
               disabled={pageNumber <= 1}
@@ -68,7 +68,7 @@ export default function PdfRenderer({ filePath, pathType }: Props) {
             >
               <Icons.ChevronUp className="w-4 h-4" />
             </button>
-            <span className="px-3 text-xs font-mono min-w-[60px] text-center select-none">
+            <span className="px-3 text-[13px] font-sans min-w-[60px] text-center select-none">
               {pageNumber} / {numPages || '--'}
             </span>
             <button
@@ -82,14 +82,14 @@ export default function PdfRenderer({ filePath, pathType }: Props) {
 
           <div className="h-4 w-px bg-white/10" />
 
-          <div className="flex items-center bg-black/20 rounded p-0.5">
+          <div className="flex items-center bg-surface-0/20 rounded p-0.5">
             <button
               onClick={handleZoomOut}
               className="p-1 hover:bg-white/10 rounded transition-colors"
             >
               <Icons.Minus className="w-4 h-4" />
             </button>
-            <span className="px-3 text-xs font-mono min-w-[50px] text-center select-none">
+            <span className="px-3 text-[13px] font-sans min-w-[50px] text-center select-none">
               {Math.round(scale * 100)}%
             </span>
             <button
@@ -108,7 +108,7 @@ export default function PdfRenderer({ filePath, pathType }: Props) {
           <div className="absolute inset-0 flex items-center justify-center bg-[#525659] z-20">
             <div className="flex items-center gap-3 text-white/70">
               <Icons.Loader2 className="w-5 h-5 animate-spin" />
-              <span className="font-mono text-sm">Loading PDF...</span>
+              <span className="font-sans text-sm">Loading PDF...</span>
             </div>
           </div>
         )}

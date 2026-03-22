@@ -37,7 +37,7 @@ export class WindowsRunner extends EventEmitter {
     return this._alive;
   }
 
-  launch(workDir: string, command: string, args: string[], logPath: string): void {
+  launch(workDir: string, command: string, args: string[], logPath: string, directSpawn = false): void {
     const logDir = path.dirname(logPath);
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
@@ -95,6 +95,7 @@ export class WindowsRunner extends EventEmitter {
       cwd: workDir,
       cols: 120,
       rows: 40,
+      directSpawn,
     });
 
     this._alive = true;

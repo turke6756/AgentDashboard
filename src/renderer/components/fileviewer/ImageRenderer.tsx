@@ -19,12 +19,12 @@ export default function ImageRenderer({ filePath, pathType }: Props) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center p-8">
-          <Icons.ImageOff className="w-10 h-10 text-gray-600 mx-auto mb-4" />
-          <div className="text-gray-400 font-mono text-sm mb-2">Failed to load image</div>
-          <div className="text-gray-600 font-mono text-xs mb-4 max-w-md break-all">{filePath}</div>
+          <Icons.ImageOff className="w-10 h-10 text-gray-400 mx-auto mb-4" />
+          <div className="text-gray-400 font-sans text-sm mb-2">Failed to load image</div>
+          <div className="text-gray-400 font-sans text-[13px] mb-4 max-w-md break-all">{filePath}</div>
           <button
             onClick={() => window.api.system.openFile(filePath, pathType)}
-            className="px-4 py-2 text-xs font-mono uppercase tracking-wider text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
+            className="px-4 py-2 text-[13px] font-sans   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors"
           >
             Open externally
           </button>
@@ -44,7 +44,7 @@ export default function ImageRenderer({ filePath, pathType }: Props) {
         >
           <Icons.Minus className="w-4 h-4" />
         </button>
-        <span className="text-[11px] font-mono text-gray-500 w-12 text-center">
+        <span className="text-[13px] font-sans text-gray-300 w-12 text-center">
           {Math.round(scale * 100)}%
         </span>
         <button

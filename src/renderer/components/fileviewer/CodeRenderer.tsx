@@ -1,7 +1,8 @@
 import React, { useRef } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import SymbolOutline from './SymbolOutline';
+import { useThemeStore } from '../../stores/theme-store';
 
 interface Props {
   content: string;
@@ -10,6 +11,8 @@ interface Props {
 
 export default function CodeRenderer({ content, language }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const theme = useThemeStore((s) => s.theme);
+  const isLight = theme === 'light';
 
   const handleSymbolClick = (line: number) => {
     if (scrollRef.current) {
@@ -27,7 +30,7 @@ export default function CodeRenderer({ content, language }: Props) {
       <div className="flex-1 overflow-auto h-full scrollbar-thin" ref={scrollRef}>
         <SyntaxHighlighter
           language={language}
-          style={vscDarkPlus}
+          style={isLight ? vs : vscDarkPlus}
           showLineNumbers
           customStyle={{
             margin: 0,
@@ -39,7 +42,7 @@ export default function CodeRenderer({ content, language }: Props) {
           lineNumberStyle={{
             minWidth: '3em',
             paddingRight: '1em',
-            color: '#4b5563',
+            color: isLight ? '#9ca3af' : '#4b5563',
             userSelect: 'none',
           }}
         >

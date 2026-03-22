@@ -21,7 +21,7 @@ export default function CollapseButton({ collapsed, direction, onClick }: Props)
   return (
     <button
       onClick={onClick}
-      className="text-[9px] font-mono text-gray-600 hover:text-accent-blue transition-colors px-1 py-0.5 border border-gray-800 hover:border-accent-blue/40 bg-surface-1 shrink-0"
+      className="text-[13px] font-sans text-gray-400 hover:text-accent-blue transition-colors px-1 py-0.5 border border-gray-800 hover:border-accent-blue/40 bg-surface-1 shrink-0"
       title={collapsed ? 'Expand' : 'Collapse'}
     >
       {CHEVRONS[chevronDir]}

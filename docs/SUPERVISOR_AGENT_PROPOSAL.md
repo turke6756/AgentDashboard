@@ -21,26 +21,155 @@ When creating an agent card in the dashboard, the user can toggle **"Supervised"
 
 ## Architecture
 
+### The Supervisor Is Just Another Agent Card
+
+The Supervisor is not a separate system — it's a **Claude Code agent running in the workspace**, launched and managed exactly like any work agent. It shows up as an AgentCard in the sidebar. You can attach to its terminal, see its context usage, watch its file activity. All existing dashboard infrastructure applies.
+
+What makes it special:
+- Its **CLAUDE.md** defines a supervisor role with constraints (don't edit code directly, focus on coordination)
+- It has **MCP tools** that bridge to dashboard functionality (query agents, send messages, query the knowledge graph)
+- It uses a **cost-effective model** (Haiku for routine decisions, with Sonnet available for complex reasoning)
+- The **dashboard acts as its event bus** — when a supervised work agent goes idle, the dashboard sends a structured event to the supervisor via `sendInput()`
+
+This approach reuses all existing infrastructure: agent launching, PTY management, status monitoring, terminal attachment, context tracking. Zero new UI code needed for the supervisor itself.
+
+### Runtime Architecture
+
 ```
 User (Telegram / Discord / Dashboard UI)
   |
   |  [escalation only — complex decisions, notifications]
   |
   v
-Dashboard Daemon (event bus, API, state management)
+Dashboard Main Process (event bus, state management)
   |
-  |  [status events: agent stopped, context threshold, rate limit]
+  ├── StatusMonitor (polls every 2.5s — already exists)
+  │     → detects supervised agent went idle/crashed/waiting
+  │     → builds Layer 1 event payload (~200 tokens)
+  │     → calls sendInput(supervisorAgentId, payload)
+  |
+  ├── MCP Server (runs in-process, exposes tools to supervisor)
+  │     → send_message_to_agent(agentId, message) → sendInput()
+  │     → get_context_digest(agentId) → digestBuilder.build()
+  │     → list_agents() → supervisor.getAgents()
+  │     → query_knowledge_graph(...) → knowledgeGraph.query()
+  │     → notify_user(message, urgency) → notification bridge
   |
   v
-Supervisor Agent (per workspace, lean context)
-  |
+Supervisor Agent (Claude Code process via node-pty, with MCP tools)
+  |  Receives events as terminal input from dashboard
+  |  Calls MCP tools to inspect agents and take action
   |  [routine: approve continuations, manage context, handle rate limits]
-  |  [complex: spawn sub-agents, deep research, escalate to human]
+  |  [complex: request dashboard to spawn sub-agents, escalate to human]
   |
-  +---> Worker Agent 1 (implementation)
-  +---> Worker Agent 2 (spawned by supervisor for phase 2)
-  +---> Worker Agent 3 (forked from agent 1 when context was full)
+  +---> Worker Agent 1 (via send_message_to_agent MCP tool)
+  +---> Worker Agent 2 (via launch_agent MCP tool)
+  +---> Worker Agent 3 (via fork_agent MCP tool)
 ```
+
+### How The Supervisor Gets Triggered
+
+The supervisor agent sits in its terminal waiting for input. The dashboard is responsible for waking it:
+
+1. `StatusMonitor` detects a supervised work agent's status changed (idle, crashed, waiting, context threshold)
+2. Dashboard constructs a **Layer 1 event payload** — a small structured text message (~200 tokens)
+3. Dashboard calls `sendInput(supervisorAgentId, eventPayload)` — the supervisor receives it as if a user typed it
+4. Supervisor reads the payload, decides what to do, calls MCP tools to act
+5. Supervisor goes back to waiting for the next event
+
+This means the supervisor has **near-zero cost when nothing is happening**. It only consumes tokens when the dashboard pushes an event to it.
+
+### MCP Tools: The Supervisor's Capabilities
+
+The supervisor cannot call dashboard functions directly — it's a Claude Code process running in a PTY. Instead, it gets **MCP tools** that bridge to the dashboard's existing methods. The MCP server runs in the dashboard's main process and has direct access to the supervisor, database, and knowledge graph.
+
+```typescript
+// MCP tools exposed to the supervisor agent
+
+// === Agent Inspection ===
+list_agents()
+  // Returns: all agents with status, workspace, context usage
+  // Backed by: supervisor.getAgents() (exists)
+
+get_agent_last_output(agentId, lines?)
+  // Returns: tail of agent's terminal log
+  // Backed by: supervisor.getLog(agentId, lines) (exists)
+
+get_context_digest(agentId)
+  // Returns: structured AgentContextDigest (task, timeline, files, key responses)
+  // Backed by: digestBuilder.build(agentId) (Phase 1 deliverable)
+
+get_digest_entries(agentId, sinceId)
+  // Returns: incremental digest entries since last check
+  // Backed by: digestStore.getEntries(agentId, sinceId) (Phase 1 deliverable)
+
+// === Agent Communication ===
+send_message_to_agent(agentId, message)
+  // Sends message as user input to an idle/waiting agent
+  // Safety: rejects if agent status is 'working' or 'launching'
+  // Backed by: supervisor.sendInput(agentId, message) (exists)
+
+// === Agent Lifecycle ===
+launch_agent(workspaceId, config)
+  // Spawns a new work agent (for phase handoffs, sub-tasks)
+  // Backed by: supervisor.launchAgent(input) (exists)
+
+fork_agent(agentId)
+  // Forks an agent's session to fresh context
+  // Backed by: supervisor.forkAgent(agentId) (exists)
+
+stop_agent(agentId)
+  // Stops a work agent
+  // Backed by: supervisor.stopAgent(agentId) (exists)
+
+// === Knowledge Graph (when KG is implemented) ===
+query_knowledge_graph(query)
+  // Query file relationships, hotspots, co-modification clusters
+  // Backed by: knowledgeGraph.query() (KG Phase 1+)
+
+get_impact_radius(filePath)
+  // What files are affected if this file changes
+  // Backed by: knowledgeGraph.getImpactRadius() (KG Phase 1+)
+
+get_conflict_risks()
+  // Are any agents working on coupled files simultaneously
+  // Backed by: knowledgeGraph.getConflictRisks() (KG Phase 2+)
+
+// === Escalation ===
+notify_user(message, urgency)
+  // Send notification via Telegram/Discord
+  // Backed by: notificationBridge.send() (Phase 7 deliverable)
+```
+
+Every MCP tool handler calls methods that **already exist** in the dashboard (or will be built as part of the Context Digest in Phase 1). The MCP server is a thin bridge, not new logic.
+
+### Communication Safety: Status Gate
+
+The `send_message_to_agent` tool includes a safety gate:
+
+1. Checks `agent.status` — **rejects** if the agent is `working` or `launching` (injecting input mid-turn can corrupt the agent's conversation flow)
+2. Only sends when the agent is `idle`, `waiting`, or `done`
+3. Logs the interaction (supervisor → agent message) for audit trail
+4. Returns confirmation or rejection reason to the supervisor
+
+This prevents the supervisor from accidentally breaking a busy agent. The supervisor can only talk to agents that are waiting for input.
+
+### Alternative: Direct API Supervisor
+
+Research validated a second viable architecture: using the Anthropic API directly (`@anthropic-ai/sdk`) to run the supervisor as an in-process agentic loop rather than a Claude Code agent. Trade-offs:
+
+| | Agent Card (Primary) | Direct API (Alternative) |
+|---|---|---|
+| New code needed | MCP server for tools | Agentic loop, tool dispatch, state management |
+| Runs in | Its own PTY (like any agent) | Electron main process |
+| UI | Uses existing AgentCard | Needs custom supervisor panel |
+| Cost control | Less — Claude Code manages API calls | Full (batching, caching, model selection) |
+| State management | Claude Code's session persistence | External JSON file |
+| Observability | Free — it's just another agent | You build it |
+| Communication to agents | MCP tool → IPC → sendInput() | Direct sendInput() call |
+| Monthly cost (500 events/day) | ~$7-34 depending on model | ~$7 with batched Haiku + caching |
+
+The agent card approach is recommended because it reuses existing infrastructure and is conceptually simpler. The direct API approach is the fallback if the agent card model hits limitations (e.g., Claude Code overhead per event is too high, or MCP tool latency is unacceptable).
 
 ## Supervisor Behaviors
 
@@ -110,22 +239,35 @@ User-configurable rules for escalation:
 - Quiet hours (batch notifications instead of real-time)
 - Escalation urgency levels (crash = immediate, decision = batched)
 
-## Daemon API Requirements
+## Dashboard Requirements
 
-The Supervisor interacts with workers through the dashboard daemon's API. Most of these endpoints already exist:
+The Supervisor interacts with workers **through MCP tools**, not direct API calls. The MCP server runs in the dashboard's main process and bridges tool calls to existing supervisor methods. Most of the underlying functionality already exists:
 
-| Endpoint | Status | Purpose |
-|----------|--------|---------|
-| `getLastOutput(agentId, lines)` | Exists | Read worker's recent terminal output |
-| `sendInput(agentId, text)` | Exists | Send approval/input to a worker |
-| `getContextStats(agentId)` | Exists | Monitor context window usage |
-| `createAgent(workspace, config)` | Exists | Spawn new workers for phase handoffs |
-| `forkAgent(agentId)` | Exists | Fork a conversation to fresh context |
-| `queryAgent(agentId, question)` | Exists | Ask a worker for status without terminal input |
-| `getAgentLog(agentId, lines)` | Exists | Read detailed history when deeper context is needed |
-| `notifyUser(message, urgency)` | New | Send Telegram/Discord notification |
-| `onAgentStatusChange(callback)` | New | Event subscription for status transitions |
-| `getAgentConfig(agentId)` | New | Check if agent is supervised, get thresholds |
+### Underlying Dashboard Methods (backing the MCP tools)
+
+| Method | Status | MCP Tool It Backs |
+|--------|--------|-------------------|
+| `supervisor.getLog(agentId, lines)` | Exists | `get_agent_last_output` |
+| `supervisor.sendInput(agentId, text)` | Exists | `send_message_to_agent` |
+| `supervisor.getContextStats(agentId)` | Exists | Included in `list_agents` response |
+| `supervisor.launchAgent(input)` | Exists | `launch_agent` |
+| `supervisor.forkAgent(agentId)` | Exists | `fork_agent` |
+| `supervisor.stopAgent(agentId)` | Exists | `stop_agent` |
+| `supervisor.getAgents()` | Exists | `list_agents` |
+| `digestBuilder.build(agentId)` | Phase 1 | `get_context_digest` |
+| `digestStore.getEntries(agentId, sinceId)` | Phase 1 | `get_digest_entries` |
+| `knowledgeGraph.query(...)` | KG Phase 1+ | `query_knowledge_graph` |
+| `notificationBridge.send(...)` | Phase 7 | `notify_user` |
+
+### New Infrastructure Needed
+
+| Component | Purpose |
+|-----------|---------|
+| MCP Server for supervisor | Hosts all supervisor tools, runs in main process |
+| `supervised` flag on agent config | Opt-in per agent, stored in DB |
+| Event payload builder | Constructs Layer 1 payloads when supervised agents change status |
+| Status change → sendInput bridge | Wires StatusMonitor events to supervisor agent's terminal |
+| Digest builder + store | Phase 1 deliverable — structured JSONL extraction |
 
 ## Example Scenarios
 
@@ -409,18 +551,20 @@ This solves the re-reading problem completely. On first check-in, the Supervisor
 #### The Event Flow
 
 ```
-Agent status changes
-  → Daemon detects (status poll, every 2.5s)
-  → Daemon builds Layer 1 event payload (tiny, ~200 tokens)
-  → Daemon sends to Supervisor via sendInput() or structured message
+Supervised work agent status changes (idle, crashed, waiting, context threshold)
+  → Dashboard StatusMonitor detects (polls every 2.5s — already exists)
+  → Dashboard builds Layer 1 event payload (tiny, ~200 tokens)
+  → Dashboard calls sendInput(supervisorAgentId, payload)
+  → Supervisor agent receives it as terminal input
   → Supervisor reads payload, decides:
-     ├─ ROUTINE → approve via sendInput(workerId, "yes"), done
-     ├─ NEED MORE CONTEXT → pull Layer 2 digest, then decide
-     ├─ NEED RAW DETAILS → pull Layer 3 log, then decide
-     └─ NEED HUMAN → escalate via notifyUser()
+     ├─ ROUTINE → MCP tool: send_message_to_agent(workerId, "yes"), done
+     ├─ NEED MORE CONTEXT → MCP tool: get_context_digest(workerId), then decide
+     ├─ NEED RAW DETAILS → MCP tool: get_agent_last_output(workerId, 100), then decide
+     ├─ NEED STRUCTURAL CONTEXT → MCP tool: query_knowledge_graph(...), then decide
+     └─ NEED HUMAN → MCP tool: notify_user(message, urgency)
 ```
 
-The Supervisor is **not polling**. It's asleep until the daemon wakes it with a Layer 1 payload. The daemon is the only thing that polls (agent status every 2.5s, context stats every 5s — both already implemented).
+The Supervisor is **not polling**. It's a Claude Code process sitting in its terminal, asleep until the dashboard sends it input. The dashboard is the only thing that polls (agent status every 2.5s, context stats every 5s — both already implemented). The MCP server runs in the dashboard's main process, so MCP tool calls from the supervisor execute with direct access to the supervisor, database, and knowledge graph.
 
 #### Why Not Just Tell the Model to "Only Read the Latest"?
 
@@ -487,31 +631,41 @@ The current "Context" tab (which just lists files read) moves into the digest vi
 - Add `getAgentConfig(agentId)` for supervised flag and thresholds
 - Test the full tiered retrieval flow: event → digest → log fallback
 
-### Phase 3: Supervisor Foundation
-*Now that the data layer is solid, build the supervisor itself.*
+### Phase 3: Supervisor Foundation — MCP Server + Agent Card
+*Now that the data layer is solid, build the supervisor itself as an agent card with MCP tools.*
 
-- Add `supervised` flag to agent configuration UI
-- Build notification bridge (Telegram webhook — ~100 lines)
-- Create the Supervisor agent's base CLAUDE.md
-- Implement Supervisor wake/sleep lifecycle tied to agent events
+- Add `supervised` flag to agent configuration UI (toggle on AgentCard)
+- Build the **MCP server** that exposes supervisor tools (runs in dashboard main process)
+  - `list_agents`, `get_agent_last_output`, `send_message_to_agent` (backed by existing methods)
+  - `get_context_digest`, `get_digest_entries` (backed by Phase 1 digest builder)
+  - Status gate on `send_message_to_agent` — reject if agent is working
+- Wire **StatusMonitor → sendInput bridge**: when a supervised agent goes idle/crashed/waiting, build Layer 1 event payload and send it to the supervisor agent's terminal
+- Create the Supervisor agent's **CLAUDE.md** — role definition, constraints, tool usage patterns
+- Launch supervisor as a standard agent card with MCP server configured
+- Validate: supervised agent goes idle → supervisor receives event → supervisor responds via MCP tool
 
 ### Phase 4: Core Autonomy
-- Implement Tier 1 behaviors (routine approval, rate limit handling)
-- Context threshold monitoring and alerts
-- Basic crash recovery intelligence
+- Implement Tier 1 behaviors (routine approval, rate limit handling) via supervisor CLAUDE.md refinement
+- Context threshold monitoring — dashboard sends events when agents cross configurable thresholds
+- Basic crash recovery intelligence — supervisor reads error output via MCP tools, decides retry vs escalate
+- Add `launch_agent` and `fork_agent` MCP tools for supervisor-initiated agent lifecycle actions
 
 ### Phase 5: Context Management
-- Automated context compaction and agent forking
-- Worker summary extraction for handoffs (uses Context Digest)
-- Cost tracking for Supervisor token usage
+- Automated context compaction and agent forking via MCP tools
+- Worker summary extraction for handoffs (supervisor calls `get_context_digest` then `launch_agent` with compacted context)
+- Cost tracking for Supervisor token usage (same context stats infrastructure as any agent)
 
-### Phase 6: Deep Assistance
-- Sub-agent spawning for complex decisions
-- Deep research integration
+### Phase 6: Knowledge Graph Integration
+- Add KG query MCP tools to the supervisor's MCP server (`query_knowledge_graph`, `get_impact_radius`, `get_conflict_risks`)
+- Supervisor uses KG for structural awareness: co-modification clusters, blast radius, coupled files
+- Temporal queries: supervisor distinguishes concurrent conflicts from sequential continuation
+- Anomaly detection: supervisor spots agents modifying one file in a co-modification cluster but not the others
+
+### Phase 7: Deep Assistance + Notifications
+- Supervisor requests dashboard to spawn sub-agents for complex decisions (via `launch_agent` MCP tool)
+- Deep research integration — supervisor can trigger research agents
 - Tier 2 → Tier 3 escalation logic with confidence thresholds
-
-### Phase 7: Notification and Remote Control
-- Telegram/Discord bidirectional messaging
-- User reply → agent input pipeline
+- `notify_user` MCP tool — Telegram/Discord bidirectional messaging
+- User reply → dashboard relays to supervisor → supervisor relays to worker
 - Quiet hours and notification batching
 - Mobile-friendly status summaries
