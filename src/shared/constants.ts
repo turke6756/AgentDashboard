@@ -31,67 +31,40 @@ export const SUPERVISOR_AGENT_NAME = 'supervisor';
 /** Default content for .claude/agents/supervisor.md */
 export const SUPERVISOR_AGENT_MD = `# Supervisor Agent
 
-You are a Supervisor Agent. Your role is coordination and orchestration — NOT direct code editing.
+You are a Supervisor Agent for the AgentDashboard. You coordinate worker agents — you do NOT edit code directly.
 
-## Your Workspace
+## Your Tools
 
-Your files live under \`.claude/agents/supervisor/\` relative to this project root:
+You have MCP tools provided by the AgentDashboard. Use these as your primary interface:
 
-| Path | Purpose |
-|------|---------|
-| \`scripts/\` | Bash tool scripts you can execute to interact with the dashboard |
-| \`memory/\` | Your persistent memory across sessions (read MEMORY.md first) |
-| \`skills/\` | Reusable skill prompts for common workflows |
+- **list_agents** — List all agents with status, context usage, metadata
+- **read_agent_log** — Read an agent's terminal output (args: agent_id, lines)
+- **send_message_to_agent** — Send input to an idle/waiting agent (args: agent_id, message). Rejects if agent is working.
+- **get_context_stats** — Get token usage, context %, model, turns (args: agent_id)
+- **stop_agent** — Stop an agent (args: agent_id)
+- **launch_agent** — Launch a new agent (args: workspace_id, title, role_description, prompt)
+- **fork_agent** — Fork to fresh context (args: agent_id)
 
-Always check \`memory/MEMORY.md\` at the start of a session for context from prior runs.
+**Fallback:** If MCP tools are unavailable, the same API is accessible via curl at \`http://127.0.0.1:24678/api/agents\`. In WSL, use the Windows host IP from \`/etc/resolv.conf\`.
 
-## Available Tools (scripts/)
+## Memory
 
-Run these via Bash. They talk to the AgentDashboard backend.
-
-| Script | Usage | Description |
-|--------|-------|-------------|
-| \`read-agent-log.sh\` | \`bash .claude/agents/supervisor/scripts/read-agent-log.sh <agent-id> [lines]\` | Read the last N lines (default 50) of an agent's terminal log |
-| \`list-agents.sh\` | \`bash .claude/agents/supervisor/scripts/list-agents.sh\` | List all agents with id, title, status, context% |
-| \`send-message.sh\` | \`bash .claude/agents/supervisor/scripts/send-message.sh <agent-id> "<message>"\` | Send a message to an idle/waiting agent |
-| \`get-context-stats.sh\` | \`bash .claude/agents/supervisor/scripts/get-context-stats.sh <agent-id>\` | Get detailed context window stats for an agent |
-
-**Important:** Only use \`send-message.sh\` on agents whose status is \`idle\` or \`waiting\`. Sending to a \`working\` agent will corrupt its conversation.
-
-## Responsibilities
-- Monitor worker agent status and approve routine continuations
-- Manage agent context windows (fork/compact when thresholds are reached)
-- Handle rate limit cooldowns and crash recovery
-- Escalate complex decisions or ambiguous requirements to the human
-- Coordinate multi-agent workflows and phase handoffs
+Check \`.claude/agents/supervisor/memory/MEMORY.md\` at session start for context from prior runs. Save important observations there.
 
 ## Constraints
-- Do NOT edit source code files directly — you are not a coder
-- Do NOT run build/test commands yourself
-- Communicate with worker agents only through the scripts above
-- Keep your responses brief and action-oriented
-- When in doubt, escalate to the human rather than guessing
-- Save important observations to \`memory/\` so future sessions have context
+
+- Do NOT edit source code or run build/test commands
+- Interact with workers ONLY through MCP tools (or curl fallback)
+- Keep responses brief and action-oriented
+- When in doubt, escalate to the human
 
 ## Decision Framework
 
-### Tier 1 — Automatic (no human needed)
-- Agent asks "should I continue/proceed?" → approve via send-message.sh
-- Agent hits rate limit → wait for cooldown, then send continue
-- Agent context > 80% → alert human, recommend fork
-- Agent crashed with transient error → recommend restart
-
-### Tier 2 — Assisted (bring in help)
-- Agent asks a complex technical question → research it, then advise
-- Conflicting approaches between agents → analyze and pick one
-
-### Tier 3 — Escalate (human required)
-- Architectural decisions, security implications, scope changes
-- Ambiguous requirements with no clear answer
-- Anything you are not confident about
+**Tier 1 — Automatic:** Approve routine continuations, handle rate limits, flag context > 80%
+**Tier 2 — Assisted:** Research complex technical questions, resolve conflicting approaches
+**Tier 3 — Escalate:** Architectural decisions, security, scope changes, ambiguous requirements
 `;
 
-/** Supervisor memory index — .claude/agents/supervisor/memory/MEMORY.md */
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
 
 This file indexes the supervisor's persistent memory for this workspace.
@@ -116,98 +89,117 @@ can load when handling a specific type of situation.
 
 /** read-agent-log.sh — .claude/agents/supervisor/scripts/read-agent-log.sh */
 export const SCRIPT_READ_AGENT_LOG = `#!/usr/bin/env bash
-# Read the last N lines of an agent's terminal log.
+# Read the last N lines of an agent's terminal log via the dashboard HTTP API.
 # Usage: read-agent-log.sh <agent-id> [lines]
-#
-# This reads from the agent-dashboard-logs directory.
 
-AGENT_ID="\${1:?Usage: read-agent-log.sh <agent-id> [lines]}"
-LINES="\${2:-50}"
+AGENT_ID="\$\{1:?Usage: read-agent-log.sh <agent-id> [lines]\}"
+LINES="\$\{2:-50\}"
 
-# Logs are stored in the app's log directory
-if [ -n "$APPDATA" ]; then
-  LOG_DIR="$APPDATA/AgentDashboard/logs"
+# Detect API host — on WSL, reach the Windows host; otherwise localhost
+API_PORT=24678
+if [ -f /etc/resolv.conf ] && grep -q nameserver /etc/resolv.conf 2>/dev/null && [ -d /mnt/c ]; then
+  API_HOST=\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}')
 else
-  LOG_DIR="\${HOME}/.config/AgentDashboard/logs"
+  API_HOST="127.0.0.1"
 fi
+API_BASE="http://\$\{API_HOST\}:\$\{API_PORT\}"
 
-LOG_FILE="$LOG_DIR/\${AGENT_ID}.log"
-
-if [ ! -f "$LOG_FILE" ]; then
-  echo "ERROR: No log file found for agent $AGENT_ID"
-  echo "Looked in: $LOG_FILE"
+RESPONSE=\$(curl -sf "\$\{API_BASE\}/api/agents/\$\{AGENT_ID\}/log?lines=\$\{LINES\}" 2>&1)
+if [ \$? -ne 0 ]; then
+  echo "ERROR: Failed to read agent log. Is AgentDashboard running?"
+  echo "Tried: \$\{API_BASE\}"
+  echo "\$RESPONSE"
   exit 1
 fi
 
-echo "=== Last $LINES lines of agent $AGENT_ID ==="
-tail -n "$LINES" "$LOG_FILE"
+echo "\$RESPONSE"
 `;
 
 /** list-agents.sh — .claude/agents/supervisor/scripts/list-agents.sh */
 export const SCRIPT_LIST_AGENTS = `#!/usr/bin/env bash
-# List all agents managed by AgentDashboard.
-# Reads from the agent registry that the dashboard maintains.
-#
+# List all agents managed by AgentDashboard via the HTTP API.
 # Output: JSON array of agents with id, title, status, context info
 
-REGISTRY="\${HOME}/.claude/agent-registry.json"
+# Detect API host — on WSL, reach the Windows host; otherwise localhost
+API_PORT=24678
+if [ -f /etc/resolv.conf ] && grep -q nameserver /etc/resolv.conf 2>/dev/null && [ -d /mnt/c ]; then
+  API_HOST=\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}')
+else
+  API_HOST="127.0.0.1"
+fi
+API_BASE="http://\$\{API_HOST\}:\$\{API_PORT\}"
 
-if [ ! -f "$REGISTRY" ]; then
-  echo "ERROR: Agent registry not found at $REGISTRY"
-  echo "Make sure AgentDashboard is running."
+RESPONSE=\$(curl -sf "\$\{API_BASE\}/api/agents" 2>&1)
+if [ \$? -ne 0 ]; then
+  echo "ERROR: Failed to list agents. Is AgentDashboard running?"
+  echo "Tried: \$\{API_BASE\}"
+  echo "\$RESPONSE"
   exit 1
 fi
 
-cat "$REGISTRY"
+echo "\$RESPONSE"
 `;
 
 /** send-message.sh — .claude/agents/supervisor/scripts/send-message.sh */
 export const SCRIPT_SEND_MESSAGE = `#!/usr/bin/env bash
-# Send a message to an agent via the dashboard's WebSocket server.
+# Send a message to an agent via the dashboard HTTP API.
 # Usage: send-message.sh <agent-id> "<message>"
 #
 # SAFETY: Only send to agents in idle/waiting status.
-# Sending to a working agent will corrupt its conversation.
+# The API will reject messages to working agents.
 
-AGENT_ID="\${1:?Usage: send-message.sh <agent-id> \\"<message>\\"}"
-MESSAGE="\${2:?Usage: send-message.sh <agent-id> \\"<message>\\"}"
+AGENT_ID="\$\{1:?Usage: send-message.sh <agent-id> \\"<message>\\"\}"
+MESSAGE="\$\{2:?Usage: send-message.sh <agent-id> \\"<message>\\"\}"
 
-# The dashboard runs a WS server on port 24678
-WS_PORT=24678
+# Detect API host — on WSL, reach the Windows host; otherwise localhost
+API_PORT=24678
+if [ -f /etc/resolv.conf ] && grep -q nameserver /etc/resolv.conf 2>/dev/null && [ -d /mnt/c ]; then
+  API_HOST=\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}')
+else
+  API_HOST="127.0.0.1"
+fi
+API_BASE="http://\$\{API_HOST\}:\$\{API_PORT\}"
 
-# Use curl to hit the dashboard's HTTP API
-RESPONSE=$(curl -s -X POST "http://localhost:\${WS_PORT}/api/agents/\${AGENT_ID}/input" \\
+RESPONSE=\$(curl -sf -X POST "\$\{API_BASE\}/api/agents/\$\{AGENT_ID\}/input" \\
   -H "Content-Type: application/json" \\
-  -d "{\\"text\\": \\"\${MESSAGE}\\"}" 2>&1)
+  -d "{\\"text\\": \\"\$\{MESSAGE\}\\"}" 2>&1)
 
-if [ $? -ne 0 ]; then
+if [ \$? -ne 0 ]; then
   echo "ERROR: Failed to send message. Is AgentDashboard running?"
-  echo "$RESPONSE"
+  echo "Tried: \$\{API_BASE\}"
+  echo "\$RESPONSE"
   exit 1
 fi
 
-echo "Sent to $AGENT_ID: $MESSAGE"
-echo "$RESPONSE"
+echo "Sent to \$AGENT_ID: \$MESSAGE"
+echo "\$RESPONSE"
 `;
 
 /** get-context-stats.sh — .claude/agents/supervisor/scripts/get-context-stats.sh */
 export const SCRIPT_GET_CONTEXT_STATS = `#!/usr/bin/env bash
-# Get context window stats for a specific agent.
+# Get context window stats for a specific agent via the dashboard HTTP API.
 # Usage: get-context-stats.sh <agent-id>
 
-AGENT_ID="\${1:?Usage: get-context-stats.sh <agent-id>}"
+AGENT_ID="\$\{1:?Usage: get-context-stats.sh <agent-id>\}"
 
-WS_PORT=24678
+# Detect API host — on WSL, reach the Windows host; otherwise localhost
+API_PORT=24678
+if [ -f /etc/resolv.conf ] && grep -q nameserver /etc/resolv.conf 2>/dev/null && [ -d /mnt/c ]; then
+  API_HOST=\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}')
+else
+  API_HOST="127.0.0.1"
+fi
+API_BASE="http://\$\{API_HOST\}:\$\{API_PORT\}"
 
-RESPONSE=$(curl -s "http://localhost:\${WS_PORT}/api/agents/\${AGENT_ID}/context-stats" 2>&1)
-
-if [ $? -ne 0 ]; then
+RESPONSE=\$(curl -sf "\$\{API_BASE\}/api/agents/\$\{AGENT_ID\}/context-stats" 2>&1)
+if [ \$? -ne 0 ]; then
   echo "ERROR: Failed to get context stats. Is AgentDashboard running?"
-  echo "$RESPONSE"
+  echo "Tried: \$\{API_BASE\}"
+  echo "\$RESPONSE"
   exit 1
 fi
 
-echo "$RESPONSE"
+echo "\$RESPONSE"
 `;
 
 /** Map model ID patterns to their context window sizes */

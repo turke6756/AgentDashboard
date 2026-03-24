@@ -1,5 +1,78 @@
 # Supervisor Agent: Autonomous Project Management Layer
 
+## Implementation Status (Updated 2026-03-23)
+
+### What's Built and Working
+
+**Supervisor Agent Core**
+- Supervisor launches as a dedicated Claude Code instance per workspace via toolbar button
+- Custom system prompt injected via `--system-prompt` flag (not CLAUDE.md — ensures isolation)
+- Auto-scaffolded folder structure at `.claude/agents/supervisor/` (memory, skills, scripts)
+- One supervisor per workspace, with duplicate prevention
+- Stop/reset button (✕) on toolbar deletes agent and clears session for fresh restarts
+- `is_supervisor` column in DB, filtered out of agent grid — lives in toolbar only
+
+**MCP Tools (Primary Interface)**
+- MCP server at `scripts/mcp-supervisor.js` — stdio, newline-delimited JSON-RPC
+- Passed to Claude Code via `--mcp-config` CLI flag (bypasses file discovery and trust approval)
+- 7 tools: `list_agents`, `read_agent_log`, `send_message_to_agent`, `get_context_stats`, `stop_agent`, `launch_agent`, `fork_agent`
+- MCP server proxies to HTTP API server in Electron main process
+- Works on both Windows (127.0.0.1) and WSL (auto-detects Windows host IP)
+
+**HTTP API Server**
+- `src/main/api-server.ts` — lightweight HTTP server on port 24678, bound to 0.0.0.0
+- Endpoints: GET/POST/DELETE on `/api/agents`, `/api/agents/:id/log`, `/api/agents/:id/input`, `/api/agents/:id/context-stats`, `/api/agents/:id/fork`
+- Status gate on send-input: rejects messages to working/launching agents
+- Available as curl fallback if MCP tools are unavailable
+
+**Platform Support**
+- Windows: `directSpawn` bypasses cmd.exe for multiline `--system-prompt` args
+- WSL: base64-encoded scaffold writes, resolv.conf host IP detection for API access
+- Both platforms confirmed working with MCP tools connected
+
+### Key Technical Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| `--system-prompt` over `--agent` flag | `--agent` was unreliable for loading prompts; `--system-prompt` injects directly |
+| `--mcp-config` over `.mcp.json` | File-based MCP discovery had trust approval issues and path casing bugs on Windows |
+| Newline-delimited JSON over Content-Length | MCP spec requires `{json}\n`, not LSP-style `Content-Length` framing |
+| HTTP API backing MCP server | MCP server is a thin proxy; HTTP API also serves as curl fallback |
+| `directSpawn` on Windows | cmd.exe mangles multiline args; direct claude.exe spawn preserves them |
+
+### What's Not Built Yet
+
+- **Event-driven triggering** — StatusMonitor → sendInput bridge (supervisor still requires manual interaction)
+- **Context Digest** — structured JSONL parsing for Layers 1-3 (Phase 1 in proposal)
+- **Supervised toggle** — per-agent opt-in flag on agent cards
+- **Notification bridge** — Telegram/Discord escalation
+- **Knowledge Graph integration** — file relationship queries
+- **Cost tracking** — supervisor token usage monitoring
+
+### Architecture (as implemented)
+
+```
+User clicks Supervisor button
+  → Dashboard scaffolds .claude/agents/supervisor/ (if first launch)
+  → Dashboard launches Claude Code with:
+      --system-prompt <supervisor role>
+      --mcp-config <JSON with agent-dashboard server>
+      --dangerously-skip-permissions
+      --session-id <uuid>
+  → Claude Code spawns mcp-supervisor.js (stdio)
+  → MCP server connects to HTTP API on port 24678
+  → Supervisor has 7 MCP tools to manage worker agents
+
+MCP Tool Call Flow:
+  Supervisor calls list_agents()
+    → mcp-supervisor.js receives JSON-RPC
+    → HTTP GET http://127.0.0.1:24678/api/agents
+    → api-server.ts calls supervisor.getAgents()
+    → JSON response back through MCP to supervisor
+```
+
+---
+
 ## Overview
 
 The Supervisor Agent is an autonomous orchestration layer that keeps worker agents productive without requiring constant human presence. It operates on a simple principle: **most agent stalls are trivial and don't need a human to resolve.** An agent asking "should I continue to phase 2?" just needs someone to say yes. The Supervisor is that someone.
@@ -631,24 +704,25 @@ The current "Context" tab (which just lists files read) moves into the digest vi
 - Add `getAgentConfig(agentId)` for supervised flag and thresholds
 - Test the full tiered retrieval flow: event → digest → log fallback
 
-### Phase 3: Supervisor Foundation — MCP Server + Agent Card
+### Phase 3: Supervisor Foundation — MCP Server + Agent Card ✅ COMPLETE
 *Now that the data layer is solid, build the supervisor itself as an agent card with MCP tools.*
 
-- Add `supervised` flag to agent configuration UI (toggle on AgentCard)
-- Build the **MCP server** that exposes supervisor tools (runs in dashboard main process)
-  - `list_agents`, `get_agent_last_output`, `send_message_to_agent` (backed by existing methods)
-  - `get_context_digest`, `get_digest_entries` (backed by Phase 1 digest builder)
-  - Status gate on `send_message_to_agent` — reject if agent is working
+- ~~Add `supervised` flag to agent configuration UI (toggle on AgentCard)~~ → Deferred; supervisor works without per-agent opt-in for now
+- ✅ Build the **MCP server** that exposes supervisor tools (stdio server proxying to HTTP API)
+  - ✅ `list_agents`, `read_agent_log`, `send_message_to_agent`, `get_context_stats` (backed by existing methods)
+  - `get_context_digest`, `get_digest_entries` (awaiting Phase 1 digest builder)
+  - ✅ Status gate on `send_message_to_agent` — reject if agent is working
 - Wire **StatusMonitor → sendInput bridge**: when a supervised agent goes idle/crashed/waiting, build Layer 1 event payload and send it to the supervisor agent's terminal
-- Create the Supervisor agent's **CLAUDE.md** — role definition, constraints, tool usage patterns
-- Launch supervisor as a standard agent card with MCP server configured
-- Validate: supervised agent goes idle → supervisor receives event → supervisor responds via MCP tool
+- ✅ Create the Supervisor agent's system prompt — role definition, constraints, MCP tool usage
+- ✅ Launch supervisor as a standard agent card with MCP server configured via `--mcp-config`
+- ✅ Validate: supervisor connects to MCP, can list agents, read logs, send messages
 
-### Phase 4: Core Autonomy
-- Implement Tier 1 behaviors (routine approval, rate limit handling) via supervisor CLAUDE.md refinement
+### Phase 4: Core Autonomy (NEXT)
+- Implement Tier 1 behaviors (routine approval, rate limit handling) via supervisor prompt refinement
+- Wire StatusMonitor → sendInput bridge for event-driven triggering
 - Context threshold monitoring — dashboard sends events when agents cross configurable thresholds
 - Basic crash recovery intelligence — supervisor reads error output via MCP tools, decides retry vs escalate
-- Add `launch_agent` and `fork_agent` MCP tools for supervisor-initiated agent lifecycle actions
+- ✅ `launch_agent` and `fork_agent` MCP tools already implemented
 
 ### Phase 5: Context Management
 - Automated context compaction and agent forking via MCP tools

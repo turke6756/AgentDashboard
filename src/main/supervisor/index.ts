@@ -267,6 +267,7 @@ export class AgentSupervisor extends EventEmitter {
     // Auto-create .claude/agents/supervisor/ scaffold if this is a supervisor launch
     if (input.isSupervisor) {
       this.ensureSupervisorScaffold(workDir, pathType);
+      this.ensureMcpConfig(workDir, pathType);
     }
 
     // Auto-load agent.md/AGENT.md if present
@@ -340,6 +341,76 @@ export class AgentSupervisor extends EventEmitter {
       addEvent('system', 'supervisor_scaffold_created', JSON.stringify({ workDir, filesCreated: created }));
     } else {
       console.log(`[supervisor] Scaffold already exists in ${workDir}`);
+    }
+  }
+
+  /** Write .mcp.json in the workspace so Claude Code auto-discovers the MCP server.
+   *  This enables the supervisor agent to use native MCP tools (list_agents, send_message, etc.)
+   *  instead of bash scripts. */
+  private ensureMcpConfig(workDir: string, pathType: string): void {
+    const mcpScriptPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js');
+    const mcpConfig = {
+      mcpServers: {
+        'agent-dashboard': {
+          command: 'node',
+          args: [mcpScriptPath.replace(/\\/g, '/')],
+          env: {
+            AGENT_DASHBOARD_API_PORT: '24678',
+          },
+        },
+      },
+    };
+
+    const configJson = JSON.stringify(mcpConfig, null, 2);
+
+    if (pathType === 'wsl') {
+      try {
+        // Convert the Windows script path to a WSL-accessible path
+        const wslScriptPath = mcpScriptPath.replace(/\\/g, '/');
+        // For WSL, use the Windows path via /mnt/c/... since node runs in WSL
+        const driveLetter = wslScriptPath.charAt(0).toLowerCase();
+        const restOfPath = wslScriptPath.substring(2); // skip "C:"
+        const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
+
+        // Get the Windows host IP that WSL can reach (from /etc/resolv.conf nameserver)
+        let windowsHostIp = '127.0.0.1';
+        try {
+          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+            encoding: 'utf-8', timeout: 5000,
+          }).trim();
+          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
+            windowsHostIp = resolv;
+          }
+        } catch { /* fall back to 127.0.0.1 */ }
+        console.log(`[supervisor] WSL → Windows host IP: ${windowsHostIp}`);
+
+        const wslMcpConfig = {
+          mcpServers: {
+            'agent-dashboard': {
+              command: 'node',
+              args: [linuxScriptPath],
+              env: {
+                AGENT_DASHBOARD_API_PORT: '24678',
+                AGENT_DASHBOARD_API_HOST: windowsHostIp,
+              },
+            },
+          },
+        };
+
+        const b64 = Buffer.from(JSON.stringify(wslMcpConfig, null, 2), 'utf-8').toString('base64');
+        execFileSync('wsl.exe', ['bash', '-lc', `echo '${b64}' | base64 -d > '${workDir}/.mcp.json'`], { timeout: 5000 });
+        console.log(`[supervisor] Wrote .mcp.json in WSL workspace: ${workDir}`);
+      } catch (err) {
+        console.error('[supervisor] Failed to write .mcp.json in WSL:', err);
+      }
+    } else {
+      try {
+        const fullPath = path.join(workDir, '.mcp.json');
+        fs.writeFileSync(fullPath, configJson, 'utf-8');
+        console.log(`[supervisor] Wrote .mcp.json in workspace: ${workDir}`);
+      } catch (err) {
+        console.error('[supervisor] Failed to write .mcp.json:', err);
+      }
     }
   }
 
@@ -430,11 +501,25 @@ export class AgentSupervisor extends EventEmitter {
     if (!overrideArgs) {
       const isClaude = agent.provider === 'claude';
 
-      // Inject supervisor prompt via --system-prompt
+      // Inject supervisor prompt via --system-prompt + MCP config
       if (agent.isSupervisor && isClaude) {
         const supPrompt = this.loadSupervisorPrompt(agent.workingDirectory, 'windows');
         args.push('--system-prompt', supPrompt);
         console.log(`[Windows] Supervisor agent ${agent.title} (${agent.id}) — loaded system prompt (${supPrompt.length} chars)`);
+
+        // Pass MCP config directly via --mcp-config to bypass file discovery and trust approval
+        const mcpScriptPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js').replace(/\\/g, '/');
+        const mcpConfig = JSON.stringify({
+          mcpServers: {
+            'agent-dashboard': {
+              command: 'node',
+              args: [mcpScriptPath],
+              env: { AGENT_DASHBOARD_API_PORT: '24678' },
+            },
+          },
+        });
+        args.push('--mcp-config', mcpConfig);
+        console.log(`[Windows] Supervisor MCP config injected via --mcp-config`);
       }
 
       // Add session ID on fresh launch (Claude only)
@@ -523,6 +608,36 @@ export class AgentSupervisor extends EventEmitter {
         const escapedPrompt = supPrompt.replace(/'/g, "'\\''");
         command += ` --system-prompt '${escapedPrompt}'`;
         console.log(`[WSL] Supervisor agent ${agent.title} (${agent.id}) — loaded system prompt (${supPrompt.length} chars)`);
+
+        // Pass MCP config directly via --mcp-config to bypass file discovery and trust approval
+        // WSL needs the Windows host IP for the API, and /mnt/c/... path for the script
+        const mcpScriptPathWin = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js').replace(/\\/g, '/');
+        const driveLetter = mcpScriptPathWin.charAt(0).toLowerCase();
+        const restOfPath = mcpScriptPathWin.substring(2);
+        const mcpScriptPathWsl = `/mnt/${driveLetter}${restOfPath}`;
+
+        let windowsHostIp = '127.0.0.1';
+        try {
+          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+            encoding: 'utf-8', timeout: 5000,
+          }).trim();
+          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
+            windowsHostIp = resolv;
+          }
+        } catch { /* fall back to 127.0.0.1 */ }
+
+        const mcpConfigObj = {
+          mcpServers: {
+            'agent-dashboard': {
+              command: 'node',
+              args: [mcpScriptPathWsl],
+              env: { AGENT_DASHBOARD_API_PORT: '24678', AGENT_DASHBOARD_API_HOST: windowsHostIp },
+            },
+          },
+        };
+        const mcpConfigEscaped = JSON.stringify(JSON.stringify(mcpConfigObj)).slice(1, -1);
+        command += ` --mcp-config '${mcpConfigEscaped.replace(/'/g, "'\\''")}'`;
+        console.log(`[WSL] Supervisor MCP config injected via --mcp-config (API host: ${windowsHostIp})`);
       }
 
       // Add session ID on fresh launch (Claude only)

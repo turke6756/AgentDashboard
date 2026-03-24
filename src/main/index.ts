@@ -4,6 +4,7 @@ import { initDatabase } from './database';
 import { AgentSupervisor } from './supervisor';
 import { registerIpcHandlers } from './ipc-handlers';
 import { WsServer } from './ws-server';
+import { ApiServer } from './api-server';
 import { pathToFileURL } from 'url';
 import { wslToWindowsPath } from './path-utils';
 
@@ -14,6 +15,7 @@ process.stderr?.on?.('error', () => {});
 let mainWindow: BrowserWindow | null = null;
 let supervisor: AgentSupervisor | null = null;
 let wsServer: WsServer | null = null;
+let apiServer: ApiServer | null = null;
 
 // Register media protocol before app is ready
 protocol.registerSchemesAsPrivileged([
@@ -131,6 +133,8 @@ app.whenReady().then(async () => {
     supervisor.start();
     wsServer = new WsServer(supervisor);
     wsServer.start();
+    apiServer = new ApiServer(supervisor);
+    apiServer.start();
     supervisor.reconcile();
     console.log('App ready');
   } catch (err: any) {
@@ -141,6 +145,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  apiServer?.stop();
   wsServer?.stop();
   supervisor?.stop();
   app.quit();

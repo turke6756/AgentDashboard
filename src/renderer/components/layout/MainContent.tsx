@@ -111,43 +111,57 @@ export default function MainContent() {
           <div className="flex items-center gap-4">
             {/* Supervisor Card */}
             {supervisorAgent && !['done', 'crashed'].includes(supervisorAgent.status) ? (
-              <button
-                onClick={() => {
-                  selectAgent(supervisorAgent.id);
-                  setTerminalAgent(supervisorAgent.id);
-                }}
-                className={`hidden md:flex items-center gap-3 px-4 py-2.5 border rounded-lg transition-all cursor-pointer ${
-                  SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border
-                } ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg} bg-surface-1/60`}
-                title="Click to attach terminal"
-              >
-                {/* Status dot + label */}
-                <div className="flex flex-col items-start gap-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].dot}`} />
-                    <span className="text-[13px] font-sans font-bold text-gray-100">Supervisor</span>
-                  </div>
-                  <span className="text-[11px] font-sans text-gray-400 ml-[18px] capitalize">{supervisorAgent.status}</span>
-                </div>
-
-                {/* Context bar */}
-                {supStats && (
-                  <div className="flex flex-col items-end gap-0.5 ml-2">
-                    <span className="text-[11px] font-sans text-gray-400">
-                      {Math.round(supStats.contextPercentage)}% ctx
-                    </span>
-                    <div className="w-20 h-1 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${
-                          supStats.contextPercentage > 80 ? 'bg-red-400' :
-                          supStats.contextPercentage > 50 ? 'bg-yellow-400' : 'bg-accent-green'
-                        }`}
-                        style={{ width: `${Math.min(supStats.contextPercentage, 100)}%` }}
-                      />
+              <div className="hidden md:flex items-center gap-0">
+                <button
+                  onClick={() => {
+                    selectAgent(supervisorAgent.id);
+                    setTerminalAgent(supervisorAgent.id);
+                  }}
+                  className={`flex items-center gap-3 px-4 py-2.5 border border-r-0 rounded-l-lg transition-all cursor-pointer ${
+                    SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border
+                  } ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg} bg-surface-1/60`}
+                  title="Click to attach terminal"
+                >
+                  {/* Status dot + label */}
+                  <div className="flex flex-col items-start gap-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].dot}`} />
+                      <span className="text-[13px] font-sans font-bold text-gray-100">Supervisor</span>
                     </div>
+                    <span className="text-[11px] font-sans text-gray-400 ml-[18px] capitalize">{supervisorAgent.status}</span>
                   </div>
-                )}
-              </button>
+
+                  {/* Context bar */}
+                  {supStats && (
+                    <div className="flex flex-col items-end gap-0.5 ml-2">
+                      <span className="text-[11px] font-sans text-gray-400">
+                        {Math.round(supStats.contextPercentage)}% ctx
+                      </span>
+                      <div className="w-20 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            supStats.contextPercentage > 80 ? 'bg-red-400' :
+                            supStats.contextPercentage > 50 ? 'bg-yellow-400' : 'bg-accent-green'
+                          }`}
+                          style={{ width: `${Math.min(supStats.contextPercentage, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </button>
+                <button
+                  onClick={async () => {
+                    await window.api.agents.delete(supervisorAgent.id);
+                    loadSupervisor(workspace.id);
+                  }}
+                  className={`flex items-center justify-center w-8 py-2.5 border rounded-r-lg transition-all cursor-pointer ${
+                    SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border
+                  } hover:bg-red-500/20 bg-surface-1/60`}
+                  title="Reset Supervisor (stops and clears session)"
+                >
+                  <span className="text-gray-400 hover:text-red-400 text-sm">✕</span>
+                </button>
+              </div>
             ) : (
               <button
                 onClick={async () => {
