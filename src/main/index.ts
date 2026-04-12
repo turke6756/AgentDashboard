@@ -17,12 +17,30 @@ let supervisor: AgentSupervisor | null = null;
 let wsServer: WsServer | null = null;
 let apiServer: ApiServer | null = null;
 
+// Single-instance lock — prevent duplicate windows
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log('Another instance is already running — exiting.');
+  app.quit();
+}
+app.on('second-instance', () => {
+  // Focus the existing window when a second instance tries to launch
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 // Register media protocol before app is ready
 protocol.registerSchemesAsPrivileged([
   { scheme: 'media', privileges: { standard: true, secure: true, supportFetchAPI: true, bypassCSP: true, stream: true } }
 ]);
 
 function createWindow(): void {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'assets', 'icon.ico')
+    : path.join(__dirname, '..', '..', '..', 'assets', 'icon.ico');
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -30,6 +48,7 @@ function createWindow(): void {
     minHeight: 700,
     center: true,
     title: 'Agent Dashboard',
+    icon: iconPath,
     backgroundColor: '#0a0a0f',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),

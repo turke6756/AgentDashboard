@@ -23,7 +23,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
     if (this.state.error) {
       return (
         <div className="flex items-center justify-center h-screen bg-surface-0 text-gray-100 p-8">
-          <div className="max-w-lg bg-surface-2 border border-accent-red/50 rounded-lg p-6">
+          <div className="panel-shell max-w-lg rounded-xl p-6">
             <h2 className="text-accent-red font-bold text-lg mb-3">Render Error</h2>
             <pre className="text-sm text-gray-300 whitespace-pre-wrap break-words mb-4 font-mono bg-surface-0 p-3 rounded max-h-60 overflow-auto">
               {this.state.error.message}
@@ -32,7 +32,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
             </pre>
             <button
               onClick={() => this.setState({ error: null })}
-              className="px-4 py-2 bg-accent-blue text-white rounded font-medium text-sm"
+              className="ui-btn ui-btn-primary text-sm font-medium"
             >
               Try Again
             </button>
@@ -63,9 +63,24 @@ function AppInner() {
       useDashboardStore.getState().updateContextStats(stats);
     });
 
+    const unsubGroupThink = window.api.onGroupThinkUpdated((session) => {
+      useDashboardStore.getState().updateGroupThinkSession(session);
+    });
+
+    const unsubTeam = window.api.onTeamUpdated((team) => {
+      useDashboardStore.getState().updateTeam(team);
+    });
+
+    const unsubTeamMsg = window.api.onTeamMessageCreated((message) => {
+      useDashboardStore.getState().addTeamMessage(message);
+    });
+
     return () => {
       unsubStatus();
       unsubContext();
+      unsubGroupThink();
+      unsubTeam();
+      unsubTeamMsg();
     };
   }, []);
 

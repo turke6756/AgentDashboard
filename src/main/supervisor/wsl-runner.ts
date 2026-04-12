@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import path from 'path';
 import { tmuxNewSession, tmuxKillSession, isTmuxSessionAlive, tmuxCapturePane, wslExec } from '../wsl-bridge';
+import { getScriptPath } from './paths';
 
 /**
  * Runs a Claude agent inside WSL via node-pty (through pty-host.js).
@@ -47,6 +48,12 @@ export class WslRunner extends EventEmitter {
    * Also creates a tmux session for persistence/reconnect.
    */
   async launch(workDir: string, command: string, logPath: string): Promise<void> {
+    // Kill any stale tmux session with the same name (leftover from previous app run)
+    if (await isTmuxSessionAlive(this.sessionName)) {
+      console.log(`[WSL] Killing stale tmux session '${this.sessionName}'`);
+      await tmuxKillSession(this.sessionName);
+    }
+
     // Create tmux session for persistence (agent survives dashboard restart)
     // No tee needed — the PTY logStream captures output directly
     try {
@@ -75,7 +82,7 @@ export class WslRunner extends EventEmitter {
     if (logPath && !fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
     if (logPath) this.logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
-    const ptyHostPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'pty-host.js');
+    const ptyHostPath = getScriptPath('pty-host.js');
 
     const env = { ...process.env };
     delete env.CLAUDECODE;

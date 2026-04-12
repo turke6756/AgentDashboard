@@ -6,6 +6,7 @@ import CollapseButton from './CollapseButton';
 import * as Icons from 'lucide-react';
 import DirectoryTreeNode from '../fileviewer/DirectoryTreeNode';
 import type { DirectoryEntry, PathType } from '../../../shared/types';
+import logoImg from '../../assets/logo.png';
 
 function InlineWorkspaceTree({ rootPath, pathType }: { rootPath: string; pathType: PathType }) {
   const [rootEntries, setRootEntries] = useState<DirectoryEntry[]>([]);
@@ -180,7 +181,7 @@ export default function Sidebar({ width }: SidebarProps) {
   if (collapsed) {
     return (
       <div
-        className="bg-surface-1/90 dark:backdrop-blur-sm border- dark:border-white/10 light:border-black/10 flex flex-col items-center z-20 dark:shadow-2xl light:shadow-none py-2"
+        className="panel-shell flex flex-col items-center z-20 py-2"
         style={{ width }}
       >
         <CollapseButton collapsed direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
@@ -193,35 +194,33 @@ export default function Sidebar({ width }: SidebarProps) {
 
   return (
     <div
-      className="bg-surface-1/90 dark:backdrop-blur-sm border- dark:border-white/10 light:border-black/10 flex flex-col z-20 dark:shadow-2xl light:shadow-none"
+      className="panel-shell flex flex-col z-20"
       style={{ width }}
     >
       {/* Header */}
-      <div className="p-4 border- dark:border-white/10 light:border-black/10 bg-surface-0">
+      <div className="panel-header p-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold   glow-text">
-            <span className="text-accent-blue">Agent</span> OS
-          </h1>
+          <div className="flex items-center gap-3">
+            <img src={logoImg} alt="Logo" className="h-16 object-contain" />
+            <span className="text-[15px] font-sans font-light tracking-wide dark:text-gray-300 text-gray-700">Agent Dashboard</span>
+          </div>
           <div className="flex items-center gap-1">
             <button
               onClick={resetLayout}
-              className="text-[13px] font-sans text-gray-400 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
+              className="ui-btn ui-btn-ghost min-h-0 px-2 py-1 text-[12px]"
               title="Reset all panel sizes to defaults"
             >
               Reset
             </button>
             <button
               onClick={toggleTheme}
-              className="text-[13px] font-sans text-gray-400 hover:text-accent-blue border border-gray-800 hover:border-accent-blue/40 px-1 py-0.5 transition-colors"
+              className="ui-btn ui-btn-ghost min-h-0 px-2 py-1 text-[12px]"
               title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
             >
               {theme === 'dark' ? 'Light' : 'Dark'}
             </button>
             <CollapseButton collapsed={false} direction="left" onClick={() => togglePanelCollapsed('sidebarCollapsed')} />
           </div>
-        </div>
-        <div className="text-[13px] text-gray-300 font-sans mt-1 ">
-          v1.0.0
         </div>
       </div>
 
@@ -234,16 +233,16 @@ export default function Sidebar({ width }: SidebarProps) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="flex items-center justify-between px-2 py-2 mb-2 border- dark:border-white/10 light:border-black/10/50">
+        <div className="flex items-center justify-between px-2 py-2 mb-3 border-b border-white/8 light:border-black/10">
           <span className="text-[13px] font-sans font-medium text-accent-blue   ">
             Workspaces
           </span>
           <button
             onClick={() => setShowCreate(true)}
-            className="text-accent-blue hover:text-white transition-colors"
+            className="ui-btn ui-btn-primary h-8 w-8 p-0"
             title="Add Workspace"
           >
-            <Icons.Plus className="w-4 h-4" />
+            <Icons.Plus className="w-5 h-5 stroke-[2.5]" />
           </button>
         </div>
 
@@ -259,10 +258,10 @@ export default function Sidebar({ width }: SidebarProps) {
                   onClick={() => selectWorkspace(ws.id)}
                   onDoubleClick={(e) => toggleWorkspace(ws.id, e)}
                   onContextMenu={(e) => handleContextMenu(e, ws.id)}
-                  className={`w-full text-left px-2 py-2.5 relative group transition-all duration-200 border-l-2 flex flex-col ${
+                  className={`w-full text-left px-3 py-3 relative group transition-all duration-200 border rounded-xl flex flex-col ${
                     isSelected
-                      ? 'bg-surface-2 border-accent-blue dark:text-gray-50 text-gray-900 dark:shadow-[inset_10px_0_20px_-10px_rgba(0,243,255,0.1)] light:shadow-none light:bg-[#ddeefe]'
-                      : 'border-transparent hover:bg-surface-2 dark:hover:border-gray-500 light:hover:border-gray-900 dark:text-gray-400 text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                      ? 'ui-card border-accent-blue/70 dark:text-gray-50 text-gray-900 ring-1 ring-accent-blue/30 dark:bg-accent-blue/10 dark:shadow-[inset_10px_0_20px_-10px_rgba(0,122,204,0.25),0_0_12px_rgba(0,122,204,0.15)] light:bg-[#dbeafe] light:ring-accent-blue/40'
+                      : 'border-white/8 bg-white/[0.02] hover:border-accent-blue/30 hover:bg-surface-2 dark:text-gray-400 text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                   }`}
                 >
                   <div className="flex items-center gap-1 w-full mb-1">
@@ -313,7 +312,7 @@ export default function Sidebar({ width }: SidebarProps) {
             <br />
             <button
               onClick={() => setShowCreate(true)}
-              className="text-accent-blue hover:underline mt-4 "
+              className="ui-btn ui-btn-primary mt-4"
             >
               Add Workspace
             </button>
@@ -325,10 +324,10 @@ export default function Sidebar({ width }: SidebarProps) {
       {contextMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 bg-surface-2 border border-accent-red/30 shadow-[0_0_15px_rgba(0,0,0,0.8)] min-w-[160px]"
+          className="panel-shell fixed z-50 min-w-[180px] rounded-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <div className="bg-accent-red/10 px-2 py-1 text-[13px] text-accent-red font-sans font-medium border-b border-accent-red/20 ">
+          <div className="panel-header px-3 py-2 text-[13px] text-accent-red font-sans font-medium rounded-t-xl">
             Workspace Options
           </div>
           {confirmDelete === contextMenu.wsId ? (
@@ -337,13 +336,13 @@ export default function Sidebar({ width }: SidebarProps) {
               <div className="flex gap-2">
                 <button
                   onClick={() => handleDelete(contextMenu.wsId)}
-                  className="px-2 py-1 text-[13px] font-sans bg-accent-red/20 text-accent-red hover:bg-accent-red/40 border border-accent-red/50 "
+                  className="ui-btn ui-btn-danger px-3 py-1.5 text-[13px]"
                 >
                   Yes
                 </button>
                 <button
                   onClick={() => { setConfirmDelete(null); setContextMenu(null); }}
-                  className="px-2 py-1 text-[13px] font-sans bg-surface-3 text-gray-400 hover:text-white border border-gray-700 "
+                  className="ui-btn ui-btn-ghost px-3 py-1.5 text-[13px]"
                 >
                   No
                 </button>
@@ -356,13 +355,13 @@ export default function Sidebar({ width }: SidebarProps) {
                   window.api.workspaces.openInVSCode(contextMenu.wsId);
                   setContextMenu(null);
                 }}
-                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-blue/20 hover:text-accent-blue transition-colors "
+                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-blue/10 hover:text-accent-blue transition-colors rounded-b-none"
               >
                 Open VS Code
               </button>
               <button
                 onClick={() => setConfirmDelete(contextMenu.wsId)}
-                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-red/20 hover:text-accent-red transition-colors "
+                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-red/10 hover:text-accent-red transition-colors"
               >
                 Delete Workspace
               </button>
@@ -372,7 +371,7 @@ export default function Sidebar({ width }: SidebarProps) {
       )}
 
       {/* Footer Status Ticker */}
-      <div className="p-2 border- dark:border-white/10 light:border-black/10 bg-surface-0 text-[13px] font-sans text-gray-300  flex justify-between items-center">
+      <div className="panel-header p-2 text-[13px] font-sans text-gray-300 flex justify-between items-center">
         {health ? (
           <>
             <div className="flex gap-2">

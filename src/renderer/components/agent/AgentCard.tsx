@@ -5,6 +5,15 @@ import StatusBadge from './StatusBadge';
 import { PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
+/** Strip .claude/agents/supervisor suffix to show the workspace root name. */
+function getDisplayDirectory(agent: Agent): string {
+  const dir = agent.workingDirectory.replace(/\\/g, '/');
+  const stripped = agent.isSupervisor
+    ? dir.replace(/\/\.claude\/agents\/[^/]+$/, '')
+    : dir;
+  return stripped.split('/').filter(Boolean).pop() || stripped;
+}
+
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -40,8 +49,8 @@ const GLOW_COLORS: Record<string, string> = {
   done: 'shadow-none',
 };
 
-export default function AgentCard({ agent }: { agent: Agent }) {
-  const { selectAgent, selectedAgentId, terminalAgentId, setTerminalAgent, deleteAgent, forkAgent, queryAgent, contextStats } = useDashboardStore();
+export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agent; onGroupThink?: (agentId: string) => void; onTeam?: (agentId: string) => void }) {
+  const { selectAgent, selectedAgentId, terminalAgentId, setTerminalAgent, deleteAgent, forkAgent, queryAgent, contextStats, groupThinkSessions } = useDashboardStore();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [forking, setForking] = useState(false);
@@ -148,6 +157,17 @@ export default function AgentCard({ agent }: { agent: Agent }) {
     }
   };
 
+  const handleToggleSupervised = async () => {
+    setContextMenu(null);
+    try {
+      await window.api.agents.updateSupervised(agent.id, !agent.isSupervised);
+      const { loadAgents } = useDashboardStore.getState();
+      await loadAgents(agent.workspaceId);
+    } catch (err) {
+      console.error('Failed to toggle supervised:', err);
+    }
+  };
+
   // Attach native drag events via ref to avoid framer-motion conflicts
   useEffect(() => {
     const el = cardRef.current;
@@ -216,7 +236,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       layout
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className={`relative glass-panel rounded-sm p-4 cursor-pointer transition-all duration-200 group interactive
+      className={`ui-card relative rounded-xl p-4 cursor-pointer transition-all duration-200 group interactive
         border-l-4 ${isSelected ? borderColor : 'border-l-gray-700 border-t-transparent border-r-transparent border-b-transparent'}
         ${isSelected ? 'bg-surface-2 ring-1 ring-black/5 dark:ring-white/5 shadow-lg' : 'hover:bg-surface-2/80'}
         ${agent.status === 'working' ? 'bg-accent-green/5' : ''}
@@ -248,6 +268,23 @@ export default function AgentCard({ agent }: { agent: Agent }) {
              {agent.isAttached && (
                 <span className="text-[13px] text-accent-green font-sans animate-pulse font-bold">● Live</span>
              )}
+             {agent.isSupervised && (
+                <span className="text-[11px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-sans font-bold">Supervised</span>
+             )}
+             {(() => {
+               const gtSession = groupThinkSessions.find(
+                 (s) => s.status === 'active' && s.memberAgentIds.includes(agent.id)
+               );
+               if (!gtSession) return null;
+               return (
+                 <span
+                   className="text-[11px] text-fuchsia-400 bg-fuchsia-500/15 px-1.5 py-0.5 rounded-full font-sans font-bold"
+                   title={`Group Think R${gtSession.roundCount}/${gtSession.maxRounds}: ${gtSession.topic}`}
+                 >
+                   GT R{gtSession.roundCount}/{gtSession.maxRounds}
+                 </span>
+               );
+             })()}
            </div>
            <h4 className={`font-sans font-bold text-sm truncate   ${isSelected ? 'text-accent-blue glow-text' : 'text-gray-100 group-hover:text-gray-50'}`}>
              {agent.title}
@@ -262,7 +299,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
            {!confirmDelete && (
             <button
               onClick={handleDelete}
-              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-accent-red transition-all transform hover:scale-110 active:scale-95"
+              className="ui-btn ui-btn-danger opacity-0 group-hover:opacity-100 min-h-0 px-2 py-1 text-gray-400 hover:text-accent-red"
               title="Terminate Agent"
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
@@ -279,13 +316,13 @@ export default function AgentCard({ agent }: { agent: Agent }) {
           <div className="flex gap-4">
             <button
               onClick={handleDelete}
-              className="text-white bg-accent-red hover:bg-accent-red/90 px-6 py-2 text-[13px] font-bold transition-all shadow-md active:scale-95"
+              className="ui-btn ui-btn-danger px-6 py-2 text-[13px] font-bold"
             >
               Confirm
             </button>
             <button
               onClick={handleCancelDelete}
-              className="text-gray-400 hover:text-gray-50 px-6 py-2 text-[13px] font-bold transition-colors active:scale-95"
+              className="ui-btn ui-btn-ghost px-6 py-2 text-[13px] font-bold"
             >
               Cancel
             </button>
@@ -348,7 +385,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       <div className="flex items-center justify-between text-[13px] font-sans text-gray-300  ">
         <div className="flex items-center gap-2">
             <span className="truncate max-w-[100px] border- dark:border-white/10 light:border-black/10 pb-0.5" title={agent.workingDirectory}>
-            ...{agent.workingDirectory.split(/[/\\]/).slice(-1)[0]}
+            ...{getDisplayDirectory(agent)}
             </span>
             {agent.restartCount > 0 && (
                 <span className="text-accent-orange">Restarts: {agent.restartCount}</span>
@@ -363,10 +400,10 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       {contextMenu && (
         <div
           ref={menuRef}
-          className="fixed z-50 bg-surface-2 border border-accent-blue/30 shadow-[0_0_15px_rgba(0,0,0,0.8)] min-w-[160px]"
+          className="panel-shell fixed z-50 min-w-[180px] rounded-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <div className="bg-accent-blue/10 px-2 py-1 text-[13px] text-accent-blue font-sans border-b dark:border-white/10 light:border-black/10">
+          <div className="panel-header px-3 py-2 text-[13px] text-accent-blue font-sans rounded-t-xl">
              Agent Actions
           </div>
           <button
@@ -376,6 +413,28 @@ export default function AgentCard({ agent }: { agent: Agent }) {
           >
             Fork Agent {(agent.provider || 'claude') !== 'claude' ? '(Claude only)' : !agent.resumeSessionId ? '(no session)' : ''}
           </button>
+          <button
+            onClick={handleToggleSupervised}
+            className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-purple-500/20 hover:text-purple-400 transition-colors"
+          >
+            {agent.isSupervised ? 'Disable Supervision' : 'Enable Supervision'}
+          </button>
+          {onGroupThink && !agent.isSupervisor && !['done', 'crashed'].includes(agent.status) && (
+            <button
+              onClick={() => { setContextMenu(null); onGroupThink(agent.id); }}
+              className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-fuchsia-500/20 hover:text-fuchsia-400 transition-colors"
+            >
+              Start Group Think
+            </button>
+          )}
+          {onTeam && !agent.isSupervisor && !['done', 'crashed'].includes(agent.status) && (
+            <button
+              onClick={() => { setContextMenu(null); onTeam(agent.id); }}
+              className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-cyan-500/20 hover:text-cyan-400 transition-colors"
+            >
+              Create Team
+            </button>
+          )}
         </div>
       )}
 
@@ -383,7 +442,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
       {dragQuery && (
         <div
           ref={popoverRef}
-          className="absolute inset-0 z-30 bg-surface-1 border border-accent-purple shadow-xl p-3 flex flex-col"
+          className="panel-shell absolute inset-0 z-30 border-accent-purple p-3 flex flex-col rounded-xl"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="text-[13px] text-accent-purple mb-2 font-sans   animate-pulse">Inter-Agent Query</div>
@@ -391,7 +450,7 @@ export default function AgentCard({ agent }: { agent: Agent }) {
             value={dragQueryText}
             onChange={(e) => setDragQueryText(e.target.value)}
             placeholder="Ask this agent a question..."
-            className="w-full bg-surface-0 border border-accent-purple/30 rounded-none text-[13px] p-2 resize-none flex-1 focus:outline-none focus:border-accent-purple text-accent-purple font-sans"
+            className="ui-textarea w-full resize-none flex-1 text-[13px] text-accent-purple font-sans rounded-lg"
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -404,13 +463,13 @@ export default function AgentCard({ agent }: { agent: Agent }) {
             <button
               onClick={handleDragQuerySubmit}
               disabled={dragQuerying || !dragQueryText.trim()}
-              className="flex-1 py-1 text-[13px] bg-accent-purple text-black font-bold  hover:brightness-125 dark:hover:bg-white transition-colors disabled:"
+              className="ui-btn ui-btn-purple flex-1 py-1 text-[13px] font-bold"
             >
               {dragQuerying ? 'Sending...' : 'Send'}
             </button>
             <button
               onClick={closeDragQuery}
-              className="px-2 py-1 text-[13px] text-gray-300 hover:text-gray-300 border border-gray-700 "
+              className="ui-btn ui-btn-ghost px-2 py-1 text-[13px]"
             >
               Cancel
             </button>

@@ -1,4 +1,4 @@
-export type FileType = 'markdown' | 'code' | 'text' | 'image' | 'pdf' | 'binary';
+export type FileType = 'markdown' | 'code' | 'text' | 'image' | 'pdf' | 'notebook' | 'binary';
 
 const MARKDOWN_EXTS = new Set(['.md', '.mdx', '.markdown']);
 
@@ -24,6 +24,7 @@ const CODE_EXTS: Record<string, string> = {
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.avif', '.svg']);
 const PDF_EXTS = new Set(['.pdf']);
+const NOTEBOOK_EXTS = new Set(['.ipynb']);
 
 const BINARY_EXTS = new Set([
   '.mp3', '.mp4', '.wav', '.ogg', '.webm', '.avi', '.mov',
@@ -59,6 +60,7 @@ export function detectFileType(filePath: string): FileType {
   if (MARKDOWN_EXTS.has(ext)) return 'markdown';
   if (IMAGE_EXTS.has(ext)) return 'image';
   if (PDF_EXTS.has(ext)) return 'pdf';
+  if (NOTEBOOK_EXTS.has(ext)) return 'notebook';
   if (ext in CODE_EXTS) return 'code';
   if (BINARY_EXTS.has(ext)) return 'binary';
   if (TEXT_EXTS.has(ext)) return 'text';
@@ -94,11 +96,12 @@ export function getFileIconName(filePath: string, isDirectory: boolean): string 
   if (lowerName.includes('license')) return 'FileCheck';
   
   const type = detectFileType(filePath);
-  
+
   switch (type) {
     case 'markdown': return 'FileText';
     case 'image': return 'FileImage';
     case 'pdf': return 'FileText'; // FileText as placeholder if FileArchive isn't right
+    case 'notebook': return 'BookOpen';
     case 'code':
       if (['.ts', '.tsx'].includes(ext)) return 'FileType2';
       if (['.js', '.jsx'].includes(ext)) return 'FileType';

@@ -49,6 +49,13 @@ body {
   font-size: 13px;
 }
 
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -278,6 +285,223 @@ html.light ::-webkit-scrollbar-thumb:hover {
 }
 .dark .shadow-soft {
   box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+}
+
+.panel-shell {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 28%),
+    linear-gradient(180deg, rgb(0 0 0 / 0.14), transparent 22%),
+    var(--color-surface-1);
+  border: 1px solid color-mix(in srgb, var(--color-surface-3) 80%, black);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.04),
+    0 18px 40px rgb(0 0 0 / 0.28);
+}
+
+.panel-header {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent 65%),
+    color-mix(in srgb, var(--color-surface-0) 82%, black);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-surface-3) 70%, black);
+}
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-surface-3) 78%, black);
+  border-radius: 0.55rem;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.08), transparent 55%),
+    color-mix(in srgb, var(--color-surface-2) 88%, black);
+  color: #d7dbe0;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 1px 1px rgb(0 0 0 / 0.32),
+    0 8px 18px rgb(0 0 0 / 0.2);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.ui-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-blue) 45%, var(--color-surface-3));
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 10px 18px rgb(0 0 0 / 0.26);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px rgb(0 0 0 / 0.3),
+    0 2px 6px rgb(0 0 0 / 0.18);
+}
+
+.ui-btn:focus-visible,
+.ui-input:focus-visible,
+.ui-textarea:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent-blue) 68%, white 8%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent-blue) 85%, transparent),
+    0 0 0 4px rgb(0 122 204 / 0.16);
+}
+
+.ui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.ui-btn-primary {
+  border-color: color-mix(in srgb, var(--color-accent-blue) 68%, black);
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.14), transparent 56%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-accent-blue) 88%, white 8%), color-mix(in srgb, var(--color-accent-blue) 70%, black));
+  color: white;
+}
+
+.ui-btn-primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-blue) 85%, white 15%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.14),
+    0 10px 22px rgb(0 122 204 / 0.28);
+}
+
+.ui-btn-ghost {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent 55%),
+    rgb(255 255 255 / 0.02);
+}
+
+.ui-btn-success {
+  border-color: color-mix(in srgb, var(--color-accent-green) 55%, black);
+  color: var(--color-accent-green);
+}
+
+.ui-btn-success.is-active {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.12), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-accent-green) 82%, white 10%), color-mix(in srgb, var(--color-accent-green) 58%, black));
+  color: #08120a;
+}
+
+.ui-btn-warning {
+  border-color: color-mix(in srgb, var(--color-accent-yellow) 55%, black);
+  color: var(--color-accent-yellow);
+}
+
+.ui-btn-danger {
+  border-color: color-mix(in srgb, var(--color-accent-red) 58%, black);
+  color: #ff8f8f;
+}
+
+.ui-btn-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-red) 72%, white 10%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 10px 20px rgb(241 76 76 / 0.18);
+}
+
+.ui-btn-purple {
+  border-color: color-mix(in srgb, var(--color-accent-purple) 58%, black);
+  color: #dfb4db;
+}
+
+.ui-input,
+.ui-textarea {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--color-surface-3) 82%, black);
+  border-radius: 0.7rem;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent 55%),
+    color-mix(in srgb, var(--color-surface-0) 86%, black);
+  color: #e5e7eb;
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.24);
+}
+
+.ui-input {
+  min-height: 2.5rem;
+  padding: 0.65rem 0.85rem;
+}
+
+.ui-textarea {
+  padding: 0.75rem 0.85rem;
+}
+
+.ui-card {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 24%),
+    linear-gradient(180deg, rgb(0 0 0 / 0.2), transparent 30%),
+    var(--color-surface-1);
+  border: 1px solid color-mix(in srgb, var(--color-surface-3) 76%, black);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 14px 34px rgb(0 0 0 / 0.22);
+}
+
+.light .panel-shell,
+.light .ui-card {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.9), rgb(248 250 252 / 0.98));
+  border-color: #d4d8dd;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.8),
+    0 12px 28px rgb(15 23 42 / 0.08);
+}
+
+.light .panel-header {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.92), rgb(240 244 248 / 0.98));
+  border-bottom-color: #d4d8dd;
+}
+
+.light .ui-btn {
+  border-color: #cfd6de;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.96), rgb(238 243 247 / 0.96));
+  color: #1f2937;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.94),
+    0 4px 10px rgb(15 23 42 / 0.08);
+}
+
+.light .ui-btn:hover:not(:disabled) {
+  color: #111827;
+  border-color: color-mix(in srgb, var(--color-accent-blue) 45%, #cfd6de);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.94),
+    0 8px 16px rgb(15 23 42 / 0.12);
+}
+
+.light .ui-btn-primary {
+  color: white;
+  border-color: #005e9e;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.16), transparent 58%),
+    linear-gradient(180deg, #0b78c9, #005e9e);
+}
+
+.light .ui-btn-success.is-active {
+  color: #0f172a;
+}
+
+.light .ui-input,
+.light .ui-textarea {
+  border-color: #cfd6de;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.98), rgb(245 247 250 / 0.98));
+  color: #111827;
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.06);
 }
 
 /* ── Light terminal viewport — dark bg even in light mode ── */

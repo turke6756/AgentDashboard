@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { AgentProvider, Workspace } from '../../../shared/types';
+import type { AgentPersona, AgentProvider, AgentTemplate, Workspace } from '../../../shared/types';
 import { PROVIDER_COMMANDS, PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
@@ -18,13 +18,64 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   const [provider, setProvider] = useState<AgentProvider>('claude');
   const [command, setCommand] = useState(PROVIDER_COMMANDS.claude[workspace.pathType]);
   const [autoRestart, setAutoRestart] = useState(true);
+  const [supervised, setSupervised] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [agentMd, setAgentMd] = useState<{ found: boolean; fileName: string | null } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Update command when provider changes
+  // Template + Persona state
+  const [templates, setTemplates] = useState<AgentTemplate[]>([]);
+  const [personas, setPersonas] = useState<AgentPersona[]>([]);
+  const [selectedOption, setSelectedOption] = useState<string>(''); // "persona:name" or "template:id"
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [saveTemplateName, setSaveTemplateName] = useState('');
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+
+  // Create persona state
+  const [showCreatePersona, setShowCreatePersona] = useState(false);
+  const [newPersonaName, setNewPersonaName] = useState('');
+  const [creatingPersona, setCreatingPersona] = useState(false);
+
+  // Load templates and personas on mount
   useEffect(() => {
-    setCommand(PROVIDER_COMMANDS[provider][workspace.pathType]);
+    window.api.templates.list(workspace.id).then(setTemplates).catch(console.error);
+    window.api.personas.list(workspace.path, workspace.pathType).then(list => {
+      // Filter out supervisor — it auto-launches
+      setPersonas(list.filter(p => !p.isSupervisor));
+    }).catch(console.error);
+  }, [workspace.id, workspace.path, workspace.pathType]);
+
+  // Apply template or persona when selected
+  useEffect(() => {
+    if (!selectedOption) return;
+
+    if (selectedOption.startsWith('template:')) {
+      const templateId = selectedOption.slice('template:'.length);
+      const template = templates.find(t => t.id === templateId);
+      if (!template) return;
+      if (template.roleDescription) setRoleDescription(template.roleDescription);
+      if (template.provider) {
+        setProvider(template.provider);
+        setCommand(template.command || PROVIDER_COMMANDS[template.provider][workspace.pathType]);
+      }
+      if (template.command) setCommand(template.command);
+      setAutoRestart(template.autoRestart);
+      setSupervised(template.isSupervised);
+      if (!title.trim()) setTitle(template.name);
+    } else if (selectedOption.startsWith('persona:')) {
+      const personaName = selectedOption.slice('persona:'.length);
+      if (!title.trim()) {
+        const displayName = personaName.charAt(0).toUpperCase() + personaName.slice(1).replace(/[-_]/g, ' ');
+        setTitle(displayName);
+      }
+    }
+  }, [selectedOption]);
+
+  // Update command when provider changes (only if no template selected or manual change)
+  useEffect(() => {
+    if (!selectedOption.startsWith('template:')) {
+      setCommand(PROVIDER_COMMANDS[provider][workspace.pathType]);
+    }
   }, [provider, workspace.pathType]);
 
   useEffect(() => {
@@ -50,7 +101,20 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
 
     setLaunching(true);
     try {
-      await window.api.agents.launch({
+      // If "New Template" is selected, scaffold the persona directory first
+      let resolvedPersona: string | undefined;
+      if (selectedOption === '__new_template__') {
+        const personaName = title.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+        if (!personaName) {
+          setLaunching(false);
+          return;
+        }
+        const claudeMdContent = roleDescription.trim() || undefined;
+        await window.api.personas.create(workspace.path, workspace.pathType, personaName, claudeMdContent);
+        resolvedPersona = personaName;
+      }
+
+      const launchInput: any = {
         workspaceId: workspace.id,
         title: title.trim(),
         roleDescription: roleDescription.trim(),
@@ -58,7 +122,18 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
         command: command.trim(),
         provider,
         autoRestartEnabled: autoRestart,
-      });
+        isSupervised: supervised,
+      };
+
+      if (resolvedPersona) {
+        launchInput.persona = resolvedPersona;
+      } else if (selectedOption.startsWith('template:')) {
+        launchInput.templateId = selectedOption.slice('template:'.length);
+      } else if (selectedOption.startsWith('persona:')) {
+        launchInput.persona = selectedOption.slice('persona:'.length);
+      }
+
+      await window.api.agents.launch(launchInput);
       await loadAgents(workspace.id);
       onClose();
     } catch (err) {
@@ -72,34 +147,166 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
     if (dir) setWorkingDirectory(dir);
   };
 
+  const handleSaveTemplate = async () => {
+    if (!saveTemplateName.trim()) return;
+    setSavingTemplate(true);
+    try {
+      const newTemplate = await window.api.templates.create({
+        workspaceId: workspace.id,
+        name: saveTemplateName.trim(),
+        description: roleDescription.trim(),
+        roleDescription: roleDescription.trim(),
+        provider,
+        command: command.trim() || null,
+        autoRestart,
+        isSupervised: supervised,
+      });
+      setTemplates(prev => [...prev, newTemplate]);
+      setSelectedOption(`template:${newTemplate.id}`);
+      setShowSaveDialog(false);
+      setSaveTemplateName('');
+    } catch (err) {
+      console.error('Failed to save template:', err);
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const handleCreatePersona = async () => {
+    if (!newPersonaName.trim()) return;
+    setCreatingPersona(true);
+    try {
+      const persona = await window.api.personas.create(workspace.path, workspace.pathType, newPersonaName.trim());
+      setPersonas(prev => [...prev, persona]);
+      setSelectedOption(`persona:${persona.name}`);
+      setShowCreatePersona(false);
+      setNewPersonaName('');
+    } catch (err: any) {
+      console.error('Failed to create persona:', err);
+      alert(err.message || 'Failed to create persona');
+    } finally {
+      setCreatingPersona(false);
+    }
+  };
+
+  const hasOptions = templates.length > 0 || personas.length > 0;
+
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-surface-2 border border-gray-700 rounded-xl p-6 w-[480px] max-h-[90vh] overflow-y-auto"
+        className="panel-shell w-[480px] max-h-[90vh] overflow-y-auto rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-lg font-bold mb-4">Launch Agent</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Combined persona + template selector */}
+          <div>
+            <label className="block text-[13px] text-gray-400 mb-1">Persona / Template</label>
+            <select
+              value={selectedOption}
+              onChange={(e) => setSelectedOption(e.target.value)}
+              className="ui-input text-sm w-full"
+            >
+              <option value="">Ephemeral (no template)</option>
+              <option value="__new_template__">+ New Template...</option>
+              {personas.length > 0 && (
+                <optgroup label="Personas">
+                  {personas.map(p => (
+                    <option key={`persona:${p.name}`} value={`persona:${p.name}`}>
+                      {p.name}{p.hasMemory ? ' (has memory)' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {templates.length > 0 && (
+                <optgroup label="Templates">
+                  {templates.map(t => (
+                    <option key={`template:${t.id}`} value={`template:${t.id}`}>
+                      {t.name}{t.workspaceId ? '' : ' (global)'}{t.systemPrompt ? ' *' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            {selectedOption.startsWith('template:') && (() => {
+              const t = templates.find(x => x.id === selectedOption.slice('template:'.length));
+              return t?.systemPrompt ? (
+                <div className="mt-1 text-[11px] text-accent-blue">
+                  Has system prompt ({t.systemPrompt.length} chars)
+                </div>
+              ) : null;
+            })()}
+            {selectedOption === '__new_template__' && (
+              <div className="mt-1 text-[11px] text-accent-blue">
+                Creates .claude/agents/{title.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-') || '<agent-title>'}/ — Role Description becomes its CLAUDE.md
+              </div>
+            )}
+            {selectedOption.startsWith('persona:') && (
+              <div className="mt-1 text-[11px] text-accent-blue">
+                Agent will run in .claude/agents/{selectedOption.slice('persona:'.length)}/ with its own CLAUDE.md
+              </div>
+            )}
+            {/* Create new persona inline */}
+            {showCreatePersona ? (
+              <div className="flex items-center gap-2 mt-2 p-2 bg-surface-2 rounded-lg border border-gray-700">
+                <input
+                  type="text"
+                  value={newPersonaName}
+                  onChange={(e) => setNewPersonaName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                  placeholder="persona-name"
+                  className="ui-input flex-1 text-sm font-mono"
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreatePersona(); } }}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={handleCreatePersona}
+                  disabled={!newPersonaName.trim() || creatingPersona}
+                  className="ui-btn ui-btn-primary px-3 py-1.5 text-[13px]"
+                >
+                  {creatingPersona ? 'Creating...' : 'Create'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowCreatePersona(false); setNewPersonaName(''); }}
+                  className="ui-btn ui-btn-ghost px-2 py-1.5 text-[13px]"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowCreatePersona(true)}
+                className="mt-1 text-[12px] text-gray-500 hover:text-accent-blue transition-colors"
+              >
+                + Create new persona...
+              </button>
+            )}
+          </div>
+
           <div>
             <label className="block text-[13px] text-gray-400 mb-1">Agent Title *</label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent-blue"
+              className="ui-input text-sm"
               placeholder="e.g. Feature Builder"
               autoFocus
             />
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Role Description</label>
+            <label className="block text-[13px] text-gray-400 mb-1">
+              {selectedOption === '__new_template__' ? 'Role Description (becomes this agent\'s CLAUDE.md)' : 'Role Description'}
+            </label>
             <textarea
               value={roleDescription}
               onChange={(e) => setRoleDescription(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent-blue resize-none"
-              rows={2}
-              placeholder="What should this agent do?"
+              className="ui-textarea resize-none text-sm"
+              rows={selectedOption === '__new_template__' ? 4 : 2}
+              placeholder={selectedOption === '__new_template__' ? 'Define this agent\'s identity and behavior — this will be saved as CLAUDE.md' : 'What should this agent do?'}
             />
           </div>
 
@@ -110,12 +317,12 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
                 type="text"
                 value={workingDirectory}
                 onChange={(e) => setWorkingDirectory(e.target.value)}
-                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
+                className="ui-input flex-1 text-sm font-sans"
               />
               <button
                 type="button"
                 onClick={handlePickDir}
-                className="px-3 py-2 text-sm bg-surface-3 hover:bg-gray-600 rounded-md"
+                className="ui-btn ui-btn-ghost px-3 py-2 text-sm"
               >
                 Browse
               </button>
@@ -145,10 +352,10 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
                     key={p}
                     type="button"
                     onClick={() => setProvider(p)}
-                    className={`flex-1 px-3 py-2 text-[13px] font-sans font-bold  rounded-md border transition-all
+                    className={`ui-btn flex-1 px-3 py-2 text-[13px] font-sans font-bold
                       ${isActive
-                        ? `${meta.bgClass} ${meta.textClass} border-current`
-                        : 'bg-surface-0 text-gray-300 border-gray-700 hover:bg-surface-3 hover:text-gray-300'
+                        ? `${meta.bgClass} ${meta.textClass} border-current shadow-[0_10px_18px_rgba(0,0,0,0.18)]`
+                        : 'ui-btn-ghost'
                       }`}
                   >
                     {meta.label}
@@ -164,7 +371,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
               type="text"
               value={command}
               onChange={(e) => setCommand(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
+              className="ui-input text-sm font-sans"
             />
           </div>
 
@@ -181,18 +388,69 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             </label>
           </div>
 
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="supervised"
+              checked={supervised}
+              onChange={(e) => setSupervised(e.target.checked)}
+              className="rounded"
+            />
+            <label htmlFor="supervised" className="text-sm text-gray-400">
+              Supervised (auto-notify supervisor on status changes)
+            </label>
+          </div>
+
+          {/* Save as Template */}
+          {showSaveDialog ? (
+            <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-gray-700">
+              <input
+                type="text"
+                value={saveTemplateName}
+                onChange={(e) => setSaveTemplateName(e.target.value)}
+                placeholder="Template name..."
+                className="ui-input flex-1 text-sm"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSaveTemplate(); } }}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={handleSaveTemplate}
+                disabled={!saveTemplateName.trim() || savingTemplate}
+                className="ui-btn ui-btn-primary px-3 py-1.5 text-[13px]"
+              >
+                {savingTemplate ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSaveDialog(false)}
+                className="ui-btn ui-btn-ghost px-2 py-1.5 text-[13px]"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowSaveDialog(true)}
+              className="text-[13px] text-gray-500 hover:text-accent-blue transition-colors"
+            >
+              Save as template...
+            </button>
+          )}
+
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm bg-surface-3 hover:bg-gray-600 rounded-md"
+              className="ui-btn ui-btn-ghost px-4 py-2 text-sm"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!title.trim() || launching}
-              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:"
+              className="ui-btn ui-btn-primary px-4 py-2 text-sm font-medium"
             >
               {launching ? 'Launching...' : 'Launch'}
             </button>

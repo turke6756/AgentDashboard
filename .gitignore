@@ -7,3 +7,5 @@ process.exit()
 *.log
 *.vsix
 vscode-extension/out/
+release/
+.claude/settings.local.json

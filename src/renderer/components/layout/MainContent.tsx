@@ -4,6 +4,7 @@ import AgentGrid from '../agent/AgentGrid';
 import AgentLaunchDialog from '../agent/AgentLaunchDialog';
 import FileViewerPanel from '../fileviewer/FileViewerPanel';
 import type { AgentStatus } from '../../../shared/types';
+import * as Icons from 'lucide-react';
 
 function useSwipe(onSwipe: () => void, direction: 'left' | 'right') {
   const startRef = useRef<{ x: number; y: number } | null>(null);
@@ -83,7 +84,7 @@ export default function MainContent() {
        <div className="absolute top-0 right-0 w-64 h-64 bg-accent-blue/5 rounded-full blur-3xl pointer-events-none -translate-y-1/2 translate-x-1/2" />
 
       {/* HUD Header */}
-      <div className="px-6 py-4 border-b dark:border-white/10 light:border-black/10 bg-surface-1/40 backdrop-blur-md sticky top-0 z-10">
+      <div className="panel-header px-6 py-4 sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-baseline gap-2">
@@ -111,29 +112,25 @@ export default function MainContent() {
           <div className="flex items-center gap-4">
             {/* Supervisor Card */}
             {supervisorAgent && !['done', 'crashed'].includes(supervisorAgent.status) ? (
-              <div className="hidden md:flex items-center gap-0">
+              <div className={`hidden md:flex items-center rounded-xl overflow-hidden border ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border}`}>
                 <button
                   onClick={() => {
                     selectAgent(supervisorAgent.id);
                     setTerminalAgent(supervisorAgent.id);
                   }}
-                  className={`flex items-center gap-3 px-4 py-2.5 border border-r-0 rounded-l-lg transition-all cursor-pointer ${
-                    SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border
-                  } ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg} bg-surface-1/60`}
+                  className={`flex items-center gap-3 px-5 py-3 transition-colors hover:brightness-110 ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg}`}
                   title="Click to attach terminal"
                 >
-                  {/* Status dot + label */}
                   <div className="flex flex-col items-start gap-0.5">
                     <div className="flex items-center gap-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].dot}`} />
-                      <span className="text-[13px] font-sans font-bold text-gray-100">Supervisor</span>
+                      <span className="text-[14px] font-sans font-bold text-gray-100">Supervisor</span>
                     </div>
                     <span className="text-[11px] font-sans text-gray-400 ml-[18px] capitalize">{supervisorAgent.status}</span>
                   </div>
 
-                  {/* Context bar */}
                   {supStats && (
-                    <div className="flex flex-col items-end gap-0.5 ml-2">
+                    <div className="flex flex-col items-end gap-0.5 ml-3">
                       <span className="text-[11px] font-sans text-gray-400">
                         {Math.round(supStats.contextPercentage)}% ctx
                       </span>
@@ -149,17 +146,16 @@ export default function MainContent() {
                     </div>
                   )}
                 </button>
+                <div className={`w-px self-stretch ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg} opacity-40`} />
                 <button
                   onClick={async () => {
                     await window.api.agents.delete(supervisorAgent.id);
                     loadSupervisor(workspace.id);
                   }}
-                  className={`flex items-center justify-center w-8 py-2.5 border rounded-r-lg transition-all cursor-pointer ${
-                    SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border
-                  } hover:bg-red-500/20 bg-surface-1/60`}
+                  className={`flex items-center justify-center w-12 py-3 transition-colors hover:bg-red-500/20 ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg}`}
                   title="Reset Supervisor (stops and clears session)"
                 >
-                  <span className="text-gray-400 hover:text-red-400 text-sm">✕</span>
+                  <Icons.X className="w-4 h-4 text-gray-400 hover:text-red-400" />
                 </button>
               </div>
             ) : (
@@ -170,11 +166,11 @@ export default function MainContent() {
                   setSupervisorLoading(false);
                 }}
                 disabled={supervisorLoading}
-                className="hidden md:flex items-center gap-2 px-4 py-2.5 border border-purple-500/30 rounded-lg text-purple-300 hover:bg-purple-500/10 hover:border-purple-500 transition-all disabled:opacity-50 bg-surface-1/40"
+                className="ui-btn ui-btn-purple hidden md:flex items-center gap-2 px-5 py-3 rounded-xl"
                 title="Launch Supervisor Agent"
               >
                 <span className="w-2.5 h-2.5 rounded-full bg-purple-400/40 border border-purple-400/60" />
-                <span className="text-[13px] font-sans font-semibold">
+                <span className="text-[14px] font-sans font-semibold">
                   {supervisorLoading ? 'Launching...' : 'Supervisor'}
                 </span>
               </button>
@@ -183,10 +179,10 @@ export default function MainContent() {
             <div className="flex gap-2">
               <button
                 onClick={() => showFileViewer()}
-                className={`px-4 py-2 text-[13px] font-sans font-medium border transition-all rounded ${
+                className={`ui-btn px-4 py-2 text-[13px] font-sans font-medium ${
                   hasOpenTabs
-                    ? 'text-accent-green border-accent-green/30 hover:bg-accent-green/10 hover:border-accent-green'
-                    : 'text-gray-400 border-gray-600 hover:bg-surface-3 hover:text-gray-200'
+                    ? 'ui-btn-success'
+                    : 'ui-btn-ghost'
                 }`}
                 title={hasOpenTabs ? `Files (${openTabs.length} tabs open)` : 'Browse files'}
               >
@@ -194,13 +190,13 @@ export default function MainContent() {
               </button>
               <button
                 onClick={() => window.api.workspaces.openInVSCode(workspace.id)}
-                className="px-4 py-2 text-[13px] font-sans font-medium text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-all hover:border-accent-blue rounded"
+                className="ui-btn px-4 py-2 text-[13px] font-sans font-medium"
               >
                 Open VS Code
               </button>
               <button
                 onClick={() => setShowLaunch(true)}
-                className="px-4 py-2 text-[13px] font-sans font-medium bg-accent-blue text-white hover:bg-blue-600 transition-all rounded shadow-sm"
+                className="ui-btn ui-btn-primary px-4 py-2 text-[13px] font-sans font-medium"
               >
                 Launch Agent
               </button>

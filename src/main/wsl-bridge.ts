@@ -63,28 +63,26 @@ export async function tmuxListSessions(): Promise<TmuxSession[]> {
 }
 
 export async function tmuxNewSession(name: string, workDir: string, command: string): Promise<void> {
-  // Create session with login shell in the right directory
+  // Create session with the command as the pane process.
+  // When the command exits, the tmux pane/session closes automatically,
+  // which causes `tmux attach` in the PTY to exit → proper status update.
+  // Use bash -lic (login + interactive) to ensure .bashrc aliases/venv are loaded.
+  const escapedCmd = command.replace(/'/g, "'\\''");
   const result = await wslExec(
-    `tmux new-session -d -s '${name}' -c '${workDir}'`,
+    `tmux new-session -d -s '${name}' -c '${workDir}' -- bash -lic '${escapedCmd}'`,
     15000
   );
   if (result.exitCode !== 0) {
     throw new Error(`Failed to create tmux session: ${result.stderr}`);
   }
-  // Type the command into the shell — use single quotes to prevent bash expansion of $ and backticks
-  const escapedCmd = command.replace(/'/g, "'\\''");
-  const sendResult = await wslExec(
-    `tmux send-keys -t '${name}' '${escapedCmd}' Enter`,
-    5000
-  );
-  if (sendResult.exitCode !== 0) {
-    console.error(`[tmux] send-keys failed: ${sendResult.stderr}`);
-  }
 }
 
 export async function tmuxSendKeys(name: string, text: string): Promise<void> {
+  // Use -l (literal) flag so tmux doesn't interpret text as key names,
+  // then send Enter separately to ensure it always registers.
   const escaped = text.replace(/'/g, "'\\''");
-  await wslExec(`tmux send-keys -t '${name}' '${escaped}' Enter`, 5000);
+  await wslExec(`tmux send-keys -t '${name}' -l '${escaped}'`, 5000);
+  await wslExec(`tmux send-keys -t '${name}' Enter`, 5000);
 }
 
 export async function tmuxKillSession(name: string): Promise<void> {

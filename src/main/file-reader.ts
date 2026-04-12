@@ -5,6 +5,7 @@ import type { PathType, FileContent, DirectoryEntry } from '../shared/types';
 import { ensureWslPath } from './path-utils';
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1MB
+const MAX_NOTEBOOK_SIZE = 5 * 1024 * 1024; // 5MB for .ipynb files
 const WSL_TIMEOUT = 10000;
 
 const DANGEROUS_CHARS = /[$`;&|]/;
@@ -18,6 +19,9 @@ function sanitizePath(p: string): string {
 
 export function readFileContents(filePath: string, pathType: PathType): FileContent {
   try {
+    const isNotebook = filePath.toLowerCase().endsWith('.ipynb');
+    const sizeLimit = isNotebook ? MAX_NOTEBOOK_SIZE : MAX_FILE_SIZE;
+
     if (pathType === 'wsl') {
       const wslPath = sanitizePath(ensureWslPath(filePath, pathType));
       // Check size first
@@ -29,19 +33,19 @@ export function readFileContents(filePath: string, pathType: PathType): FileCont
       if (isNaN(size)) {
         return { path: filePath, content: '', encoding: 'utf-8', size: 0, error: 'Could not determine file size' };
       }
-      if (size > MAX_FILE_SIZE) {
+      if (size > sizeLimit) {
         return { path: filePath, content: '', encoding: 'utf-8', size, error: `File too large (${(size / 1024 / 1024).toFixed(1)}MB). Open in VS Code instead.` };
       }
       const content = execFileSync('wsl.exe', ['bash', '-lc', `cat '${wslPath}'`], {
         encoding: 'utf-8',
         timeout: WSL_TIMEOUT,
-        maxBuffer: MAX_FILE_SIZE + 1024,
+        maxBuffer: sizeLimit + 1024,
       });
       return { path: filePath, content, encoding: 'utf-8', size };
     } else {
       // Windows path
       const stat = fs.statSync(filePath);
-      if (stat.size > MAX_FILE_SIZE) {
+      if (stat.size > sizeLimit) {
         return { path: filePath, content: '', encoding: 'utf-8', size: stat.size, error: `File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Open in VS Code instead.` };
       }
       const content = fs.readFileSync(filePath, 'utf-8');

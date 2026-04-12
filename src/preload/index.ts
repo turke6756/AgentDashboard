@@ -22,6 +22,7 @@ const api: IpcApi = {
     query: (targetAgentId, question, sourceAgentId) => ipcRenderer.invoke('agent:query', targetAgentId, question, sourceAgentId),
     sendInput: (agentId, text) => ipcRenderer.invoke('agent:send-input', agentId, text),
     getSupervisor: (workspaceId) => ipcRenderer.invoke('agent:get-supervisor', workspaceId),
+    updateSupervised: (id, supervised) => ipcRenderer.invoke('agent:update-supervised', id, supervised),
     onFileActivity: (callback) => {
       const listener = (_event: any, activity: any) => callback(activity);
       ipcRenderer.on('agent:file-activity', listener);
@@ -56,10 +57,57 @@ const api: IpcApi = {
     openFileInWorkspace: (filePath, workspaceDir, pathType) =>
       ipcRenderer.invoke('system:open-file-in-workspace', filePath, workspaceDir, pathType),
   },
+  groupthink: {
+    start: (workspaceId, topic, agentIds, maxRounds) =>
+      ipcRenderer.invoke('groupthink:start', workspaceId, topic, agentIds, maxRounds),
+    getStatus: (sessionId) => ipcRenderer.invoke('groupthink:status', sessionId),
+    list: (workspaceId) => ipcRenderer.invoke('groupthink:list', workspaceId),
+    cancel: (sessionId) => ipcRenderer.invoke('groupthink:cancel', sessionId),
+  },
+  teams: {
+    create: (input) => ipcRenderer.invoke('team:create', input),
+    get: (teamId) => ipcRenderer.invoke('team:get', teamId),
+    list: (workspaceId) => ipcRenderer.invoke('team:list', workspaceId),
+    disband: (teamId) => ipcRenderer.invoke('team:disband', teamId),
+    addMember: (teamId, agentId, role) => ipcRenderer.invoke('team:add-member', teamId, agentId, role),
+    removeMember: (teamId, agentId) => ipcRenderer.invoke('team:remove-member', teamId, agentId),
+    addChannel: (teamId, fromAgent, toAgent, label) => ipcRenderer.invoke('team:add-channel', teamId, fromAgent, toAgent, label),
+    removeChannel: (teamId, channelId) => ipcRenderer.invoke('team:remove-channel', teamId, channelId),
+    getMessages: (teamId, agentId) => ipcRenderer.invoke('team:get-messages', teamId, agentId),
+    getTasks: (teamId) => ipcRenderer.invoke('team:get-tasks', teamId),
+    createTask: (teamId, task) => ipcRenderer.invoke('team:create-task', teamId, task),
+    updateTask: (teamId, taskId, updates) => ipcRenderer.invoke('team:update-task', teamId, taskId, updates),
+    resurrect: (teamId) => ipcRenderer.invoke('team:resurrect', teamId),
+  },
+  templates: {
+    list: (workspaceId) => ipcRenderer.invoke('template:list', workspaceId),
+    create: (input) => ipcRenderer.invoke('template:create', input),
+    update: (id, updates) => ipcRenderer.invoke('template:update', id, updates),
+    delete: (id) => ipcRenderer.invoke('template:delete', id),
+  },
+  personas: {
+    list: (workspacePath, pathType) => ipcRenderer.invoke('persona:list', workspacePath, pathType),
+    create: (workspacePath, pathType, name, customClaudeMd?) => ipcRenderer.invoke('persona:create', workspacePath, pathType, name, customClaudeMd),
+  },
   onAgentStatusChanged: (callback) => {
     const listener = (_event: any, data: any) => callback(data);
     ipcRenderer.on('agent:status-changed', listener);
     return () => ipcRenderer.removeListener('agent:status-changed', listener);
+  },
+  onGroupThinkUpdated: (callback) => {
+    const listener = (_event: any, session: any) => callback(session);
+    ipcRenderer.on('groupthink:updated', listener);
+    return () => ipcRenderer.removeListener('groupthink:updated', listener);
+  },
+  onTeamUpdated: (callback) => {
+    const listener = (_event: any, team: any) => callback(team);
+    ipcRenderer.on('team:updated', listener);
+    return () => ipcRenderer.removeListener('team:updated', listener);
+  },
+  onTeamMessageCreated: (callback) => {
+    const listener = (_event: any, message: any) => callback(message);
+    ipcRenderer.on('team:message-created', listener);
+    return () => ipcRenderer.removeListener('team:message-created', listener);
   },
 };
 

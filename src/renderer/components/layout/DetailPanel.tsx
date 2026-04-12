@@ -6,7 +6,8 @@ import DetailPaneProducts from '../detail/DetailPaneProducts';
 import DetailPaneLog from '../detail/DetailPaneLog';
 import QueryDialog from '../agent/QueryDialog';
 import CollapseButton from './CollapseButton';
-import type { PathType, ContextStats } from '../../../shared/types';
+import type { PathType, ContextStats, GroupThinkSession } from '../../../shared/types';
+import { PROVIDER_META } from '../../../shared/constants';
 
 const TABS = [
   { label: 'Context', icon: '\u{1F4D6}' },
@@ -24,7 +25,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="text-[13px] text-accent-blue hover:text-white ml-2 transition-colors  border border-accent-blue/30 px-1 rounded-sm"
+      className="ui-btn ml-2 min-h-0 px-2 py-1 text-[12px]"
       title="Copy to clipboard"
     >
       {copied ? 'Copied' : 'Copy'}
@@ -42,8 +43,50 @@ interface DetailPanelProps {
   width: number;
 }
 
+function GroupThinkStatusSection({ session, agents: allAgents }: { session: GroupThinkSession; agents: { id: string; title: string; provider: string }[] }) {
+  const statusColors: Record<string, string> = {
+    active: 'text-fuchsia-400',
+    synthesizing: 'text-amber-400',
+    completed: 'text-green-400',
+    cancelled: 'text-gray-400',
+  };
+
+  return (
+    <div className="mx-4 mb-3 p-3 bg-fuchsia-500/5 border border-fuchsia-500/20 rounded-sm">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] text-fuchsia-400 font-bold uppercase tracking-wider">Group Think</span>
+        <span className={`text-[11px] font-bold ${statusColors[session.status] || 'text-gray-400'}`}>
+          {session.status.toUpperCase()} R{session.roundCount}/{session.maxRounds}
+        </span>
+      </div>
+      <p className="text-[12px] text-gray-300 mb-2 line-clamp-2">{session.topic}</p>
+      <div className="flex flex-wrap gap-1">
+        {session.memberAgentIds.map((id) => {
+          const agent = allAgents.find((a) => a.id === id);
+          if (!agent) return null;
+          const meta = PROVIDER_META[agent.provider || 'claude'];
+          return (
+            <span
+              key={id}
+              className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-700"
+              style={{ color: meta.color }}
+            >
+              {agent.title}
+            </span>
+          );
+        })}
+      </div>
+      {session.synthesis && (
+        <div className="mt-2 p-2 bg-surface-0/60 border border-gray-700 max-h-32 overflow-y-auto text-[11px] text-gray-300 whitespace-pre-wrap">
+          {session.synthesis}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DetailPanel({ width }: DetailPanelProps) {
-  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats, panelLayout, togglePanelCollapsed } = useDashboardStore();
+  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats, groupThinkSessions, panelLayout, togglePanelCollapsed } = useDashboardStore();
   const [contextCount, setContextCount] = useState(0);
   const [productsCount, setProductsCount] = useState(0);
   const [showMeta, setShowMeta] = useState(false);
@@ -89,7 +132,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   if (collapsed) {
     return (
       <div
-        className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col items-center z-20 shadow-2xl py-2"
+        className="panel-shell flex flex-col items-center z-20 py-2"
         style={{ width }}
       >
         <CollapseButton collapsed direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
@@ -103,10 +146,10 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   if (!agent) {
     return (
       <div
-        className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col z-20 shadow-2xl"
+        className="panel-shell flex flex-col z-20"
         style={{ width }}
       >
-        <div className="flex items-center justify-end p-1 border- dark:border-white/10 light:border-black/10">
+        <div className="panel-header flex items-center justify-end p-1">
           <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
         </div>
         <div className="flex-1 flex items-center justify-center text-gray-300 font-sans text-sm p-4">
@@ -121,14 +164,14 @@ export default function DetailPanel({ width }: DetailPanelProps) {
 
   return (
     <div
-      className="bg-surface-1/90 backdrop-blur border- dark:border-white/10 light:border-black/10 flex flex-col font-sans relative shadow-2xl z-20"
+      className="panel-shell flex flex-col font-sans relative z-20"
       style={{ width }}
     >
       {/* Decorative line */}
       <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-accent-blue/50 via-transparent to-accent-blue/50" />
 
       {/* Agent info header */}
-      <div className="p-4 border- dark:border-white/10 light:border-black/10 relative overflow-hidden">
+      <div className="panel-header p-4 relative overflow-hidden">
         <div className="absolute top-0 right-0 p-1 opacity-20 pointer-events-none">
              <svg width="60" height="60" viewBox="0 0 100 100" fill="none" stroke="currentColor" className="text-accent-blue">
                  <circle cx="50" cy="50" r="40" strokeWidth="1" strokeDasharray="4 4" />
@@ -162,7 +205,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         {/* Collapsible Metadata */}
         <button
           onClick={() => setShowMeta(!showMeta)}
-          className="mt-3 w-full text-[13px] border border-gray-800 hover:border-accent-blue/50 text-gray-300 hover:text-accent-blue transition-colors py-1 flex justify-center items-center gap-2 font-sans"
+          className="ui-btn ui-btn-ghost mt-3 w-full text-[13px]"
         >
           {showMeta ? 'Collapse Meta' : 'Expand Meta'}
         </button>
@@ -256,14 +299,23 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         })()}
       </div>
 
+      {/* Group Think status (if agent is in an active session) */}
+      {(() => {
+        const gtSession = groupThinkSessions.find(
+          (s) => ['active', 'synthesizing', 'completed'].includes(s.status) && s.memberAgentIds.includes(agent.id)
+        );
+        if (!gtSession) return null;
+        return <GroupThinkStatusSection session={gtSession} agents={agents} />;
+      })()}
+
       {/* Controls */}
-      <div className="p-3 border- dark:border-white/10 light:border-black/10 grid grid-cols-2 gap-2 bg-surface-0/30">
+      <div className="panel-header grid grid-cols-2 gap-2 p-3">
         <button
           onClick={() => setTerminalAgent(isAttached ? null : agent.id)}
-          className={`px-2 py-2 text-[13px] font-bold   transition-all border ${
+          className={`ui-btn px-2 py-2 text-[13px] font-bold ${
             isAttached
-              ? 'bg-accent-green text-black border-accent-green hover:brightness-125 dark:hover:bg-white'
-              : 'bg-transparent text-accent-green border-accent-green/50 hover:bg-accent-green/10'
+              ? 'ui-btn-success is-active'
+              : 'ui-btn-success'
           }`}
         >
           {isAttached ? 'Detach Terminal' : 'Attach Terminal'}
@@ -271,19 +323,19 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         <button
           onClick={() => setShowQuery(true)}
           disabled={!agent.resumeSessionId}
-          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-purple/50 text-accent-purple hover:bg-accent-purple/10 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="ui-btn ui-btn-purple px-2 py-2 text-[13px] font-bold"
         >
           Query Agent
         </button>
         <button
           onClick={() => window.api.agents.restart(agent.id)}
-          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+          className="ui-btn ui-btn-warning px-2 py-2 text-[13px] font-bold"
         >
           Restart
         </button>
         <button
           onClick={() => window.api.agents.stop(agent.id)}
-          className="px-2 py-2 text-[13px] font-bold   transition-all border border-accent-red/50 text-accent-red hover:bg-accent-red/10 hover:shadow-[0_0_10px_rgba(255,0,85,0.4)]"
+          className="ui-btn ui-btn-danger px-2 py-2 text-[13px] font-bold"
         >
           Stop
         </button>

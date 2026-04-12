@@ -1,7 +1,22 @@
 import http from 'http';
 import { URL } from 'url';
 import type { AgentSupervisor } from './supervisor';
-import { getAgent, getAllAgents, getAgentsByWorkspace } from './database';
+import {
+  getAgent, getAllAgents, getAgentsByWorkspace, getWorkspace,
+  createGroupThinkSession, getGroupThinkSession, listGroupThinkSessions,
+  advanceGroupThinkRound, completeGroupThink, cancelGroupThink,
+  createTeam, getTeam, listTeams, updateTeamStatus, saveTeamManifest, getTeamManifest,
+  addTeamMember, removeTeamMember, getTeamMembers,
+  createChannel, removeChannel, getChannel, listChannels,
+  createTeamMessage, getTeamMessages, getRecentMessageCount, getRecentPairMessages,
+  createTeamTask, updateTeamTask, getTeamTasks,
+  listAgentTemplates, createAgentTemplate, updateAgentTemplate, deleteAgentTemplate, getAgentTemplate,
+} from './database';
+import { executeNotebook } from './notebook-executor';
+import { scanPersonas, scaffoldPersona } from './persona-scanner';
+import { TEAM_MAX_MESSAGES_PER_5MIN, TEAM_MAX_ALTERNATIONS, TEAM_ALTERNATION_WINDOW_MS, TEAM_PAIR_COOLDOWN_MS } from '../shared/constants';
+import { TeamMessageStatus } from '../shared/types';
+import crypto from 'crypto';
 
 /**
  * Lightweight HTTP API server that exposes supervisor methods.
@@ -22,7 +37,7 @@ export class ApiServer {
     this.server = http.createServer(async (req, res) => {
       // CORS headers for local requests
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
       if (req.method === 'OPTIONS') {
@@ -150,6 +165,488 @@ export class ApiServer {
     if (method === 'POST' && forkMatch) {
       const newAgent = await this.supervisor.forkAgent(forkMatch[1]);
       return newAgent;
+    }
+
+    // ── Group Think routes ────────────────────────────────────────────
+
+    // POST /api/groupthink — create session
+    if (method === 'POST' && path === '/api/groupthink') {
+      const body = await readBody(req);
+      const { workspaceId, topic, agentIds, maxRounds } = JSON.parse(body);
+      if (!workspaceId || !topic || !agentIds?.length) {
+        throw Object.assign(new Error('Missing workspaceId, topic, or agentIds'), { statusCode: 400 });
+      }
+      const session = createGroupThinkSession(workspaceId, topic, agentIds, maxRounds);
+      // Notify supervisor of the new session
+      this.supervisor.notifyGroupThinkStart(session);
+      return session;
+    }
+
+    // GET /api/groupthink/:id — get session with member agent statuses
+    const gtGetMatch = path.match(/^\/api\/groupthink\/([^/]+)$/);
+    if (method === 'GET' && gtGetMatch) {
+      const session = getGroupThinkSession(gtGetMatch[1]);
+      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
+      // Enrich with per-member agent status
+      const members = session.memberAgentIds.map(id => {
+        const agent = getAgent(id);
+        return {
+          agentId: id,
+          title: agent?.title || 'unknown',
+          status: agent?.status || 'unknown',
+          provider: agent?.provider || 'unknown',
+        };
+      });
+      return { ...session, members };
+    }
+
+    // GET /api/groupthink?workspaceId=... — list sessions
+    if (method === 'GET' && path === '/api/groupthink') {
+      const workspaceId = url.searchParams.get('workspaceId');
+      if (!workspaceId) throw Object.assign(new Error('Missing workspaceId'), { statusCode: 400 });
+      return listGroupThinkSessions(workspaceId);
+    }
+
+    // POST /api/groupthink/:id/advance — advance round
+    const gtAdvanceMatch = path.match(/^\/api\/groupthink\/([^/]+)\/advance$/);
+    if (method === 'POST' && gtAdvanceMatch) {
+      const session = advanceGroupThinkRound(gtAdvanceMatch[1]);
+      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
+      return session;
+    }
+
+    // POST /api/groupthink/:id/complete — complete with synthesis
+    const gtCompleteMatch = path.match(/^\/api\/groupthink\/([^/]+)\/complete$/);
+    if (method === 'POST' && gtCompleteMatch) {
+      const body = await readBody(req);
+      const { synthesis } = JSON.parse(body);
+      if (!synthesis) throw Object.assign(new Error('Missing synthesis'), { statusCode: 400 });
+      const session = completeGroupThink(gtCompleteMatch[1], synthesis);
+      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
+      // Notify renderer
+      this.supervisor.emit('groupThinkUpdated', session);
+      return session;
+    }
+
+    // DELETE /api/groupthink/:id — cancel session
+    const gtCancelMatch = path.match(/^\/api\/groupthink\/([^/]+)$/);
+    if (method === 'DELETE' && gtCancelMatch) {
+      cancelGroupThink(gtCancelMatch[1]);
+      const session = getGroupThinkSession(gtCancelMatch[1]);
+      if (session) this.supervisor.emit('groupThinkUpdated', session);
+      return { ok: true, sessionId: gtCancelMatch[1], message: 'Session cancelled' };
+    }
+
+    // ── Team routes ──────────────────────────────────────────────────────
+
+    // POST /api/teams — create team
+    if (method === 'POST' && path === '/api/teams') {
+      const body = await readBody(req);
+      const input = JSON.parse(body);
+      if (!input.workspaceId || !input.name || !input.members?.length) {
+        throw Object.assign(new Error('Missing workspaceId, name, or members'), { statusCode: 400 });
+      }
+      const team = createTeam(input);
+      this.supervisor.emit('teamUpdated', team);
+      return team;
+    }
+
+    // GET /api/teams?workspaceId=... — list teams
+    if (method === 'GET' && path === '/api/teams') {
+      const workspaceId = url.searchParams.get('workspaceId');
+      if (!workspaceId) throw Object.assign(new Error('Missing workspaceId'), { statusCode: 400 });
+      return listTeams(workspaceId);
+    }
+
+    // GET /api/teams/:id — get team with members, channels, messages, tasks
+    const teamGetMatch = path.match(/^\/api\/teams\/([^/]+)$/);
+    if (method === 'GET' && teamGetMatch) {
+      const team = getTeam(teamGetMatch[1]);
+      if (!team) throw Object.assign(new Error('Team not found'), { statusCode: 404 });
+      const messages = getTeamMessages(team.id, undefined, 20);
+      const tasks = getTeamTasks(team.id);
+      return { ...team, recentMessages: messages, tasks };
+    }
+
+    // DELETE /api/teams/:id — disband team
+    const teamDisbandMatch = path.match(/^\/api\/teams\/([^/]+)$/);
+    if (method === 'DELETE' && teamDisbandMatch) {
+      const team = getTeam(teamDisbandMatch[1]);
+      if (!team) throw Object.assign(new Error('Team not found'), { statusCode: 404 });
+      // Save manifest before disbanding
+      const members = getTeamMembers(team.id);
+      const channels = listChannels(team.id);
+      const tasks = getTeamTasks(team.id);
+      const recentMessages = getTeamMessages(team.id, undefined, 20);
+      const manifest = JSON.stringify({
+        version: 1,
+        members: members.map(m => {
+          const agent = getAgent(m.agentId);
+          return {
+            agentId: m.agentId,
+            title: agent?.title || m.title || '',
+            provider: agent?.provider || m.provider || 'claude',
+            roleDescription: agent?.roleDescription || '',
+            workingDirectory: agent?.workingDirectory || '',
+            command: agent?.command || '',
+            resumeSessionId: agent?.resumeSessionId || null,
+            role: m.role,
+          };
+        }),
+        channels: channels.map(c => ({ fromAgent: c.fromAgent, toAgent: c.toAgent, label: c.label })),
+        tasks: tasks.map(t => ({ title: t.title, description: t.description, status: t.status, assignedTo: t.assignedTo })),
+        recentMessages,
+      });
+      saveTeamManifest(team.id, manifest);
+      updateTeamStatus(team.id, 'disbanded');
+      const updated = getTeam(team.id);
+      this.supervisor.emit('teamUpdated', updated);
+      return { ok: true, teamId: team.id, message: 'Team disbanded' };
+    }
+
+    // POST /api/teams/:id/members — add member
+    const memberAddMatch = path.match(/^\/api\/teams\/([^/]+)\/members$/);
+    if (method === 'POST' && memberAddMatch) {
+      const body = await readBody(req);
+      const { agentId, role } = JSON.parse(body);
+      if (!agentId) throw Object.assign(new Error('Missing agentId'), { statusCode: 400 });
+      addTeamMember(memberAddMatch[1], agentId, role || 'member');
+      const team = getTeam(memberAddMatch[1]);
+      this.supervisor.emit('teamUpdated', team);
+      return { ok: true, teamId: memberAddMatch[1], agentId };
+    }
+
+    // DELETE /api/teams/:id/members/:agentId — remove member
+    const memberRemoveMatch = path.match(/^\/api\/teams\/([^/]+)\/members\/([^/]+)$/);
+    if (method === 'DELETE' && memberRemoveMatch) {
+      removeTeamMember(memberRemoveMatch[1], memberRemoveMatch[2]);
+      const team = getTeam(memberRemoveMatch[1]);
+      this.supervisor.emit('teamUpdated', team);
+      return { ok: true, teamId: memberRemoveMatch[1], agentId: memberRemoveMatch[2] };
+    }
+
+    // POST /api/teams/:id/channels — add channel
+    const channelAddMatch = path.match(/^\/api\/teams\/([^/]+)\/channels$/);
+    if (method === 'POST' && channelAddMatch) {
+      const body = await readBody(req);
+      const { fromAgent, toAgent, label } = JSON.parse(body);
+      if (!fromAgent || !toAgent) throw Object.assign(new Error('Missing fromAgent or toAgent'), { statusCode: 400 });
+      const channel = createChannel(channelAddMatch[1], fromAgent, toAgent, label);
+      const team = getTeam(channelAddMatch[1]);
+      this.supervisor.emit('teamUpdated', team);
+      return channel;
+    }
+
+    // DELETE /api/teams/:id/channels/:channelId — remove channel
+    const channelRemoveMatch = path.match(/^\/api\/teams\/([^/]+)\/channels\/([^/]+)$/);
+    if (method === 'DELETE' && channelRemoveMatch) {
+      removeChannel(channelRemoveMatch[2]);
+      const team = getTeam(channelRemoveMatch[1]);
+      this.supervisor.emit('teamUpdated', team);
+      return { ok: true, teamId: channelRemoveMatch[1], channelId: channelRemoveMatch[2] };
+    }
+
+    // POST /api/teams/:id/messages — send message (with channel enforcement + loop detection)
+    const msgSendMatch = path.match(/^\/api\/teams\/([^/]+)\/messages$/);
+    if (method === 'POST' && msgSendMatch) {
+      const teamId = msgSendMatch[1];
+      const body = await readBody(req);
+      const { fromAgent, toAgent, subject, status, summary, detail, need } = JSON.parse(body);
+      if (!fromAgent || !toAgent || !subject || !summary) {
+        throw Object.assign(new Error('Missing required fields: fromAgent, toAgent, subject, summary'), { statusCode: 400 });
+      }
+
+      // Channel enforcement
+      const channel = getChannel(teamId, fromAgent, toAgent);
+      if (!channel) {
+        throw Object.assign(
+          new Error(`No channel from ${fromAgent} to ${toAgent} in this team. Communication not authorized.`),
+          { statusCode: 403 }
+        );
+      }
+
+      // Loop detection tier 1: global cap
+      const recentCount = getRecentMessageCount(teamId, 5);
+      if (recentCount >= TEAM_MAX_MESSAGES_PER_5MIN) {
+        throw Object.assign(
+          new Error(`Team message rate limit exceeded (${TEAM_MAX_MESSAGES_PER_5MIN} messages per 5 minutes). Wait before sending more.`),
+          { statusCode: 429 }
+        );
+      }
+
+      // Loop detection tier 2: low-content filter
+      const summaryHash = crypto.createHash('md5').update(summary.substring(0, 200)).digest('hex');
+      const pairRecent = getRecentPairMessages(teamId, fromAgent, toAgent, 3);
+      const duplicateCount = pairRecent.filter(m =>
+        m.fromAgent === fromAgent &&
+        crypto.createHash('md5').update(m.summary.substring(0, 200)).digest('hex') === summaryHash
+      ).length;
+      if (duplicateCount >= 3) {
+        throw Object.assign(
+          new Error('Low-content repetition detected. Your last 3 messages to this agent had the same content.'),
+          { statusCode: 429 }
+        );
+      }
+
+      // Loop detection tier 3: pair alternation
+      const pairHistory = getRecentPairMessages(teamId, fromAgent, toAgent, 12);
+      let alternations = 0;
+      for (let i = 0; i < pairHistory.length - 1; i++) {
+        if (pairHistory[i].fromAgent !== pairHistory[i + 1].fromAgent) {
+          alternations++;
+        }
+      }
+      if (alternations >= TEAM_MAX_ALTERNATIONS) {
+        throw Object.assign(
+          new Error(`Communication loop detected between you and the recipient (${alternations} alternations). Pause and work independently, or escalate to supervisor.`),
+          { statusCode: 429 }
+        );
+      }
+
+      const message = createTeamMessage({
+        teamId, fromAgent, toAgent, subject,
+        status: (status || 'update') as TeamMessageStatus,
+        summary, detail, need,
+      });
+      this.supervisor.emit('teamMessageCreated', message);
+      return message;
+    }
+
+    // GET /api/teams/:id/messages — get messages
+    const msgGetMatch = path.match(/^\/api\/teams\/([^/]+)\/messages$/);
+    if (method === 'GET' && msgGetMatch) {
+      const agentId = url.searchParams.get('agentId') || undefined;
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+      return getTeamMessages(msgGetMatch[1], agentId, limit);
+    }
+
+    // POST /api/teams/:id/tasks — create task
+    const taskCreateMatch = path.match(/^\/api\/teams\/([^/]+)\/tasks$/);
+    if (method === 'POST' && taskCreateMatch) {
+      const body = await readBody(req);
+      const { title, description, assignedTo, blockedBy, createdBy } = JSON.parse(body);
+      if (!title || !createdBy) throw Object.assign(new Error('Missing title or createdBy'), { statusCode: 400 });
+      const task = createTeamTask({
+        teamId: taskCreateMatch[1], title, description, assignedTo, blockedBy, createdBy,
+      });
+      return task;
+    }
+
+    // GET /api/teams/:id/tasks — list tasks
+    const taskListMatch = path.match(/^\/api\/teams\/([^/]+)\/tasks$/);
+    if (method === 'GET' && taskListMatch) {
+      return getTeamTasks(taskListMatch[1]);
+    }
+
+    // PATCH /api/teams/:id/tasks/:taskId — update task
+    const taskUpdateMatch = path.match(/^\/api\/teams\/([^/]+)\/tasks\/([^/]+)$/);
+    if (method === 'PATCH' && taskUpdateMatch) {
+      const body = await readBody(req);
+      const updates = JSON.parse(body);
+      const task = updateTeamTask(taskUpdateMatch[2], updates);
+      if (!task) throw Object.assign(new Error('Task not found'), { statusCode: 404 });
+      return task;
+    }
+
+    // POST /api/teams/:id/resurrect — resurrect disbanded team from manifest
+    const resurrectMatch = path.match(/^\/api\/teams\/([^/]+)\/resurrect$/);
+    if (method === 'POST' && resurrectMatch) {
+      const teamId = resurrectMatch[1];
+      const team = getTeam(teamId);
+      if (!team) throw Object.assign(new Error('Team not found'), { statusCode: 404 });
+      if (team.status !== 'disbanded') {
+        throw Object.assign(new Error('Can only resurrect disbanded teams'), { statusCode: 400 });
+      }
+
+      const manifestJson = getTeamManifest(teamId);
+      if (!manifestJson) {
+        // No manifest — just reactivate without relaunching
+        updateTeamStatus(teamId, 'active');
+        const updated = getTeam(teamId);
+        this.supervisor.emit('teamUpdated', updated);
+        return updated;
+      }
+
+      const manifest = JSON.parse(manifestJson);
+      const idMap = new Map<string, string>(); // old agent ID → new agent ID
+
+      // Relaunch each member agent
+      for (const member of manifest.members) {
+        try {
+          const isClaude = member.provider === 'claude';
+
+          // Build rehydration context for non-Claude agents
+          let rehydrationPrompt: string | undefined;
+          if (!isClaude) {
+            const taskSummary = (manifest.tasks || [])
+              .map((t: any) => `  [${t.status}] ${t.title}${t.assignedTo ? ` (assigned: ${t.assignedTo})` : ''}`)
+              .join('\n');
+            const msgSummary = (manifest.recentMessages || []).slice(0, 10)
+              .map((m: any) => `  ${m.fromTitle || m.fromAgent} → ${m.toTitle || m.toAgent}: "${m.subject}" [${m.status}]`)
+              .join('\n');
+            rehydrationPrompt = [
+              `You are being resurrected into team "${team.name}".`,
+              `Your role: ${member.role}`,
+              member.roleDescription ? `Role description: ${member.roleDescription}` : '',
+              taskSummary ? `\nTask Board:\n${taskSummary}` : '',
+              msgSummary ? `\nRecent Messages:\n${msgSummary}` : '',
+              '\nUse your MCP tools (send_message, get_messages, get_tasks, update_task, get_team_info) to coordinate with teammates.',
+            ].filter(Boolean).join('\n');
+          }
+
+          const newAgent = await this.supervisor.launchAgent({
+            workspaceId: team.workspaceId,
+            title: member.title,
+            roleDescription: member.roleDescription || '',
+            workingDirectory: member.workingDirectory,
+            command: member.command,
+            provider: member.provider,
+            autoRestartEnabled: true,
+            isSupervised: true,
+          });
+
+          idMap.set(member.agentId, newAgent.id);
+
+          // For non-Claude agents, send rehydration prompt after a brief delay
+          if (rehydrationPrompt) {
+            setTimeout(async () => {
+              try {
+                await this.supervisor.sendInput(newAgent.id, rehydrationPrompt!);
+              } catch { /* agent may not be idle yet — delivery engine will handle queued messages */ }
+            }, 5000);
+          }
+        } catch (err: any) {
+          console.error(`[resurrect] Failed to relaunch member ${member.title}:`, err.message);
+          // Continue with remaining members
+        }
+      }
+
+      // Reactivate team and clear old members
+      updateTeamStatus(teamId, 'active');
+
+      // Remove old members, add new ones
+      for (const member of manifest.members) {
+        try { removeTeamMember(teamId, member.agentId); } catch { /* may not exist */ }
+        const newId = idMap.get(member.agentId);
+        if (newId) {
+          addTeamMember(teamId, newId, member.role);
+        }
+      }
+
+      // Remove old channels, re-create with new IDs
+      const oldChannels = listChannels(teamId);
+      for (const ch of oldChannels) {
+        removeChannel(ch.id);
+      }
+      for (const ch of manifest.channels) {
+        const newFrom = idMap.get(ch.fromAgent);
+        const newTo = idMap.get(ch.toAgent);
+        if (newFrom && newTo) {
+          createChannel(teamId, newFrom, newTo, ch.label);
+        }
+      }
+
+      // Re-create tasks with new assignee IDs
+      for (const task of (manifest.tasks || [])) {
+        const newAssignee = task.assignedTo ? idMap.get(task.assignedTo) || null : null;
+        createTeamTask({
+          teamId,
+          title: task.title,
+          description: task.description || '',
+          assignedTo: newAssignee || undefined,
+          createdBy: 'system',
+        });
+      }
+
+      // Inject team MCP config for each new agent
+      for (const [_oldId, newId] of idMap) {
+        const agent = getAgent(newId);
+        if (agent) {
+          const pathType = agent.tmuxSessionName ? 'wsl' : 'windows';
+          this.supervisor.ensureTeamMcpConfig(newId, teamId, agent.workingDirectory, pathType);
+        }
+      }
+
+      const updated = getTeam(teamId);
+      this.supervisor.emit('teamUpdated', updated);
+      return {
+        ...updated,
+        resurrected: true,
+        agentMapping: Object.fromEntries(idMap),
+        membersLaunched: idMap.size,
+        membersFailed: manifest.members.length - idMap.size,
+      };
+    }
+
+    // POST /api/notebooks/execute — execute a notebook in-place via nbconvert
+    if (method === 'POST' && path === '/api/notebooks/execute') {
+      const body = await readBody(req);
+      const { notebookPath, kernelName, timeout } = JSON.parse(body);
+      if (!notebookPath) throw Object.assign(new Error('Missing "notebookPath" in request body'), { statusCode: 400 });
+      const result = await executeNotebook(notebookPath, kernelName, timeout);
+      if (!result.ok) {
+        throw Object.assign(new Error(result.error || 'Notebook execution failed'), { statusCode: 500 });
+      }
+      return result;
+    }
+
+    // ── Persona routes ──────────────────────────────────────────────────
+
+    // GET /api/personas?workspaceId=... — list personas
+    if (method === 'GET' && path === '/api/personas') {
+      const workspaceId = url.searchParams.get('workspaceId');
+      if (!workspaceId) throw Object.assign(new Error('Missing workspaceId'), { statusCode: 400 });
+      const workspace = getWorkspace(workspaceId);
+      if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
+      return scanPersonas(workspace.path, workspace.pathType);
+    }
+
+    // POST /api/personas — create persona
+    if (method === 'POST' && path === '/api/personas') {
+      const body = await readBody(req);
+      const { workspaceId, name, claudeMd } = JSON.parse(body);
+      if (!workspaceId || !name) throw Object.assign(new Error('Missing workspaceId or name'), { statusCode: 400 });
+      const workspace = getWorkspace(workspaceId);
+      if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
+      return scaffoldPersona(workspace.path, workspace.pathType, name, claudeMd);
+    }
+
+    // ── Template routes ────────────────────────────────────────────────
+
+    // GET /api/templates?workspaceId=... — list templates
+    if (method === 'GET' && path === '/api/templates') {
+      const workspaceId = url.searchParams.get('workspaceId') || undefined;
+      return listAgentTemplates(workspaceId);
+    }
+
+    // GET /api/templates/:id — get single template
+    const templateGetMatch = path.match(/^\/api\/templates\/([^/]+)$/);
+    if (method === 'GET' && templateGetMatch) {
+      const template = getAgentTemplate(templateGetMatch[1]);
+      if (!template) throw Object.assign(new Error('Template not found'), { statusCode: 404 });
+      return template;
+    }
+
+    // POST /api/templates — create template
+    if (method === 'POST' && path === '/api/templates') {
+      const body = await readBody(req);
+      const input = JSON.parse(body);
+      return createAgentTemplate(input);
+    }
+
+    // PATCH /api/templates/:id — update template
+    const templateUpdateMatch = path.match(/^\/api\/templates\/([^/]+)$/);
+    if (method === 'PATCH' && templateUpdateMatch) {
+      const body = await readBody(req);
+      const updates = JSON.parse(body);
+      return updateAgentTemplate(templateUpdateMatch[1], updates);
+    }
+
+    // DELETE /api/templates/:id — delete template
+    const templateDeleteMatch = path.match(/^\/api\/templates\/([^/]+)$/);
+    if (method === 'DELETE' && templateDeleteMatch) {
+      deleteAgentTemplate(templateDeleteMatch[1]);
+      return { ok: true };
     }
 
     throw Object.assign(new Error(`Not found: ${method} ${path}`), { statusCode: 404 });

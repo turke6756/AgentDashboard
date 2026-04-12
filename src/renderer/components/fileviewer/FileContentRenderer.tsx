@@ -5,6 +5,7 @@ import CodeRenderer from './CodeRenderer';
 import MarkdownRenderer from './MarkdownRenderer';
 import ImageRenderer from './ImageRenderer';
 import PdfRenderer from './PdfRenderer';
+import NotebookRenderer from './NotebookRenderer';
 import type { PathType } from '../../../shared/types';
 
 interface Props {
@@ -66,6 +67,10 @@ export default function FileContentRenderer({ content, filePath, pathType, error
 
   if (fileType === 'pdf') {
     return <PdfRenderer filePath={filePath} pathType={pathType} />;
+  }
+
+  if (fileType === 'notebook') {
+    return <NotebookRenderer content={content} />;
   }
 
   return <PlainTextRenderer content={content} />;

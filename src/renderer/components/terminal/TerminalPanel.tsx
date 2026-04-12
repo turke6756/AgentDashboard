@@ -5,6 +5,16 @@ import '@xterm/xterm/css/xterm.css';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useThemeStore } from '../../stores/theme-store';
 import { shellEscapePath } from '../../utils/drag-file';
+import type { Agent } from '../../../shared/types';
+
+/** Strip .claude/agents/supervisor suffix to show the workspace root name. */
+function getDisplayDirectory(agent: Agent): string {
+  const dir = agent.workingDirectory.replace(/\\/g, '/');
+  const stripped = agent.isSupervisor
+    ? dir.replace(/\/\.claude\/agents\/[^/]+$/, '')
+    : dir;
+  return stripped.split('/').filter(Boolean).pop() || stripped;
+}
 
 // Dark theme (GitHub Slate)
 const DARK_TERMINAL_THEME = {
@@ -369,7 +379,7 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
               <span className={`text-[10px] font-mono px-1 py-0.5 truncate max-w-[150px] ${
                 isLight ? 'text-[#333333]' : 'text-gray-500'
               }`}>
-                {agent.workingDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop()}
+                {getDisplayDirectory(agent)}
               </span>
             )}
           </>
@@ -440,7 +450,7 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
                     ? 'text-[#4d4d4d] bg-[#e5e5e5]'
                     : 'text-gray-500 bg-gray-500/10'
                 }`}>
-                  {agent.workingDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop()}
+                  {getDisplayDirectory(agent)}
                 </span>
               )}
             </>

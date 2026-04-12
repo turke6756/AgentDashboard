@@ -3,13 +3,18 @@ import { AgentSupervisor } from './supervisor';
 import {
   getWorkspaces, createWorkspace, deleteWorkspace, getWorkspace,
   getAgentsByWorkspace, getAllAgents, getAgent, getFileActivities, getWorkspaceAgentSummary,
-  checkAgentMdExists
+  checkAgentMdExists, updateAgentSupervised,
+  createGroupThinkSession, getGroupThinkSession, listGroupThinkSessions, cancelGroupThink,
+  createTeam, getTeam, listTeams, updateTeamStatus, addTeamMember, removeTeamMember,
+  createChannel, removeChannel, getTeamMessages, getTeamTasks, createTeamTask, updateTeamTask,
+  listAgentTemplates, createAgentTemplate, updateAgentTemplate, deleteAgentTemplate,
 } from './database';
 import { openInVSCode, openFileInVSCode, openFileInWorkspace } from './vscode-launcher';
 import { isWslAvailable, isTmuxAvailable, isClaudeAvailableInWsl } from './wsl-bridge';
 import { execFileSync } from 'child_process';
 import { detectPathType } from './path-utils';
 import { readFileContents, listDirectoryEntries } from './file-reader';
+import { scanPersonas, scaffoldPersona } from './persona-scanner';
 
 export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: BrowserWindow): void {
   // Workspace handlers
@@ -39,6 +44,95 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:workspace-heat', () => getWorkspaceAgentSummary());
   ipcMain.handle('agent:get-supervisor', (_e, workspaceId) => supervisor.getSupervisorAgent(workspaceId));
   ipcMain.handle('agent:get-context-stats', (_e, agentId) => supervisor.getContextStats(agentId));
+  ipcMain.handle('agent:update-supervised', (_e, id, supervised) => {
+    updateAgentSupervised(id, supervised);
+    return getAgent(id);
+  });
+
+  // Group Think handlers
+  ipcMain.handle('groupthink:start', (_e, workspaceId, topic, agentIds, maxRounds) => {
+    const session = createGroupThinkSession(workspaceId, topic, agentIds, maxRounds);
+    supervisor.notifyGroupThinkStart(session);
+    return session;
+  });
+  ipcMain.handle('groupthink:status', (_e, sessionId) => getGroupThinkSession(sessionId));
+  ipcMain.handle('groupthink:list', (_e, workspaceId) => listGroupThinkSessions(workspaceId));
+  ipcMain.handle('groupthink:cancel', (_e, sessionId) => {
+    cancelGroupThink(sessionId);
+    const session = getGroupThinkSession(sessionId);
+    if (session && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('groupthink:updated', session);
+    }
+  });
+
+  // Team handlers
+  ipcMain.handle('team:create', (_e, input) => {
+    const team = createTeam(input);
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+    return team;
+  });
+  ipcMain.handle('team:get', (_e, teamId) => getTeam(teamId));
+  ipcMain.handle('team:list', (_e, workspaceId) => listTeams(workspaceId));
+  ipcMain.handle('team:disband', (_e, teamId) => {
+    updateTeamStatus(teamId, 'disbanded');
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+  });
+  ipcMain.handle('team:add-member', (_e, teamId, agentId, role) => {
+    addTeamMember(teamId, agentId, role || 'member');
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+  });
+  ipcMain.handle('team:remove-member', (_e, teamId, agentId) => {
+    removeTeamMember(teamId, agentId);
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+  });
+  ipcMain.handle('team:add-channel', (_e, teamId, fromAgent, toAgent, label) => {
+    const channel = createChannel(teamId, fromAgent, toAgent, label);
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+    return channel;
+  });
+  ipcMain.handle('team:remove-channel', (_e, teamId, channelId) => {
+    removeChannel(channelId);
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+  });
+  ipcMain.handle('team:get-messages', (_e, teamId, agentId) => getTeamMessages(teamId, agentId));
+  ipcMain.handle('team:get-tasks', (_e, teamId) => getTeamTasks(teamId));
+  ipcMain.handle('team:create-task', (_e, teamId, task) => createTeamTask({ teamId, ...task }));
+  ipcMain.handle('team:update-task', (_e, teamId, taskId, updates) => updateTeamTask(taskId, updates));
+  ipcMain.handle('team:resurrect', (_e, teamId) => {
+    updateTeamStatus(teamId, 'active');
+    const team = getTeam(teamId);
+    if (team && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+    return team;
+  });
+
+  // Persona handlers
+  ipcMain.handle('persona:list', (_e, workspacePath, pathType) => scanPersonas(workspacePath, pathType));
+  ipcMain.handle('persona:create', (_e, workspacePath, pathType, name, customClaudeMd?) => scaffoldPersona(workspacePath, pathType, name, customClaudeMd));
+
+  // Template handlers
+  ipcMain.handle('template:list', (_e, workspaceId) => listAgentTemplates(workspaceId));
+  ipcMain.handle('template:create', (_e, data) => createAgentTemplate(data));
+  ipcMain.handle('template:update', (_e, id, updates) => updateAgentTemplate(id, updates));
+  ipcMain.handle('template:delete', (_e, id) => deleteAgentTemplate(id));
 
   // Terminal handlers - track attached agents and their data listeners
   // Map<agentId, listenerFunction>
@@ -160,6 +254,26 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   supervisor.on('contextStatsChanged', (stats) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('agent:context-stats-changed', stats);
+    }
+  });
+
+  // Forward group think updates to renderer
+  supervisor.on('groupThinkUpdated', (session) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('groupthink:updated', session);
+    }
+  });
+
+  // Forward team updates to renderer
+  supervisor.on('teamUpdated', (team) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:updated', team);
+    }
+  });
+
+  supervisor.on('teamMessageCreated', (message) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:message-created', message);
     }
   });
 }

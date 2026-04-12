@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout } from '../../shared/types';
+import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout, GroupThinkSession, Team, TeamMessage, CreateTeamInput } from '../../shared/types';
 
 interface WorkspaceHeat {
   activeCount: number;
@@ -48,6 +48,11 @@ interface DashboardState {
   fileActivities: FileActivity[];
   workspaceHeat: Record<string, WorkspaceHeat>;
   contextStats: Record<string, ContextStats>;
+  groupThinkSessions: GroupThinkSession[];
+
+  // Teams
+  teams: Team[];
+  teamMessages: Record<string, TeamMessage[]>;
 
   // Panel layout
   panelLayout: PanelLayout;
@@ -83,6 +88,20 @@ interface DashboardState {
   loadSupervisor: (workspaceId: string) => Promise<void>;
   launchSupervisor: (workspaceId: string) => Promise<Agent | null>;
 
+  // Group Think actions
+  loadGroupThinkSessions: (workspaceId: string) => Promise<void>;
+  startGroupThink: (workspaceId: string, topic: string, agentIds: string[], maxRounds?: number) => Promise<GroupThinkSession | null>;
+  cancelGroupThink: (sessionId: string) => Promise<void>;
+  updateGroupThinkSession: (session: GroupThinkSession) => void;
+
+  // Team actions
+  loadTeams: (workspaceId: string) => Promise<void>;
+  createTeam: (input: CreateTeamInput) => Promise<Team | null>;
+  disbandTeam: (teamId: string) => Promise<void>;
+  updateTeam: (team: Team) => void;
+  loadTeamMessages: (teamId: string) => Promise<void>;
+  addTeamMessage: (message: TeamMessage) => void;
+
   // Tab actions
   openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string) => void;
   openDirectoryTab: (rootDirectory: string, pathType: PathType) => void;
@@ -112,6 +131,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   fileActivities: [],
   workspaceHeat: {},
   contextStats: {},
+  groupThinkSessions: [],
+  teams: [],
+  teamMessages: {},
 
   // Panel layout
   panelLayout: loadLayout(),
@@ -301,7 +323,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     } else {
       set({ selectedWorkspaceId: id, selectedAgentId: null });
     }
-    if (id) get().loadAgents(id);
+    if (id) {
+      get().loadAgents(id);
+      get().loadGroupThinkSessions(id);
+      get().loadTeams(id);
+    }
   },
 
   selectAgent: (id) => set({ selectedAgentId: id }),
@@ -314,9 +340,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (agent.isSupervisor) {
       set({ supervisorAgent: agent });
     } else {
-      set((state) => ({
-        agents: state.agents.map((a) => (a.id === agent.id ? agent : a)),
-      }));
+      set((state) => {
+        const exists = state.agents.some((a) => a.id === agent.id);
+        return {
+          agents: exists
+            ? state.agents.map((a) => (a.id === agent.id ? agent : a))
+            : [...state.agents, agent],
+        };
+      });
     }
   },
 
@@ -412,6 +443,123 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set((state) => ({
       contextStats: { ...state.contextStats, [stats.agentId]: stats },
     }));
+  },
+
+  loadGroupThinkSessions: async (workspaceId: string) => {
+    try {
+      const sessions = await window.api.groupthink.list(workspaceId);
+      set({ groupThinkSessions: sessions });
+    } catch (err) {
+      console.error('Failed to load group think sessions:', err);
+    }
+  },
+
+  startGroupThink: async (workspaceId, topic, agentIds, maxRounds?) => {
+    try {
+      const session = await window.api.groupthink.start(workspaceId, topic, agentIds, maxRounds);
+      set((state) => ({
+        groupThinkSessions: [session, ...state.groupThinkSessions],
+      }));
+      return session;
+    } catch (err) {
+      console.error('Failed to start group think:', err);
+      return null;
+    }
+  },
+
+  cancelGroupThink: async (sessionId) => {
+    try {
+      await window.api.groupthink.cancel(sessionId);
+      set((state) => ({
+        groupThinkSessions: state.groupThinkSessions.map((s) =>
+          s.id === sessionId ? { ...s, status: 'cancelled' as const } : s
+        ),
+      }));
+    } catch (err) {
+      console.error('Failed to cancel group think:', err);
+    }
+  },
+
+  updateGroupThinkSession: (session) => {
+    set((state) => {
+      const exists = state.groupThinkSessions.some((s) => s.id === session.id);
+      if (exists) {
+        return {
+          groupThinkSessions: state.groupThinkSessions.map((s) =>
+            s.id === session.id ? session : s
+          ),
+        };
+      }
+      return { groupThinkSessions: [session, ...state.groupThinkSessions] };
+    });
+  },
+
+  // ── Team actions ───────────────────────────────────────────────────────
+
+  loadTeams: async (workspaceId: string) => {
+    try {
+      const teams = await window.api.teams.list(workspaceId);
+      set({ teams });
+    } catch (err) {
+      console.error('Failed to load teams:', err);
+    }
+  },
+
+  createTeam: async (input: CreateTeamInput) => {
+    try {
+      const team = await window.api.teams.create(input);
+      set((state) => ({ teams: [team, ...state.teams] }));
+      return team;
+    } catch (err) {
+      console.error('Failed to create team:', err);
+      return null;
+    }
+  },
+
+  disbandTeam: async (teamId: string) => {
+    try {
+      await window.api.teams.disband(teamId);
+      set((state) => ({
+        teams: state.teams.map((t) =>
+          t.id === teamId ? { ...t, status: 'disbanded' as const } : t
+        ),
+      }));
+    } catch (err) {
+      console.error('Failed to disband team:', err);
+    }
+  },
+
+  updateTeam: (team: Team) => {
+    set((state) => {
+      const exists = state.teams.some((t) => t.id === team.id);
+      if (exists) {
+        return { teams: state.teams.map((t) => (t.id === team.id ? team : t)) };
+      }
+      return { teams: [team, ...state.teams] };
+    });
+  },
+
+  loadTeamMessages: async (teamId: string) => {
+    try {
+      const messages = await window.api.teams.getMessages(teamId);
+      set((state) => ({
+        teamMessages: { ...state.teamMessages, [teamId]: messages },
+      }));
+    } catch (err) {
+      console.error('Failed to load team messages:', err);
+    }
+  },
+
+  addTeamMessage: (message: TeamMessage) => {
+    set((state) => {
+      const existing = state.teamMessages[message.teamId] || [];
+      return {
+        teamMessages: {
+          ...state.teamMessages,
+          [message.teamId]: [message, ...existing],
+        },
+      };
+    });
   },
 
   updateWorkspaceHeat: () => {

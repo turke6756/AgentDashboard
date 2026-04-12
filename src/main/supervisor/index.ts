@@ -3,12 +3,16 @@ import path from 'path';
 import fs from 'fs';
 import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentStatus, ContextStats, LaunchAgentInput, QueryResult } from '../../shared/types';
+import { Agent, AgentStatus, ContextStats, GroupThinkSession, LaunchAgentInput, QueryResult, Team } from '../../shared/types';
 import {
   TMUX_SESSION_PREFIX, DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, PROVIDER_COMMANDS,
   SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_MEMORY_MD, SUPERVISOR_SKILLS_README,
   SCRIPT_READ_AGENT_LOG, SCRIPT_LIST_AGENTS, SCRIPT_SEND_MESSAGE, SCRIPT_GET_CONTEXT_STATS,
+  SUPERVISOR_EVENT_COOLDOWN_MS, SUPERVISOR_EVENT_LOG_TAIL_LINES, SUPERVISOR_CONTEXT_THRESHOLDS,
+  SUPERVISOR_EVENT_QUEUE_MAX, SUPERVISOR_EVENT_DRAIN_INTERVAL_MS,
 } from '../../shared/constants';
+import { SupervisorEvent, buildEventPayload, buildConsolidatedPayload } from './event-payload-builder';
+import { TeamMessageDeliveryEngine } from './team-delivery';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
 import { StatusMonitor } from './status-monitor';
@@ -18,10 +22,20 @@ import {
   createAgent, getAgent, getActiveAgents, getAllAgents, getSupervisorAgent, getWorkspace, updateAgentStatus, updateAgentPid,
   updateAgentExitCode, incrementRestartCount, updateAgentLastOutput,
   updateAgentAttached, addEvent, deleteAgent as dbDeleteAgent,
-  updateAgentResumeSessionId, addFileActivity
+  updateAgentResumeSessionId, addFileActivity, getTeamMembership, getAgentTemplate
 } from '../database';
 import { detectPathType, windowsToWslPath, uncToWslPath } from '../path-utils';
+import { getScriptPath } from './paths';
 import { tmuxListSessions, tmuxSendKeys } from '../wsl-bridge';
+
+/** Recover the workspace root from an agent whose cwd is a persona subdirectory. */
+function getEffectiveWorkspaceRoot(agent: Agent): string {
+  const unixMatch = agent.workingDirectory.match(/^(.+)\/\.claude\/agents\/[^/]+\/?$/);
+  if (unixMatch) return unixMatch[1];
+  const winMatch = agent.workingDirectory.match(/^(.+)\\\.claude\\agents\\[^\\]+\\?$/);
+  if (winMatch) return winMatch[1];
+  return agent.workingDirectory;
+}
 
 function parseQueryResponse(stdout: string): QueryResult {
   const trimmed = stdout.trim();
@@ -121,6 +135,15 @@ export class AgentSupervisor extends EventEmitter {
   private contextStatsMonitor: ContextStatsMonitor;
   private logsDir: string;
 
+  // Event bridge state
+  private eventCooldowns = new Map<string, number>();
+  private supervisorQueuedEvents: SupervisorEvent[] = [];
+  private eventDrainTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastContextThreshold = new Map<string, number>();
+
+  // Team message delivery
+  private teamDeliveryEngine: TeamMessageDeliveryEngine;
+
   constructor() {
     super();
     const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
@@ -139,6 +162,8 @@ export class AgentSupervisor extends EventEmitter {
       if (agent && data.status === 'crashed' && agent.autoRestartEnabled) {
         this.handleAutoRestart(agent);
       }
+      // Event bridge: notify supervisor of supervised agent status changes
+      this.handleSupervisorEvent(data);
     });
 
     this.contextStatsMonitor = new ContextStatsMonitor(() => {
@@ -154,6 +179,8 @@ export class AgentSupervisor extends EventEmitter {
 
     this.contextStatsMonitor.on('statsChanged', (stats: ContextStats) => {
       this.emit('contextStatsChanged', stats);
+      // Event bridge: check context thresholds for supervised agents
+      this.checkContextThreshold(stats);
     });
 
     // JSONL-based file activity tracking (reliable for both Windows and WSL agents)
@@ -167,16 +194,21 @@ export class AgentSupervisor extends EventEmitter {
     // Update registry whenever any status changes
     this.on('statusChanged', () => this.writeAgentRegistry());
     this.on('agentDeleted', () => this.writeAgentRegistry());
+
+    // Team message delivery engine
+    this.teamDeliveryEngine = new TeamMessageDeliveryEngine(this);
   }
 
   start(): void {
     this.monitor.start();
     this.contextStatsMonitor.start();
+    this.teamDeliveryEngine.start();
   }
 
   stop(): void {
     this.monitor.stop();
     this.contextStatsMonitor.stop();
+    this.teamDeliveryEngine.stop();
   }
 
   getContextStats(agentId: string): ContextStats | null {
@@ -185,6 +217,191 @@ export class AgentSupervisor extends EventEmitter {
 
   getSupervisorAgent(workspaceId: string): Agent | null {
     return getSupervisorAgent(workspaceId);
+  }
+
+  // ── Group Think ─────────────────────────────────────────────────────
+
+  notifyGroupThinkStart(session: GroupThinkSession): void {
+    const supervisor = getSupervisorAgent(session.workspaceId);
+    if (!supervisor || ['done', 'crashed'].includes(supervisor.status)) {
+      console.warn('[groupthink] No active supervisor to notify for session', session.id);
+      return;
+    }
+
+    const members = session.memberAgentIds.map(id => {
+      const agent = getAgent(id);
+      return {
+        agentId: id,
+        title: agent?.title || 'unknown',
+        provider: agent?.provider || 'unknown',
+      };
+    });
+
+    const event: SupervisorEvent = {
+      type: 'groupthink_start',
+      agentId: supervisor.id,
+      agentTitle: supervisor.title,
+      workspaceId: session.workspaceId,
+      groupthinkSessionId: session.id,
+      groupthinkTopic: session.topic,
+      groupthinkMembers: members,
+      groupthinkMaxRounds: session.maxRounds,
+    };
+
+    this.deliverToSupervisor(supervisor, event);
+  }
+
+  // ── Event Bridge: auto-notify supervisor of supervised agent changes ──
+
+  private async handleSupervisorEvent(data: { agentId: string; status: AgentStatus }): Promise<void> {
+    try {
+      const agent = getAgent(data.agentId);
+      if (!agent || agent.isSupervisor || !agent.isSupervised) return;
+
+      // Only trigger on meaningful terminal statuses
+      const triggerStatuses: AgentStatus[] = ['idle', 'crashed', 'done'];
+      if (!triggerStatuses.includes(data.status)) return;
+
+      // Skip no-op transitions (e.g. idle → idle)
+      if (agent.status === data.status) return;
+
+      const supervisor = getSupervisorAgent(agent.workspaceId);
+      if (!supervisor || ['done', 'crashed'].includes(supervisor.status)) return;
+
+      // Per-agent cooldown
+      const lastEvent = this.eventCooldowns.get(data.agentId) || 0;
+      if (Date.now() - lastEvent < SUPERVISOR_EVENT_COOLDOWN_MS) return;
+      this.eventCooldowns.set(data.agentId, Date.now());
+
+      // Build event
+      const logTail = await this.getAgentLog(data.agentId, SUPERVISOR_EVENT_LOG_TAIL_LINES);
+      const stats = this.getContextStats(data.agentId);
+      const event: SupervisorEvent = {
+        type: 'status_change',
+        agentId: agent.id,
+        agentTitle: agent.title,
+        workspaceId: agent.workspaceId,
+        fromStatus: agent.status, // previous status (from DB before update propagates)
+        toStatus: data.status,
+        lastExitCode: agent.lastExitCode,
+        contextPercentage: stats?.contextPercentage,
+        contextWindowMax: stats?.contextWindowMax,
+        totalContextTokens: stats?.totalContextTokens,
+        turnCount: stats?.turnCount,
+        model: stats?.model,
+        logTail,
+      };
+
+      await this.deliverToSupervisor(supervisor, event);
+    } catch (err) {
+      console.error('[event-bridge] Error handling supervisor event:', err);
+    }
+  }
+
+  private checkContextThreshold(stats: ContextStats): void {
+    try {
+      const agent = getAgent(stats.agentId);
+      if (!agent || agent.isSupervisor || !agent.isSupervised) return;
+
+      // Find highest crossed threshold
+      const crossed = SUPERVISOR_CONTEXT_THRESHOLDS.filter(t => stats.contextPercentage >= t);
+      if (crossed.length === 0) return;
+      const threshold = Math.max(...crossed);
+
+      // Skip if same threshold already reported
+      const lastThreshold = this.lastContextThreshold.get(stats.agentId) || 0;
+      if (threshold <= lastThreshold) return;
+      this.lastContextThreshold.set(stats.agentId, threshold);
+
+      const supervisor = getSupervisorAgent(agent.workspaceId);
+      if (!supervisor || ['done', 'crashed'].includes(supervisor.status)) return;
+
+      const event: SupervisorEvent = {
+        type: 'context_threshold',
+        agentId: agent.id,
+        agentTitle: agent.title,
+        workspaceId: agent.workspaceId,
+        contextPercentage: stats.contextPercentage,
+        contextWindowMax: stats.contextWindowMax,
+        totalContextTokens: stats.totalContextTokens,
+        turnCount: stats.turnCount,
+        model: stats.model,
+      };
+
+      this.deliverToSupervisor(supervisor, event);
+    } catch (err) {
+      console.error('[event-bridge] Error checking context threshold:', err);
+    }
+  }
+
+  private async deliverToSupervisor(supervisor: Agent, event: SupervisorEvent): Promise<void> {
+    // Re-fetch supervisor for fresh status
+    const fresh = getAgent(supervisor.id);
+    if (!fresh) return;
+
+    if (fresh.status === 'working' || fresh.status === 'launching') {
+      // Queue the event — supervisor is busy
+      this.supervisorQueuedEvents.push(event);
+      if (this.supervisorQueuedEvents.length > SUPERVISOR_EVENT_QUEUE_MAX) {
+        this.supervisorQueuedEvents.shift(); // drop oldest
+      }
+      if (!this.eventDrainTimer) {
+        this.eventDrainTimer = setTimeout(() => this.drainEventQueue(supervisor.id), SUPERVISOR_EVENT_DRAIN_INTERVAL_MS);
+      }
+      console.log(`[event-bridge] Queued event (supervisor busy): ${event.type} for "${event.agentTitle}"`);
+      return;
+    }
+
+    if (fresh.status === 'idle' || fresh.status === 'waiting') {
+      // Don't inject events while the user has the terminal open — it types into their input field.
+      // Queue instead and drain when they detach or the supervisor becomes busy/idle again.
+      if (fresh.isAttached) {
+        this.supervisorQueuedEvents.push(event);
+        if (this.supervisorQueuedEvents.length > SUPERVISOR_EVENT_QUEUE_MAX) {
+          this.supervisorQueuedEvents.shift();
+        }
+        if (!this.eventDrainTimer) {
+          this.eventDrainTimer = setTimeout(() => this.drainEventQueue(supervisor.id), SUPERVISOR_EVENT_DRAIN_INTERVAL_MS);
+        }
+        console.log(`[event-bridge] Queued event (supervisor attached/user viewing): ${event.type} for "${event.agentTitle}"`);
+        return;
+      }
+
+      const payload = buildEventPayload(event);
+      await this.sendInput(fresh.id, payload);
+      addEvent(fresh.id, 'supervisor_event', JSON.stringify({ type: event.type, agentId: event.agentId, agentTitle: event.agentTitle }));
+      console.log(`[event-bridge] Sent event to supervisor: ${event.type} for "${event.agentTitle}"`);
+      return;
+    }
+
+    // Supervisor is done/crashed — drop the event
+    console.log(`[event-bridge] Dropped event (supervisor ${fresh.status}): ${event.type} for "${event.agentTitle}"`);
+  }
+
+  private async drainEventQueue(supervisorId: string): Promise<void> {
+    this.eventDrainTimer = null;
+
+    const supervisor = getAgent(supervisorId);
+    if (!supervisor || ['done', 'crashed'].includes(supervisor.status)) {
+      this.supervisorQueuedEvents = [];
+      return;
+    }
+
+    if (supervisor.status === 'working' || supervisor.status === 'launching') {
+      // Still busy — reschedule
+      this.eventDrainTimer = setTimeout(() => this.drainEventQueue(supervisorId), SUPERVISOR_EVENT_DRAIN_INTERVAL_MS);
+      return;
+    }
+
+    if (this.supervisorQueuedEvents.length === 0) return;
+
+    const events = [...this.supervisorQueuedEvents];
+    this.supervisorQueuedEvents = [];
+
+    const payload = buildConsolidatedPayload(events);
+    await this.sendInput(supervisor.id, payload);
+    addEvent(supervisor.id, 'supervisor_event_batch', JSON.stringify({ count: events.length }));
+    console.log(`[event-bridge] Drained ${events.length} queued events to supervisor`);
   }
 
   /** Write ~/.claude/agent-registry.json so other Claude instances can discover agents */
@@ -200,7 +417,7 @@ export class AgentSupervisor extends EventEmitter {
             title: a.title,
             status: a.status,
             sessionId: a.resumeSessionId,
-            workingDirectory: a.workingDirectory,
+            workingDirectory: getEffectiveWorkspaceRoot(a),
             roleDescription: a.roleDescription || '',
           })),
       };
@@ -215,44 +432,80 @@ export class AgentSupervisor extends EventEmitter {
     const workspace = getWorkspace(input.workspaceId);
     if (!workspace) throw new Error('Workspace not found');
 
+    // Resolve template defaults if launching from a template
+    let resolvedInput = { ...input };
+    if (input.templateId) {
+      const template = getAgentTemplate(input.templateId);
+      if (template) {
+        resolvedInput = {
+          ...resolvedInput,
+          roleDescription: input.roleDescription || template.roleDescription || undefined,
+          provider: input.provider || template.provider,
+          command: input.command || template.command || undefined,
+          autoRestartEnabled: input.autoRestartEnabled ?? template.autoRestart,
+          isSupervisor: input.isSupervisor ?? template.isSupervisor,
+          isSupervised: input.isSupervised ?? template.isSupervised,
+          systemPrompt: input.systemPrompt || template.systemPrompt || undefined,
+        };
+        console.log(`[supervisor] Resolved template "${template.name}" (${template.id}) for agent "${input.title}"`);
+      }
+    }
+
     // Prevent duplicate supervisors per workspace
-    if (input.isSupervisor) {
-      const existing = getSupervisorAgent(input.workspaceId);
+    if (resolvedInput.isSupervisor) {
+      const existing = getSupervisorAgent(resolvedInput.workspaceId);
       if (existing && !['done', 'crashed'].includes(existing.status)) {
         throw new Error(`Supervisor already running for this workspace (${existing.id})`);
       }
     }
 
-    let workDir = input.workingDirectory || workspace.path;
+    let workDir = resolvedInput.workingDirectory || workspace.path;
     const pathType = detectPathType(workDir);
     // Convert UNC WSL paths (\\wsl.localhost\...) to Linux paths (/home/...)
     if (pathType === 'wsl' && workDir.startsWith('\\\\')) {
       workDir = uncToWslPath(workDir);
     }
-    const provider = input.provider || 'claude';
+    const provider = resolvedInput.provider || 'claude';
     const defaultCmd = PROVIDER_COMMANDS[provider][pathType];
-    const command = input.command || (workspace.defaultCommand === DEFAULT_COMMAND ? defaultCmd : workspace.defaultCommand);
+    const command = resolvedInput.command || (workspace.defaultCommand === DEFAULT_COMMAND ? defaultCmd : workspace.defaultCommand);
     const agentId = uuidv4().substring(0, 8);
     const logPath = path.join(this.logsDir, `${agentId}.log`);
 
     let tmuxSessionName: string | null = null;
 
     if (pathType === 'wsl') {
-      const slug = input.title.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20);
+      const slug = resolvedInput.title.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20);
       tmuxSessionName = `${TMUX_SESSION_PREFIX}${slug}__${agentId}`;
     }
 
+    // For persona or supervisor agents, set cwd to .claude/agents/{name}/ so Claude Code
+    // discovers CLAUDE.md natively as system instructions (not sent as a user message).
+    // Scaffold and MCP config are written using the workspace root (workDir) first.
+    let agentCwd = workDir;
+    if (resolvedInput.persona) {
+      agentCwd = pathType === 'windows'
+        ? path.join(workDir, '.claude', 'agents', resolvedInput.persona)
+        : `${workDir}/.claude/agents/${resolvedInput.persona}`;
+    } else if (resolvedInput.isSupervisor) {
+      agentCwd = pathType === 'windows'
+        ? path.join(workDir, '.claude', 'agents', SUPERVISOR_AGENT_NAME)
+        : `${workDir}/.claude/agents/${SUPERVISOR_AGENT_NAME}`;
+    }
+
     const agent = createAgent({
-      workspaceId: input.workspaceId,
-      title: input.title,
-      roleDescription: input.roleDescription || '',
-      workingDirectory: workDir,
+      workspaceId: resolvedInput.workspaceId,
+      title: resolvedInput.title,
+      roleDescription: resolvedInput.roleDescription || '',
+      workingDirectory: agentCwd,
       command,
       provider,
-      isSupervisor: input.isSupervisor,
+      isSupervisor: resolvedInput.isSupervisor,
+      isSupervised: resolvedInput.isSupervised,
       tmuxSessionName,
-      autoRestartEnabled: input.autoRestartEnabled ?? true,
+      autoRestartEnabled: resolvedInput.autoRestartEnabled ?? true,
       logPath,
+      templateId: resolvedInput.templateId || null,
+      systemPrompt: resolvedInput.systemPrompt || null,
     });
 
     // Assign a session ID for resume/fork/query support (Claude only)
@@ -265,13 +518,34 @@ export class AgentSupervisor extends EventEmitter {
     addEvent(agent.id, 'launched');
 
     // Auto-create .claude/agents/supervisor/ scaffold if this is a supervisor launch
-    if (input.isSupervisor) {
+    if (resolvedInput.isSupervisor) {
       this.ensureSupervisorScaffold(workDir, pathType);
+    }
+    // Write .mcp.json to workspace root and agent subdir (if persona or supervisor)
+    if (resolvedInput.isSupervisor || resolvedInput.persona) {
       this.ensureMcpConfig(workDir, pathType);
+      if (agentCwd !== workDir) {
+        this.ensureMcpConfig(agentCwd, pathType);
+      }
     }
 
-    // Auto-load agent.md/AGENT.md if present
-    const agentMdPrompt = this.loadAgentMd(workDir, pathType);
+    // If this agent is a member of an active team, inject team MCP config
+    const teamMembership = getTeamMembership(agent.id);
+    if (teamMembership) {
+      this.ensureTeamMcpConfig(agent.id, teamMembership.teamId, workDir, pathType);
+      console.log(`[supervisor] Agent ${agent.title} (${agent.id}) is in team ${teamMembership.teamId} — team MCP injected`);
+    }
+
+    // Auto-load agent.md/AGENT.md if present (from workspace root, not agent subdir)
+    let agentMdPrompt = this.loadAgentMd(workDir, pathType);
+
+    // For non-supervisor agents with a custom systemPrompt (from template or direct), send as initial message
+    if (!resolvedInput.isSupervisor && resolvedInput.systemPrompt && provider === 'claude') {
+      agentMdPrompt = agentMdPrompt
+        ? `${resolvedInput.systemPrompt}\n\n---\n\n${agentMdPrompt}`
+        : resolvedInput.systemPrompt;
+      console.log(`[supervisor] Custom system prompt (${resolvedInput.systemPrompt.length} chars) — will send as initial message`);
+    }
 
     if (pathType === 'windows') {
       await this.launchWindowsAgent(agent, false, agentMdPrompt, sessionId);
@@ -285,7 +559,7 @@ export class AgentSupervisor extends EventEmitter {
   /** Scaffold file map: relative path → content.
    *  Scripts get +x on WSL. */
   private static SUPERVISOR_FILES: Record<string, { content: string; executable?: boolean }> = {
-    [`.claude/agents/${SUPERVISOR_AGENT_NAME}.md`]:                    { content: SUPERVISOR_AGENT_MD },
+    [`.claude/agents/${SUPERVISOR_AGENT_NAME}/CLAUDE.md`]:             { content: SUPERVISOR_AGENT_MD },
     [`.claude/agents/${SUPERVISOR_AGENT_NAME}/memory/MEMORY.md`]:     { content: SUPERVISOR_MEMORY_MD },
     [`.claude/agents/${SUPERVISOR_AGENT_NAME}/skills/README.md`]:     { content: SUPERVISOR_SKILLS_README },
     [`.claude/agents/${SUPERVISOR_AGENT_NAME}/scripts/read-agent-log.sh`]:   { content: SCRIPT_READ_AGENT_LOG, executable: true },
@@ -348,7 +622,7 @@ export class AgentSupervisor extends EventEmitter {
    *  This enables the supervisor agent to use native MCP tools (list_agents, send_message, etc.)
    *  instead of bash scripts. */
   private ensureMcpConfig(workDir: string, pathType: string): void {
-    const mcpScriptPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js');
+    const mcpScriptPath = getScriptPath('mcp-supervisor.js');
     const mcpConfig = {
       mcpServers: {
         'agent-dashboard': {
@@ -412,6 +686,138 @@ export class AgentSupervisor extends EventEmitter {
         console.error('[supervisor] Failed to write .mcp.json:', err);
       }
     }
+  }
+
+  /** Write/merge team MCP config into .mcp.json for a team member agent.
+   *  Works for all providers (Claude, Gemini, Codex) — they all auto-discover .mcp.json.
+   *  If .mcp.json already exists, merges the team server entry without overwriting others. */
+  ensureTeamMcpConfig(agentId: string, teamId: string, workDir: string, pathType: string): void {
+    const mcpTeamScriptPath = getScriptPath('mcp-team.js');
+    const teamServerKey = 'agent-dashboard-team';
+
+    if (pathType === 'wsl') {
+      try {
+        const wslScriptPath = mcpTeamScriptPath.replace(/\\/g, '/');
+        const driveLetter = wslScriptPath.charAt(0).toLowerCase();
+        const restOfPath = wslScriptPath.substring(2);
+        const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
+
+        let windowsHostIp = '127.0.0.1';
+        try {
+          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+            encoding: 'utf-8', timeout: 5000,
+          }).trim();
+          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
+            windowsHostIp = resolv;
+          }
+        } catch { /* fall back to 127.0.0.1 */ }
+
+        // Read existing .mcp.json to merge
+        let existing: any = { mcpServers: {} };
+        try {
+          const content = execFileSync('wsl.exe', ['bash', '-lc', `cat '${workDir}/.mcp.json'`], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+          existing = JSON.parse(content);
+        } catch { /* file doesn't exist or parse error, start fresh */ }
+
+        existing.mcpServers[teamServerKey] = {
+          command: 'node',
+          args: [linuxScriptPath],
+          env: {
+            AGENT_ID: agentId,
+            TEAM_ID: teamId,
+            AGENT_DASHBOARD_API_PORT: '24678',
+            AGENT_DASHBOARD_API_HOST: windowsHostIp,
+          },
+        };
+
+        const b64 = Buffer.from(JSON.stringify(existing, null, 2), 'utf-8').toString('base64');
+        execFileSync('wsl.exe', ['bash', '-lc', `echo '${b64}' | base64 -d > '${workDir}/.mcp.json'`], { timeout: 5000 });
+        console.log(`[supervisor] Wrote team MCP config for agent ${agentId} in WSL: ${workDir}`);
+      } catch (err) {
+        console.error('[supervisor] Failed to write team MCP config in WSL:', err);
+      }
+    } else {
+      try {
+        const fullPath = path.join(workDir, '.mcp.json');
+
+        // Read existing .mcp.json to merge
+        let existing: any = { mcpServers: {} };
+        try {
+          if (fs.existsSync(fullPath)) {
+            existing = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
+          }
+        } catch { /* parse error, start fresh */ }
+
+        existing.mcpServers[teamServerKey] = {
+          command: 'node',
+          args: [mcpTeamScriptPath.replace(/\\/g, '/')],
+          env: {
+            AGENT_ID: agentId,
+            TEAM_ID: teamId,
+            AGENT_DASHBOARD_API_PORT: '24678',
+          },
+        };
+
+        fs.writeFileSync(fullPath, JSON.stringify(existing, null, 2), 'utf-8');
+        console.log(`[supervisor] Wrote team MCP config for agent ${agentId} in: ${workDir}`);
+      } catch (err) {
+        console.error('[supervisor] Failed to write team MCP config:', err);
+      }
+    }
+  }
+
+  /** Build --mcp-config JSON for a team member agent (used at launch time).
+   *  Returns the JSON string to pass via --mcp-config flag. */
+  buildTeamMcpConfigArg(agentId: string, teamId: string, pathType: string): string {
+    const mcpTeamScriptPath = getScriptPath('mcp-team.js');
+
+    if (pathType === 'wsl') {
+      const wslScriptPath = mcpTeamScriptPath.replace(/\\/g, '/');
+      const driveLetter = wslScriptPath.charAt(0).toLowerCase();
+      const restOfPath = wslScriptPath.substring(2);
+      const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
+
+      let windowsHostIp = '127.0.0.1';
+      try {
+        const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+          encoding: 'utf-8', timeout: 5000,
+        }).trim();
+        if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
+          windowsHostIp = resolv;
+        }
+      } catch { /* fall back */ }
+
+      return JSON.stringify({
+        mcpServers: {
+          'agent-dashboard-team': {
+            command: 'node',
+            args: [linuxScriptPath],
+            env: {
+              AGENT_ID: agentId,
+              TEAM_ID: teamId,
+              AGENT_DASHBOARD_API_PORT: '24678',
+              AGENT_DASHBOARD_API_HOST: windowsHostIp,
+            },
+          },
+        },
+      });
+    }
+
+    return JSON.stringify({
+      mcpServers: {
+        'agent-dashboard-team': {
+          command: 'node',
+          args: [mcpTeamScriptPath.replace(/\\/g, '/')],
+          env: {
+            AGENT_ID: agentId,
+            TEAM_ID: teamId,
+            AGENT_DASHBOARD_API_PORT: '24678',
+          },
+        },
+      },
+    });
   }
 
   /** Read the supervisor.md from the scaffold we created.
@@ -501,14 +907,10 @@ export class AgentSupervisor extends EventEmitter {
     if (!overrideArgs) {
       const isClaude = agent.provider === 'claude';
 
-      // Inject supervisor prompt via --system-prompt + MCP config
+      // Supervisor: prompt now goes via positional argument (set in launchAgent).
+      // Only inject MCP config via --mcp-config flag here.
       if (agent.isSupervisor && isClaude) {
-        const supPrompt = this.loadSupervisorPrompt(agent.workingDirectory, 'windows');
-        args.push('--system-prompt', supPrompt);
-        console.log(`[Windows] Supervisor agent ${agent.title} (${agent.id}) — loaded system prompt (${supPrompt.length} chars)`);
-
-        // Pass MCP config directly via --mcp-config to bypass file discovery and trust approval
-        const mcpScriptPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js').replace(/\\/g, '/');
+        const mcpScriptPath = getScriptPath('mcp-supervisor.js').replace(/\\/g, '/');
         const mcpConfig = JSON.stringify({
           mcpServers: {
             'agent-dashboard': {
@@ -547,7 +949,7 @@ export class AgentSupervisor extends EventEmitter {
     }
 
     // Setup file activity tracker
-    const tracker = this.setupFileTracker(agent.id, agent.workingDirectory);
+    const tracker = this.setupFileTracker(agent.id, getEffectiveWorkspaceRoot(agent));
 
     runner.on('data', (data: string) => {
       updateAgentLastOutput(agent.id);
@@ -569,20 +971,22 @@ export class AgentSupervisor extends EventEmitter {
       }
     });
 
-    // Supervisor agents use directSpawn to avoid cmd.exe mangling multiline --system-prompt.
-    // This requires the full path to claude.exe since cmd.exe won't resolve PATH.
+    // Use directSpawn when we have a multiline positional argument (prompt text).
+    // Without directSpawn, pty-host joins args with spaces and wraps in cmd.exe /c,
+    // which mangles multiline text — Claude only sees the first word.
+    const hasPromptArg = !!agentMdPrompt && !resume && agent.provider === 'claude';
     let launchCmd = cmd;
-    const useDirectSpawn = agent.isSupervisor && agent.provider === 'claude';
-    if (useDirectSpawn) {
+    if (hasPromptArg) {
       try {
         launchCmd = await findWindowsClaudePath(process.env as NodeJS.ProcessEnv);
-        console.log(`[Windows] Supervisor using direct spawn with: ${launchCmd}`);
+        console.log(`[Windows] Using direct spawn with: ${launchCmd}`);
       } catch (err) {
         console.warn(`[Windows] Could not resolve claude.exe path, falling back to cmd.exe:`, err);
       }
     }
+    const useDirectSpawn = hasPromptArg && launchCmd !== cmd;
 
-    runner.launch(agent.workingDirectory, launchCmd, args, agent.logPath || '', useDirectSpawn && launchCmd !== cmd);
+    runner.launch(agent.workingDirectory, launchCmd, args, agent.logPath || '', useDirectSpawn);
     updateAgentPid(agent.id, runner.pid);
     updateAgentStatus(agent.id, 'working');
     this.emit('statusChanged', { agentId: agent.id, status: 'working' });
@@ -602,42 +1006,10 @@ export class AgentSupervisor extends EventEmitter {
     const isClaude = agent.provider === 'claude';
 
     if (!overrideCommand) {
-      // Inject supervisor prompt via --system-prompt (reads from scaffolded .claude/agents/supervisor.md)
+      // Supervisor MCP config: rely on .mcp.json file (written by ensureMcpConfig in launchAgent).
+      // No --mcp-config flag needed — Claude Code auto-discovers .mcp.json in the workspace.
       if (agent.isSupervisor && isClaude) {
-        const supPrompt = this.loadSupervisorPrompt(agent.workingDirectory, 'wsl');
-        const escapedPrompt = supPrompt.replace(/'/g, "'\\''");
-        command += ` --system-prompt '${escapedPrompt}'`;
-        console.log(`[WSL] Supervisor agent ${agent.title} (${agent.id}) — loaded system prompt (${supPrompt.length} chars)`);
-
-        // Pass MCP config directly via --mcp-config to bypass file discovery and trust approval
-        // WSL needs the Windows host IP for the API, and /mnt/c/... path for the script
-        const mcpScriptPathWin = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'mcp-supervisor.js').replace(/\\/g, '/');
-        const driveLetter = mcpScriptPathWin.charAt(0).toLowerCase();
-        const restOfPath = mcpScriptPathWin.substring(2);
-        const mcpScriptPathWsl = `/mnt/${driveLetter}${restOfPath}`;
-
-        let windowsHostIp = '127.0.0.1';
-        try {
-          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
-            encoding: 'utf-8', timeout: 5000,
-          }).trim();
-          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
-            windowsHostIp = resolv;
-          }
-        } catch { /* fall back to 127.0.0.1 */ }
-
-        const mcpConfigObj = {
-          mcpServers: {
-            'agent-dashboard': {
-              command: 'node',
-              args: [mcpScriptPathWsl],
-              env: { AGENT_DASHBOARD_API_PORT: '24678', AGENT_DASHBOARD_API_HOST: windowsHostIp },
-            },
-          },
-        };
-        const mcpConfigEscaped = JSON.stringify(JSON.stringify(mcpConfigObj)).slice(1, -1);
-        command += ` --mcp-config '${mcpConfigEscaped.replace(/'/g, "'\\''")}'`;
-        console.log(`[WSL] Supervisor MCP config injected via --mcp-config (API host: ${windowsHostIp})`);
+        console.log(`[WSL] Supervisor MCP: relying on .mcp.json auto-discovery in ${wslWorkDir}`);
       }
 
       // Add session ID on fresh launch (Claude only)
@@ -658,15 +1030,30 @@ export class AgentSupervisor extends EventEmitter {
         }
       }
 
-      // Append agent.md content (shell-escaped) as final argument (Claude only)
+      // Append agent.md / system prompt as positional argument (Claude only).
+      // Write the prompt to a file and inline the cat into the command, so the prompt
+      // is loaded at runtime within the same bash -lic shell that has ccode/aliases available.
       if (agentMdPrompt && !resume && isClaude) {
-        const escaped = agentMdPrompt.replace(/'/g, "'\\''");
-        command += ` '${escaped}'`;
+        const promptFile = `${wslWorkDir}/.claude/.prompt-${agent.id}.txt`;
+        try {
+          const promptB64 = Buffer.from(agentMdPrompt, 'utf-8').toString('base64');
+          execFileSync('wsl.exe', ['bash', '-lc',
+            `mkdir -p '${wslWorkDir}/.claude' && echo '${promptB64}' | base64 -d > '${promptFile}'`
+          ], { timeout: 5000 });
+          // Inline: read prompt from file and pass as positional arg, all in one shell
+          command = `cd '${wslWorkDir}' && PROMPT="$(cat '${promptFile}')" && exec ${command} "$PROMPT"`;
+          console.log(`[WSL] Wrote prompt file (${agentMdPrompt.length} chars) — inlined into command`);
+        } catch (err) {
+          // Fallback: embed directly if file write fails
+          console.warn(`[WSL] Failed to write prompt file, embedding directly:`, err);
+          const escaped = agentMdPrompt.replace(/'/g, "'\\''");
+          command += ` '${escaped}'`;
+        }
       }
     }
 
     // Setup file activity tracker
-    const tracker = this.setupFileTracker(agent.id, agent.workingDirectory);
+    const tracker = this.setupFileTracker(agent.id, getEffectiveWorkspaceRoot(agent));
 
     runner.on('data', (data: string) => {
       updateAgentLastOutput(agent.id);
@@ -704,6 +1091,13 @@ export class AgentSupervisor extends EventEmitter {
     addEvent(agent.id, 'restarting');
     this.emit('statusChanged', { agentId: agent.id, status: 'restarting' });
     incrementRestartCount(agent.id);
+
+    // Clear stale session ID so restart uses --continue instead of --resume.
+    // The old session may no longer exist (e.g. app was restarted), causing --resume to fail.
+    if (agent.resumeSessionId) {
+      updateAgentResumeSessionId(agent.id, '');
+      console.log(`[auto-restart] Cleared stale session ID for ${agent.title} — will use --continue`);
+    }
 
     // Wait a bit before restarting with --continue to resume conversation
     setTimeout(async () => {
@@ -971,6 +1365,9 @@ export class AgentSupervisor extends EventEmitter {
     }
 
     this.fileTrackers.delete(agentId);
+    this.eventCooldowns.delete(agentId);
+    this.lastContextThreshold.delete(agentId);
+    this.supervisorQueuedEvents = this.supervisorQueuedEvents.filter(e => e.agentId !== agentId);
     dbDeleteAgent(agentId);
     this.emit('agentDeleted', { agentId });
   }
@@ -1039,6 +1436,12 @@ export class AgentSupervisor extends EventEmitter {
     if (wslRunner) {
       const agent = getAgent(agentId);
       if (agent?.tmuxSessionName) {
+        // Guard: don't send input if the runner reports the agent as dead.
+        // This prevents typing event payloads into a bare bash shell after Claude Code exits.
+        if (!wslRunner.isAlive) {
+          console.warn(`[sendInput] Skipping send to ${agent.title} — runner not alive`);
+          return;
+        }
         await tmuxSendKeys(agent.tmuxSessionName, text);
         return;
       }

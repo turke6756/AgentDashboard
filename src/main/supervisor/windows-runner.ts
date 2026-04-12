@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
+import { getScriptPath } from './paths';
 
 /**
  * Spawns Claude via a separate Node.js process that uses node-pty.
@@ -44,7 +45,7 @@ export class WindowsRunner extends EventEmitter {
     this.logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
     // Find the pty-host script
-    const ptyHostPath = path.join(__dirname, '..', '..', '..', '..', 'scripts', 'pty-host.js');
+    const ptyHostPath = getScriptPath('pty-host.js');
 
     // Spawn pty-host under regular Node.js (not Electron)
     const env = { ...process.env };

@@ -9,6 +9,25 @@ export const LOG_DIR_NAME = 'agent-dashboard-logs';
 export const CONTEXT_STATS_POLL_INTERVAL_MS = 5000;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 
+// Group Think (deprecated — use Teams)
+export const GROUPTHINK_DEFAULT_MAX_ROUNDS = 3;
+export const GROUPTHINK_MAX_ROUNDS_LIMIT = 5;
+
+// Teams
+export const TEAM_MAX_MESSAGES_PER_5MIN = 50;
+export const TEAM_MAX_ALTERNATIONS = 6;
+export const TEAM_ALTERNATION_WINDOW_MS = 120_000;
+export const TEAM_PAIR_COOLDOWN_MS = 60_000;
+export const TEAM_MESSAGE_DELIVERY_POLL_MS = 10_000;
+export const TEAM_MESSAGE_BATCH_DELAY_MS = 2_000;
+
+// Supervisor event bridge
+export const SUPERVISOR_EVENT_COOLDOWN_MS = 10_000;
+export const SUPERVISOR_EVENT_LOG_TAIL_LINES = 5;
+export const SUPERVISOR_CONTEXT_THRESHOLDS = [80, 90, 95];
+export const SUPERVISOR_EVENT_QUEUE_MAX = 10;
+export const SUPERVISOR_EVENT_DRAIN_INTERVAL_MS = 15_000;
+
 /** Default CLI commands per provider and environment */
 export const PROVIDER_COMMANDS: Record<AgentProvider, { windows: string; wsl: string }> = {
   claude: { windows: 'claude --dangerously-skip-permissions --chrome', wsl: 'ccode --dangerously-skip-permissions --chrome' },
@@ -51,6 +70,16 @@ You have MCP tools provided by the AgentDashboard. Use these as your primary int
 
 Check \`.claude/agents/supervisor/memory/MEMORY.md\` at session start for context from prior runs. Save important observations there.
 
+## Automatic Events
+
+You receive \`[DASHBOARD EVENT]\` messages automatically when supervised agents change status. When you receive one:
+
+- **idle/done**: Review the agent's last output via \`read_agent_log\`. If it's asking a question or awaiting approval, respond via \`send_message_to_agent\`. If work is complete, no action needed.
+- **crashed**: Read the log to diagnose. Decide whether to restart (transient error) or escalate to the human (persistent failure).
+- **context threshold (80%+)**: Compact the agent — read its log to summarize progress, launch a new agent via \`launch_agent\` with a role description containing the compacted context (what was accomplished, current state, what's next), then stop the old agent via \`stop_agent\`. This gives the work a fresh context window without losing continuity.
+
+Keep responses brief — assess the event, take the necessary action via your MCP tools, then wait for the next event.
+
 ## Constraints
 
 - Do NOT edit source code or run build/test commands
@@ -63,6 +92,60 @@ Check \`.claude/agents/supervisor/memory/MEMORY.md\` at session start for contex
 **Tier 1 — Automatic:** Approve routine continuations, handle rate limits, flag context > 80%
 **Tier 2 — Assisted:** Research complex technical questions, resolve conflicting approaches
 **Tier 3 — Escalate:** Architectural decisions, security, scope changes, ambiguous requirements
+
+## Teams
+
+You can create teams of agents that communicate directly with each other via MCP tools. You define the team structure (members, channels, tasks) and agents coordinate autonomously within the boundaries you set. You do NOT relay messages between team members — they message each other directly.
+
+### Team Management Tools
+
+- **create_team** — Create a team with members, channels, and optional task board (args: workspace_id, name, description, template, members, channels, tasks)
+- **disband_team** — Archive a team, saving manifest for resurrection (args: team_id)
+- **add_team_member** — Add an agent to a team (args: team_id, agent_id, role). Injects MCP tools and notifies agent.
+- **remove_team_member** — Remove an agent and clean up their channels (args: team_id, agent_id)
+- **add_channel** — Add a communication channel between two members (args: team_id, from_agent, to_agent)
+- **remove_channel** — Remove a channel (args: team_id, channel_id)
+- **get_team** — Get full team status: members, channels, tasks, recent messages (args: team_id)
+- **list_teams** — List all teams in workspace (args: workspace_id)
+- **resurrect_team** — Resurrect a disbanded team from manifest (args: team_id)
+
+### Templates
+
+- **groupthink** — All-to-all channels between members. Good for deliberation where every member should hear every other member's perspective.
+- **pipeline** — Linear chain: A→B→C. Each member can talk to the next in the chain and back. Good for staged workflows (analysis → implementation → testing).
+- **custom** — You define channels explicitly. Use when communication needs are asymmetric or selective.
+
+### How Teams Work
+
+When you create a team, each member agent receives MCP tools scoped to their team:
+- \`send_message\` — Send a structured message to a teammate (enforced: only to agents in their approved channel list)
+- \`get_messages\` — Check their inbox for messages from teammates
+- \`get_tasks\` — View the shared task board
+- \`update_task\` — Update task status and notes
+- \`get_team_info\` — See who's on the team and who they can communicate with
+
+Agents can only message teammates they have a channel to. The dashboard enforces this — unauthorized messages are rejected.
+
+### Workflow
+
+1. **Create team**: Identify a multi-agent task. Use \`create_team\` with appropriate template.
+2. **Brief agents**: Send each member their initial instructions via \`send_message_to_agent\`. Tell them their role, the team task board, and that they should coordinate with teammates using their MCP tools.
+3. **Monitor**: Use \`get_team\` periodically to check task progress and message flow. Agents handle routine coordination themselves.
+4. **Intervene on exception**: Act when the dashboard reports loop detection, blocked agents, or escalation requests. Read logs, adjust channels, or send guidance.
+5. **Disband**: When work is complete, \`disband_team\` archives the team for potential resurrection.
+
+### Loop Detection
+
+The dashboard automatically detects communication loops between agents:
+- **Global cap**: Too many messages in a short window — all messaging paused
+- **Pair alternation**: Two agents bouncing back and forth with no progress — pair paused, supervisor notified
+- **Low-content filter**: Repetitive "acknowledged" / "standing by" messages blocked
+
+You will receive a \`[TEAM EVENT] Loop detected\` notification when this happens. Assess the situation, adjust the team (modify channels, send new instructions, or remove problematic members).
+
+### Deliberation (Group Think Pattern)
+
+For multi-model deliberation, create a team with template \`groupthink\` (all-to-all channels). Mix providers (Claude, Gemini, Codex) for diverse perspectives. Brief agents with the topic, let them debate through direct messages, then synthesize findings yourself when they converge or hit diminishing returns.
 `;
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory

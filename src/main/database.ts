@@ -2,8 +2,8 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentProvider, AgentStatus, CreateWorkspaceInput, FileActivity, FileOperation, Workspace } from '../shared/types';
-import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL } from '../shared/constants';
+import { Agent, AgentProvider, AgentStatus, AgentTemplate, CreateAgentTemplateInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, GroupThinkSession, GroupThinkStatus, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, Workspace } from '../shared/types';
+import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, GROUPTHINK_DEFAULT_MAX_ROUNDS, SUPERVISOR_AGENT_MD } from '../shared/constants';
 
 let db: SqlJsDatabase;
 let dbPath: string;
@@ -86,6 +86,9 @@ export async function initDatabase(): Promise<void> {
   // Migration: add is_supervisor column
   try { db.run(`ALTER TABLE agents ADD COLUMN is_supervisor INTEGER NOT NULL DEFAULT 0`); } catch { /* column already exists */ }
 
+  // Migration: add is_supervised column (opt-in for supervisor event bridge)
+  try { db.run(`ALTER TABLE agents ADD COLUMN is_supervised INTEGER NOT NULL DEFAULT 0`); } catch { /* column already exists */ }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +98,133 @@ export async function initDatabase(): Promise<void> {
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS groupthink_sessions (
+      id              TEXT PRIMARY KEY,
+      workspace_id    TEXT NOT NULL,
+      topic           TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'active',
+      round_count     INTEGER NOT NULL DEFAULT 0,
+      max_rounds      INTEGER NOT NULL DEFAULT ${GROUPTHINK_DEFAULT_MAX_ROUNDS},
+      synthesis       TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS groupthink_members (
+      session_id  TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      PRIMARY KEY (session_id, agent_id)
+    )
+  `);
+
+  // ── Team tables ─────────────────────────────────────────────────────────
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id              TEXT PRIMARY KEY,
+      workspace_id    TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      template        TEXT,
+      status          TEXT NOT NULL DEFAULT 'active',
+      manifest        TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      disbanded_at    TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_members (
+      team_id     TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      role        TEXT NOT NULL DEFAULT 'member',
+      joined_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (team_id, agent_id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_channels (
+      id          TEXT PRIMARY KEY,
+      team_id     TEXT NOT NULL,
+      from_agent  TEXT NOT NULL,
+      to_agent    TEXT NOT NULL,
+      label       TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(team_id, from_agent, to_agent)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_messages (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id       TEXT NOT NULL,
+      from_agent    TEXT NOT NULL,
+      to_agent      TEXT NOT NULL,
+      subject       TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'update',
+      summary       TEXT NOT NULL,
+      detail        TEXT,
+      need          TEXT,
+      delivered_at  TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_tasks (
+      id            TEXT PRIMARY KEY,
+      team_id       TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL DEFAULT 'todo',
+      assigned_to   TEXT,
+      blocked_by    TEXT NOT NULL DEFAULT '[]',
+      created_by    TEXT NOT NULL,
+      notes         TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // ── Agent templates table ────────────────────────────────────────────
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agent_templates (
+      id                TEXT PRIMARY KEY,
+      workspace_id      TEXT,
+      name              TEXT NOT NULL,
+      description       TEXT NOT NULL DEFAULT '',
+      system_prompt     TEXT,
+      role_description  TEXT NOT NULL DEFAULT '',
+      provider          TEXT NOT NULL DEFAULT 'claude',
+      command           TEXT,
+      auto_restart      INTEGER NOT NULL DEFAULT 1,
+      is_supervisor     INTEGER NOT NULL DEFAULT 0,
+      is_supervised     INTEGER NOT NULL DEFAULT 1,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Migration: add template_id and system_prompt to agents
+  try { db.run(`ALTER TABLE agents ADD COLUMN template_id TEXT`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE agents ADD COLUMN system_prompt TEXT`); } catch { /* exists */ }
+
+  // Seed built-in supervisor template if not present
+  const existingSup = queryAll("SELECT id FROM agent_templates WHERE id = 'builtin-supervisor'");
+  if (existingSup.length === 0) {
+    db.run(
+      `INSERT INTO agent_templates (id, workspace_id, name, description, system_prompt, role_description, provider, is_supervisor, is_supervised, auto_restart)
+       VALUES (?, NULL, ?, ?, ?, ?, 'claude', 1, 0, 1)`,
+      ['builtin-supervisor', 'Supervisor', 'Coordinates worker agents, approves continuations, manages context.', SUPERVISOR_AGENT_MD, 'Autonomous supervisor agent — coordinates workers, approves continuations, manages context.']
+    );
+  }
 
   saveDb();
 }
@@ -128,6 +258,7 @@ function rowToAgent(row: any): Agent {
     command: row.command,
     provider: (row.provider || 'claude') as AgentProvider,
     isSupervisor: !!row.is_supervisor,
+    isSupervised: !!row.is_supervised,
     tmuxSessionName: row.tmux_session_name,
     autoRestartEnabled: !!row.auto_restart_enabled,
     resumeSessionId: row.resume_session_id,
@@ -137,6 +268,8 @@ function rowToAgent(row: any): Agent {
     lastExitCode: row.last_exit_code,
     pid: row.pid,
     logPath: row.log_path,
+    templateId: row.template_id || null,
+    systemPrompt: row.system_prompt || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastOutputAt: row.last_output_at,
@@ -203,18 +336,22 @@ export function createAgent(data: {
   command: string;
   provider?: AgentProvider;
   isSupervisor?: boolean;
+  isSupervised?: boolean;
   tmuxSessionName: string | null;
   autoRestartEnabled: boolean;
   logPath: string;
+  templateId?: string | null;
+  systemPrompt?: string | null;
 }): Agent {
   const id = uuidv4();
   const slug = slugify(data.title);
   run(
     `INSERT INTO agents (id, workspace_id, title, slug, role_description, working_directory,
-      command, provider, is_supervisor, tmux_session_name, auto_restart_enabled, log_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      command, provider, is_supervisor, is_supervised, tmux_session_name, auto_restart_enabled, log_path, template_id, system_prompt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, data.workspaceId, data.title, slug, data.roleDescription, data.workingDirectory,
-      data.command, data.provider || 'claude', data.isSupervisor ? 1 : 0, data.tmuxSessionName, data.autoRestartEnabled ? 1 : 0, data.logPath]
+      data.command, data.provider || 'claude', data.isSupervisor ? 1 : 0, data.isSupervised ? 1 : 0, data.tmuxSessionName, data.autoRestartEnabled ? 1 : 0, data.logPath,
+      data.templateId || null, data.systemPrompt || null]
   );
   return getAgent(id)!;
 }
@@ -274,8 +411,86 @@ export function updateAgentResumeSessionId(id: string, sessionId: string): void 
   run("UPDATE agents SET resume_session_id = ?, updated_at = datetime('now') WHERE id = ?", [sessionId, id]);
 }
 
+export function updateAgentSupervised(id: string, supervised: boolean): void {
+  run("UPDATE agents SET is_supervised = ?, updated_at = datetime('now') WHERE id = ?", [supervised ? 1 : 0, id]);
+}
+
 export function addEvent(agentId: string, eventType: string, payload?: string): void {
   run('INSERT INTO events (agent_id, event_type, payload) VALUES (?, ?, ?)', [agentId, eventType, payload || null]);
+}
+
+// Agent template operations
+
+function rowToAgentTemplate(row: any): AgentTemplate {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id || null,
+    name: row.name,
+    description: row.description,
+    systemPrompt: row.system_prompt || null,
+    roleDescription: row.role_description,
+    provider: (row.provider || 'claude') as AgentProvider,
+    command: row.command || null,
+    autoRestart: !!row.auto_restart,
+    isSupervisor: !!row.is_supervisor,
+    isSupervised: !!row.is_supervised,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function createAgentTemplate(input: CreateAgentTemplateInput): AgentTemplate {
+  const id = uuidv4();
+  run(
+    `INSERT INTO agent_templates (id, workspace_id, name, description, system_prompt, role_description, provider, command, auto_restart, is_supervisor, is_supervised)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.workspaceId || null, input.name, input.description || '', input.systemPrompt || null,
+     input.roleDescription || '', input.provider || 'claude', input.command || null,
+     input.autoRestart !== false ? 1 : 0, input.isSupervisor ? 1 : 0, input.isSupervised !== false ? 1 : 0]
+  );
+  return getAgentTemplate(id)!;
+}
+
+export function getAgentTemplate(id: string): AgentTemplate | null {
+  const row = queryOne('SELECT * FROM agent_templates WHERE id = ?', [id]);
+  return row ? rowToAgentTemplate(row) : null;
+}
+
+export function listAgentTemplates(workspaceId?: string): AgentTemplate[] {
+  if (workspaceId) {
+    return queryAll(
+      'SELECT * FROM agent_templates WHERE workspace_id = ? OR workspace_id IS NULL ORDER BY name',
+      [workspaceId]
+    ).map(rowToAgentTemplate);
+  }
+  return queryAll('SELECT * FROM agent_templates ORDER BY name').map(rowToAgentTemplate);
+}
+
+export function updateAgentTemplate(id: string, updates: Partial<CreateAgentTemplateInput>): AgentTemplate {
+  const sets: string[] = [];
+  const params: any[] = [];
+
+  if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
+  if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description); }
+  if (updates.systemPrompt !== undefined) { sets.push('system_prompt = ?'); params.push(updates.systemPrompt); }
+  if (updates.roleDescription !== undefined) { sets.push('role_description = ?'); params.push(updates.roleDescription); }
+  if (updates.provider !== undefined) { sets.push('provider = ?'); params.push(updates.provider); }
+  if (updates.command !== undefined) { sets.push('command = ?'); params.push(updates.command); }
+  if (updates.autoRestart !== undefined) { sets.push('auto_restart = ?'); params.push(updates.autoRestart ? 1 : 0); }
+  if (updates.isSupervisor !== undefined) { sets.push('is_supervisor = ?'); params.push(updates.isSupervisor ? 1 : 0); }
+  if (updates.isSupervised !== undefined) { sets.push('is_supervised = ?'); params.push(updates.isSupervised ? 1 : 0); }
+  if (updates.workspaceId !== undefined) { sets.push('workspace_id = ?'); params.push(updates.workspaceId); }
+
+  if (sets.length > 0) {
+    sets.push("updated_at = datetime('now')");
+    params.push(id);
+    run(`UPDATE agent_templates SET ${sets.join(', ')} WHERE id = ?`, params);
+  }
+  return getAgentTemplate(id)!;
+}
+
+export function deleteAgentTemplate(id: string): void {
+  run('DELETE FROM agent_templates WHERE id = ?', [id]);
 }
 
 // File activity operations
@@ -372,4 +587,441 @@ export function getWorkspaceAgentSummary(): { workspaceId: string; activeCount: 
     activeCount: row.active_count,
     workingCount: row.working_count,
   }));
+}
+
+// ── Group Think operations ──────────────────────────────────────────────
+
+function rowToGroupThinkSession(row: any, memberAgentIds: string[]): GroupThinkSession {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    topic: row.topic,
+    status: row.status as GroupThinkStatus,
+    roundCount: row.round_count,
+    maxRounds: row.max_rounds,
+    memberAgentIds,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    synthesis: row.synthesis,
+  };
+}
+
+function getGroupThinkMemberIds(sessionId: string): string[] {
+  return queryAll('SELECT agent_id FROM groupthink_members WHERE session_id = ?', [sessionId])
+    .map(r => r.agent_id);
+}
+
+export function createGroupThinkSession(workspaceId: string, topic: string, agentIds: string[], maxRounds?: number): GroupThinkSession {
+  const id = uuidv4();
+  run(
+    `INSERT INTO groupthink_sessions (id, workspace_id, topic, max_rounds) VALUES (?, ?, ?, ?)`,
+    [id, workspaceId, topic, maxRounds || GROUPTHINK_DEFAULT_MAX_ROUNDS]
+  );
+  for (const agentId of agentIds) {
+    run('INSERT INTO groupthink_members (session_id, agent_id) VALUES (?, ?)', [id, agentId]);
+  }
+  return getGroupThinkSession(id)!;
+}
+
+export function getGroupThinkSession(id: string): GroupThinkSession | null {
+  const row = queryOne('SELECT * FROM groupthink_sessions WHERE id = ?', [id]);
+  if (!row) return null;
+  return rowToGroupThinkSession(row, getGroupThinkMemberIds(id));
+}
+
+export function listGroupThinkSessions(workspaceId: string): GroupThinkSession[] {
+  const rows = queryAll('SELECT * FROM groupthink_sessions WHERE workspace_id = ? ORDER BY created_at DESC', [workspaceId]);
+  return rows.map(row => rowToGroupThinkSession(row, getGroupThinkMemberIds(row.id)));
+}
+
+export function advanceGroupThinkRound(sessionId: string): GroupThinkSession | null {
+  run(
+    "UPDATE groupthink_sessions SET round_count = round_count + 1, updated_at = datetime('now') WHERE id = ?",
+    [sessionId]
+  );
+  return getGroupThinkSession(sessionId);
+}
+
+export function completeGroupThink(sessionId: string, synthesis: string): GroupThinkSession | null {
+  run(
+    "UPDATE groupthink_sessions SET status = 'completed', synthesis = ?, updated_at = datetime('now') WHERE id = ?",
+    [synthesis, sessionId]
+  );
+  return getGroupThinkSession(sessionId);
+}
+
+export function cancelGroupThink(sessionId: string): void {
+  run(
+    "UPDATE groupthink_sessions SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
+    [sessionId]
+  );
+}
+
+export function getActiveGroupThinkForAgent(agentId: string): GroupThinkSession | null {
+  const row = queryOne(
+    `SELECT gs.* FROM groupthink_sessions gs
+     JOIN groupthink_members gm ON gs.id = gm.session_id
+     WHERE gm.agent_id = ? AND gs.status = 'active'
+     LIMIT 1`,
+    [agentId]
+  );
+  if (!row) return null;
+  return rowToGroupThinkSession(row, getGroupThinkMemberIds(row.id));
+}
+
+// ── Team operations ───────────────────────────────────────────────────────
+
+function rowToTeam(row: any): Team {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    description: row.description,
+    template: row.template,
+    status: row.status as TeamStatus,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    disbandedAt: row.disbanded_at,
+  };
+}
+
+function rowToTeamMember(row: any): TeamMember {
+  return {
+    teamId: row.team_id,
+    agentId: row.agent_id,
+    role: row.role,
+    joinedAt: row.joined_at,
+    // Enrichment fields (present when joined with agents table)
+    title: row.title,
+    provider: row.provider,
+    status: row.agent_status,
+  };
+}
+
+function rowToTeamChannel(row: any): TeamChannel {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    fromAgent: row.from_agent,
+    toAgent: row.to_agent,
+    label: row.label,
+  };
+}
+
+function rowToTeamMessage(row: any): TeamMessage {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    fromAgent: row.from_agent,
+    toAgent: row.to_agent,
+    subject: row.subject,
+    status: row.status as TeamMessageStatus,
+    summary: row.summary,
+    detail: row.detail,
+    need: row.need,
+    deliveredAt: row.delivered_at,
+    createdAt: row.created_at,
+    fromTitle: row.from_title,
+    toTitle: row.to_title,
+  };
+}
+
+function rowToTeamTask(row: any): TeamTask {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    title: row.title,
+    description: row.description,
+    status: row.status as TeamTaskStatus,
+    assignedTo: row.assigned_to,
+    blockedBy: JSON.parse(row.blocked_by || '[]'),
+    createdBy: row.created_by,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function createTeam(input: CreateTeamInput): Team {
+  const id = uuidv4();
+  run(
+    `INSERT INTO teams (id, workspace_id, name, description, template) VALUES (?, ?, ?, ?, ?)`,
+    [id, input.workspaceId, input.name, input.description || '', input.template || null]
+  );
+
+  // Add members
+  for (const m of input.members) {
+    run('INSERT INTO team_members (team_id, agent_id, role) VALUES (?, ?, ?)',
+      [id, m.agentId, m.role || 'member']);
+  }
+
+  // Generate channels based on template
+  if (input.template === 'groupthink') {
+    // All-to-all: every member can message every other member
+    for (const a of input.members) {
+      for (const b of input.members) {
+        if (a.agentId !== b.agentId) {
+          run('INSERT INTO team_channels (id, team_id, from_agent, to_agent) VALUES (?, ?, ?, ?)',
+            [uuidv4(), id, a.agentId, b.agentId]);
+        }
+      }
+    }
+  } else if (input.template === 'pipeline') {
+    // Linear chain: A↔B↔C (bidirectional between adjacent)
+    for (let i = 0; i < input.members.length - 1; i++) {
+      const a = input.members[i].agentId;
+      const b = input.members[i + 1].agentId;
+      run('INSERT INTO team_channels (id, team_id, from_agent, to_agent) VALUES (?, ?, ?, ?)',
+        [uuidv4(), id, a, b]);
+      run('INSERT INTO team_channels (id, team_id, from_agent, to_agent) VALUES (?, ?, ?, ?)',
+        [uuidv4(), id, b, a]);
+    }
+  }
+
+  // Add explicit channels (for 'custom' template or additions on top of template)
+  if (input.channels) {
+    for (const c of input.channels) {
+      // Skip if channel already exists (from template generation)
+      const exists = queryOne(
+        'SELECT 1 FROM team_channels WHERE team_id = ? AND from_agent = ? AND to_agent = ?',
+        [id, c.from, c.to]
+      );
+      if (!exists) {
+        run('INSERT INTO team_channels (id, team_id, from_agent, to_agent, label) VALUES (?, ?, ?, ?, ?)',
+          [uuidv4(), id, c.from, c.to, c.label || null]);
+      }
+    }
+  }
+
+  return getTeam(id)!;
+}
+
+export function getTeam(id: string): Team | null {
+  const row = queryOne('SELECT * FROM teams WHERE id = ?', [id]);
+  if (!row) return null;
+  const team = rowToTeam(row);
+  team.members = getTeamMembers(id);
+  team.channels = listChannels(id);
+  return team;
+}
+
+export function listTeams(workspaceId: string): Team[] {
+  const rows = queryAll('SELECT * FROM teams WHERE workspace_id = ? ORDER BY created_at DESC', [workspaceId]);
+  return rows.map(row => {
+    const team = rowToTeam(row);
+    team.members = getTeamMembers(team.id);
+    team.channels = listChannels(team.id);
+    return team;
+  });
+}
+
+export function updateTeamStatus(id: string, status: TeamStatus): void {
+  if (status === 'disbanded') {
+    run("UPDATE teams SET status = ?, disbanded_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [status, id]);
+  } else {
+    run("UPDATE teams SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, id]);
+  }
+}
+
+export function saveTeamManifest(id: string, manifest: string): void {
+  run("UPDATE teams SET manifest = ?, updated_at = datetime('now') WHERE id = ?", [manifest, id]);
+}
+
+export function getTeamManifest(id: string): string | null {
+  const row = queryOne('SELECT manifest FROM teams WHERE id = ?', [id]);
+  return row?.manifest || null;
+}
+
+// ── Team members ────────────────────────────────────────────────────────
+
+export function addTeamMember(teamId: string, agentId: string, role: string = 'member'): void {
+  run('INSERT INTO team_members (team_id, agent_id, role) VALUES (?, ?, ?)', [teamId, agentId, role]);
+  run("UPDATE teams SET updated_at = datetime('now') WHERE id = ?", [teamId]);
+}
+
+export function removeTeamMember(teamId: string, agentId: string): void {
+  run('DELETE FROM team_members WHERE team_id = ? AND agent_id = ?', [teamId, agentId]);
+  // Clean up channels involving this agent
+  run('DELETE FROM team_channels WHERE team_id = ? AND (from_agent = ? OR to_agent = ?)', [teamId, agentId, agentId]);
+  run("UPDATE teams SET updated_at = datetime('now') WHERE id = ?", [teamId]);
+}
+
+export function getTeamMembers(teamId: string): TeamMember[] {
+  return queryAll(
+    `SELECT tm.*, a.title, a.provider, a.status as agent_status
+     FROM team_members tm
+     LEFT JOIN agents a ON tm.agent_id = a.id
+     WHERE tm.team_id = ?`,
+    [teamId]
+  ).map(rowToTeamMember);
+}
+
+export function getTeamMembership(agentId: string): { teamId: string; role: string } | null {
+  const row = queryOne(
+    `SELECT tm.team_id, tm.role FROM team_members tm
+     JOIN teams t ON tm.team_id = t.id
+     WHERE tm.agent_id = ? AND t.status = 'active'
+     LIMIT 1`,
+    [agentId]
+  );
+  return row ? { teamId: row.team_id, role: row.role } : null;
+}
+
+// ── Team channels ───────────────────────────────────────────────────────
+
+export function createChannel(teamId: string, fromAgent: string, toAgent: string, label?: string): TeamChannel {
+  const id = uuidv4();
+  run('INSERT INTO team_channels (id, team_id, from_agent, to_agent, label) VALUES (?, ?, ?, ?, ?)',
+    [id, teamId, fromAgent, toAgent, label || null]);
+  run("UPDATE teams SET updated_at = datetime('now') WHERE id = ?", [teamId]);
+  return { id, teamId, fromAgent, toAgent, label: label || null };
+}
+
+export function removeChannel(channelId: string): void {
+  const channel = queryOne('SELECT team_id FROM team_channels WHERE id = ?', [channelId]);
+  run('DELETE FROM team_channels WHERE id = ?', [channelId]);
+  if (channel) {
+    run("UPDATE teams SET updated_at = datetime('now') WHERE id = ?", [channel.team_id]);
+  }
+}
+
+export function getChannel(teamId: string, fromAgent: string, toAgent: string): TeamChannel | null {
+  const row = queryOne(
+    'SELECT * FROM team_channels WHERE team_id = ? AND from_agent = ? AND to_agent = ?',
+    [teamId, fromAgent, toAgent]
+  );
+  return row ? rowToTeamChannel(row) : null;
+}
+
+export function listChannels(teamId: string): TeamChannel[] {
+  return queryAll('SELECT * FROM team_channels WHERE team_id = ?', [teamId]).map(rowToTeamChannel);
+}
+
+// ── Team messages ───────────────────────────────────────────────────────
+
+export function createTeamMessage(input: {
+  teamId: string;
+  fromAgent: string;
+  toAgent: string;
+  subject: string;
+  status: TeamMessageStatus;
+  summary: string;
+  detail?: string;
+  need?: string;
+}): TeamMessage {
+  run(
+    `INSERT INTO team_messages (team_id, from_agent, to_agent, subject, status, summary, detail, need)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [input.teamId, input.fromAgent, input.toAgent, input.subject, input.status, input.summary, input.detail || null, input.need || null]
+  );
+  const row = queryOne('SELECT * FROM team_messages WHERE team_id = ? ORDER BY id DESC LIMIT 1', [input.teamId]);
+  return rowToTeamMessage(row);
+}
+
+export function getPendingMessages(agentId: string): TeamMessage[] {
+  return queryAll(
+    `SELECT tm.*, fa.title as from_title, ta.title as to_title
+     FROM team_messages tm
+     LEFT JOIN agents fa ON tm.from_agent = fa.id
+     LEFT JOIN agents ta ON tm.to_agent = ta.id
+     WHERE tm.to_agent = ? AND tm.delivered_at IS NULL
+     ORDER BY tm.created_at ASC`,
+    [agentId]
+  ).map(rowToTeamMessage);
+}
+
+export function markMessageDelivered(messageId: number): void {
+  run("UPDATE team_messages SET delivered_at = datetime('now') WHERE id = ?", [messageId]);
+}
+
+export function getTeamMessages(teamId: string, agentId?: string, limit: number = 50): TeamMessage[] {
+  if (agentId) {
+    return queryAll(
+      `SELECT tm.*, fa.title as from_title, ta.title as to_title
+       FROM team_messages tm
+       LEFT JOIN agents fa ON tm.from_agent = fa.id
+       LEFT JOIN agents ta ON tm.to_agent = ta.id
+       WHERE tm.team_id = ? AND (tm.from_agent = ? OR tm.to_agent = ?)
+       ORDER BY tm.created_at DESC LIMIT ?`,
+      [teamId, agentId, agentId, limit]
+    ).map(rowToTeamMessage);
+  }
+  return queryAll(
+    `SELECT tm.*, fa.title as from_title, ta.title as to_title
+     FROM team_messages tm
+     LEFT JOIN agents fa ON tm.from_agent = fa.id
+     LEFT JOIN agents ta ON tm.to_agent = ta.id
+     WHERE tm.team_id = ?
+     ORDER BY tm.created_at DESC LIMIT ?`,
+    [teamId, limit]
+  ).map(rowToTeamMessage);
+}
+
+export function getRecentMessageCount(teamId: string, windowMinutes: number = 5): number {
+  const row = queryOne(
+    `SELECT COUNT(*) as cnt FROM team_messages
+     WHERE team_id = ? AND created_at > datetime('now', '-' || ? || ' minutes')`,
+    [teamId, windowMinutes]
+  );
+  return row?.cnt || 0;
+}
+
+export function getRecentPairMessages(teamId: string, agentA: string, agentB: string, limit: number = 12): TeamMessage[] {
+  return queryAll(
+    `SELECT * FROM team_messages
+     WHERE team_id = ?
+       AND ((from_agent = ? AND to_agent = ?) OR (from_agent = ? AND to_agent = ?))
+     ORDER BY created_at DESC LIMIT ?`,
+    [teamId, agentA, agentB, agentB, agentA, limit]
+  ).map(rowToTeamMessage);
+}
+
+// ── Team tasks ──────────────────────────────────────────────────────────
+
+export function createTeamTask(input: {
+  teamId: string;
+  title: string;
+  description?: string;
+  assignedTo?: string;
+  blockedBy?: string[];
+  createdBy: string;
+}): TeamTask {
+  const id = uuidv4();
+  run(
+    `INSERT INTO team_tasks (id, team_id, title, description, assigned_to, blocked_by, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.teamId, input.title, input.description || '', input.assignedTo || null,
+     JSON.stringify(input.blockedBy || []), input.createdBy]
+  );
+  return getTeamTask(id)!;
+}
+
+export function getTeamTask(id: string): TeamTask | null {
+  const row = queryOne('SELECT * FROM team_tasks WHERE id = ?', [id]);
+  return row ? rowToTeamTask(row) : null;
+}
+
+export function updateTeamTask(taskId: string, updates: {
+  status?: TeamTaskStatus;
+  assignedTo?: string;
+  notes?: string;
+}): TeamTask | null {
+  const sets: string[] = [];
+  const params: any[] = [];
+
+  if (updates.status !== undefined) { sets.push('status = ?'); params.push(updates.status); }
+  if (updates.assignedTo !== undefined) { sets.push('assigned_to = ?'); params.push(updates.assignedTo); }
+  if (updates.notes !== undefined) { sets.push('notes = ?'); params.push(updates.notes); }
+
+  if (sets.length === 0) return getTeamTask(taskId);
+
+  sets.push("updated_at = datetime('now')");
+  params.push(taskId);
+  run(`UPDATE team_tasks SET ${sets.join(', ')} WHERE id = ?`, params);
+  return getTeamTask(taskId);
+}
+
+export function getTeamTasks(teamId: string): TeamTask[] {
+  return queryAll('SELECT * FROM team_tasks WHERE team_id = ? ORDER BY created_at ASC', [teamId])
+    .map(rowToTeamTask);
 }
