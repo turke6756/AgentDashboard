@@ -101,10 +101,17 @@ anser                    ^2.1
 
 ### Acceptance
 
-- [ ] `npm run build` passes.
-- [ ] Grep returns nothing: search `InteractiveNotebookRenderer` across `src/`.
-- [ ] App launches and the stub renders on any `.ipynb` click.
-- [ ] `git diff --stat` shows only: package.json, package-lock.json, vite.config.ts, FileContentRenderer.tsx, NotebookView.tsx (new), InteractiveNotebookRenderer.tsx (deleted).
+- [x] `npm run build` passes.
+- [x] Grep returns nothing: search `InteractiveNotebookRenderer` across `src/`.
+- [x] App launches and the stub renders on any `.ipynb` click.
+- [x] `git diff --stat` shows only: package.json, package-lock.json, vite.config.ts, FileContentRenderer.tsx, NotebookView.tsx (new), InteractiveNotebookRenderer.tsx (deleted).
+
+### Phase 0 handoff (confirmed 2026-04-25)
+
+- Commit pushed: `32b4e87 notebook full-send phase 0: demolition + deps` on branch `notebook-full-send`.
+- Clean-worktree build of the pushed commit passed.
+- User manually confirmed the Phase 0 stub appears for `.ipynb` files.
+- Next agent should start at Phase 1. Local workspace may contain unrelated in-progress edits from other agents; keep Phase 1 commits narrowly staged.
 
 ### Commit
 
