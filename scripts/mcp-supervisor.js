@@ -473,6 +473,18 @@ function getToolDefinitions() {
       },
     },
     {
+      name: 'execute_notebook',
+      description: 'Execute every code cell in a notebook from top to bottom on the live kernel. Stops on the first non-ok cell and returns the last executed cell plus compact output summaries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path.' },
+          timeout: { type: 'number', description: 'Per-cell timeout in seconds (default 60).' },
+        },
+        required: ['notebook_path'],
+      },
+    },
+    {
       name: 'interrupt_kernel',
       description: "Interrupt the live kernel for a notebook (sends SIGINT-equivalent). Affects the user's iframe view too — that is intended.",
       inputSchema: {
@@ -734,6 +746,13 @@ async function handleToolCall(name, args) {
       };
       if (args.timeout) payload.timeout = args.timeout;
       const result = await apiRequest('POST', '/api/notebooks/kernel/execute-range', payload);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'execute_notebook': {
+      const payload = { notebookPath: args.notebook_path };
+      if (args.timeout) payload.timeout = args.timeout;
+      const result = await apiRequest('POST', '/api/notebooks/kernel/execute-notebook', payload);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 

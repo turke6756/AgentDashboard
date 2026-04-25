@@ -14,6 +14,7 @@ import {
 } from './database';
 import {
   executeCell as kernelExecuteCell,
+  executeNotebook as kernelExecuteNotebook,
   executeRange as kernelExecuteRange,
   interruptKernel as kernelInterrupt,
   restartKernel as kernelRestart,
@@ -606,6 +607,16 @@ export class ApiServer {
         throw Object.assign(new Error('Missing notebookPath, fromCellId, or toCellId'), { statusCode: 400 });
       }
       return await kernelExecuteRange(notebookPath, fromCellId, toCellId, { timeoutSec: timeout });
+    }
+
+    // POST /api/notebooks/kernel/execute-notebook
+    if (method === 'POST' && path === '/api/notebooks/kernel/execute-notebook') {
+      const body = await readBody(req);
+      const { notebookPath, timeout } = JSON.parse(body);
+      if (!notebookPath) {
+        throw Object.assign(new Error('Missing notebookPath'), { statusCode: 400 });
+      }
+      return await kernelExecuteNotebook(notebookPath, { timeoutSec: timeout });
     }
 
     // POST /api/notebooks/kernel/interrupt

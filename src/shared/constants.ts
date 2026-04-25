@@ -8,6 +8,7 @@ export const WORKING_THRESHOLD_MS = 8_000;
 export const LOG_DIR_NAME = 'agent-dashboard-logs';
 export const CONTEXT_STATS_POLL_INTERVAL_MS = 5000;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+export const EXTENDED_CONTEXT_WINDOW_TOKENS = 1_000_000;
 
 // Group Think (deprecated — use Teams)
 export const GROUPTHINK_DEFAULT_MAX_ROUNDS = 3;
@@ -155,6 +156,7 @@ When the user is editing a \`.ipynb\` in the dashboard, the iframe is connected 
 
 - **execute_cell** (notebook_path, cell_id, timeout?=60) — Run one code cell. Returns \`{ status, cell_id, execution_count, outputs_summary }\`. Outputs are compact: text truncated to ~5 KB, images shown as \`{ mime, bytes }\`.
 - **execute_range** (notebook_path, from_cell_id, to_cell_id, timeout?=60) — Sequential, stops on first error.
+- **execute_notebook** (notebook_path, timeout?=60) — Run every code cell top-to-bottom. Returns \`{ status, last_executed_cell_id, failed_cell_id?, error?, outputs_summary }\`.
 - **interrupt_kernel** (notebook_path) — Interrupts whatever is running. **Affects the user's iframe too** — only do this if you know they want it stopped.
 - **restart_kernel** (notebook_path) — Clears in-memory state. Both iframe and you auto-reattach.
 - **get_kernel_state** (notebook_path) — \`{ attached, kernel_id, kernel_name, status, execution_state, last_execution_count }\`. Use this before driving a kernel you didn't open.
@@ -316,13 +318,24 @@ echo "\$RESPONSE"
 
 /** Map model ID patterns to their context window sizes */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  'opus': 1_000_000,
-  'sonnet': 200_000,
-  'haiku': 200_000,
+  'claude-opus-4-7': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'claude-opus-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'claude-opus-4-1': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'claude-opus-4-20250514': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'claude-sonnet-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'claude-haiku-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'claude-sonnet-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'opusplan': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'opus': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'sonnet': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'haiku': DEFAULT_CONTEXT_WINDOW_TOKENS,
 };
 
 export function getContextWindowForModel(model: string): number {
   const lower = model.toLowerCase();
+  if (lower.includes('[1m]') || lower.includes('context-1m')) {
+    return EXTENDED_CONTEXT_WINDOW_TOKENS;
+  }
   for (const [key, value] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
     if (lower.includes(key)) return value;
   }

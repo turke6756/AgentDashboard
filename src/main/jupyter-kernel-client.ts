@@ -338,6 +338,65 @@ export async function executeRange(
   return { status: 'ok', cells: results };
 }
 
+export interface ExecuteNotebookResult {
+  status: 'ok' | 'interrupted' | 'failed';
+  last_executed_cell_id: string | null;
+  failed_cell_id?: string;
+  error?: string;
+  outputs_summary: Array<{
+    cell_id: string;
+    status: ExecuteCellResult['status'];
+    execution_count: number | null;
+    outputs: CompactOutput[];
+  }>;
+}
+
+export async function executeNotebook(
+  notebookPath: string,
+  opts: ExecuteOptions = {},
+): Promise<ExecuteNotebookResult> {
+  const m = await ensureManager();
+  const file: any = await m.contents.get(notebookPath, { content: true });
+  const nb = file.content;
+  if (!nb?.cells) throw new Error(`Not a notebook: ${notebookPath}`);
+
+  const codeCells = (nb.cells as any[])
+    .filter((cell) => cell.cell_type === 'code' && typeof cell.id === 'string')
+    .map((cell) => cell.id as string);
+
+  const outputsSummary: ExecuteNotebookResult['outputs_summary'] = [];
+  let lastExecutedCellId: string | null = null;
+
+  for (const cellId of codeCells) {
+    const result = await executeCell(notebookPath, cellId, opts);
+    lastExecutedCellId = cellId;
+    outputsSummary.push({
+      cell_id: cellId,
+      status: result.status,
+      execution_count: result.execution_count,
+      outputs: result.outputs_summary,
+    });
+
+    if (result.status !== 'ok') {
+      return {
+        status: result.status === 'aborted' ? 'interrupted' : 'failed',
+        last_executed_cell_id: lastExecutedCellId,
+        failed_cell_id: cellId,
+        error: result.error
+          ? `${result.error.ename}: ${result.error.evalue}`
+          : `Execution stopped with status ${result.status}`,
+        outputs_summary: outputsSummary,
+      };
+    }
+  }
+
+  return {
+    status: 'ok',
+    last_executed_cell_id: lastExecutedCellId,
+    outputs_summary: outputsSummary,
+  };
+}
+
 export async function interruptKernel(notebookPath: string): Promise<{ ok: true }> {
   const session = await attachSession(notebookPath);
   try {
