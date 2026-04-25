@@ -2,9 +2,27 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { CellShell } from './CellShell';
 import { useYNotebook } from '../../hooks/useYNotebook';
+import { useNotebookActions } from '../../hooks/useNotebookActions';
+import { NotebookToolbar } from './NotebookToolbar';
 
 export function NotebookView({ path }: { path: string }) {
   const { ynotebook, status, error } = useYNotebook(path);
+  const {
+    kernelStatusLabel,
+    kernelState,
+    pendingAction,
+    actionError,
+    runCell,
+    runAll,
+    interruptKernel,
+    restartKernel,
+    addCodeCell,
+    addMarkdownCell,
+    deleteCell,
+    moveCellUp,
+    moveCellDown,
+    clearActionError,
+  } = useNotebookActions(path, ynotebook);
   const cells = ynotebook?.cells ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const notebookLanguage = useMemo(() => getNotebookLanguage(ynotebook), [ynotebook]);
@@ -47,15 +65,34 @@ export function NotebookView({ path }: { path: string }) {
         <StatusPill status={status} />
       </div>
 
+      <NotebookToolbar
+        kernelStatus={kernelStatusLabel}
+        isReady={status === 'synced'}
+        isBusy={pendingAction === 'run-all' || pendingAction === 'run-cell' || kernelState?.execution_state === 'busy'}
+        onRunAll={() => void runAll()}
+        onAddCode={() => addCodeCell(cells.length - 1)}
+        onAddMarkdown={() => addMarkdownCell(cells.length - 1)}
+        onInterrupt={() => void interruptKernel()}
+        onRestart={() => void restartKernel()}
+      />
+
       {error ? (
         <div className="m-4 border border-accent-red/40 bg-accent-red/10 p-4 font-sans text-sm text-accent-red">
           {error}
         </div>
       ) : (
         <div className="p-4 font-sans">
+          {actionError ? (
+            <div className="mb-3 flex items-start justify-between gap-3 border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-sm text-accent-red">
+              <span>{actionError}</span>
+              <button type="button" className="ui-btn min-h-0 px-2 py-0.5 text-[11px]" onClick={clearActionError}>
+                Dismiss
+              </button>
+            </div>
+          ) : null}
           <div className="mb-3 text-sm text-fg-secondary">
             {status === 'synced'
-              ? `${cells.length} cells synced. Virtualized read-only renderer is active.`
+              ? `${cells.length} cells synced. Shared notebook actions are active.`
               : 'Connecting to notebook collaboration room...'}
           </div>
           <div className="border border-surface-3">
@@ -81,8 +118,18 @@ export function NotebookView({ path }: { path: string }) {
                   <div className="min-w-0">
                     <CellShell
                       cell={cell}
+                      index={index}
+                      totalCells={cells.length}
                       isVisible={visibleIndexes.has(index)}
                       language={notebookLanguage}
+                      busy={pendingAction !== null}
+                      onRunCell={(cellId) => {
+                        if (cell.cell_type !== 'code') return;
+                        void runCell(cellId);
+                      }}
+                      onDeleteCell={deleteCell}
+                      onMoveCellUp={moveCellUp}
+                      onMoveCellDown={moveCellDown}
                     />
                   </div>
                 </div>
