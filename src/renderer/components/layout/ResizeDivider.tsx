@@ -31,8 +31,8 @@ export default function ResizeDivider({ direction, isResizing, onMouseDown }: Pr
           isHoriz
             ? 'top-0 bottom-0 left-[1px] w-[1px]'
             : 'left-0 right-0 top-[1px] h-[1px]'
-        } dark:bg-white/10 light:bg-black/10 group-hover:bg-gray-400 ${
-          isResizing ? 'bg-gray-300' : ''
+        } dark:bg-white/10 light:bg-black/10 group-hover:bg-accent-blue ${
+          isResizing ? 'bg-accent-blue' : ''
         } transition-colors`}
       />
     </div>

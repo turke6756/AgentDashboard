@@ -36,15 +36,27 @@ export default function FileViewerPanel() {
     openTab,
     panelLayout,
     togglePanelCollapsed,
+    selectedWorkspaceId,
   } = useDashboardStore();
 
   const swipeToAgents = useSwipeRight(hideFileViewer);
 
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  // Filter tabs to only show those belonging to the current workspace
+  const visibleTabs = useMemo(
+    () => openTabs.filter((t) => t.workspaceId === selectedWorkspaceId),
+    [openTabs, selectedWorkspaceId],
+  );
 
-  // Use the active tab's rootDirectory for the tree, falling back to first tab
-  const treeRoot = activeTab?.rootDirectory || openTabs[0]?.rootDirectory || '';
-  const treePathType = activeTab?.pathType || openTabs[0]?.pathType || 'wsl';
+  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  // activeTab may briefly belong to another workspace during transitions; fall back
+  // to the first visible tab so tree root and header reflect the current workspace.
+  const effectiveTab = activeTab && activeTab.workspaceId === selectedWorkspaceId
+    ? activeTab
+    : visibleTabs[0];
+
+  // Use the effective tab's rootDirectory for the tree
+  const treeRoot = effectiveTab?.rootDirectory || '';
+  const treePathType = effectiveTab?.pathType || 'wsl';
 
   // Directory tree resize
   const treeResize = useResize({
@@ -57,31 +69,31 @@ export default function FileViewerPanel() {
 
   const treeCollapsed = panelLayout.directoryTreeCollapsed;
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — close the tab currently displayed in this workspace's viewer
+  const displayedTabId = effectiveTab?.id;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        // Close active tab; if it's the last one, closes file viewer
-        if (activeTabId) {
-          evictTabCache(activeTabId);
-          closeTab(activeTabId);
+        if (displayedTabId) {
+          evictTabCache(displayedTabId);
+          closeTab(displayedTabId);
         }
       } else if (e.key === 'w' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        if (activeTabId) {
-          evictTabCache(activeTabId);
-          closeTab(activeTabId);
+        if (displayedTabId) {
+          evictTabCache(displayedTabId);
+          closeTab(displayedTabId);
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeTabId, closeTab]);
+  }, [displayedTabId, closeTab]);
 
   // Clicking a file in the tree opens it as a new tab (or focuses existing)
   const handleFileSelect = useCallback((filePath: string) => {
-    openTab(filePath, treeRoot, treePathType, activeTab?.agentId);
-  }, [openTab, treeRoot, treePathType, activeTab?.agentId]);
+    openTab(filePath, treeRoot, treePathType, effectiveTab?.agentId, selectedWorkspaceId ?? undefined);
+  }, [openTab, treeRoot, treePathType, effectiveTab?.agentId, selectedWorkspaceId]);
 
   const handleCloseTab = useCallback((tabId: string) => {
     evictTabCache(tabId);
@@ -92,16 +104,10 @@ export default function FileViewerPanel() {
     // Could navigate tree in future
   }, []);
 
-  // Filter tabs to only show those belonging to the current root directory
-  const visibleTabs = useMemo(
-    () => openTabs.filter((t) => t.rootDirectory === treeRoot),
-    [openTabs, treeRoot],
-  );
-
-  if (!activeTab) return null;
+  if (!effectiveTab) return null;
 
   // Only show file header + content for tabs that have a file (not directory-only tabs)
-  const hasFile = !!activeTab.filePath;
+  const hasFile = !!effectiveTab.filePath;
 
   // Extract directory name for display
   const dirName = treeRoot.split('/').filter(Boolean).pop() || treeRoot;
@@ -125,7 +131,7 @@ export default function FileViewerPanel() {
       {/* Tab Bar */}
       <FileTabBar
         tabs={visibleTabs}
-        activeTabId={activeTabId}
+        activeTabId={effectiveTab.id}
         onSelectTab={setActiveTab}
         onCloseTab={handleCloseTab}
       />
@@ -133,10 +139,10 @@ export default function FileViewerPanel() {
       {/* File Header — only for file tabs */}
       {hasFile && (
         <FileViewerHeader
-          filePath={activeTab.filePath}
-          pathType={activeTab.pathType}
+          filePath={effectiveTab.filePath}
+          pathType={effectiveTab.pathType}
           fileSize={0}
-          workingDirectory={activeTab.rootDirectory}
+          workingDirectory={effectiveTab.rootDirectory}
           onNavigate={handleBreadcrumbNavigate}
         />
       )}
@@ -159,7 +165,7 @@ export default function FileViewerPanel() {
               <DirectoryTree
                 rootPath={treeRoot}
                 pathType={treePathType}
-                activeFilePath={activeTab.filePath}
+                activeFilePath={effectiveTab.filePath}
                 onFileSelect={handleFileSelect}
               />
             </div>
@@ -175,9 +181,9 @@ export default function FileViewerPanel() {
         <div className="flex-1 min-w-0 overflow-hidden">
           {hasFile ? (
             <FileContentArea
-              tabId={activeTab.id}
-              filePath={activeTab.filePath}
-              pathType={activeTab.pathType}
+              tabId={effectiveTab.id}
+              filePath={effectiveTab.filePath}
+              pathType={effectiveTab.pathType}
             />
           ) : (
             <div className="flex items-center justify-center h-full">

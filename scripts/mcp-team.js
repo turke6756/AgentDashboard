@@ -226,6 +226,76 @@ function getToolDefinitions() {
         required: ['title'],
       },
     },
+    // ── Live notebook kernel tools ────────────────────────────────────
+    // Attach to the same jupyter-server / kernel the dashboard iframe is
+    // using. Outputs persist to the .ipynb via jupyter-collaboration RTC,
+    // so the user sees updates live without a "file changed on disk" dialog.
+    // Cells are addressed by nbformat 4.5 `id` (UUID) so inserts don't shift
+    // addresses between calls.
+    //
+    // notebook_path is SERVER-RELATIVE (jupyter-server root_dir is /):
+    //   WSL /home/user/foo.ipynb  →  "home/user/foo.ipynb"
+    //   Windows C:\Users\x\foo.ipynb  →  "mnt/c/Users/x/foo.ipynb"
+    {
+      name: 'execute_cell',
+      description: 'Execute a single notebook cell on the live kernel and persist outputs to disk. Address cells by their nbformat 4.5 `id` (UUID-like string), NOT by index. Read the .ipynb JSON first to find the id. The user sees your output land live in the dashboard iframe.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path (see tool-group notes; strip the leading slash from absolute paths).' },
+          cell_id: { type: 'string', description: 'The nbformat 4.5 cell id. Read it from the .ipynb cell metadata.' },
+          timeout: { type: 'number', description: 'Cell timeout in seconds (default 60). Kernel is interrupted on timeout.' },
+        },
+        required: ['notebook_path', 'cell_id'],
+      },
+    },
+    {
+      name: 'execute_range',
+      description: 'Execute a contiguous range of cells [from_cell_id..to_cell_id] inclusive on the live kernel. Stops at the first cell that errors or times out and returns what completed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path.' },
+          from_cell_id: { type: 'string', description: 'First cell id to execute.' },
+          to_cell_id: { type: 'string', description: 'Last cell id to execute (must appear after from_cell_id).' },
+          timeout: { type: 'number', description: 'Per-cell timeout in seconds (default 60).' },
+        },
+        required: ['notebook_path', 'from_cell_id', 'to_cell_id'],
+      },
+    },
+    {
+      name: 'interrupt_kernel',
+      description: "Interrupt the live kernel for a notebook (sends SIGINT-equivalent). Affects anyone else viewing the notebook too — only do this if a long-running cell needs to stop.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path.' },
+        },
+        required: ['notebook_path'],
+      },
+    },
+    {
+      name: 'restart_kernel',
+      description: 'Restart the live kernel for a notebook. Clears in-memory state but preserves the session — the iframe and any other MCP clients auto-reattach.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path.' },
+        },
+        required: ['notebook_path'],
+      },
+    },
+    {
+      name: 'get_kernel_state',
+      description: 'Get live kernel status for a notebook: whether a session is attached, kernel id/name, current state (idle/busy/dead), and the highest execution_count seen on disk. Use this before driving a kernel you did not open.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          notebook_path: { type: 'string', description: 'Server-relative notebook path.' },
+        },
+        required: ['notebook_path'],
+      },
+    },
   ];
 }
 
@@ -314,6 +384,41 @@ async function handleToolCall(name, args) {
         createdBy: AGENT_ID,
       });
       return { content: [{ type: 'text', text: `Task created: "${task.title}" (${task.id})` }] };
+    }
+
+    // ── Live notebook kernel handlers ─────────────────────────────────
+    case 'execute_cell': {
+      const payload = { notebookPath: args.notebook_path, cellId: args.cell_id };
+      if (args.timeout) payload.timeout = args.timeout;
+      const result = await apiRequest('POST', '/api/notebooks/kernel/execute-cell', payload);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'execute_range': {
+      const payload = {
+        notebookPath: args.notebook_path,
+        fromCellId: args.from_cell_id,
+        toCellId: args.to_cell_id,
+      };
+      if (args.timeout) payload.timeout = args.timeout;
+      const result = await apiRequest('POST', '/api/notebooks/kernel/execute-range', payload);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'interrupt_kernel': {
+      await apiRequest('POST', '/api/notebooks/kernel/interrupt', { notebookPath: args.notebook_path });
+      return { content: [{ type: 'text', text: `Kernel interrupted for ${args.notebook_path}` }] };
+    }
+
+    case 'restart_kernel': {
+      const result = await apiRequest('POST', '/api/notebooks/kernel/restart', { notebookPath: args.notebook_path });
+      return { content: [{ type: 'text', text: `Kernel restarted for ${args.notebook_path}\nKernel id: ${result.kernel_id}` }] };
+    }
+
+    case 'get_kernel_state': {
+      const qs = `notebookPath=${encodeURIComponent(args.notebook_path)}`;
+      const result = await apiRequest('GET', `/api/notebooks/kernel/state?${qs}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
     default:

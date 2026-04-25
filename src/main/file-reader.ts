@@ -5,7 +5,7 @@ import type { PathType, FileContent, DirectoryEntry } from '../shared/types';
 import { ensureWslPath } from './path-utils';
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1MB
-const MAX_NOTEBOOK_SIZE = 5 * 1024 * 1024; // 5MB for .ipynb files
+const MAX_NOTEBOOK_SIZE = 5 * 1024 * 1024; // 5MB for notebook JSON files
 const WSL_TIMEOUT = 10000;
 
 const DANGEROUS_CHARS = /[$`;&|]/;
@@ -19,7 +19,8 @@ function sanitizePath(p: string): string {
 
 export function readFileContents(filePath: string, pathType: PathType): FileContent {
   try {
-    const isNotebook = filePath.toLowerCase().endsWith('.ipynb');
+    const lowerPath = filePath.toLowerCase();
+    const isNotebook = lowerPath.endsWith('.ipynb') || lowerPath.endsWith('.pynb');
     const sizeLimit = isNotebook ? MAX_NOTEBOOK_SIZE : MAX_FILE_SIZE;
 
     if (pathType === 'wsl') {

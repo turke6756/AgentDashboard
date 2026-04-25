@@ -64,10 +64,9 @@ export default function MainContent() {
 
   if (!workspace) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-400 bg-surface-0/20">
-        <div className="text-center animate-pulse">
-          <div className="text-4xl mb-4 text-accent-blue ">&#x1f916;</div>
-          <div className="text-lg font-sans   text-accent-blue/50">
+      <div className="flex-1 flex items-center justify-center text-gray-500">
+        <div className="text-center">
+          <div className="text-[13px]">
             Select a workspace to begin
           </div>
         </div>
@@ -75,33 +74,31 @@ export default function MainContent() {
     );
   }
 
-  const hasOpenTabs = openTabs.length > 0;
+  const workspaceTabCount = openTabs.filter((t) => t.workspaceId === selectedWorkspaceId).length;
+  const hasOpenTabs = workspaceTabCount > 0;
   const supStats = supervisorAgent ? contextStats[supervisorAgent.id] : null;
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-       {/* Background Grid Accent */}
-       <div className="absolute top-0 right-0 w-64 h-64 bg-accent-blue/5 rounded-full blur-3xl pointer-events-none -translate-y-1/2 translate-x-1/2" />
-
-      {/* HUD Header */}
-      <div className="panel-header px-6 py-4 sticky top-0 z-10">
+      {/* Header */}
+      <div className="panel-header px-4 py-3 sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-baseline gap-2">
-              <h2 className="text-xl font-sans font-bold text-gray-50">
+              <h2 className="text-[14px] font-semibold text-gray-100">
                 {workspace.title}
               </h2>
             </div>
 
-            <div className="flex items-center gap-4 mt-2">
-              <span className="text-[13px] text-accent-blue/70 font-sans px-1 rounded-sm">
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-[11px] text-gray-500">
                 {workspace.path}
               </span>
               <span
-                className={`text-[13px] px-1.5 py-0.5 font-bold border ${
+                className={`text-[11px] px-1.5 py-0.5 font-semibold ${
                   workspace.pathType === 'wsl'
-                    ? 'border-accent-orange/50 text-accent-orange'
-                    : 'border-accent-blue/50 text-accent-blue'
+                    ? 'text-accent-orange bg-accent-orange/10'
+                    : 'text-accent-blue bg-accent-blue/10'
                 }`}
               >
                 {workspace.pathType === 'wsl' ? 'WSL' : 'Windows'}
@@ -112,21 +109,21 @@ export default function MainContent() {
           <div className="flex items-center gap-4">
             {/* Supervisor Card */}
             {supervisorAgent && !['done', 'crashed'].includes(supervisorAgent.status) ? (
-              <div className={`hidden md:flex items-center rounded-xl overflow-hidden border ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border}`}>
+              <div className={`hidden md:flex items-center overflow-hidden border ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].border}`}>
                 <button
                   onClick={() => {
                     selectAgent(supervisorAgent.id);
                     setTerminalAgent(supervisorAgent.id);
                   }}
-                  className={`flex items-center gap-3 px-5 py-3 transition-colors hover:brightness-110 ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg}`}
+                  className={`flex items-center gap-3 px-4 py-2 transition-colors ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].bg}`}
                   title="Click to attach terminal"
                 >
                   <div className="flex flex-col items-start gap-0.5">
                     <div className="flex items-center gap-2">
-                      <span className={`w-2.5 h-2.5 rounded-full ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].dot}`} />
-                      <span className="text-[14px] font-sans font-bold text-gray-100">Supervisor</span>
+                      <span className={`w-2 h-2 rounded-full ${SUPERVISOR_STATUS_COLORS[supervisorAgent.status].dot}`} />
+                      <span className="text-[13px] font-semibold text-gray-100">Supervisor</span>
                     </div>
-                    <span className="text-[11px] font-sans text-gray-400 ml-[18px] capitalize">{supervisorAgent.status}</span>
+                    <span className="text-[11px] text-gray-400 ml-[16px] capitalize">{supervisorAgent.status}</span>
                   </div>
 
                   {supStats && (
@@ -166,11 +163,11 @@ export default function MainContent() {
                   setSupervisorLoading(false);
                 }}
                 disabled={supervisorLoading}
-                className="ui-btn ui-btn-purple hidden md:flex items-center gap-2 px-5 py-3 rounded-xl"
+                className="ui-btn ui-btn-purple hidden md:flex items-center gap-2 px-4 py-2"
                 title="Launch Supervisor Agent"
               >
-                <span className="w-2.5 h-2.5 rounded-full bg-purple-400/40 border border-purple-400/60" />
-                <span className="text-[14px] font-sans font-semibold">
+                <span className="w-2 h-2 rounded-full bg-purple-400/40 border border-purple-400/60" />
+                <span className="text-[13px] font-semibold">
                   {supervisorLoading ? 'Launching...' : 'Supervisor'}
                 </span>
               </button>
@@ -179,24 +176,24 @@ export default function MainContent() {
             <div className="flex gap-2">
               <button
                 onClick={() => showFileViewer()}
-                className={`ui-btn px-4 py-2 text-[13px] font-sans font-medium ${
+                className={`ui-btn px-4 py-2 text-[13px] font-medium ${
                   hasOpenTabs
                     ? 'ui-btn-success'
                     : 'ui-btn-ghost'
                 }`}
-                title={hasOpenTabs ? `Files (${openTabs.length} tabs open)` : 'Browse files'}
+                title={hasOpenTabs ? `Files (${workspaceTabCount} tabs open)` : 'Browse files'}
               >
-                Files{hasOpenTabs ? ` (${openTabs.length})` : ''}
+                Files{hasOpenTabs ? ` (${workspaceTabCount})` : ''}
               </button>
               <button
                 onClick={() => window.api.workspaces.openInVSCode(workspace.id)}
-                className="ui-btn px-4 py-2 text-[13px] font-sans font-medium"
+                className="ui-btn px-4 py-2 text-[13px] font-medium"
               >
                 Open VS Code
               </button>
               <button
                 onClick={() => setShowLaunch(true)}
-                className="ui-btn ui-btn-primary px-4 py-2 text-[13px] font-sans font-medium"
+                className="ui-btn ui-btn-primary px-4 py-2 text-[13px] font-medium"
               >
                 Launch Agent
               </button>

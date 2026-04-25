@@ -194,14 +194,14 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="panel-shell w-[480px] max-h-[90vh] overflow-y-auto rounded-2xl p-6"
+        className="panel-shell w-[480px] max-h-[90vh] overflow-y-auto p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-lg font-bold mb-4">Launch Agent</h3>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <h3 className="text-[13px] font-semibold mb-3">Launch Agent</h3>
+        <form onSubmit={handleSubmit} className="space-y-3">
           {/* Combined persona + template selector */}
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Persona / Template</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Persona / Template</label>
             <select
               value={selectedOption}
               onChange={(e) => setSelectedOption(e.target.value)}
@@ -286,7 +286,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Agent Title *</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Agent Title *</label>
             <input
               type="text"
               value={title}
@@ -298,7 +298,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">
               {selectedOption === '__new_template__' ? 'Role Description (becomes this agent\'s CLAUDE.md)' : 'Role Description'}
             </label>
             <textarea
@@ -311,7 +311,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Working Directory</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Working Directory</label>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -342,7 +342,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
 
           {/* Provider selector */}
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Provider</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Provider</label>
             <div className="flex gap-1">
               {PROVIDERS.map((p) => {
                 const meta = PROVIDER_META[p];
@@ -366,7 +366,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Command</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Command</label>
             <input
               type="text"
               value={command}

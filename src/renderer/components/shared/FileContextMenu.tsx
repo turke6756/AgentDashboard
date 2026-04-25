@@ -57,32 +57,29 @@ export default function FileContextMenu({
     onClose();
   };
 
-  const itemClass =
-    'w-full text-left px-3 py-1.5 text-[13px] font-sans hover:bg-accent-blue/20 hover:text-accent-blue transition-colors';
-
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 bg-surface-2 border border-accent-blue/30 shadow-[0_0_15px_rgba(0,0,0,0.8)] min-w-[180px]"
+      className="ui-menu fixed z-50"
       style={{ left: x, top: y }}
     >
-      <div className="bg-accent-blue/10 px-2 py-1 text-[13px] text-accent-blue font-sans border-b dark:border-white/10 light:border-black/10 ">
-        File_Operations
+      <div className="ui-menu-header">
+        File Operations
       </div>
-      <button onClick={handleCopyPath} className={itemClass}>
+      <button onClick={handleCopyPath} className="ui-menu-item">
         Copy Path
       </button>
-      <button onClick={handleCopyRelativePath} className={itemClass}>
+      <button onClick={handleCopyRelativePath} className="ui-menu-item">
         Copy Relative Path
       </button>
-      <div className="border-t dark:border-white/10 light:border-black/10" />
-      <button onClick={handleOpenInVSCode} className={itemClass}>
+      <div className="ui-menu-divider" />
+      <button onClick={handleOpenInVSCode} className="ui-menu-item">
         Open in VS Code
       </button>
       {showRevealInTree && onRevealInTree && (
         <>
-          <div className="border-t dark:border-white/10 light:border-black/10" />
-          <button onClick={handleRevealInTree} className={itemClass}>
+          <div className="ui-menu-divider" />
+          <button onClick={handleRevealInTree} className="ui-menu-item">
             Reveal in Tree
           </button>
         </>

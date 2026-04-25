@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, protocol, net } from 'electron';
+import { app, BrowserWindow, dialog, protocol, net, session } from 'electron';
 import path from 'path';
 import { initDatabase } from './database';
 import { AgentSupervisor } from './supervisor';
@@ -7,10 +7,24 @@ import { WsServer } from './ws-server';
 import { ApiServer } from './api-server';
 import { pathToFileURL } from 'url';
 import { wslToWindowsPath } from './path-utils';
+import { shutdownJupyterServer } from './jupyter-server';
+import { disposeKernelClient } from './jupyter-kernel-client';
+import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
+
+const JUPYTER_BASE_PORT = 18888;
+const JUPYTER_PORT_RETRIES = 50;
 
 // Prevent EPIPE crashes when stdout/stderr pipe is closed (e.g. parent shell exits)
 process.stdout?.on?.('error', () => {});
 process.stderr?.on?.('error', () => {});
+
+// Electron 41/Chromium 130+ blocks file://→http://127.0.0.1 iframe loads via
+// Private Network Access preflights. Disable PNA and insecure-loopback checks
+// for our locally-spawned Jupyter server embed. Must run before app.ready.
+app.commandLine.appendSwitch(
+  'disable-features',
+  'PrivateNetworkAccessSendPreflights,BlockInsecurePrivateNetworkRequests,LocalNetworkAccessChecks',
+);
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: AgentSupervisor | null = null;
@@ -54,7 +68,12 @@ function createWindow(): void {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: true, // Keep enabled but use custom protocol
+      // Required so the file:// renderer can iframe-embed the locally-spawned
+      // Jupyter server at http://127.0.0.1:<port>. Without this, Chromium
+      // rejects the cross-origin iframe load with ERR_BLOCKED_BY_RESPONSE
+      // before our webRequest header shim runs.
+      webSecurity: false,
+      allowRunningInsecureContent: true,
     },
   });
 
@@ -86,9 +105,13 @@ function createWindow(): void {
     })();
   }
 
-  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
-    console.error('Page failed to load:', code, desc);
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    console.error(`Page failed to load (mainFrame=${isMainFrame}): ${code} ${desc} url=${url}`);
   });
+
+  if (!app.isPackaged) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -96,6 +119,37 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  // Strip any frame-blocking headers from Jupyter responses. Don't add CORS
+  // headers here — `Access-Control-Allow-Origin: *` combined with
+  // `Access-Control-Allow-Credentials: true` is an invalid pair that Chromium
+  // rejects with ERR_BLOCKED_BY_RESPONSE. webSecurity:false on the window
+  // already allows the cross-origin iframe load itself.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    let isJupyter = false;
+    try {
+      const url = new URL(details.url);
+      const isLoopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+      const port = Number(url.port);
+      isJupyter = isLoopback && Number.isInteger(port) && port >= JUPYTER_BASE_PORT && port <= JUPYTER_BASE_PORT + JUPYTER_PORT_RETRIES;
+    } catch {
+      isJupyter = false;
+    }
+    if (!isJupyter) return callback({});
+    const headers: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(details.responseHeaders || {})) {
+      const key = k.toLowerCase();
+      // Strip CSP and X-Frame-Options — the renderer is loaded from file://
+      // (origin "null") and CSP `frame-ancestors *` per spec does NOT match
+      // non-network schemes like file:/data:/blob:. Stripping lets the
+      // file:// renderer iframe-embed Jupyter.
+      if (key === 'x-frame-options') continue;
+      if (key === 'content-security-policy') continue;
+      if (key === 'content-security-policy-report-only') continue;
+      headers[k] = Array.isArray(v) ? v : [String(v)];
+    }
+    callback({ responseHeaders: headers });
+  });
+
   // Handle media:// protocol — URLs are media://file/<encodedPath>
   protocol.handle('media', async (request) => {
     const urlObj = new URL(request.url);
@@ -167,7 +221,15 @@ app.on('window-all-closed', () => {
   apiServer?.stop();
   wsServer?.stop();
   supervisor?.stop();
+  disposeKernelClient();
+  void shutdownJupyterServer();
+  closeAllFsWatchers();
   app.quit();
+});
+
+app.on('will-quit', () => {
+  disposeKernelClient();
+  void shutdownJupyterServer();
 });
 
 app.on('activate', () => {

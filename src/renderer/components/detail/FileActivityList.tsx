@@ -8,6 +8,13 @@ interface Props {
   activities: FileActivity[];
   pathType?: PathType;
   agentId?: string;
+  title?: string;
+  embedded?: boolean;
+}
+
+interface GroupedActivity {
+  activity: FileActivity;
+  count: number;
 }
 
 function timeAgo(timestamp: string): string {
@@ -47,19 +54,23 @@ function operationBadge(op: string): { label: string; className: string } {
   }
 }
 
-// Group activities by file, keeping the most recent per file
-function groupByFile(activities: FileActivity[]): FileActivity[] {
-  const seen = new Map<string, FileActivity>();
+// Group activities by file, keeping the most recent per file + op and counting duplicates.
+// Activities arrive newest-first, so the first row encountered per key is the most recent.
+function groupByFile(activities: FileActivity[]): GroupedActivity[] {
+  const seen = new Map<string, GroupedActivity>();
   for (const a of activities) {
     const key = `${a.filePath}:${a.operation}`;
-    if (!seen.has(key)) {
-      seen.set(key, a);
+    const existing = seen.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      seen.set(key, { activity: a, count: 1 });
     }
   }
   return Array.from(seen.values());
 }
 
-export default function FileActivityList({ activities, pathType, agentId }: Props) {
+export default function FileActivityList({ activities, pathType, agentId, title, embedded }: Props) {
   const { openFileViewer, agents, workspaces } = useDashboardStore();
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
@@ -72,6 +83,7 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
   const resolvedPathType = workspace?.pathType || pathType || 'wsl';
 
   if (grouped.length === 0) {
+    if (embedded) return null;
     return (
       <div className="px-4 py-8 text-center text-gray-400 text-sm">
         No file activity yet...
@@ -128,9 +140,16 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
     openInWorkspaceVSCode(filePath);
   };
 
+  const outerClass = embedded ? '' : 'flex-1 overflow-y-auto';
+
   return (
-    <div className="flex-1 overflow-y-auto">
-      {grouped.map((activity) => {
+    <div className={outerClass}>
+      {title && (
+        <div className="px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide uppercase text-gray-400">
+          {title}
+        </div>
+      )}
+      {grouped.map(({ activity, count }) => {
         const badge = operationBadge(activity.operation);
         return (
           <button
@@ -150,7 +169,12 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
                 <span className="text-sm font-medium text-gray-200 truncate group-hover:text-white">
                   {fileName(activity.filePath)}
                 </span>
-                <span className={`text-[13px] px-1.5 py-0.5 rounded-full shrink-0 ${badge.className}`}>
+                {count > 1 && (
+                  <span className="text-[11px] text-gray-400 shrink-0" title={`${count} ${activity.operation} events`}>
+                    ×{count}
+                  </span>
+                )}
+                <span className={`text-[11px] px-1.5 py-0.5 shrink-0 ${badge.className}`}>
                   {badge.label}
                 </span>
               </div>
@@ -158,7 +182,7 @@ export default function FileActivityList({ activities, pathType, agentId }: Prop
             </div>
             <span
               onClick={(e) => handleVSCode(e, activity.filePath)}
-              className="text-[13px] font-sans font-bold text-accent-blue/40 hover:text-accent-blue opacity-0 group-hover:opacity-100 transition-all shrink-0 mt-0.5 px-1 border border-transparent hover:border-accent-blue/30 cursor-pointer"
+              className="text-[11px] text-gray-600 hover:text-accent-blue opacity-0 group-hover:opacity-100 transition-all shrink-0 mt-0.5 px-1 cursor-pointer"
               title="Open in VS Code"
             >
               VS

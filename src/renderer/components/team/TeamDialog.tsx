@@ -30,7 +30,6 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
     [eligibleAgents, selectedIds]
   );
 
-  // All directed pairs among selected agents
   const possiblePairs = useMemo(() => {
     const pairs: { from: Agent; to: Agent; key: string }[] = [];
     for (const a of selectedAgents) {
@@ -103,66 +102,62 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-surface-2 border border-gray-700 rounded-xl p-6 w-[560px] max-h-[90vh] overflow-y-auto"
+        className="panel-shell w-[520px] max-h-[90vh] overflow-y-auto p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold text-white mb-4">Create Team</h2>
+        <h2 className="text-[13px] font-semibold mb-3">Create Team</h2>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Team Name */}
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Team Name</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Team Name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Backend Refactor Squad"
-              className="w-full bg-surface-1 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500"
+              className="ui-input text-[13px]"
               autoFocus
             />
           </div>
 
-          {/* Description */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Description</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Description</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What is this team working on?"
-              className="w-full bg-surface-1 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none h-20 focus:outline-none focus:border-purple-500"
+              className="ui-textarea text-[13px] resize-none h-16"
             />
           </div>
 
-          {/* Template Selector */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Template</label>
-            <div className="flex gap-2">
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Template</label>
+            <div className="flex gap-1">
               {templateOptions.map((opt) => (
                 <button
                   key={opt.value}
                   type="button"
                   onClick={() => setTemplate(opt.value)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors ${
+                  className={`ui-btn flex-1 flex-col items-start py-2 text-[13px] ${
                     template === opt.value
-                      ? 'bg-purple-500/20 border-purple-500/50 text-white'
-                      : 'bg-surface-1 border-gray-700 text-gray-400 hover:border-gray-500'
+                      ? 'bg-accent-purple/15 text-accent-purple border-accent-purple/40'
+                      : ''
                   }`}
                 >
                   <div className="font-medium">{opt.label}</div>
-                  <div className="text-xs text-gray-500 mt-0.5">{opt.desc}</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">{opt.desc}</div>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Agent Selection */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">
-              Members <span className="text-gray-500">({selectedIds.size} selected, min 2)</span>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">
+              Members <span className="text-gray-600">({selectedIds.size} selected, min 2)</span>
             </label>
-            <div className="space-y-1 max-h-48 overflow-y-auto">
+            <div className="space-y-0.5 max-h-48 overflow-y-auto">
               {eligibleAgents.length === 0 ? (
-                <p className="text-gray-500 text-sm py-2">No active agents in this workspace.</p>
+                <p className="text-gray-500 text-[13px] py-2">No active agents in this workspace.</p>
               ) : (
                 eligibleAgents.map((agent) => {
                   const meta = PROVIDER_META[agent.provider];
@@ -172,23 +167,23 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
                       key={agent.id}
                       type="button"
                       onClick={() => toggleAgent(agent.id)}
-                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors border ${
                         selected
-                          ? 'bg-purple-500/20 border border-purple-500/50 text-white'
-                          : 'bg-surface-1 border border-gray-700 text-gray-300 hover:border-gray-500'
+                          ? 'bg-accent-purple/10 border-accent-purple/30 text-gray-200'
+                          : 'border-transparent text-gray-400 hover:bg-white/[0.04]'
                       }`}
                     >
                       <span
-                        className={`w-2 h-2 rounded-full ${selected ? 'bg-purple-400' : 'bg-gray-600'}`}
+                        className={`w-2 h-2 rounded-full ${selected ? 'bg-accent-purple' : 'bg-gray-600'}`}
                       />
                       <span className="flex-1 truncate">{agent.title}</span>
                       <span
-                        className="text-xs px-1.5 py-0.5 rounded"
-                        style={{ backgroundColor: meta.color + '33', color: meta.color }}
+                        className="text-[11px] px-1.5 py-0.5"
+                        style={{ backgroundColor: meta.color + '22', color: meta.color }}
                       >
                         {meta.label}
                       </span>
-                      <span className="text-xs text-gray-500">#{agent.id.slice(0, 6)}</span>
+                      <span className="text-[11px] text-gray-600 font-mono">#{agent.id.slice(0, 6)}</span>
                     </button>
                   );
                 })
@@ -196,13 +191,12 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
             </div>
           </div>
 
-          {/* Custom Channel Editor */}
           {template === 'custom' && selectedAgents.length >= 2 && (
             <div>
-              <label className="block text-sm text-gray-400 mb-1">
-                Channels <span className="text-gray-500">({customChannels.size} selected)</span>
+              <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">
+                Channels <span className="text-gray-600">({customChannels.size} selected)</span>
               </label>
-              <div className="space-y-1 max-h-40 overflow-y-auto">
+              <div className="space-y-0.5 max-h-40 overflow-y-auto">
                 {possiblePairs.map(({ from, to, key }) => {
                   const selected = customChannels.has(key);
                   return (
@@ -210,18 +204,18 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
                       key={key}
                       type="button"
                       onClick={() => toggleChannel(key)}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-left text-sm transition-colors ${
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors border ${
                         selected
-                          ? 'bg-blue-500/20 border border-blue-500/50 text-white'
-                          : 'bg-surface-1 border border-gray-700 text-gray-400 hover:border-gray-500'
+                          ? 'bg-accent-blue/10 border-accent-blue/30 text-gray-200'
+                          : 'border-transparent text-gray-400 hover:bg-white/[0.04]'
                       }`}
                     >
                       <span
-                        className={`w-2 h-2 rounded-full ${selected ? 'bg-blue-400' : 'bg-gray-600'}`}
+                        className={`w-2 h-2 rounded-full ${selected ? 'bg-accent-blue' : 'bg-gray-600'}`}
                       />
                       <span className="truncate">
                         {from.title}
-                        <span className="text-gray-500 mx-1">{'\u2192'}</span>
+                        <span className="text-gray-600 mx-1">{'\u2192'}</span>
                         {to.title}
                       </span>
                     </button>
@@ -231,19 +225,18 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
             </div>
           )}
 
-          {/* Actions */}
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+              className="ui-btn ui-btn-ghost px-3 py-1.5 text-[13px]"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSubmit}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors"
+              className="ui-btn ui-btn-primary px-3 py-1.5 text-[13px]"
             >
               {submitting ? 'Creating...' : 'Create Team'}
             </button>

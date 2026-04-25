@@ -103,8 +103,8 @@ interface DashboardState {
   addTeamMessage: (message: TeamMessage) => void;
 
   // Tab actions
-  openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string) => void;
-  openDirectoryTab: (rootDirectory: string, pathType: PathType) => void;
+  openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string, workspaceId?: string) => void;
+  openDirectoryTab: (rootDirectory: string, pathType: PathType, workspaceId?: string) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   closeAllTabs: () => void;
@@ -165,8 +165,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   activeTabId: null,
   fileViewerOpen: false,
 
-  openTab: (filePath, rootDirectory, pathType, agentId?) => {
-    const { openTabs } = get();
+  openTab: (filePath, rootDirectory, pathType, agentId?, workspaceId?) => {
+    const { openTabs, selectedWorkspaceId } = get();
+    const ws = workspaceId ?? selectedWorkspaceId ?? undefined;
     // Check if tab already exists for this file+root combo
     const existing = openTabs.find(
       (t) => t.filePath === filePath && t.rootDirectory === rootDirectory
@@ -186,6 +187,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       rootDirectory,
       pathType,
       agentId,
+      workspaceId: ws,
       label,
     };
     set((state) => ({
@@ -195,8 +197,9 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }));
   },
 
-  openDirectoryTab: (rootDirectory, pathType) => {
-    const { openTabs, activeTabId } = get();
+  openDirectoryTab: (rootDirectory, pathType, workspaceId?) => {
+    const { openTabs, activeTabId, selectedWorkspaceId } = get();
+    const ws = workspaceId ?? selectedWorkspaceId ?? undefined;
     // If any tabs already exist for this root, just re-show the file viewer
     // and keep the current active tab if it belongs to this root
     const tabsForRoot = openTabs.filter((t) => t.rootDirectory === rootDirectory);
@@ -215,6 +218,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       filePath: '',
       rootDirectory,
       pathType,
+      workspaceId: ws,
       label,
     };
     set((state) => ({
@@ -255,15 +259,20 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // Hide file viewer without destroying tabs (for back navigation)
   hideFileViewer: () => set({ fileViewerOpen: false }),
 
-  // Show file viewer — restore existing tabs or open workspace directory
+  // Show file viewer — restore existing tabs for the current workspace, or open its directory
   showFileViewer: () => {
-    const { openTabs, selectedWorkspaceId, workspaces } = get();
-    if (openTabs.length > 0) {
-      set({ fileViewerOpen: true });
+    const { openTabs, activeTabId, selectedWorkspaceId, workspaces } = get();
+    const wsTabs = openTabs.filter((t) => t.workspaceId === selectedWorkspaceId);
+    if (wsTabs.length > 0) {
+      const activeBelongs = wsTabs.some((t) => t.id === activeTabId);
+      set({
+        fileViewerOpen: true,
+        activeTabId: activeBelongs ? activeTabId : wsTabs[0].id,
+      });
     } else {
       const workspace = workspaces.find((w) => w.id === selectedWorkspaceId);
       if (workspace) {
-        get().openDirectoryTab(workspace.path, workspace.pathType);
+        get().openDirectoryTab(workspace.path, workspace.pathType, workspace.id);
       }
     }
   },
@@ -282,7 +291,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (!agent) return;
     const workspace = get().workspaces.find((w) => w.id === agent.workspaceId);
     const pathType = workspace?.pathType || 'wsl';
-    get().openTab(filePath, agent.workingDirectory, pathType, agentId);
+    get().openTab(filePath, agent.workingDirectory, pathType, agentId, agent.workspaceId);
   },
 
   closeFileViewer: () => get().closeAllTabs(),
@@ -318,10 +327,22 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   selectWorkspace: (id) => {
-    if (!get().terminalPinned) {
-      set({ selectedWorkspaceId: id, selectedAgentId: null, terminalAgentId: null });
+    const { openTabs, activeTabId, fileViewerOpen, terminalPinned } = get();
+    // Re-point the file viewer's active tab at something that belongs to the new workspace.
+    // Without this, activeTabId can stay on a tab from the previous workspace, so the tree
+    // root is wrong and visibleTabs filters out the current workspace's tabs.
+    const activeBelongs = openTabs.find((t) => t.id === activeTabId)?.workspaceId === id;
+    const nextActiveTabId = activeBelongs
+      ? activeTabId
+      : openTabs.find((t) => t.workspaceId === id)?.id ?? null;
+    // If the new workspace has no tabs and the viewer was open, hide it — otherwise the
+    // panel would render blank.
+    const nextFileViewerOpen = fileViewerOpen && nextActiveTabId !== null;
+
+    if (!terminalPinned) {
+      set({ selectedWorkspaceId: id, selectedAgentId: null, terminalAgentId: null, activeTabId: nextActiveTabId, fileViewerOpen: nextFileViewerOpen });
     } else {
-      set({ selectedWorkspaceId: id, selectedAgentId: null });
+      set({ selectedWorkspaceId: id, selectedAgentId: null, activeTabId: nextActiveTabId, fileViewerOpen: nextFileViewerOpen });
     }
     if (id) {
       get().loadAgents(id);
@@ -337,6 +358,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   toggleTerminalPinned: () => set((state) => ({ terminalPinned: !state.terminalPinned })),
 
   updateAgent: (agent) => {
+    const { selectedWorkspaceId } = get();
+    if (agent.workspaceId !== selectedWorkspaceId) return;
     if (agent.isSupervisor) {
       set({ supervisorAgent: agent });
     } else {

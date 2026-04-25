@@ -67,29 +67,24 @@ export default function TeamPanel({ team }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-700">
+      <div className="px-4 py-3 border-b border-surface-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
-            {/* Status dot */}
-            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${STATUS_DOT[team.status] ?? 'bg-gray-500'}`} />
-            {/* Name */}
-            <h2 className="text-white font-semibold text-base truncate">{team.name}</h2>
-            {/* Template badge */}
+            <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[team.status] ?? 'bg-gray-500'}`} />
+            <h2 className="text-gray-100 font-semibold text-[13px] truncate">{team.name}</h2>
             {team.template && (
-              <span className={`text-xs px-1.5 py-0.5 rounded ${templateStyle.bg} ${templateStyle.text}`}>
+              <span className={`text-[11px] px-1.5 py-0.5 ${templateStyle.bg} ${templateStyle.text}`}>
                 {team.template}
               </span>
             )}
-            {/* Member count */}
-            <span className="text-xs text-gray-500">{memberCount} member{memberCount !== 1 ? 's' : ''}</span>
+            <span className="text-[11px] text-gray-500">{memberCount} member{memberCount !== 1 ? 's' : ''}</span>
           </div>
 
-          {/* Disband button */}
           {team.status === 'active' && (
             <button
               onClick={handleDisband}
               disabled={disbanding}
-              className="px-3 py-1 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              className="ui-btn ui-btn-danger text-[11px]"
             >
               {disbanding ? 'Disbanding...' : 'Disband'}
             </button>
@@ -97,20 +92,16 @@ export default function TeamPanel({ team }: Props) {
         </div>
 
         {team.description && (
-          <p className="text-sm text-gray-400 mt-1 truncate">{team.description}</p>
+          <p className="text-[13px] text-gray-400 mt-1 truncate">{team.description}</p>
         )}
 
         {/* Tab bar */}
-        <div className="flex gap-1 mt-3">
+        <div className="flex mt-2 border-b border-surface-3">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-surface-1 text-white'
-                  : 'text-gray-400 hover:text-gray-300'
-              }`}
+              className={`ui-tab ${activeTab === tab.id ? 'ui-tab-active' : ''}`}
             >
               {tab.label}
             </button>

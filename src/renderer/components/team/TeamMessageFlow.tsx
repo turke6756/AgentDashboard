@@ -49,7 +49,7 @@ export default function TeamMessageFlow({ messages }: Props) {
         return (
           <div
             key={msg.id}
-            className="bg-surface-1 border border-gray-700 rounded-lg px-3 py-2 cursor-pointer hover:border-gray-600 transition-colors"
+            className="bg-surface-1 border border-surface-3 px-3 py-2 cursor-pointer hover:bg-white/[0.03] transition-colors"
             onClick={() => setExpandedId(expanded ? null : msg.id)}
           >
             {/* Header row */}
@@ -60,7 +60,7 @@ export default function TeamMessageFlow({ messages }: Props) {
               <span className="text-white font-medium truncate">{fromLabel}</span>
               <span className="text-gray-500">{'\u2192'}</span>
               <span className="text-white font-medium truncate">{toLabel}</span>
-              <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${style.bg} ${style.text}`}>
+              <span className={`ml-auto text-[11px] px-1.5 py-0.5 ${style.bg} ${style.text}`}>
                 {style.label}
               </span>
             </div>

@@ -1,9 +1,10 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { DirectoryEntry, PathType } from '../../../shared/types';
 import FileContextMenu from '../shared/FileContextMenu';
 import * as Icons from 'lucide-react';
-import { getFileIconName } from './fileTypeUtils';
+import FileIcon from './FileIcon';
 import { fileDragStart } from '../../utils/drag-file';
+import { applyFsEvent } from './applyFsEvent';
 
 interface Props {
   entry: DirectoryEntry;
@@ -59,6 +60,15 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
     window.api.system.openFileInWorkspace(entry.path, workingDirectory, pathType);
   }, [entry, workingDirectory, pathType]);
 
+  const childrenLoaded = children !== null;
+  useEffect(() => {
+    if (!entry.isDirectory || !expanded || !childrenLoaded) return;
+    const unsub = window.api.files.watchDirectory(entry.path, pathType, (event) => {
+      setChildren((prev) => (prev ? applyFsEvent(prev, event) : prev));
+    });
+    return unsub;
+  }, [entry.isDirectory, entry.path, pathType, expanded, childrenLoaded]);
+
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (entry.isDirectory) return;
     e.preventDefault();
@@ -66,9 +76,7 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
     setContextMenu({ x: e.clientX, y: e.clientY });
   }, [entry.isDirectory]);
 
-  const iconName = getFileIconName(entry.path, entry.isDirectory);
-  const IconComponent = (Icons as any)[iconName] || Icons.File;
-  const FolderIcon = expanded ? Icons.ChevronDown : Icons.ChevronRight;
+  const ChevronIcon = expanded ? Icons.ChevronDown : Icons.ChevronRight;
 
   return (
     <div>
@@ -78,23 +86,33 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
         onContextMenu={handleContextMenu}
         draggable={!entry.isDirectory}
         onDragStart={(e) => { if (!entry.isDirectory) fileDragStart(e, entry.path); }}
-        className={`w-full text-left flex items-center gap-1.5 py-1 px-2 text-[13px] font-sans hover:bg-surface-2/60 transition-colors group ${
-          isActive ? 'bg-accent-blue/10 text-accent-blue' : 'text-gray-400'
+        className={`w-full text-left flex items-center gap-1 py-[3px] px-2 text-[13px] font-sans transition-colors group ${
+          isActive ? 'tree-row-selected' : 'tree-row-hover text-fg-primary'
         }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        style={{ paddingLeft: `${depth * 12 + 8}px`, color: isActive ? undefined : 'var(--color-fg-primary)' }}
       >
-        <span className="shrink-0 w-4 flex items-center justify-center">
-          {entry.isDirectory ? (
-            loading ? (
-              <Icons.Loader2 className="w-3 h-3 animate-spin text-gray-300" />
-            ) : (
-              <FolderIcon className="w-3 h-3 text-gray-300 group-hover:text-gray-300" />
-            )
-          ) : (
-            <IconComponent className={`w-3.5 h-3.5 ${isActive ? 'text-accent-blue' : 'text-gray-300'}`} />
-          )}
-        </span>
-        <span className={`truncate ${entry.isDirectory ? 'text-accent-blue/70 font-medium' : ''}`}>
+        {entry.isDirectory ? (
+          <>
+            <span className="shrink-0 w-3.5 flex items-center justify-center" style={{ color: 'var(--color-fg-secondary)' }}>
+              {loading ? (
+                <Icons.Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <ChevronIcon className="w-3.5 h-3.5" />
+              )}
+            </span>
+            <span className="shrink-0 w-4 flex items-center justify-center">
+              <FileIcon name={entry.name} isDirectory isOpen={expanded} className="w-4 h-4" />
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="shrink-0 w-3.5" />
+            <span className="shrink-0 w-4 flex items-center justify-center">
+              <FileIcon name={entry.name} className="w-4 h-4" />
+            </span>
+          </>
+        )}
+        <span className="truncate">
           {entry.name}
         </span>
       </button>

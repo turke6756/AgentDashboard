@@ -1,3 +1,5 @@
+import type { SessionEvent, ChatEventBatch } from './session-events';
+
 export type PathType = 'windows' | 'wsl';
 export type AgentProvider = 'claude' | 'gemini' | 'codex';
 export type GroupThinkStatus = 'active' | 'synthesizing' | 'completed' | 'cancelled';
@@ -154,6 +156,11 @@ export interface DirectoryEntry {
   size: number;
 }
 
+export type FsEvent =
+  | { type: 'add'; path: string; parentDir: string; isDirectory: boolean; size: number }
+  | { type: 'unlink'; path: string; parentDir: string }
+  | { type: 'change'; path: string; parentDir: string };
+
 export interface FileContent {
   path: string;
   content: string;
@@ -168,6 +175,7 @@ export interface FileTab {
   rootDirectory: string;   // tree root (agent workingDirectory or workspace path)
   pathType: PathType;
   agentId?: string;
+  workspaceId?: string;    // scopes the tab to a workspace; unset for legacy/orphan tabs
   label: string;           // display name (filename or dirname/)
 }
 
@@ -288,6 +296,27 @@ export interface PanelLayout {
   directoryTreeCollapsed: boolean;
 }
 
+export interface JupyterServerInfo {
+  baseUrl: string;
+  token: string;
+  ready: boolean;
+}
+
+export interface KernelspecInfo {
+  name: string;
+  spec: {
+    language?: string;
+    display_name?: string;
+    argv?: string[];
+  };
+  resources?: Record<string, string>;
+}
+
+export interface KernelspecsResponse {
+  default: string;
+  kernelspecs: Record<string, KernelspecInfo>;
+}
+
 export interface ContextStats {
   agentId: string;
   sessionId: string;
@@ -324,6 +353,11 @@ export interface IpcApi {
     onFileActivity: (callback: (activity: FileActivity) => void) => () => void;
     getContextStats: (agentId: string) => Promise<ContextStats | null>;
     onContextStatsChanged: (callback: (stats: ContextStats) => void) => () => void;
+    getChatEvents: (agentId: string, sinceUuid?: string) => Promise<{ events: SessionEvent[]; truncated: boolean }>;
+    chatSubscribe: (agentId: string) => Promise<void>;
+    chatUnsubscribe: (agentId: string) => Promise<void>;
+    getFullToolResult: (agentId: string, toolUseId: string) => Promise<string | null>;
+    onChatEvents: (callback: (batch: ChatEventBatch) => void) => () => void;
     fork: (id: string) => Promise<Agent>;
     query: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult>;
     sendInput: (agentId: string, text: string) => Promise<void>;
@@ -340,6 +374,7 @@ export interface IpcApi {
   files: {
     readFile: (filePath: string, pathType: PathType) => Promise<FileContent>;
     listDirectory: (dirPath: string, pathType: PathType) => Promise<DirectoryEntry[]>;
+    watchDirectory: (dirPath: string, pathType: PathType, callback: (event: FsEvent) => void) => () => void;
   };
   system: {
     pickDirectory: (startInWsl?: boolean) => Promise<string | null>;
@@ -377,6 +412,10 @@ export interface IpcApi {
   personas: {
     list: (workspacePath: string, pathType: PathType) => Promise<AgentPersona[]>;
     create: (workspacePath: string, pathType: PathType, name: string, customClaudeMd?: string) => Promise<AgentPersona>;
+  };
+  notebooks: {
+    ensureServer: () => Promise<JupyterServerInfo>;
+    listKernelspecs: () => Promise<KernelspecsResponse>;
   };
   onAgentStatusChanged: (callback: (data: { agentId: string; status: AgentStatus; agent: Agent }) => void) => () => void;
   onGroupThinkUpdated: (callback: (session: GroupThinkSession) => void) => () => void;

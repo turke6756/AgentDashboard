@@ -12,7 +12,13 @@ import {
   createTeamTask, updateTeamTask, getTeamTasks,
   listAgentTemplates, createAgentTemplate, updateAgentTemplate, deleteAgentTemplate, getAgentTemplate,
 } from './database';
-import { executeNotebook } from './notebook-executor';
+import {
+  executeCell as kernelExecuteCell,
+  executeRange as kernelExecuteRange,
+  interruptKernel as kernelInterrupt,
+  restartKernel as kernelRestart,
+  getKernelState as kernelGetState,
+} from './jupyter-kernel-client';
 import { scanPersonas, scaffoldPersona } from './persona-scanner';
 import { TEAM_MAX_MESSAGES_PER_5MIN, TEAM_MAX_ALTERNATIONS, TEAM_ALTERNATION_WINDOW_MS, TEAM_PAIR_COOLDOWN_MS } from '../shared/constants';
 import { TeamMessageStatus } from '../shared/types';
@@ -578,16 +584,51 @@ export class ApiServer {
       };
     }
 
-    // POST /api/notebooks/execute — execute a notebook in-place via nbconvert
-    if (method === 'POST' && path === '/api/notebooks/execute') {
+    // ── Notebook live-kernel routes (Phase 1) ──────────────────────────
+    // These talk to the same jupyter-server the iframe uses, attaching to
+    // the notebook's existing session rather than spawning a parallel kernel.
+
+    // POST /api/notebooks/kernel/execute-cell
+    if (method === 'POST' && path === '/api/notebooks/kernel/execute-cell') {
       const body = await readBody(req);
-      const { notebookPath, kernelName, timeout } = JSON.parse(body);
-      if (!notebookPath) throw Object.assign(new Error('Missing "notebookPath" in request body'), { statusCode: 400 });
-      const result = await executeNotebook(notebookPath, kernelName, timeout);
-      if (!result.ok) {
-        throw Object.assign(new Error(result.error || 'Notebook execution failed'), { statusCode: 500 });
+      const { notebookPath, cellId, timeout } = JSON.parse(body);
+      if (!notebookPath || !cellId) {
+        throw Object.assign(new Error('Missing notebookPath or cellId'), { statusCode: 400 });
       }
-      return result;
+      return await kernelExecuteCell(notebookPath, cellId, { timeoutSec: timeout });
+    }
+
+    // POST /api/notebooks/kernel/execute-range
+    if (method === 'POST' && path === '/api/notebooks/kernel/execute-range') {
+      const body = await readBody(req);
+      const { notebookPath, fromCellId, toCellId, timeout } = JSON.parse(body);
+      if (!notebookPath || !fromCellId || !toCellId) {
+        throw Object.assign(new Error('Missing notebookPath, fromCellId, or toCellId'), { statusCode: 400 });
+      }
+      return await kernelExecuteRange(notebookPath, fromCellId, toCellId, { timeoutSec: timeout });
+    }
+
+    // POST /api/notebooks/kernel/interrupt
+    if (method === 'POST' && path === '/api/notebooks/kernel/interrupt') {
+      const body = await readBody(req);
+      const { notebookPath } = JSON.parse(body);
+      if (!notebookPath) throw Object.assign(new Error('Missing notebookPath'), { statusCode: 400 });
+      return await kernelInterrupt(notebookPath);
+    }
+
+    // POST /api/notebooks/kernel/restart
+    if (method === 'POST' && path === '/api/notebooks/kernel/restart') {
+      const body = await readBody(req);
+      const { notebookPath } = JSON.parse(body);
+      if (!notebookPath) throw Object.assign(new Error('Missing notebookPath'), { statusCode: 400 });
+      return await kernelRestart(notebookPath);
+    }
+
+    // GET /api/notebooks/kernel/state?notebookPath=…
+    if (method === 'GET' && path === '/api/notebooks/kernel/state') {
+      const notebookPath = url.searchParams.get('notebookPath');
+      if (!notebookPath) throw Object.assign(new Error('Missing notebookPath query param'), { statusCode: 400 });
+      return await kernelGetState(notebookPath);
     }
 
     // ── Persona routes ──────────────────────────────────────────────────

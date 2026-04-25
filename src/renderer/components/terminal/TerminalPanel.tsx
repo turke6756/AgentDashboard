@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useThemeStore } from '../../stores/theme-store';
@@ -163,6 +164,18 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
       const fitAddon = new FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(container);
+
+      // WebGL renderer — GPU-composites the whole terminal surface.
+      // Must be loaded AFTER open() because it inspects the canvas it builds
+      // into the terminal's DOM element. On context loss (tab backgrounded,
+      // driver hiccup) dispose it so xterm falls back to the DOM renderer.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => { webgl.dispose(); });
+        terminal.loadAddon(webgl);
+      } catch (err) {
+        console.warn('[terminal] WebGL renderer unavailable, falling back to DOM:', err);
+      }
 
       xtermRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -404,12 +417,12 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
 
   // Shared button base for toolbar
   const toolbarBtn = (active: boolean, activeClasses: string) =>
-    `text-[10px] uppercase tracking-wider border px-2 py-0.5 rounded-sm transition-colors ${
+    `text-[10px] uppercase tracking-wider border px-2 py-0.5 transition-colors ${
       active
         ? activeClasses
         : isLight
-          ? 'text-[#4d4d4d] border-[#d1d1d1] hover:text-[#000000] hover:border-[#999999] hover:bg-[#e5e5e5]'
-          : 'text-gray-500 border-gray-700 hover:text-white hover:border-gray-500'
+          ? 'text-[#4d4d4d] border-[#d1d1d1] hover:text-[#000000] hover:bg-[#e5e5e5]'
+          : 'text-gray-500 border-transparent hover:text-white hover:bg-white/[0.06]'
     }`;
 
   // --- Full mode rendering ---
@@ -478,8 +491,8 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
                 onClick={() => toggleTerminalPinned()}
                 className={toolbarBtn(terminalPinned,
                   isLight
-                    ? 'text-white border-[#005e9e] bg-[#005e9e] font-semibold'
-                    : 'text-white border-[#005e9e] bg-[#005e9e]'
+                    ? 'text-on-accent border-[#005e9e] bg-[#005e9e] font-semibold'
+                    : 'text-on-accent border-[#005e9e] bg-[#005e9e]'
                 )}
                 title={terminalPinned ? "Terminal is pinned to current workspace" : "Pin terminal to persist across workspaces"}
             >
@@ -532,10 +545,10 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
         {!isAtBottom && !scrollLocked && (
           <button
             onClick={scrollToBottom}
-            className={`absolute bottom-3 right-5 text-[10px] px-3 py-1 rounded transition-colors shadow-lg ${
+            className={`absolute bottom-3 right-5 text-[10px] px-3 py-1 transition-colors ${
               isLight
-                ? 'text-[#424a53] bg-white border border-[#c8cdd3] hover:text-[#1b2733] hover:border-[#8b949e] shadow-md'
-                : 'text-gray-400 bg-surface-1 border border-gray-700 hover:text-gray-50 hover:border-gray-500'
+                ? 'text-[#424a53] bg-white border border-[#c8cdd3] hover:text-[#1b2733]'
+                : 'text-gray-400 bg-surface-1 border border-surface-3 hover:text-gray-50'
             }`}
           >
             ↓ Scroll to bottom

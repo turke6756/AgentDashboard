@@ -1,11 +1,16 @@
 import React from 'react';
-import { detectFileType, detectLanguage } from './fileTypeUtils';
+import { detectFileType, detectLanguage, isInteractiveNotebookFile } from './fileTypeUtils';
 import PlainTextRenderer from './PlainTextRenderer';
 import CodeRenderer from './CodeRenderer';
 import MarkdownRenderer from './MarkdownRenderer';
+import CsvRenderer from './CsvRenderer';
+import GeoTiffRenderer from './GeoTiffRenderer';
+import ShapefileRenderer from './ShapefileRenderer';
+import GeoPackageRenderer from './GeoPackageRenderer';
 import ImageRenderer from './ImageRenderer';
 import PdfRenderer from './PdfRenderer';
 import NotebookRenderer from './NotebookRenderer';
+import InteractiveNotebookRenderer from './InteractiveNotebookRenderer';
 import type { PathType } from '../../../shared/types';
 
 interface Props {
@@ -56,6 +61,22 @@ export default function FileContentRenderer({ content, filePath, pathType, error
     return <MarkdownRenderer content={content} />;
   }
 
+  if (fileType === 'csv') {
+    return <CsvRenderer content={content} filePath={filePath} />;
+  }
+
+  if (fileType === 'geotiff') {
+    return <GeoTiffRenderer filePath={filePath} />;
+  }
+
+  if (fileType === 'shapefile') {
+    return <ShapefileRenderer filePath={filePath} />;
+  }
+
+  if (fileType === 'geopackage') {
+    return <GeoPackageRenderer filePath={filePath} />;
+  }
+
   if (fileType === 'code') {
     const language = detectLanguage(filePath);
     return <CodeRenderer content={content} language={language} />;
@@ -70,7 +91,19 @@ export default function FileContentRenderer({ content, filePath, pathType, error
   }
 
   if (fileType === 'notebook') {
-    return <NotebookRenderer content={content} />;
+    if (isInteractiveNotebookFile(filePath)) {
+      return <InteractiveNotebookRenderer filePath={filePath} pathType={pathType} content={content} />;
+    }
+    return (
+      <div className="flex flex-col h-full">
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/30 text-xs text-amber-300 font-sans">
+          Non-standard notebook extension detected. Rendering statically; interactive run support currently expects `.ipynb`.
+        </div>
+        <div className="flex-1 min-h-0">
+          <NotebookRenderer content={content} />
+        </div>
+      </div>
+    );
   }
 
   return <PlainTextRenderer content={content} />;

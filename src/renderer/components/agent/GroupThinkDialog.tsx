@@ -49,32 +49,30 @@ export default function GroupThinkDialog({ workspaceId, agents, preSelectedAgent
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-surface-2 border border-gray-700 rounded-xl p-6 w-[520px] max-h-[90vh] overflow-y-auto"
+        className="panel-shell w-[480px] max-h-[90vh] overflow-y-auto p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold text-white mb-4">Start Group Think</h2>
+        <h2 className="text-[13px] font-semibold mb-3">Start Group Think</h2>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Topic */}
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Topic / Question</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Topic / Question</label>
             <textarea
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="What should the agents deliberate on?"
-              className="w-full bg-surface-1 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none h-24 focus:outline-none focus:border-purple-500"
+              className="ui-textarea text-[13px] resize-none h-24"
               autoFocus
             />
           </div>
 
-          {/* Agent Selection */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">
-              Enroll Agents <span className="text-gray-500">({selectedIds.size} selected, min 2)</span>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">
+              Enroll Agents <span className="text-gray-600">({selectedIds.size} selected, min 2)</span>
             </label>
-            <div className="space-y-1 max-h-48 overflow-y-auto">
+            <div className="space-y-0.5 max-h-48 overflow-y-auto">
               {eligibleAgents.length === 0 ? (
-                <p className="text-gray-500 text-sm py-2">No active agents in this workspace.</p>
+                <p className="text-gray-500 text-[13px] py-2">No active agents in this workspace.</p>
               ) : (
                 eligibleAgents.map((agent) => {
                   const meta = PROVIDER_META[agent.provider];
@@ -84,23 +82,23 @@ export default function GroupThinkDialog({ workspaceId, agents, preSelectedAgent
                       key={agent.id}
                       type="button"
                       onClick={() => toggleAgent(agent.id)}
-                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors border ${
                         selected
-                          ? 'bg-purple-500/20 border border-purple-500/50 text-white'
-                          : 'bg-surface-1 border border-gray-700 text-gray-300 hover:border-gray-500'
+                          ? 'bg-accent-purple/10 border-accent-purple/30 text-gray-200'
+                          : 'border-transparent text-gray-400 hover:bg-white/[0.04]'
                       }`}
                     >
                       <span
-                        className={`w-2 h-2 rounded-full ${selected ? 'bg-purple-400' : 'bg-gray-600'}`}
+                        className={`w-2 h-2 rounded-full ${selected ? 'bg-accent-purple' : 'bg-gray-600'}`}
                       />
                       <span className="flex-1 truncate">{agent.title}</span>
                       <span
-                        className="text-xs px-1.5 py-0.5 rounded"
-                        style={{ backgroundColor: meta.color + '33', color: meta.color }}
+                        className="text-[11px] px-1.5 py-0.5"
+                        style={{ backgroundColor: meta.color + '22', color: meta.color }}
                       >
                         {meta.label}
                       </span>
-                      <span className="text-xs text-gray-500">#{agent.id.slice(0, 6)}</span>
+                      <span className="text-[11px] text-gray-600 font-mono">#{agent.id.slice(0, 6)}</span>
                     </button>
                   );
                 })
@@ -108,9 +106,8 @@ export default function GroupThinkDialog({ workspaceId, agents, preSelectedAgent
             </div>
           </div>
 
-          {/* Max Rounds */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Max Rounds</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Max Rounds</label>
             <div className="flex items-center gap-3">
               <input
                 type="range"
@@ -120,23 +117,22 @@ export default function GroupThinkDialog({ workspaceId, agents, preSelectedAgent
                 onChange={(e) => setMaxRounds(parseInt(e.target.value, 10))}
                 className="flex-1 accent-purple-500"
               />
-              <span className="text-white text-sm font-mono w-6 text-center">{maxRounds}</span>
+              <span className="text-gray-300 text-[13px] font-mono w-6 text-center">{maxRounds}</span>
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+              className="ui-btn ui-btn-ghost px-3 py-1.5 text-[13px]"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!topic.trim() || selectedIds.size < 2 || starting}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors"
+              className="ui-btn ui-btn-primary px-3 py-1.5 text-[13px]"
             >
               {starting ? 'Starting...' : 'Start Group Think'}
             </button>

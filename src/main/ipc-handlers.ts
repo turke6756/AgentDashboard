@@ -14,7 +14,9 @@ import { isWslAvailable, isTmuxAvailable, isClaudeAvailableInWsl } from './wsl-b
 import { execFileSync } from 'child_process';
 import { detectPathType } from './path-utils';
 import { readFileContents, listDirectoryEntries } from './file-reader';
+import { subscribe as subscribeFsWatch } from './fs-watcher';
 import { scanPersonas, scaffoldPersona } from './persona-scanner';
+import { ensureJupyterServer, listKernelspecs } from './jupyter-server';
 
 export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: BrowserWindow): void {
   // Workspace handlers
@@ -44,6 +46,18 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:workspace-heat', () => getWorkspaceAgentSummary());
   ipcMain.handle('agent:get-supervisor', (_e, workspaceId) => supervisor.getSupervisorAgent(workspaceId));
   ipcMain.handle('agent:get-context-stats', (_e, agentId) => supervisor.getContextStats(agentId));
+
+  // Chat pane (session-log-reader)
+  ipcMain.handle('agent:get-chat-events', (_e, agentId, sinceUuid) =>
+    supervisor.getSessionLogReader().getCachedEvents(agentId, sinceUuid));
+  ipcMain.handle('agent:chat-subscribe', (_e, agentId) => {
+    supervisor.getSessionLogReader().addChatSubscriber(agentId);
+  });
+  ipcMain.handle('agent:chat-unsubscribe', (_e, agentId) => {
+    supervisor.getSessionLogReader().removeChatSubscriber(agentId);
+  });
+  ipcMain.handle('agent:chat-tool-result-full', (_e, agentId, toolUseId) =>
+    supervisor.getSessionLogReader().getFullToolResult(agentId, toolUseId));
   ipcMain.handle('agent:update-supervised', (_e, id, supervised) => {
     updateAgentSupervised(id, supervised);
     return getAgent(id);
@@ -217,6 +231,15 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
     return { wslAvailable, tmuxAvailable, claudeWindowsAvailable, claudeWslAvailable };
   });
 
+  // Notebook (Jupyter) handlers
+  ipcMain.handle('notebook:ensure-server', async () => {
+    const info = await ensureJupyterServer();
+    return info;
+  });
+  ipcMain.handle('notebook:list-kernelspecs', async () => {
+    return await listKernelspecs();
+  });
+
   // File viewer handlers
   ipcMain.handle('files:read', (_e, filePath, pathType) => {
     return readFileContents(filePath, pathType || detectPathType(filePath));
@@ -224,6 +247,28 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
 
   ipcMain.handle('files:list-directory', (_e, dirPath, pathType) => {
     return listDirectoryEntries(dirPath, pathType || detectPathType(dirPath));
+  });
+
+  // Live file watcher — one entry per subscription id, keyed across renderers.
+  const activeFileWatches = new Map<string, () => void>();
+  ipcMain.handle('files:watch-start', (_e, id: string, dirPath: string, pathType) => {
+    if (activeFileWatches.has(id)) return;
+    const resolved = pathType || detectPathType(dirPath);
+    const unsub = subscribeFsWatch(dirPath, resolved, (event) => {
+      if (mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('files:watch-event', { id, event });
+    });
+    activeFileWatches.set(id, unsub);
+  });
+  ipcMain.handle('files:watch-stop', (_e, id: string) => {
+    const unsub = activeFileWatches.get(id);
+    if (unsub) { unsub(); activeFileWatches.delete(id); }
+  });
+  mainWindow.on('closed', () => {
+    for (const unsub of activeFileWatches.values()) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    activeFileWatches.clear();
   });
 
   // File open handler
@@ -254,6 +299,13 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   supervisor.on('contextStatsChanged', (stats) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('agent:context-stats-changed', stats);
+    }
+  });
+
+  // Forward chat event batches to renderer
+  supervisor.on('chatEvents', (batch) => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('agent:chat-events', batch);
     }
   });
 

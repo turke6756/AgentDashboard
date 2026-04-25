@@ -8,7 +8,7 @@ import DirectoryTreeNode from '../fileviewer/DirectoryTreeNode';
 import type { DirectoryEntry, PathType } from '../../../shared/types';
 import logoImg from '../../assets/logo.png';
 
-function InlineWorkspaceTree({ rootPath, pathType }: { rootPath: string; pathType: PathType }) {
+function InlineWorkspaceTree({ rootPath, pathType, workspaceId }: { rootPath: string; pathType: PathType; workspaceId: string }) {
   const [rootEntries, setRootEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const cache = useRef(new Map<string, DirectoryEntry[]>());
@@ -41,8 +41,8 @@ function InlineWorkspaceTree({ rootPath, pathType }: { rootPath: string; pathTyp
   }, [pathType]);
 
   const handleFileSelect = useCallback((filePath: string) => {
-    openTab(filePath, rootPath, pathType);
-  }, [openTab, rootPath, pathType]);
+    openTab(filePath, rootPath, pathType, undefined, workspaceId);
+  }, [openTab, rootPath, pathType, workspaceId]);
 
   return (
     <div className={`pl-3 py-1 shadow-inner ${isLight ? 'bg-black/5' : 'bg-black/40'}`}>
@@ -69,26 +69,26 @@ function InlineWorkspaceTree({ rootPath, pathType }: { rootPath: string; pathTyp
 }
 
 function HeatDot({ activeCount, workingCount }: { activeCount: number; workingCount: number }) {
-  let colorClass = 'bg-gray-800';
+  let colorClass = 'bg-gray-700';
   let pulse = false;
 
   if (activeCount === 0) {
-    colorClass = 'bg-gray-800 border border-gray-700';
+    colorClass = 'bg-gray-700';
   } else if (workingCount === 0) {
-    colorClass = 'bg-accent-blue shadow-[0_0_8px_rgba(0,243,255,0.6)]';
+    colorClass = 'bg-accent-blue';
   } else if (workingCount === 1) {
-    colorClass = 'bg-accent-yellow shadow-[0_0_8px_rgba(252,238,10,0.6)]';
+    colorClass = 'bg-accent-yellow';
   } else if (workingCount === 2) {
-    colorClass = 'bg-accent-orange shadow-[0_0_8px_rgba(255,170,0,0.6)]';
+    colorClass = 'bg-accent-orange';
     pulse = true;
   } else {
-    colorClass = 'bg-accent-red shadow-[0_0_10px_rgba(255,0,85,0.8)]';
+    colorClass = 'bg-accent-red';
     pulse = true;
   }
 
   return (
     <span
-      className={`inline-block w-2 h-2 rounded-none shrink-0 ${colorClass} ${pulse ? 'animate-pulse-fast' : ''}`}
+      className={`inline-block w-2 h-2 rounded-full shrink-0 ${colorClass} ${pulse ? 'animate-pulse-fast' : ''}`}
     />
   );
 }
@@ -198,11 +198,11 @@ export default function Sidebar({ width }: SidebarProps) {
       style={{ width }}
     >
       {/* Header */}
-      <div className="panel-header p-4">
+      <div className="panel-header p-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src={logoImg} alt="Logo" className="h-16 object-contain" />
-            <span className="text-[15px] font-sans font-light tracking-wide dark:text-gray-300 text-gray-700">Agent Dashboard</span>
+          <div className="flex items-center gap-2">
+            <img src={logoImg} alt="Logo" className="h-10 object-contain" />
+            <span className="text-[13px] font-medium dark:text-gray-300 text-gray-700">Agent Dashboard</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -233,8 +233,8 @@ export default function Sidebar({ width }: SidebarProps) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="flex items-center justify-between px-2 py-2 mb-3 border-b border-white/8 light:border-black/10">
-          <span className="text-[13px] font-sans font-medium text-accent-blue   ">
+        <div className="flex items-center justify-between px-2 py-2 mb-1 border-b border-surface-3">
+          <span className="ui-section-header">
             Workspaces
           </span>
           <button
@@ -258,42 +258,39 @@ export default function Sidebar({ width }: SidebarProps) {
                   onClick={() => selectWorkspace(ws.id)}
                   onDoubleClick={(e) => toggleWorkspace(ws.id, e)}
                   onContextMenu={(e) => handleContextMenu(e, ws.id)}
-                  className={`w-full text-left px-3 py-3 relative group transition-all duration-200 border rounded-xl flex flex-col ${
+                  className={`w-full text-left px-3 py-2 group transition-colors flex flex-col border-l-2 ${
                     isSelected
-                      ? 'ui-card border-accent-blue/70 dark:text-gray-50 text-gray-900 ring-1 ring-accent-blue/30 dark:bg-accent-blue/10 dark:shadow-[inset_10px_0_20px_-10px_rgba(0,122,204,0.25),0_0_12px_rgba(0,122,204,0.15)] light:bg-[#dbeafe] light:ring-accent-blue/40'
-                      : 'border-white/8 bg-white/[0.02] hover:border-accent-blue/30 hover:bg-surface-2 dark:text-gray-400 text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                      ? 'border-l-accent-blue-bright tree-row-selected'
+                      : 'border-l-transparent hover:bg-white/[0.04]'
                   }`}
+                  style={!isSelected ? { color: 'var(--color-fg-primary)' } : undefined}
                 >
-                  <div className="flex items-center gap-1 w-full mb-1">
-                    <div 
-                      className="p-1 shrink-0 cursor-pointer text-gray-300 hover:text-gray-300 transition-colors"
+                  <div className="flex items-center gap-1 w-full mb-0.5">
+                    <div
+                      className="p-0.5 shrink-0 cursor-pointer transition-colors"
+                      style={{ color: isSelected ? 'var(--color-fg-bright)' : 'var(--color-fg-secondary)' }}
                       onClick={(e) => toggleWorkspace(ws.id, e)}
                     >
                       {isExpanded ? <Icons.ChevronDown className="w-3.5 h-3.5" /> : <Icons.ChevronRight className="w-3.5 h-3.5" />}
                     </div>
-                    <span className={`flex-1 font-sans text-[13px] font-medium truncate ${isSelected ? 'text-accent-blue' : ''}`}>
+                    <span className="flex-1 text-[13px] font-medium truncate">
                       {ws.title}
                     </span>
                     {heat && <HeatDot activeCount={heat.activeCount} workingCount={heat.workingCount} />}
                   </div>
 
-                  <div className="flex items-center text-[13px] font-sans text-gray-300 pl-6">
-                    <span className={`mr-2  text-[13px] ${ws.pathType === 'wsl' ? 'text-accent-orange' : 'text-blue-400'}`}>
+                  <div
+                    className="flex items-center text-[11px] pl-5"
+                    style={{ color: isSelected ? 'rgba(255,255,255,0.75)' : 'var(--color-fg-secondary)' }}
+                  >
+                    <span className={`mr-2 ${ws.pathType === 'wsl' ? 'text-accent-orange' : 'text-accent-blue-bright'}`}>
                       {ws.pathType}
                     </span>
-                    <span className="truncate  max-w-[120px]">{ws.path}</span>
+                    <span className="truncate max-w-[120px]">{ws.path}</span>
                   </div>
-
-                  {/* Decoration corners for active item */}
-                  {isSelected && (
-                    <>
-                      <div className="absolute top-0 right-0 w-1 h-1 border-t border-r border-accent-blue" />
-                      <div className="absolute bottom-0 right-0 w-1 h-1 border-b border-r border-accent-blue" />
-                    </>
-                  )}
                 </button>
                 {isExpanded && (
-                  <InlineWorkspaceTree rootPath={ws.path} pathType={ws.pathType} />
+                  <InlineWorkspaceTree rootPath={ws.path} pathType={ws.pathType} workspaceId={ws.id} />
                 )}
               </div>
             );
@@ -324,15 +321,15 @@ export default function Sidebar({ width }: SidebarProps) {
       {contextMenu && (
         <div
           ref={menuRef}
-          className="panel-shell fixed z-50 min-w-[180px] rounded-xl"
+          className="ui-menu fixed z-50"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <div className="panel-header px-3 py-2 text-[13px] text-accent-red font-sans font-medium rounded-t-xl">
+          <div className="ui-menu-header">
             Workspace Options
           </div>
           {confirmDelete === contextMenu.wsId ? (
             <div className="px-3 py-2">
-              <p className="text-[13px] text-accent-red font-sans mb-2">Confirm delete?</p>
+              <p className="text-[13px] text-accent-red mb-2">Confirm delete?</p>
               <div className="flex gap-2">
                 <button
                   onClick={() => handleDelete(contextMenu.wsId)}
@@ -355,13 +352,14 @@ export default function Sidebar({ width }: SidebarProps) {
                   window.api.workspaces.openInVSCode(contextMenu.wsId);
                   setContextMenu(null);
                 }}
-                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-blue/10 hover:text-accent-blue transition-colors rounded-b-none"
+                className="ui-menu-item"
               >
                 Open VS Code
               </button>
+              <div className="ui-menu-divider" />
               <button
                 onClick={() => setConfirmDelete(contextMenu.wsId)}
-                className="w-full text-left px-3 py-2 text-[13px] font-sans hover:bg-accent-red/10 hover:text-accent-red transition-colors"
+                className="ui-menu-item text-accent-red"
               >
                 Delete Workspace
               </button>
@@ -379,7 +377,7 @@ export default function Sidebar({ width }: SidebarProps) {
               <span className={health.wslAvailable ? 'text-accent-green' : 'text-gray-700'}>WSL</span>
               <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>Tmux</span>
             </div>
-            <div className="animate-pulse text-accent-blue">Connected</div>
+            <div className="text-accent-blue">Connected</div>
           </>
         ) : (
           <span className="text-accent-red animate-pulse">Checking...</span>

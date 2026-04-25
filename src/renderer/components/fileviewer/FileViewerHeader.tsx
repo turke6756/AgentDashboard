@@ -1,7 +1,8 @@
 import React from 'react';
 import type { PathType } from '../../../shared/types';
-import { detectFileType, detectLanguage, formatFileSize, getFileIconName } from './fileTypeUtils';
+import { detectFileType, detectLanguage, formatFileSize } from './fileTypeUtils';
 import * as Icons from 'lucide-react';
+import FileIcon from './FileIcon';
 
 interface Props {
   filePath: string;
@@ -31,11 +32,10 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
     return { label: seg, path };
   });
 
-  const fileIconName = getFileIconName(filePath, false);
-  const FileIcon = (Icons as any)[fileIconName] || Icons.File;
+  const fileName = segments[segments.length - 1] ?? '';
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 border-b dark:border-white/10 light:border-black/10 bg-surface-1/40 backdrop-blur-md shrink-0">
+    <div className="flex items-center gap-3 px-4 py-2 border-b border-surface-3 bg-surface-1 shrink-0">
       {/* Breadcrumb */}
       <div className="flex items-center gap-0.5 min-w-0 overflow-hidden flex-1">
         {breadcrumbs.map((crumb, i) => {
@@ -47,12 +47,12 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
               <div className="flex items-center gap-1.5 min-w-0">
                 {isLast ? (
                   <>
-                    <FileIcon className="w-3.5 h-3.5 text-accent-blue shrink-0" />
+                    <FileIcon name={fileName} className="w-3.5 h-3.5 shrink-0" />
                     <span className="text-gray-50 text-[13px] font-sans font-medium truncate">{crumb.label}</span>
                   </>
                 ) : (
                   <>
-                    {isFirst ? <Icons.Folder className="w-3 h-3 text-gray-300 shrink-0" /> : null}
+                    {isFirst ? <FileIcon name={crumb.label} isDirectory className="w-3.5 h-3.5 shrink-0" /> : null}
                     <button
                       onClick={() => onNavigate(crumb.path)}
                       className="text-gray-300 hover:text-accent-blue text-[13px] font-sans truncate transition-colors shrink-0 max-w-[120px]"
@@ -69,11 +69,9 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
 
       {/* Labels */}
       <div className="flex items-center gap-3 shrink-0">
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-accent-blue/5 border border-accent-blue/20 rounded-sm">
-          <span className="text-[13px] font-sans   text-accent-blue font-bold">
-            {language}
-          </span>
-        </div>
+        <span className="text-[11px] text-accent-blue px-1.5 py-0.5 bg-accent-blue/10">
+          {language}
+        </span>
         
         {fileSize > 0 && (
           <span className="text-[13px] font-sans text-gray-300 flex items-center gap-1">
@@ -84,7 +82,7 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
 
         <button
           onClick={handleOpenInVSCode}
-          className="flex items-center gap-1.5 px-3 py-1 text-[13px] font-sans font-bold   text-accent-blue border border-accent-blue/30 hover:bg-accent-blue/10 transition-colors rounded-sm"
+          className="ui-btn text-[13px] text-accent-blue"
         >
           <Icons.ExternalLink className="w-3 h-3" />
           VS Code

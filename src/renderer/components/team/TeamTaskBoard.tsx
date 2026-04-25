@@ -45,7 +45,7 @@ export default function TeamTaskBoard({ tasks }: Props) {
               {columnTasks.map((task) => (
                 <div
                   key={task.id}
-                  className="bg-surface-1 border border-gray-700 rounded-lg px-3 py-2"
+                  className="bg-surface-1 border border-surface-3 px-3 py-2"
                 >
                   <div className="text-sm text-white font-medium">{task.title}</div>
                   {task.description && (

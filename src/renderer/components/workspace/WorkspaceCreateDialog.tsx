@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import type { PathType } from '../../../shared/types';
 
-/** Convert \\wsl.localhost\Ubuntu\home\... or \\wsl$\Ubuntu\home\... to /home/... */
 function uncToLinuxPath(p: string): string | null {
   const match = p.match(/^\\\\wsl[\.\$][^\\]*\\[^\\]+(\\.*)/i);
   if (!match) return null;
@@ -20,7 +19,6 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
   const handlePickDir = async () => {
     const dir = await window.api.system.pickDirectory(pathType === 'wsl');
     if (dir) {
-      // Auto-detect and convert WSL UNC paths
       const linuxPath = uncToLinuxPath(dir);
       if (linuxPath) {
         setDirPath(linuxPath);
@@ -32,7 +30,6 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
         setDirPath(dir);
         setPathType('windows');
       }
-      // Auto-fill title from directory name
       if (!title) {
         const name = dir.split(/[/\\]/).filter(Boolean).pop() || '';
         setTitle(name);
@@ -44,7 +41,6 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
     e.preventDefault();
     if (!title.trim() || !dirPath.trim()) return;
 
-    // Final conversion: ensure UNC paths are converted before saving
     let finalPath = dirPath.trim();
     const linuxPath = uncToLinuxPath(finalPath);
     const finalPathType = linuxPath ? 'wsl' as PathType : pathType;
@@ -64,13 +60,13 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
   return createPortal(
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-surface-2 border border-gray-700 rounded-xl p-6 w-[440px]"
+        className="panel-shell w-[440px] p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-lg font-bold mb-4">New Workspace</h3>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <h3 className="text-[13px] font-semibold mb-3">New Workspace</h3>
+        <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Directory</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Directory</label>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -78,7 +74,6 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
                 onChange={(e) => {
                   const val = e.target.value;
                   setDirPath(val);
-                  // Auto-switch path type based on what's typed
                   if (val.startsWith('/') || /^\\\\wsl[\.\$]/i.test(val)) {
                     setPathType('wsl');
                   } else if (/^[A-Za-z]:/.test(val)) {
@@ -86,42 +81,41 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
                   }
                 }}
                 onBlur={() => {
-                  // Convert UNC WSL paths to Linux paths on blur
                   const linuxPath = uncToLinuxPath(dirPath);
                   if (linuxPath) {
                     setDirPath(linuxPath);
                     setPathType('wsl');
                   }
                 }}
-                className="flex-1 bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm font-sans focus:outline-none focus:border-accent-blue"
+                className="ui-input flex-1 text-[13px]"
                 placeholder={pathType === 'wsl' ? '/home/user/project' : 'C:\\Projects\\myapp'}
               />
               <button
                 type="button"
                 onClick={handlePickDir}
-                className="px-3 py-2 text-sm rounded-md bg-surface-3 hover:bg-gray-600"
+                className="ui-btn text-[13px]"
                 title={pathType === 'wsl' ? 'Browse (opens at \\\\wsl.localhost)' : 'Browse for directory'}
               >
                 Browse
               </button>
             </div>
             {pathType === 'wsl' && (
-              <p className="text-[13px] text-gray-300 mt-1 font-sans">
+              <p className="text-[11px] text-gray-500 mt-1">
                 Paste a UNC path (\\wsl.localhost\...) or type a Linux path (/home/...)
               </p>
             )}
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Path Type</label>
-            <div className="flex gap-2">
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Path Type</label>
+            <div className="flex gap-1">
               <button
                 type="button"
                 onClick={() => setPathType('windows')}
-                className={`px-3 py-1.5 text-[13px] rounded-md font-medium transition-colors ${
+                className={`ui-btn flex-1 text-[13px] ${
                   pathType === 'windows'
-                    ? 'bg-blue-500/30 text-blue-300 border border-blue-500/50'
-                    : 'bg-surface-0 text-gray-300 border border-gray-700'
+                    ? 'bg-accent-blue/15 text-accent-blue border-accent-blue/40'
+                    : ''
                 }`}
               >
                 Windows
@@ -129,10 +123,10 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
               <button
                 type="button"
                 onClick={() => setPathType('wsl')}
-                className={`px-3 py-1.5 text-[13px] rounded-md font-medium transition-colors ${
+                className={`ui-btn flex-1 text-[13px] ${
                   pathType === 'wsl'
-                    ? 'bg-orange-500/30 text-orange-300 border border-orange-500/50'
-                    : 'bg-surface-0 text-gray-300 border border-gray-700'
+                    ? 'bg-accent-orange/15 text-accent-orange border-accent-orange/40'
+                    : ''
                 }`}
               >
                 WSL
@@ -141,39 +135,39 @@ export default function WorkspaceCreateDialog({ onClose }: { onClose: () => void
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Title *</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Title *</label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent-blue"
+              className="ui-input text-[13px]"
               placeholder="My Project"
             />
           </div>
 
           <div>
-            <label className="block text-[13px] text-gray-400 mb-1">Description</label>
+            <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Description</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent-blue"
+              className="ui-input text-[13px]"
               placeholder="Optional description"
             />
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm bg-surface-3 hover:bg-gray-600 rounded-md"
+              className="ui-btn ui-btn-ghost px-3 py-1.5 text-[13px]"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!title.trim() || !dirPath.trim()}
-              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue/80 text-white rounded-md font-medium disabled:"
+              className="ui-btn ui-btn-primary px-3 py-1.5 text-[13px]"
             >
               Create
             </button>

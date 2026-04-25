@@ -17,6 +17,7 @@ import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
 import { StatusMonitor } from './status-monitor';
 import { ContextStatsMonitor, JsonlFileActivity } from './context-stats-monitor';
+import { SessionLogReader } from './session-log-reader';
 import { FileActivityTracker } from './file-activity-tracker';
 import {
   createAgent, getAgent, getActiveAgents, getAllAgents, getSupervisorAgent, getWorkspace, updateAgentStatus, updateAgentPid,
@@ -133,6 +134,7 @@ export class AgentSupervisor extends EventEmitter {
   private fileTrackers = new Map<string, FileActivityTracker>();
   private monitor: StatusMonitor;
   private contextStatsMonitor: ContextStatsMonitor;
+  private sessionLogReader: SessionLogReader;
   private logsDir: string;
 
   // Event bridge state
@@ -166,7 +168,9 @@ export class AgentSupervisor extends EventEmitter {
       this.handleSupervisorEvent(data);
     });
 
-    this.contextStatsMonitor = new ContextStatsMonitor(() => {
+    // Typed session-event reader — single source of truth for JSONL tailing.
+    // ContextStatsMonitor consumes its 'usage' + 'tool-use' events.
+    this.sessionLogReader = new SessionLogReader(() => {
       const agents = getActiveAgents();
       return agents
         .filter(a => a.resumeSessionId)
@@ -176,6 +180,11 @@ export class AgentSupervisor extends EventEmitter {
           workingDirectory: a.workingDirectory,
         }));
     });
+    this.sessionLogReader.on('chat-events', (batch) => {
+      this.emit('chatEvents', batch);
+    });
+
+    this.contextStatsMonitor = new ContextStatsMonitor(this.sessionLogReader);
 
     this.contextStatsMonitor.on('statsChanged', (stats: ContextStats) => {
       this.emit('contextStatsChanged', stats);
@@ -202,17 +211,23 @@ export class AgentSupervisor extends EventEmitter {
   start(): void {
     this.monitor.start();
     this.contextStatsMonitor.start();
+    this.sessionLogReader.start();
     this.teamDeliveryEngine.start();
   }
 
   stop(): void {
     this.monitor.stop();
     this.contextStatsMonitor.stop();
+    this.sessionLogReader.stop();
     this.teamDeliveryEngine.stop();
   }
 
   getContextStats(agentId: string): ContextStats | null {
     return this.contextStatsMonitor.getStats(agentId);
+  }
+
+  getSessionLogReader(): SessionLogReader {
+    return this.sessionLogReader;
   }
 
   getSupervisorAgent(workspaceId: string): Agent | null {
@@ -513,6 +528,7 @@ export class AgentSupervisor extends EventEmitter {
     if (provider === 'claude') {
       sessionId = uuidv4();
       updateAgentResumeSessionId(agent.id, sessionId);
+      this.sessionLogReader.invalidatePath(agent.id);
     }
 
     addEvent(agent.id, 'launched');
@@ -646,15 +662,23 @@ export class AgentSupervisor extends EventEmitter {
         const restOfPath = wslScriptPath.substring(2); // skip "C:"
         const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
 
-        // Get the Windows host IP that WSL can reach (from /etc/resolv.conf nameserver)
+        // Get the Windows host IP that WSL routes to. We want the DEFAULT GATEWAY
+        // ("ip route show default" → "default via X.X.X.X dev eth0"), NOT the DNS
+        // nameserver in /etc/resolv.conf — those can differ when the user has
+        // custom DNS (e.g. nameserver=10.255.255.254 but actual gateway=172.22.208.1).
+        // In WSL "mirrored" networking mode there is no separate gateway and 127.0.0.1
+        // works directly — the fallback below covers that case.
+        //
+        // We invoke `ip route show default` rather than piping through awk because
+        // wsl.exe pre-processes args and mangles `$2` in `awk '{print $2}'`, which
+        // historically caused this code to silently fall back to 127.0.0.1.
         let windowsHostIp = '127.0.0.1';
         try {
-          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+          const route = execFileSync('wsl.exe', ['ip', 'route', 'show', 'default'], {
             encoding: 'utf-8', timeout: 5000,
-          }).trim();
-          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
-            windowsHostIp = resolv;
-          }
+          });
+          const match = route.match(/default\s+via\s+(\d+\.\d+\.\d+\.\d+)/);
+          if (match) windowsHostIp = match[1];
         } catch { /* fall back to 127.0.0.1 */ }
         console.log(`[supervisor] WSL → Windows host IP: ${windowsHostIp}`);
 
@@ -702,14 +726,14 @@ export class AgentSupervisor extends EventEmitter {
         const restOfPath = wslScriptPath.substring(2);
         const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
 
+        // See ensureMcpConfig for why we read the default gateway, not resolv.conf.
         let windowsHostIp = '127.0.0.1';
         try {
-          const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+          const route = execFileSync('wsl.exe', ['ip', 'route', 'show', 'default'], {
             encoding: 'utf-8', timeout: 5000,
-          }).trim();
-          if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
-            windowsHostIp = resolv;
-          }
+          });
+          const match = route.match(/default\s+via\s+(\d+\.\d+\.\d+\.\d+)/);
+          if (match) windowsHostIp = match[1];
         } catch { /* fall back to 127.0.0.1 */ }
 
         // Read existing .mcp.json to merge
@@ -779,14 +803,14 @@ export class AgentSupervisor extends EventEmitter {
       const restOfPath = wslScriptPath.substring(2);
       const linuxScriptPath = `/mnt/${driveLetter}${restOfPath}`;
 
+      // See ensureMcpConfig for why we read the default gateway, not resolv.conf.
       let windowsHostIp = '127.0.0.1';
       try {
-        const resolv = execFileSync('wsl.exe', ['bash', '-lc', "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"], {
+        const route = execFileSync('wsl.exe', ['ip', 'route', 'show', 'default'], {
           encoding: 'utf-8', timeout: 5000,
-        }).trim();
-        if (resolv && /^\d+\.\d+\.\d+\.\d+$/.test(resolv)) {
-          windowsHostIp = resolv;
-        }
+        });
+        const match = route.match(/default\s+via\s+(\d+\.\d+\.\d+\.\d+)/);
+        if (match) windowsHostIp = match[1];
       } catch { /* fall back */ }
 
       return JSON.stringify({
@@ -1096,6 +1120,7 @@ export class AgentSupervisor extends EventEmitter {
     // The old session may no longer exist (e.g. app was restarted), causing --resume to fail.
     if (agent.resumeSessionId) {
       updateAgentResumeSessionId(agent.id, '');
+      this.sessionLogReader.invalidatePath(agent.id);
       console.log(`[auto-restart] Cleared stale session ID for ${agent.title} — will use --continue`);
     }
 
@@ -1151,6 +1176,7 @@ export class AgentSupervisor extends EventEmitter {
     });
 
     updateAgentResumeSessionId(newAgent.id, newSessionId);
+    this.sessionLogReader.invalidatePath(newAgent.id);
     addEvent(newAgent.id, 'forked', JSON.stringify({ sourceAgentId, sourceSessionId: source.resumeSessionId }));
 
     if (pathType === 'windows') {
@@ -1560,6 +1586,24 @@ export class AgentSupervisor extends EventEmitter {
         console.log(`Reconnecting agent: ${agent.title} (${agent.id}) sessionId=${agentForReconnect?.resumeSessionId || 'NONE'}`);
         try {
           const pathType = detectPathType(agent.workingDirectory);
+
+          // Refresh .mcp.json for supervisors and persona-backed agents.
+          // launchAgent() runs ensureMcpConfig() on first launch, but reconcile
+          // bypasses that path — so the .mcp.json on disk persists from whenever
+          // the agent was originally created. That's how stale script paths
+          // (e.g. release/win-unpacked/...) survive past a switch from packaged
+          // to dev builds, and how new MCP tools fail to surface to existing
+          // supervisors. Rewriting on every reconcile makes this self-healing.
+          if (agent.isSupervisor) {
+            const ws = getWorkspace(agent.workspaceId);
+            if (ws) {
+              this.ensureMcpConfig(ws.path, pathType);
+              if (agent.workingDirectory && agent.workingDirectory !== ws.path) {
+                this.ensureMcpConfig(agent.workingDirectory, pathType);
+              }
+            }
+          }
+
           if (pathType === 'windows') {
             await this.launchWindowsAgent(agent, true);
           } else {
@@ -1589,5 +1633,6 @@ export class AgentSupervisor extends EventEmitter {
     // Now that agents are active, do an immediate context stats poll
     // so data is available before the first interval tick.
     this.contextStatsMonitor.pollNow();
+    this.sessionLogReader.pollNow();
   }
 }

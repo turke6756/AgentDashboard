@@ -1,7 +1,18 @@
-import { execFile } from 'child_process';
+import { execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
+
+export function wslSpawn(command: string): ChildProcess {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  delete env.ELECTRON_RUN_AS_NODE;
+  return spawn('wsl.exe', ['bash', '-lc', command], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+}
 
 export interface WslExecResult {
   stdout: string;
@@ -48,6 +59,14 @@ export async function isClaudeAvailableInWsl(): Promise<boolean> {
   return result.exitCode === 0;
 }
 
+let inotifywaitAvailable: boolean | null = null;
+export async function isInotifywaitAvailable(): Promise<boolean> {
+  if (inotifywaitAvailable !== null) return inotifywaitAvailable;
+  const result = await wslExec('which inotifywait');
+  inotifywaitAvailable = result.exitCode === 0;
+  return inotifywaitAvailable;
+}
+
 export interface TmuxSession {
   name: string;
   attached: boolean;
@@ -78,11 +97,18 @@ export async function tmuxNewSession(name: string, workDir: string, command: str
 }
 
 export async function tmuxSendKeys(name: string, text: string): Promise<void> {
-  // Use -l (literal) flag so tmux doesn't interpret text as key names,
-  // then send Enter separately to ensure it always registers.
+  // Chain literal-text send and Enter into a single wsl.exe invocation so they
+  // either both happen or neither does. Splitting them across two wsl.exe
+  // spawns lets a flaky second spawn drop the Enter silently, leaving the
+  // message typed but unsubmitted in Claude Code's prompt buffer.
   const escaped = text.replace(/'/g, "'\\''");
-  await wslExec(`tmux send-keys -t '${name}' -l '${escaped}'`, 5000);
-  await wslExec(`tmux send-keys -t '${name}' Enter`, 5000);
+  const result = await wslExec(
+    `tmux send-keys -t '${name}' -l '${escaped}' \\; send-keys -t '${name}' Enter`,
+    5000
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`tmux send-keys failed: ${result.stderr || 'unknown error'}`);
+  }
 }
 
 export async function tmuxKillSession(name: string): Promise<void> {

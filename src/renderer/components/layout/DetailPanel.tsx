@@ -3,7 +3,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import StatusBadge from '../agent/StatusBadge';
 import DetailPaneContext from '../detail/DetailPaneContext';
 import DetailPaneProducts from '../detail/DetailPaneProducts';
-import DetailPaneLog from '../detail/DetailPaneLog';
+import ChatPane from '../detail/ChatPane';
 import QueryDialog from '../agent/QueryDialog';
 import CollapseButton from './CollapseButton';
 import type { PathType, ContextStats, GroupThinkSession } from '../../../shared/types';
@@ -12,7 +12,7 @@ import { PROVIDER_META } from '../../../shared/constants';
 const TABS = [
   { label: 'Context', icon: '\u{1F4D6}' },
   { label: 'Outputs', icon: '\u{1F4E6}' },
-  { label: 'Logs', icon: '\u{1F4CB}' },
+  { label: 'Chat', icon: '\u{1F4AC}' },
 ] as const;
 
 function CopyButton({ text }: { text: string }) {
@@ -167,37 +167,28 @@ export default function DetailPanel({ width }: DetailPanelProps) {
       className="panel-shell flex flex-col font-sans relative z-20"
       style={{ width }}
     >
-      {/* Decorative line */}
-      <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-accent-blue/50 via-transparent to-accent-blue/50" />
 
       {/* Agent info header */}
       <div className="panel-header p-4 relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-1 opacity-20 pointer-events-none">
-             <svg width="60" height="60" viewBox="0 0 100 100" fill="none" stroke="currentColor" className="text-accent-blue">
-                 <circle cx="50" cy="50" r="40" strokeWidth="1" strokeDasharray="4 4" />
-                 <path d="M50 10 L50 90 M10 50 L90 50" strokeWidth="1" />
-             </svg>
-        </div>
-
-        <div className="flex items-center justify-between mb-3 relative z-10">
-          <h3 className="font-bold text-lg truncate   text-gray-50 glow-text font-black">{agent.title}</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-[13px] truncate text-gray-100">{agent.title}</h3>
           <div className="flex items-center gap-1">
             <StatusBadge status={agent.status} />
             <CollapseButton collapsed={false} direction="right" onClick={() => togglePanelCollapsed('detailPanelCollapsed')} />
           </div>
         </div>
 
-        <div className="space-y-1 text-[13px] text-gray-400 font-sans   relative z-10">
+        <div className="space-y-1 text-[13px] text-gray-400">
           <div className="flex">
-            <span className="text-accent-blue w-16 shrink-0 ">Directory</span>
+            <span className="text-gray-500 w-16 shrink-0">Directory</span>
             <span className="truncate text-gray-200">{agent.workingDirectory}</span>
           </div>
           <div className="flex">
-            <span className="text-accent-blue w-16 shrink-0 ">Command</span>
+            <span className="text-gray-500 w-16 shrink-0">Command</span>
             <span className="truncate text-gray-200">{agent.command}</span>
           </div>
           <div className="flex">
-             <span className="text-accent-blue w-16 shrink-0 ">Session</span>
+             <span className="text-gray-500 w-16 shrink-0">Session</span>
              <span className="truncate text-gray-200">{agent.tmuxSessionName || 'N/A'}</span>
           </div>
         </div>
@@ -342,28 +333,18 @@ export default function DetailPanel({ width }: DetailPanelProps) {
       </div>
 
       {/* Tab strip */}
-      <div className="flex border- dark:border-white/10 light:border-black/10 bg-surface-0">
+      <div className="flex bg-surface-0 border-b border-surface-3">
         {TABS.map((tab, index) => (
           <button
             key={tab.label}
             onClick={() => setDetailPane(index as 0 | 1 | 2)}
-            className={`flex-1 py-3 text-[13px] font-bold   relative transition-all border-r border-gray-900 ${
-              detailPane === index
-                ? 'text-accent-blue bg-surface-2'
-                : 'text-gray-400 hover:text-gray-400 hover:bg-surface-1'
-            }`}
+            className={`ui-tab flex-1 justify-center ${detailPane === index ? 'ui-tab-active' : ''}`}
           >
-            <div className="flex items-center justify-center gap-1">
-                <span>{tab.label}</span>
-                {tabCounts[index] !== null && tabCounts[index]! > 0 && (
-                <span className={`ml-1 px-1 rounded-sm text-[13px] ${detailPane === index ? 'bg-accent-blue text-black' : 'bg-gray-700 text-gray-300'}`}>
-                    {tabCounts[index]}
-                </span>
-                )}
-            </div>
-
-            {detailPane === index && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue shadow-[0_0_8px_currentColor]" />
+            <span>{tab.label}</span>
+            {tabCounts[index] !== null && tabCounts[index]! > 0 && (
+              <span className={`ml-1 text-[11px] ${detailPane === index ? 'text-accent-blue' : 'text-gray-600'}`}>
+                {tabCounts[index]}
+              </span>
             )}
           </button>
         ))}
@@ -371,10 +352,9 @@ export default function DetailPanel({ width }: DetailPanelProps) {
 
       {/* Active pane */}
       <div className="flex-1 overflow-hidden flex flex-col relative">
-        <div className="absolute inset-0 bg-grid-white/[0.02] pointer-events-none" />
         {detailPane === 0 && <DetailPaneContext agentId={agent.id} pathType={pathType} />}
         {detailPane === 1 && <DetailPaneProducts agentId={agent.id} pathType={pathType} />}
-        {detailPane === 2 && <DetailPaneLog agentId={agent.id} agentStatus={agent.status} />}
+        {detailPane === 2 && <ChatPane agentId={agent.id} agentStatus={agent.status} agentName={agent.title} />}
       </div>
 
       {/* Query dialog */}

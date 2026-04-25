@@ -34,6 +34,15 @@ const api: IpcApi = {
       ipcRenderer.on('agent:context-stats-changed', listener);
       return () => ipcRenderer.removeListener('agent:context-stats-changed', listener);
     },
+    getChatEvents: (agentId, sinceUuid) => ipcRenderer.invoke('agent:get-chat-events', agentId, sinceUuid),
+    chatSubscribe: (agentId) => ipcRenderer.invoke('agent:chat-subscribe', agentId),
+    chatUnsubscribe: (agentId) => ipcRenderer.invoke('agent:chat-unsubscribe', agentId),
+    getFullToolResult: (agentId, toolUseId) => ipcRenderer.invoke('agent:chat-tool-result-full', agentId, toolUseId),
+    onChatEvents: (callback) => {
+      const listener = (_event: any, batch: any) => callback(batch);
+      ipcRenderer.on('agent:chat-events', listener);
+      return () => ipcRenderer.removeListener('agent:chat-events', listener);
+    },
   },
   terminal: {
     attach: (agentId) => ipcRenderer.invoke('terminal:attach', agentId),
@@ -49,6 +58,18 @@ const api: IpcApi = {
   files: {
     readFile: (filePath, pathType) => ipcRenderer.invoke('files:read', filePath, pathType),
     listDirectory: (dirPath, pathType) => ipcRenderer.invoke('files:list-directory', dirPath, pathType),
+    watchDirectory: (dirPath, pathType, callback) => {
+      const id = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const listener = (_event: any, msg: { id: string; event: any }) => {
+        if (msg.id === id) callback(msg.event);
+      };
+      ipcRenderer.on('files:watch-event', listener);
+      ipcRenderer.invoke('files:watch-start', id, dirPath, pathType);
+      return () => {
+        ipcRenderer.removeListener('files:watch-event', listener);
+        ipcRenderer.invoke('files:watch-stop', id);
+      };
+    },
   },
   system: {
     pickDirectory: (startInWsl?: boolean) => ipcRenderer.invoke('system:pick-directory', startInWsl),
@@ -88,6 +109,10 @@ const api: IpcApi = {
   personas: {
     list: (workspacePath, pathType) => ipcRenderer.invoke('persona:list', workspacePath, pathType),
     create: (workspacePath, pathType, name, customClaudeMd?) => ipcRenderer.invoke('persona:create', workspacePath, pathType, name, customClaudeMd),
+  },
+  notebooks: {
+    ensureServer: () => ipcRenderer.invoke('notebook:ensure-server'),
+    listKernelspecs: () => ipcRenderer.invoke('notebook:list-kernelspecs'),
   },
   onAgentStatusChanged: (callback) => {
     const listener = (_event: any, data: any) => callback(data);

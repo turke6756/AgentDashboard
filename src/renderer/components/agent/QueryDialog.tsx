@@ -42,24 +42,27 @@ export default function QueryDialog({ sourceAgent, onClose }: QueryDialogProps) 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
-        className="bg-surface-2 border border-gray-700 rounded-xl w-[480px] max-h-[80vh] flex flex-col shadow-2xl"
+        className="panel-shell w-[480px] max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="font-bold text-sm">Query Agent</h3>
-          <button onClick={onClose} className="text-gray-300 hover:text-gray-300 text-sm">X</button>
+        <div className="panel-header p-3 flex items-center justify-between">
+          <h3 className="text-[13px] font-semibold">Query Agent</h3>
+          <button onClick={onClose} className="ui-btn ui-btn-ghost min-h-0 px-1.5 py-0.5">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+              <path d="M1 1L9 9M9 1L1 9" strokeWidth="2" />
+            </svg>
+          </button>
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-3 flex-1 overflow-y-auto">
-          {/* Target selector */}
+        <div className="p-3 space-y-3 flex-1 overflow-y-auto">
           <div>
-            <label className="text-[13px] text-gray-300 block mb-1">Target agent</label>
+            <label className="text-[11px] text-gray-500 block mb-1 uppercase tracking-wider">Target agent</label>
             <select
               value={targetId}
               onChange={(e) => setTargetId(e.target.value)}
-              className="w-full bg-surface-0 border border-gray-700 rounded text-[13px] p-2 focus:outline-none focus:border-accent-blue"
+              className="ui-input text-[13px]"
             >
               <option value="">Select an agent...</option>
               {eligibleTargets.map((a) => (
@@ -69,18 +72,17 @@ export default function QueryDialog({ sourceAgent, onClose }: QueryDialogProps) 
               ))}
             </select>
             {eligibleTargets.length === 0 && (
-              <p className="text-[13px] text-gray-400 mt-1">No agents with session IDs available</p>
+              <p className="text-[11px] text-gray-500 mt-1">No agents with session IDs available</p>
             )}
           </div>
 
-          {/* Question */}
           <div>
-            <label className="text-[13px] text-gray-300 block mb-1">Question</label>
+            <label className="text-[11px] text-gray-500 block mb-1 uppercase tracking-wider">Question</label>
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="What would you like to ask?"
-              className="w-full bg-surface-0 border border-gray-700 rounded text-[13px] p-2 resize-none h-24 focus:outline-none focus:border-accent-blue"
+              className="ui-textarea text-[13px] resize-none h-24"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
@@ -90,34 +92,26 @@ export default function QueryDialog({ sourceAgent, onClose }: QueryDialogProps) 
             />
           </div>
 
-          {/* Send button */}
           <button
             onClick={handleSend}
             disabled={loading || !targetId || !question.trim()}
-            className="w-full py-2 text-[13px] font-medium bg-accent-blue hover:bg-blue-500 rounded transition-colors text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            className="ui-btn ui-btn-primary w-full py-2 text-[13px]"
           >
             {loading ? 'Querying... this may take up to 60s' : 'Send Query'}
           </button>
 
-          {/* Result */}
           {result && (
-            <div className={`p-3 rounded text-[13px] ${result.isError ? 'bg-red-500/10 border border-red-500/30' : 'bg-surface-0 border border-gray-700'}`}>
+            <div className={`p-3 text-[13px] border ${result.isError ? 'bg-accent-red/5 border-accent-red/30' : 'bg-surface-0 border-surface-3'}`}>
               <div className="flex items-center justify-between mb-2">
-                <span className={`text-[13px] font-medium ${result.isError ? 'text-red-400' : 'text-green-400'}`}>
+                <span className={`text-[11px] font-semibold uppercase tracking-wider ${result.isError ? 'text-accent-red' : 'text-accent-green'}`}>
                   {result.isError ? 'Error' : 'Response'}
                 </span>
                 <div className="flex gap-2">
-                  <button
-                    onClick={handleCopy}
-                    className="text-[13px] text-gray-300 hover:text-gray-300"
-                  >
+                  <button onClick={handleCopy} className="ui-btn ui-btn-ghost min-h-0 px-2 py-0.5 text-[11px]">
                     Copy
                   </button>
                   {!result.isError && (
-                    <button
-                      onClick={handleInject}
-                      className="text-[13px] text-purple-400 hover:text-purple-300"
-                    >
+                    <button onClick={handleInject} className="ui-btn ui-btn-purple min-h-0 px-2 py-0.5 text-[11px]">
                       Inject to terminal
                     </button>
                   )}

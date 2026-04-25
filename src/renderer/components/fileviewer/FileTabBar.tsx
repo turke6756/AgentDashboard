@@ -46,7 +46,7 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
   };
 
   return (
-    <div className="flex items-stretch border- dark:border-white/10 light:border-black/10 bg-surface-0 shrink-0 overflow-hidden">
+    <div className="flex items-stretch tab-bar shrink-0 overflow-hidden">
       <div
         ref={scrollRef}
         className="flex items-stretch overflow-x-auto scrollbar-hide flex-1"
@@ -62,13 +62,9 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
               onMouseDown={(e) => handleMouseDown(e, tab.id)}
               draggable={!!tab.filePath}
               onDragStart={(e) => { if (tab.filePath) fileDragStart(e, tab.filePath); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 cursor-pointer shrink-0 max-w-[180px] border- dark:border-white/10 light:border-black/10/50 transition-colors group ${
-                isActive
-                  ? 'bg-surface-2 border-b-2 border-b-accent-blue text-gray-50'
-                  : 'text-gray-300 hover:bg-surface-1 hover:text-gray-300 border-b-2 border-b-transparent'
-              }`}
+              className={`ui-tab shrink-0 max-w-[180px] group ${isActive ? 'ui-tab-active tab-active' : ''}`}
             >
-              <span className="text-[13px] font-sans truncate select-none">
+              <span className="text-[13px] truncate select-none">
                 {displayLabel}
               </span>
               <button
@@ -76,14 +72,15 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
                   e.stopPropagation();
                   onCloseTab(tab.id);
                 }}
-                className={`text-[13px] leading-none px-0.5 rounded-sm shrink-0 transition-colors ${
-                  isActive
-                    ? 'text-gray-300 hover:text-gray-50 hover:bg-gray-700'
-                    : 'text-gray-700 hover:text-gray-400 hover:bg-gray-800 opacity-0 group-hover:opacity-100'
+                className={`leading-none px-0.5 shrink-0 transition-colors hover:bg-white/10 ${
+                  isActive ? '' : 'opacity-0 group-hover:opacity-100'
                 }`}
+                style={{ color: isActive ? 'var(--color-fg-secondary)' : 'var(--color-fg-muted)' }}
                 title="Close tab"
               >
-                x
+                <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+                  <path d="M1 1L9 9M9 1L1 9" strokeWidth="2" />
+                </svg>
               </button>
             </div>
           );
