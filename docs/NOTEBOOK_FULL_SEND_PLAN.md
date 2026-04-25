@@ -253,6 +253,15 @@ Execute subphases in order. Each is its own commit.
 - [ ] Scrolling a cell offscreen then back does not lose content (Y.Text survives — this is by design).
 - [ ] No memory growth after 50 scroll cycles (Performance monitor).
 
+### Phase 2d handoff (implemented 2026-04-25)
+
+- `NotebookView` now uses `@tanstack/react-virtual` to track which cells are inside the active viewport/overscan range and measures live row heights.
+- New `CellShell` switches code cells between live CM6 (`CodeCell`) and `StaticCodeBlock` based on visibility; markdown/raw cells stay on a lightweight static renderer.
+- Intentional deviation from the original sketch: rows stay mounted even when offscreen. That keeps `OutputRenderer` mounted for every code cell, which satisfies the plan's "do not unmount outputs" requirement and keeps the Phase 3 live-output path stable.
+- The notebook header now reports cell count, code-cell count, and detected kernel language instead of the temporary Phase 1 preview text.
+- `npm run build` passed after the Phase 2d wiring.
+- Manual acceptance at the STOP below is still required for real scroll profiling, offscreen/on-screen remount checks, and memory monitoring.
+
 **Commit:** `notebook full-send phase 2d: virtualization`
 
 ### STOP
