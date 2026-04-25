@@ -158,10 +158,20 @@ This is where we learn whether our understanding of the collaboration room addre
 
 ### Acceptance
 
-- [ ] DevTools console logs every cell's `cell_type` + source preview.
-- [ ] Status text in UI reads "synced" after connection.
-- [ ] No WebSocket errors in DevTools Network tab.
-- [ ] Quitting the app cleanly destroys the provider (no "WebSocket still open" warnings in next launch).
+- [x] DevTools console logs every cell's `cell_type` + source preview.
+- [x] Status text in UI reads "synced" after connection.
+- [x] No WebSocket errors in DevTools Network tab.
+- [x] Quitting the app cleanly destroys the provider (no "WebSocket still open" warnings in next launch).
+
+### Phase 1 handoff (confirmed 2026-04-25)
+
+- User manually confirmed a real notebook opens through the custom renderer and reports `6 cells synced`.
+- The UI shows each synced cell's type and first source preview; `NotebookView` also logs the same cell previews to DevTools with a `[notebook] synced ...` group.
+- `npm run build` passed after the implementation and after the follow-up fix for the empty-cell sync bug.
+- Room discovery differed from the original assumption: this installed `jupyter_server_ydoc`/`jupyter_server_fileid` stack does **not** expose `file_id` on `GET /api/contents/<path>`. The verified shape is `PUT /api/collaboration/session/<path>` with body `{"format":"json","type":"notebook"}`, returning `{ "format": "json", "type": "notebook", "fileId": "<uuid>", "sessionId": "<uuid>" }`. `jupyterCollab.ts` documents and uses that endpoint.
+- `getCollabRoomUrl` accepts the returned `sessionId` because the server validates document sessions on WebSocket open; the active hook passes `sessionId` through the `WebsocketProvider` params.
+- Important implementation fix: `@jupyter/ydoc@3.0.5`'s `YNotebook` constructor ignores an external `{ ydoc }` option. The hook now creates `YNotebook` first and syncs `ynotebook.ydoc` directly; syncing a separate `Y.Doc` produced the observed false-positive state: `"synced"` with `0 cells`.
+- The throwaway probe script was created during verification and deleted before handoff.
 
 ### Commit
 
