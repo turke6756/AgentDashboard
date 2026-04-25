@@ -15,6 +15,10 @@ export default defineConfig({
     alias: {
       '@shared': path.resolve(__dirname, 'src/shared'),
     },
+    dedupe: ['@codemirror/state', '@codemirror/view'],
+  },
+  optimizeDeps: {
+    include: ['@codemirror/state', '@codemirror/view', 'yjs', 'y-codemirror.next'],
   },
   server: {
     port: 5173,

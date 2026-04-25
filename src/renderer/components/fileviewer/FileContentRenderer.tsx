@@ -10,7 +10,7 @@ import GeoPackageRenderer from './GeoPackageRenderer';
 import ImageRenderer from './ImageRenderer';
 import PdfRenderer from './PdfRenderer';
 import NotebookRenderer from './NotebookRenderer';
-import InteractiveNotebookRenderer from './InteractiveNotebookRenderer';
+import { NotebookView } from '../notebook/NotebookView';
 import type { PathType } from '../../../shared/types';
 
 interface Props {
@@ -92,7 +92,7 @@ export default function FileContentRenderer({ content, filePath, pathType, error
 
   if (fileType === 'notebook') {
     if (isInteractiveNotebookFile(filePath)) {
-      return <InteractiveNotebookRenderer filePath={filePath} pathType={pathType} content={content} />;
+      return <NotebookView path={filePath} />;
     }
     return (
       <div className="flex flex-col h-full">
