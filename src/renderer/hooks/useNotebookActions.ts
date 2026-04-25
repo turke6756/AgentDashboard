@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { ISharedCell, ISharedNotebook } from '@jupyter/ydoc';
 import { toJupyterServerPath } from '../lib/jupyterCollab';
+import { useCellStatusStore } from '../stores/cellStatus';
 
 const API_ROOT = 'http://127.0.0.1:24678/api/notebooks/kernel';
 const KERNEL_POLL_MS = 2000;
@@ -56,6 +57,18 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const syncNotebookCells = useCellStatusStore((state) => state.syncNotebookCells);
+  const setCellStatus = useCellStatusStore((state) => state.setCellStatus);
+  const setManyCellStatus = useCellStatusStore((state) => state.setManyCellStatus);
+  const clearNotebookRunState = useCellStatusStore((state) => state.clearNotebookRunState);
+  const markNotebookError = useCellStatusStore((state) => state.markNotebookError);
+
+  useEffect(() => {
+    syncNotebookCells(
+      notebookPath,
+      ynotebook?.cells.map((cell) => cell.id) ?? []
+    );
+  }, [notebookPath, syncNotebookCells, ynotebook]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -98,15 +111,21 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
   const runCell = async (cellId: string) => {
     setActionError(null);
     setPendingAction('run-cell');
+    clearNotebookRunState(notebookPath);
+    setCellStatus(notebookPath, cellId, 'running');
     try {
       const result = await fetchJson<ExecuteCellResult>(`${API_ROOT}/execute-cell`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath, cellId }),
       });
+      setCellStatus(notebookPath, cellId, result.status === 'ok' ? 'done' : 'error');
+      markNotebookError(notebookPath, result.status !== 'ok');
       await refreshKernelStateOnce(notebookPath, setKernelState, mountedRef);
       return result;
     } catch (error) {
+      setCellStatus(notebookPath, cellId, 'error');
+      markNotebookError(notebookPath, true);
       setActionError(error instanceof Error ? error.message : String(error));
       return null;
     } finally {
@@ -127,16 +146,34 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
 
     setActionError(null);
     setPendingAction('run-all');
+    clearNotebookRunState(notebookPath);
+    setManyCellStatus(
+      notebookPath,
+      codeCells.map((cell) => cell.id),
+      'queued'
+    );
     try {
-      await fetchJson(`${API_ROOT}/execute-range`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebookPath,
-          fromCellId: codeCells[0].id,
-          toCellId: codeCells[codeCells.length - 1].id,
-        }),
-      });
+      for (let index = 0; index < codeCells.length; index += 1) {
+        const cell = codeCells[index];
+        setCellStatus(notebookPath, cell.id, 'running');
+        const result = await fetchJson<ExecuteCellResult>(`${API_ROOT}/execute-cell`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notebookPath, cellId: cell.id }),
+        });
+        const nextStatus = result.status === 'ok' ? 'done' : 'error';
+        setCellStatus(notebookPath, cell.id, nextStatus);
+        if (result.status !== 'ok') {
+          setManyCellStatus(
+            notebookPath,
+            codeCells.slice(index + 1).map((queuedCell) => queuedCell.id),
+            'idle'
+          );
+          markNotebookError(notebookPath, true);
+          throw new Error(`Execution stopped at cell ${cell.id} with status ${result.status}.`);
+        }
+      }
+      markNotebookError(notebookPath, false);
       await refreshKernelStateOnce(notebookPath, setKernelState, mountedRef);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -156,6 +193,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath }),
       });
+      clearNotebookRunState(notebookPath);
       await refreshKernelStateOnce(notebookPath, setKernelState, mountedRef);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -175,6 +213,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath }),
       });
+      clearNotebookRunState(notebookPath);
       await refreshKernelStateOnce(notebookPath, setKernelState, mountedRef);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -239,6 +278,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
       if (index < 0 || index >= ynotebook.cells.length) {
         throw new Error('Cell index out of range.');
       }
+      clearNotebookRunState(notebookPath);
       ynotebook.deleteCell(index);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));

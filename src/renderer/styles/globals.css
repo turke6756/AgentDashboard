@@ -346,6 +346,26 @@ select {
   animation: ui-spin 0.6s linear infinite;
 }
 
+@keyframes notebook-ring-pulse {
+  0% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.45); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.7; }
+}
+
+@keyframes notebook-activity-slide {
+  0% { transform: translateX(-45%); }
+  100% { transform: translateX(45%); }
+}
+
+.notebook-status-ring-running {
+  animation: notebook-ring-pulse 1s ease-in-out infinite;
+}
+
+.notebook-activity-bar-running {
+  background-size: 200% 100%;
+  animation: notebook-activity-slide 1.2s linear infinite alternate;
+}
+
 /* ── Light theme overrides ── */
 
 .light {

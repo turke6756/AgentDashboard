@@ -4,6 +4,10 @@ import { CellShell } from './CellShell';
 import { useYNotebook } from '../../hooks/useYNotebook';
 import { useNotebookActions } from '../../hooks/useNotebookActions';
 import { NotebookToolbar } from './NotebookToolbar';
+import { NotebookActivityBar } from './NotebookActivityBar';
+import { CellStatusRing } from './CellStatusRing';
+import { useCellStatusStore } from '../../stores/cellStatus';
+import { toJupyterServerPath } from '../../lib/jupyterCollab';
 
 export function NotebookView({ path }: { path: string }) {
   const { ynotebook, status, error } = useYNotebook(path);
@@ -26,6 +30,9 @@ export function NotebookView({ path }: { path: string }) {
   const cells = ynotebook?.cells ?? [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const notebookLanguage = useMemo(() => getNotebookLanguage(ynotebook), [ynotebook]);
+  const notebookPath = useMemo(() => toJupyterServerPath(path), [path]);
+  const cellStatuses = useCellStatusStore((state) => state.cellStatuses[notebookPath] ?? {});
+  const lastRunErrored = useCellStatusStore((state) => state.lastRunErrored[notebookPath] ?? false);
   const logSignature = cells
     .map((cell) => `${cell.id}:${cell.cell_type}:${previewSource(cell.source)}`)
     .join('|');
@@ -36,6 +43,7 @@ export function NotebookView({ path }: { path: string }) {
     overscan: 5,
   });
   const visibleIndexes = new Set(virtualizer.getVirtualItems().map((item) => item.index));
+  const hasRunningCell = Object.values(cellStatuses).some((value) => value === 'queued' || value === 'running');
 
   useEffect(() => {
     if (status !== 'synced' || !ynotebook) return;
@@ -68,13 +76,14 @@ export function NotebookView({ path }: { path: string }) {
       <NotebookToolbar
         kernelStatus={kernelStatusLabel}
         isReady={status === 'synced'}
-        isBusy={pendingAction === 'run-all' || pendingAction === 'run-cell' || kernelState?.execution_state === 'busy'}
+        isBusy={hasRunningCell || pendingAction === 'run-all' || pendingAction === 'run-cell' || kernelState?.execution_state === 'busy'}
         onRunAll={() => void runAll()}
         onAddCode={() => addCodeCell(cells.length - 1)}
         onAddMarkdown={() => addMarkdownCell(cells.length - 1)}
         onInterrupt={() => void interruptKernel()}
         onRestart={() => void restartKernel()}
       />
+      <NotebookActivityBar running={hasRunningCell} errored={lastRunErrored} />
 
       {error ? (
         <div className="m-4 border border-accent-red/40 bg-accent-red/10 p-4 font-sans text-sm text-accent-red">
@@ -113,7 +122,10 @@ export function NotebookView({ path }: { path: string }) {
                   className="grid grid-cols-[56px_minmax(0,1fr)] bg-surface-1"
                 >
                   <div className="border-r border-surface-3 px-2 py-3 text-right text-[11px] uppercase text-fg-muted">
-                    {cell.cell_type}
+                    <div className="mb-1 flex items-center justify-end gap-1.5">
+                      <CellStatusRing status={cellStatuses[cell.id] ?? 'idle'} />
+                      <span>{cell.cell_type}</span>
+                    </div>
                   </div>
                   <div className="min-w-0">
                     <CellShell
