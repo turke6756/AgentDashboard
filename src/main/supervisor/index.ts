@@ -1588,6 +1588,7 @@ export class AgentSupervisor extends EventEmitter {
           ? agent.provider
           : 'unknown';
         await tmuxSendInput(agent.tmuxSessionName, text, provider);
+        this.emitSyntheticUserEcho(agent, text);
         return;
       }
     }
@@ -1627,11 +1628,17 @@ export class AgentSupervisor extends EventEmitter {
         }
         await new Promise((resolve) => setTimeout(resolve, WINDOWS_SEND_INPUT_ENTER_DELAY_MS));
         winRunner.write(WIN32_KEY_ENTER_DOWN + WIN32_KEY_ENTER_UP);
+        this.emitSyntheticUserEcho(agent, text);
       } else {
         winRunner.write(`${text}\r`);
       }
       return;
     }
+  }
+
+  private emitSyntheticUserEcho(agent: Agent, text: string): void {
+    if (agent.provider !== 'codex' && agent.provider !== 'gemini') return;
+    this.sessionLogReader.appendSyntheticUserText(agent.id, text);
   }
 
   removeAgentListener(agentId: string, listener: (data: string) => void): void {

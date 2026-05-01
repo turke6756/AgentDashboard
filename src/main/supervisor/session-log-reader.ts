@@ -110,6 +110,24 @@ export class SessionLogReader extends EventEmitter {
     this.subscribers.delete(agentId);
   }
 
+  // Synthetic echo for codex/gemini (no on-disk user-message echo). TODO(reconcile-synthetic): dedupe vs real reader within ~30s once codex/gemini readers land.
+  appendSyntheticUserText(agentId: string, text: string): void {
+    const ev: UserTextEvent = {
+      type: 'user-text',
+      uuid: `synthetic:${agentId}:${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      agentId,
+      text,
+    };
+    this.appendToRingBuffer(agentId, [ev]);
+    const batch: ChatEventBatch = {
+      agentId,
+      events: [ev],
+      truncated: this.truncatedByAgent.get(agentId) || false,
+    };
+    this.emit('chat-events', batch);
+  }
+
   /** Called when agent's resumeSessionId changes — forces re-resolution of JSONL path. */
   invalidatePath(agentId: string): void {
     const cached = this.resolvedPaths.get(agentId);
