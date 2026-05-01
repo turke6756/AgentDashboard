@@ -18,6 +18,7 @@ import { WslRunner } from './wsl-runner';
 import { StatusMonitor } from './status-monitor';
 import { ContextStatsMonitor, JsonlFileActivity } from './context-stats-monitor';
 import { SessionLogReader } from './session-log-reader';
+import { ClaudeJsonlReader } from './log-readers/claude-jsonl-reader';
 import { FileActivityTracker } from './file-activity-tracker';
 import {
   createAgent, getAgent, getActiveAgents, getAllAgents, getSupervisorAgent, getWorkspace, updateAgentStatus, updateAgentPid,
@@ -214,8 +215,10 @@ export class AgentSupervisor extends EventEmitter {
           agentId: a.id,
           sessionId: a.resumeSessionId!,
           workingDirectory: a.workingDirectory,
+          provider: a.provider,
         }));
     });
+    this.sessionLogReader.register(new ClaudeJsonlReader());
     this.sessionLogReader.on('chat-events', (batch) => {
       this.emit('chatEvents', batch);
     });
