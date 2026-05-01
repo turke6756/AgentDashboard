@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { PathType } from '../../../shared/types';
-import { detectFileType, detectLanguage, formatFileSize } from './fileTypeUtils';
+import { detectFileType, detectLanguage, formatFileSize, isEditableFileType } from './fileTypeUtils';
 import * as Icons from 'lucide-react';
 import FileIcon from './FileIcon';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 interface Props {
+  tabId: string;
   filePath: string;
   pathType: PathType;
   fileSize: number;
@@ -12,18 +14,64 @@ interface Props {
   onNavigate: (dirPath: string) => void;
 }
 
-export default function FileViewerHeader({ filePath, pathType, fileSize, workingDirectory, onNavigate }: Props) {
+export default function FileViewerHeader({ tabId, filePath, pathType, fileSize, workingDirectory, onNavigate }: Props) {
   const normalized = filePath.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
   const fileType = detectFileType(filePath);
   const language = fileType === 'code' ? detectLanguage(filePath) : fileType;
+  const editable = isEditableFileType(filePath);
+  const [enteringEdit, setEnteringEdit] = useState(false);
+  const editState = useDashboardStore((state) => state.tabEditState[tabId]);
+  const enterEditMode = useDashboardStore((state) => state.enterEditMode);
+  const exitEditMode = useDashboardStore((state) => state.exitEditMode);
+  const discardTabChanges = useDashboardStore((state) => state.discardTabChanges);
+  const saveTab = useDashboardStore((state) => state.saveTab);
+  const checkHealth = useDashboardStore((state) => state.checkHealth);
+  const isEditing = editState?.mode === 'edit';
+  const dirty = !!editState?.dirty;
+  const saving = !!editState?.saving;
+  const saveError = editState?.error;
 
-  const handleOpenInVSCode = () => {
+  const handleOpenInVSCode = async () => {
     if (workingDirectory) {
-      window.api.system.openFileInWorkspace(filePath, workingDirectory, pathType);
+      await window.api.system.openFileInWorkspace(filePath, workingDirectory, pathType);
     } else {
-      window.api.system.openFile(filePath, pathType);
+      await window.api.system.openFile(filePath, pathType);
     }
+    if (pathType === 'wsl') {
+      await checkHealth();
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!editable || enteringEdit) return;
+    setEnteringEdit(true);
+    try {
+      const result = await window.api.files.readFile(filePath, pathType);
+      if (result.error) {
+        window.alert(result.error);
+        return;
+      }
+      enterEditMode(tabId, result.content);
+    } finally {
+      if (pathType === 'wsl') {
+        void checkHealth();
+      }
+      setEnteringEdit(false);
+    }
+  };
+
+  const handleView = () => {
+    if (dirty && !window.confirm('Discard unsaved changes?')) return;
+    if (dirty) {
+      discardTabChanges(tabId);
+    } else {
+      exitEditMode(tabId);
+    }
+  };
+
+  const handleSave = () => {
+    void saveTab(tabId);
   };
 
   // Build breadcrumb paths
@@ -80,8 +128,47 @@ export default function FileViewerHeader({ filePath, pathType, fileSize, working
           </span>
         )}
 
+        {editable && (
+          <>
+            {isEditing ? (
+              <>
+                <button
+                  onClick={handleView}
+                  className="ui-btn text-[13px]"
+                >
+                  <Icons.Eye className="w-3 h-3" />
+                  View
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={!dirty || saving}
+                  className="ui-btn ui-btn-primary text-[13px]"
+                >
+                  {saving ? <Icons.Loader2 className="w-3 h-3 animate-spin" /> : <Icons.Save className="w-3 h-3" />}
+                  Save
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleEdit}
+                disabled={enteringEdit}
+                className="ui-btn text-[13px]"
+              >
+                {enteringEdit ? <Icons.Loader2 className="w-3 h-3 animate-spin" /> : <Icons.Pencil className="w-3 h-3" />}
+                Edit
+              </button>
+            )}
+          </>
+        )}
+
+        {saveError && (
+          <span className="text-[12px] text-accent-red max-w-[220px] truncate" title={saveError}>
+            {saveError}
+          </span>
+        )}
+
         <button
-          onClick={handleOpenInVSCode}
+          onClick={() => { void handleOpenInVSCode(); }}
           className="ui-btn text-[13px] text-accent-blue"
         >
           <Icons.ExternalLink className="w-3 h-3" />

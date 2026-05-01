@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function AgentLaunchDialog({ workspace, onClose }: Props) {
-  const { loadAgents } = useDashboardStore();
+  const { loadAgents, checkHealth } = useDashboardStore();
   const [title, setTitle] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [workingDirectory, setWorkingDirectory] = useState(workspace.path);
@@ -135,6 +135,9 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
 
       await window.api.agents.launch(launchInput);
       await loadAgents(workspace.id);
+      if (workspace.pathType === 'wsl') {
+        await checkHealth();
+      }
       onClose();
     } catch (err) {
       console.error('Failed to launch agent:', err);

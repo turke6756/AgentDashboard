@@ -7,6 +7,7 @@ import { NotebookToolbar } from './NotebookToolbar';
 import { NotebookActivityBar } from './NotebookActivityBar';
 import { CellStatusRing } from './CellStatusRing';
 import { useCellStatusStore } from '../../stores/cellStatus';
+import type { NotebookCellStatus } from '../../stores/cellStatus';
 import { toJupyterServerPath } from '../../lib/jupyterCollab';
 
 export function NotebookView({ path }: { path: string }) {
@@ -86,13 +87,13 @@ export function NotebookView({ path }: { path: string }) {
       <NotebookActivityBar running={hasRunningCell} errored={lastRunErrored} />
 
       {error ? (
-        <div className="m-4 border border-accent-red/40 bg-accent-red/10 p-4 font-sans text-sm text-accent-red">
+        <div className="m-4 rounded-[4px] border border-accent-red/40 bg-accent-red/10 p-4 font-sans text-sm text-accent-red">
           {error}
         </div>
       ) : (
-        <div className="p-4 font-sans">
+        <div className="notebook-surface p-4 font-sans">
           {actionError ? (
-            <div className="mb-3 flex items-start justify-between gap-3 border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-sm text-accent-red">
+            <div className="mb-3 flex items-start justify-between gap-3 rounded-[4px] border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-sm text-accent-red">
               <span>{actionError}</span>
               <button type="button" className="ui-btn min-h-0 px-2 py-0.5 text-[11px]" onClick={clearActionError}>
                 Dismiss
@@ -104,9 +105,9 @@ export function NotebookView({ path }: { path: string }) {
               ? `${cells.length} cells synced. Shared notebook actions are active.`
               : 'Connecting to notebook collaboration room...'}
           </div>
-          <div className="border border-surface-3">
+          <div className="notebook-stack">
             {cells.length === 0 ? (
-              <div className="p-4 text-sm text-fg-muted">
+              <div className="rounded-[4px] border border-surface-3 bg-surface-1 p-4 text-sm text-fg-muted">
                 {status === 'synced' ? 'Notebook has no cells.' : 'Waiting for cells...'}
               </div>
             ) : (
@@ -119,31 +120,32 @@ export function NotebookView({ path }: { path: string }) {
                       virtualizer.measureElement(node);
                     }
                   }}
-                  className="grid grid-cols-[56px_minmax(0,1fr)] bg-surface-1"
+                  className={`notebook-cell notebook-cell-${cellStatuses[cell.id] ?? 'idle'}`}
                 >
-                  <div className="border-r border-surface-3 px-2 py-3 text-right text-[11px] uppercase text-fg-muted">
-                    <div className="mb-1 flex items-center justify-end gap-1.5">
-                      <CellStatusRing status={cellStatuses[cell.id] ?? 'idle'} />
-                      <span>{cell.cell_type}</span>
-                    </div>
-                  </div>
-                  <div className="min-w-0">
-                    <CellShell
-                      cell={cell}
-                      index={index}
-                      totalCells={cells.length}
-                      isVisible={visibleIndexes.has(index)}
-                      language={notebookLanguage}
-                      busy={pendingAction !== null}
-                      onRunCell={(cellId) => {
-                        if (cell.cell_type !== 'code') return;
-                        void runCell(cellId);
-                      }}
-                      onDeleteCell={deleteCell}
-                      onMoveCellUp={moveCellUp}
-                      onMoveCellDown={moveCellDown}
-                    />
-                  </div>
+                  <CellLabel
+                    index={index}
+                    type={cell.cell_type}
+                    status={cellStatuses[cell.id] ?? 'idle'}
+                    executionCount={getExecutionCount(cell)}
+                  />
+                  <CellShell
+                    cell={cell}
+                    index={index}
+                    totalCells={cells.length}
+                    status={cellStatuses[cell.id] ?? 'idle'}
+                    isVisible={visibleIndexes.has(index)}
+                    language={notebookLanguage}
+                    busy={pendingAction !== null}
+                    onRunCell={(cellId) => {
+                      if (cell.cell_type !== 'code') return;
+                      void runCell(cellId);
+                    }}
+                    onAddCodeBelow={(cellIndex) => addCodeCell(cellIndex)}
+                    onAddMarkdownBelow={(cellIndex) => addMarkdownCell(cellIndex)}
+                    onDeleteCell={deleteCell}
+                    onMoveCellUp={moveCellUp}
+                    onMoveCellDown={moveCellDown}
+                  />
                 </div>
               ))
             )}
@@ -151,6 +153,31 @@ export function NotebookView({ path }: { path: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+function CellLabel({
+  index,
+  type,
+  status,
+  executionCount,
+}: {
+  index: number;
+  type: string;
+  status: NotebookCellStatus;
+  executionCount: number | null;
+}) {
+  return (
+    <aside className="notebook-gutter">
+      <div className="flex items-center justify-between gap-2">
+        <span className="notebook-cell-label">Cell {index + 1}</span>
+        <CellStatusRing status={status} />
+      </div>
+      <div className="notebook-cell-meta">{type}</div>
+      {type === 'code' ? (
+        <div className="notebook-execution-count">In {formatExecutionCount(executionCount)}</div>
+      ) : null}
+    </aside>
   );
 }
 
@@ -176,6 +203,14 @@ function previewSource(source: string): string {
 
 function countCodeCells(cells: Array<{ cell_type: string }>) {
   return cells.filter((cell) => cell.cell_type === 'code').length;
+}
+
+function getExecutionCount(cell: { cell_type: string; execution_count?: number | null }) {
+  return cell.cell_type === 'code' ? cell.execution_count ?? null : null;
+}
+
+function formatExecutionCount(executionCount: number | null) {
+  return executionCount == null ? '[ ]' : `[${executionCount}]`;
 }
 
 function getNotebookLanguage(

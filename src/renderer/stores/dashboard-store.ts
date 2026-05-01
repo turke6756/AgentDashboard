@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout, GroupThinkSession, Team, TeamMessage, CreateTeamInput } from '../../shared/types';
+import { evictTabCache } from '../components/fileviewer/useFileContentCache';
 
 interface WorkspaceHeat {
   activeCount: number;
@@ -34,6 +35,31 @@ function nextTabId(): string {
   return `tab-${++tabIdCounter}`;
 }
 
+function pathKey(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function pathMatches(targetPath: string, candidatePath: string): boolean {
+  const target = pathKey(targetPath);
+  const candidate = pathKey(candidatePath);
+  return candidate === target || candidate.startsWith(`${target}/`);
+}
+
+function labelFromPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const segments = normalized.split('/').filter(Boolean);
+  return segments[segments.length - 1] || filePath;
+}
+
+interface TabEditState {
+  mode: 'view' | 'edit';
+  draftContent: string;
+  originalContent: string;
+  dirty: boolean;
+  saving: boolean;
+  error: string | null;
+}
+
 interface DashboardState {
   workspaces: Workspace[];
   agents: Agent[];
@@ -43,6 +69,7 @@ interface DashboardState {
   terminalAgentId: string | null;
   terminalPinned: boolean;
   health: HealthCheck | null;
+  healthChecking: boolean;
   loading: boolean;
   detailPane: 0 | 1 | 2;
   fileActivities: FileActivity[];
@@ -64,6 +91,7 @@ interface DashboardState {
   openTabs: FileTab[];
   activeTabId: string | null;
   fileViewerOpen: boolean;
+  tabEditState: Record<string, TabEditState>;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -108,6 +136,14 @@ interface DashboardState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   closeAllTabs: () => void;
+  enterEditMode: (tabId: string, initialContent: string) => void;
+  exitEditMode: (tabId: string) => void;
+  setDraftContent: (tabId: string, content: string) => void;
+  saveTab: (tabId: string) => Promise<boolean>;
+  discardTabChanges: (tabId: string) => void;
+  closeTabsForPath: (path: string) => void;
+  renameTabPath: (oldPath: string, newPath: string) => void;
+  hasDirtyTabForPath: (path: string) => boolean;
   hideFileViewer: () => void;
   showFileViewer: () => void;
   toggleFileViewer: () => void;
@@ -126,6 +162,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   terminalAgentId: null,
   terminalPinned: false,
   health: null,
+  healthChecking: false,
   loading: false,
   detailPane: 2,
   fileActivities: [],
@@ -164,6 +201,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   openTabs: [],
   activeTabId: null,
   fileViewerOpen: false,
+  tabEditState: {},
 
   openTab: (filePath, rootDirectory, pathType, agentId?, workspaceId?) => {
     const { openTabs, selectedWorkspaceId } = get();
@@ -233,6 +271,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const idx = state.openTabs.findIndex((t) => t.id === tabId);
       if (idx === -1) return state;
       const newTabs = state.openTabs.filter((t) => t.id !== tabId);
+      const { [tabId]: _closedEditState, ...tabEditState } = state.tabEditState;
       let newActive = state.activeTabId;
       if (state.activeTabId === tabId) {
         // Activate neighbor
@@ -248,13 +287,206 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         openTabs: newTabs,
         activeTabId: newActive,
         fileViewerOpen: newTabs.length > 0,
+        tabEditState,
       };
     });
   },
 
   setActiveTab: (tabId) => set({ activeTabId: tabId }),
 
-  closeAllTabs: () => set({ openTabs: [], activeTabId: null, fileViewerOpen: false }),
+  closeAllTabs: () => {
+    for (const tab of get().openTabs) {
+      evictTabCache(tab.id);
+    }
+    set({ openTabs: [], activeTabId: null, fileViewerOpen: false, tabEditState: {} });
+  },
+
+  enterEditMode: (tabId, initialContent) => {
+    set((state) => {
+      const existing = state.tabEditState[tabId];
+      if (existing?.dirty) {
+        return {
+          tabEditState: {
+            ...state.tabEditState,
+            [tabId]: { ...existing, mode: 'edit', error: null },
+          },
+        };
+      }
+      return {
+        tabEditState: {
+          ...state.tabEditState,
+          [tabId]: {
+            mode: 'edit',
+            draftContent: initialContent,
+            originalContent: initialContent,
+            dirty: false,
+            saving: false,
+            error: null,
+          },
+        },
+      };
+    });
+  },
+
+  exitEditMode: (tabId) => {
+    set((state) => {
+      const existing = state.tabEditState[tabId];
+      if (!existing) return state;
+      return {
+        tabEditState: {
+          ...state.tabEditState,
+          [tabId]: { ...existing, mode: 'view', saving: false, error: null },
+        },
+      };
+    });
+  },
+
+  setDraftContent: (tabId, content) => {
+    set((state) => {
+      const existing = state.tabEditState[tabId];
+      if (!existing) return state;
+      return {
+        tabEditState: {
+          ...state.tabEditState,
+          [tabId]: {
+            ...existing,
+            draftContent: content,
+            dirty: content !== existing.originalContent,
+            error: null,
+          },
+        },
+      };
+    });
+  },
+
+  saveTab: async (tabId) => {
+    const { openTabs, tabEditState } = get();
+    const tab = openTabs.find((t) => t.id === tabId);
+    const editState = tabEditState[tabId];
+    if (!tab || !tab.filePath || !editState) return false;
+    const draftToSave = editState.draftContent;
+
+    set((state) => ({
+      tabEditState: {
+        ...state.tabEditState,
+        [tabId]: { ...editState, saving: true, error: null },
+      },
+    }));
+
+    const result = await window.api.files.writeFile(
+      tab.filePath,
+      tab.rootDirectory,
+      tab.pathType,
+      draftToSave,
+    );
+    if (tab.pathType === 'wsl') {
+      await get().checkHealth();
+    }
+
+    if (!result.ok) {
+      set((state) => {
+        const current = state.tabEditState[tabId];
+        if (!current) return state;
+        return {
+          tabEditState: {
+            ...state.tabEditState,
+            [tabId]: { ...current, saving: false, error: result.error },
+          },
+        };
+      });
+      return false;
+    }
+
+    evictTabCache(tabId);
+    set((state) => {
+      const current = state.tabEditState[tabId];
+      if (!current) return state;
+      return {
+        tabEditState: {
+          ...state.tabEditState,
+          [tabId]: {
+            ...current,
+            originalContent: draftToSave,
+            dirty: current.draftContent !== draftToSave,
+            saving: false,
+            error: null,
+          },
+        },
+      };
+    });
+    return true;
+  },
+
+  discardTabChanges: (tabId) => {
+    set((state) => {
+      const existing = state.tabEditState[tabId];
+      if (!existing) return state;
+      return {
+        tabEditState: {
+          ...state.tabEditState,
+          [tabId]: {
+            ...existing,
+            mode: 'view',
+            draftContent: existing.originalContent,
+            dirty: false,
+            saving: false,
+            error: null,
+          },
+        },
+      };
+    });
+  },
+
+  closeTabsForPath: (targetPath) => {
+    set((state) => {
+      const closedTabs = state.openTabs.filter((tab) => tab.filePath && pathMatches(targetPath, tab.filePath));
+      if (closedTabs.length === 0) return state;
+      const closedIds = new Set(closedTabs.map((tab) => tab.id));
+      for (const tab of closedTabs) {
+        evictTabCache(tab.id);
+      }
+      const openTabs = state.openTabs.filter((tab) => !closedIds.has(tab.id));
+      const tabEditState = { ...state.tabEditState };
+      for (const id of closedIds) {
+        delete tabEditState[id];
+      }
+      let activeTabId = state.activeTabId;
+      if (activeTabId && closedIds.has(activeTabId)) {
+        activeTabId = openTabs[0]?.id ?? null;
+      }
+      return {
+        openTabs,
+        activeTabId,
+        fileViewerOpen: openTabs.length > 0,
+        tabEditState,
+      };
+    });
+  },
+
+  renameTabPath: (oldPath, newPath) => {
+    set((state) => ({
+      openTabs: state.openTabs.map((tab) => {
+        if (!tab.filePath || !pathMatches(oldPath, tab.filePath)) return tab;
+        const suffix = pathKey(tab.filePath) === pathKey(oldPath)
+          ? ''
+          : tab.filePath.replace(/\\/g, '/').slice(oldPath.replace(/\\/g, '/').replace(/\/+$/, '').length);
+        const renamedPath = suffix ? `${newPath.replace(/\/+$/, '')}${suffix}` : newPath;
+        return {
+          ...tab,
+          filePath: renamedPath,
+          label: labelFromPath(renamedPath),
+        };
+      }),
+    }));
+  },
+
+  hasDirtyTabForPath: (targetPath) => {
+    const { openTabs, tabEditState } = get();
+    return openTabs.some((tab) => {
+      if (!tab.filePath || !pathMatches(targetPath, tab.filePath)) return false;
+      return !!tabEditState[tab.id]?.dirty;
+    });
+  },
 
   // Hide file viewer without destroying tabs (for back navigation)
   hideFileViewer: () => set({ fileViewerOpen: false }),
@@ -390,8 +622,27 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   checkHealth: async () => {
-    const health = await window.api.system.healthCheck();
-    set({ health });
+    set({ healthChecking: true });
+    try {
+      const health = await window.api.system.healthCheck();
+      set({ health, healthChecking: false });
+    } catch (err) {
+      console.error('Health check failed:', err);
+      set({
+        health: {
+          wslAvailable: false,
+          tmuxAvailable: false,
+          claudeWindowsAvailable: false,
+          claudeWslAvailable: false,
+          wslStatus: {
+            state: 'unavailable',
+            distros: [],
+            error: err instanceof Error ? err.message : 'Health check failed',
+          },
+        },
+        healthChecking: false,
+      });
+    }
   },
 
   setDetailPane: (pane) => set({ detailPane: pane }),
@@ -435,6 +686,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   launchSupervisor: async (workspaceId: string) => {
+    const workspace = get().workspaces.find((w) => w.id === workspaceId);
     // If one already exists and is alive, just select it
     const existing = get().supervisorAgent;
     if (existing && !['done', 'crashed'].includes(existing.status)) {
@@ -453,11 +705,17 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         autoRestartEnabled: true,
       });
       set({ supervisorAgent: agent });
+      if (workspace?.pathType === 'wsl') {
+        await get().checkHealth();
+      }
       return agent;
     } catch (err) {
       console.error('Failed to launch supervisor:', err);
       // Refresh in case it was already running but our state was stale
       await get().loadSupervisor(workspaceId);
+      if (workspace?.pathType === 'wsl') {
+        await get().checkHealth();
+      }
       return null;
     }
   },

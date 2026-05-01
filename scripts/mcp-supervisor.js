@@ -441,13 +441,13 @@ function getToolDefinitions() {
       },
     },
     // ── Live notebook kernel tools (Phase 1) ──────────────────────────
-    // These attach to the SAME jupyter-server / kernel the dashboard iframe is
+    // These attach to the SAME jupyter-server / kernel the dashboard notebook view is
     // using. Outputs land on disk via jupyter-collaboration RTC, so the user
     // sees live updates without a "file changed on disk" dialog. Cells are
     // addressed by nbformat 4.5 cell `id` (UUID) so inserts don't shift addresses.
     {
       name: 'execute_cell',
-      description: 'Execute a single notebook cell on the live kernel and persist outputs to disk. Address by nbformat 4.5 cell id (NOT by index). The user sees the update land live in the dashboard iframe with no reload.',
+      description: 'Execute a single notebook cell on the live kernel and persist outputs to disk. Address by nbformat 4.5 cell id (NOT by index). The user sees the update land live in the dashboard notebook view with no reload.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -486,7 +486,7 @@ function getToolDefinitions() {
     },
     {
       name: 'interrupt_kernel',
-      description: "Interrupt the live kernel for a notebook (sends SIGINT-equivalent). Affects the user's iframe view too — that is intended.",
+      description: "Interrupt the live kernel for a notebook (sends SIGINT-equivalent). Affects the user's notebook view too — that is intended.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -497,7 +497,7 @@ function getToolDefinitions() {
     },
     {
       name: 'restart_kernel',
-      description: 'Restart the live kernel for a notebook. Clears in-memory state but preserves the session — both the iframe and MCP auto-reattach.',
+      description: 'Restart the live kernel for a notebook. Clears in-memory state but preserves the session — the dashboard notebook view and MCP tools auto-reattach.',
       inputSchema: {
         type: 'object',
         properties: {

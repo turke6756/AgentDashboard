@@ -45,7 +45,11 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 function AppInner() {
-  const { loadWorkspaces, checkHealth, panelLayout, setPanelSize, terminalAgentId } = useDashboardStore();
+  const loadWorkspaces = useDashboardStore((s) => s.loadWorkspaces);
+  const checkHealth = useDashboardStore((s) => s.checkHealth);
+  const setPanelSize = useDashboardStore((s) => s.setPanelSize);
+  const panelLayout = useDashboardStore((s) => s.panelLayout);
+  const terminalAgentId = useDashboardStore((s) => s.terminalAgentId);
 
   useEffect(() => {
     loadWorkspaces();

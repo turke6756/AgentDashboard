@@ -7,16 +7,37 @@ import * as Icons from 'lucide-react';
 import DirectoryTreeNode from '../fileviewer/DirectoryTreeNode';
 import type { DirectoryEntry, PathType } from '../../../shared/types';
 import logoImg from '../../assets/logo.png';
+import { useNamePrompt } from '../../hooks/useNamePrompt';
 
 function InlineWorkspaceTree({ rootPath, pathType, workspaceId }: { rootPath: string; pathType: PathType; workspaceId: string }) {
   const [rootEntries, setRootEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const cache = useRef(new Map<string, DirectoryEntry[]>());
-  const { openTab, activeTabId, openTabs } = useDashboardStore();
+  const openTab = useDashboardStore((s) => s.openTab);
+  const checkHealth = useDashboardStore((s) => s.checkHealth);
+  // Collapse to the active filePath primitive — only re-renders when that exact path changes.
+  const activeFilePath = useDashboardStore(
+    (s) => s.openTabs.find((t) => t.id === s.activeTabId)?.filePath ?? null
+  );
   const { theme } = useThemeStore();
   const isLight = theme === 'light';
+  const { prompt: promptName, modal: namePromptModal } = useNamePrompt();
 
-  const activeFilePath = openTabs.find(t => t.id === activeTabId)?.filePath || null;
+  const reloadRoot = useCallback(async () => {
+    setLoading(true);
+    cache.current.delete(rootPath);
+    const entries = await window.api.files.listDirectory(rootPath, pathType);
+    cache.current.set(rootPath, entries);
+    setRootEntries(entries);
+    setLoading(false);
+    if (pathType === 'wsl') {
+      void checkHealth();
+    }
+  }, [rootPath, pathType, checkHealth]);
+
+  const invalidateDir = useCallback((dirPath: string) => {
+    cache.current.delete(dirPath);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,18 +48,24 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId }: { rootPath: st
         cache.current.set(rootPath, entries);
         setRootEntries(entries);
         setLoading(false);
+        if (pathType === 'wsl') {
+          void checkHealth();
+        }
       }
     });
     return () => { cancelled = true; };
-  }, [rootPath, pathType]);
+  }, [rootPath, pathType, checkHealth]);
 
   const loadChildren = useCallback(async (dirPath: string): Promise<DirectoryEntry[]> => {
     const cached = cache.current.get(dirPath);
     if (cached) return cached;
     const entries = await window.api.files.listDirectory(dirPath, pathType);
     cache.current.set(dirPath, entries);
+    if (pathType === 'wsl') {
+      void checkHealth();
+    }
     return entries;
-  }, [pathType]);
+  }, [pathType, checkHealth]);
 
   const handleFileSelect = useCallback((filePath: string) => {
     openTab(filePath, rootPath, pathType, undefined, workspaceId);
@@ -61,9 +88,13 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId }: { rootPath: st
             workingDirectory={rootPath}
             onFileSelect={handleFileSelect}
             loadChildren={loadChildren}
+            onTreeChanged={invalidateDir}
+            onSiblingsChanged={reloadRoot}
+            promptName={promptName}
           />
         ))
       )}
+      {namePromptModal}
     </div>
   );
 }
@@ -98,7 +129,18 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ width }: SidebarProps) {
-  const { workspaces, selectedWorkspaceId, selectWorkspace, loadWorkspaces, deleteWorkspace, health, workspaceHeat, panelLayout, togglePanelCollapsed, resetLayout } = useDashboardStore();
+  const workspaces = useDashboardStore((s) => s.workspaces);
+  const selectedWorkspaceId = useDashboardStore((s) => s.selectedWorkspaceId);
+  const health = useDashboardStore((s) => s.health);
+  const healthChecking = useDashboardStore((s) => s.healthChecking);
+  const workspaceHeat = useDashboardStore((s) => s.workspaceHeat);
+  const panelLayout = useDashboardStore((s) => s.panelLayout);
+  const selectWorkspace = useDashboardStore((s) => s.selectWorkspace);
+  const loadWorkspaces = useDashboardStore((s) => s.loadWorkspaces);
+  const deleteWorkspace = useDashboardStore((s) => s.deleteWorkspace);
+  const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
+  const resetLayout = useDashboardStore((s) => s.resetLayout);
+  const checkHealth = useDashboardStore((s) => s.checkHealth);
   const { theme, toggleTheme } = useThemeStore();
   const [showCreate, setShowCreate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -107,6 +149,27 @@ export default function Sidebar({ width }: SidebarProps) {
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set());
   const menuRef = useRef<HTMLDivElement>(null);
   const collapsed = panelLayout.sidebarCollapsed;
+  const wslState = health?.wslStatus?.state;
+  const wslLabel = healthChecking
+    ? 'Checking...'
+    : wslState === 'running'
+      ? 'WSL Running'
+      : wslState === 'stopped'
+        ? 'WSL Stopped'
+        : wslState === 'no-distro'
+          ? 'No WSL distro'
+          : wslState === 'unavailable'
+            ? 'WSL Unavailable'
+            : 'WSL Unknown';
+  const wslStatusClass = healthChecking
+    ? 'text-accent-blue animate-pulse'
+    : wslState === 'running'
+      ? 'text-accent-green'
+      : wslState === 'stopped'
+        ? 'text-gray-500'
+        : wslState === 'no-distro'
+          ? 'text-accent-orange'
+          : 'text-accent-red';
 
   const toggleWorkspace = (wsId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -369,18 +432,40 @@ export default function Sidebar({ width }: SidebarProps) {
       )}
 
       {/* Footer Status Ticker */}
-      <div className="panel-header p-2 text-[13px] font-sans text-gray-300 flex justify-between items-center">
+      <div className="panel-header p-2 text-[13px] font-sans text-gray-300 flex justify-between items-center gap-2">
         {health ? (
           <>
-            <div className="flex gap-2">
+            <div className="flex gap-2 min-w-0">
               <span className={health.claudeWindowsAvailable ? 'text-accent-green' : 'text-gray-700'}>Win</span>
-              <span className={health.wslAvailable ? 'text-accent-green' : 'text-gray-700'}>WSL</span>
+              <span className={health.wslStatus.state === 'running' ? 'text-accent-green' : 'text-gray-700'}>WSL</span>
               <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>Tmux</span>
             </div>
-            <div className="text-accent-blue">Connected</div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`truncate max-w-[120px] ${wslStatusClass}`} title={health.wslStatus.error || wslLabel}>
+                {wslLabel}
+              </span>
+              <button
+                onClick={() => void checkHealth()}
+                disabled={healthChecking}
+                className="p-1 rounded text-gray-500 hover:text-accent-blue hover:bg-white/5 transition-colors disabled:opacity-50"
+                title="Refresh WSL status"
+              >
+                <Icons.RefreshCw className={`w-3.5 h-3.5 ${healthChecking ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </>
         ) : (
-          <span className="text-accent-red animate-pulse">Checking...</span>
+          <div className="flex items-center justify-between w-full">
+            <span className="text-accent-blue animate-pulse">Checking...</span>
+            <button
+              onClick={() => void checkHealth()}
+              disabled={healthChecking}
+              className="p-1 rounded text-gray-500 hover:text-accent-blue hover:bg-white/5 transition-colors disabled:opacity-50"
+              title="Refresh WSL status"
+            >
+              <Icons.RefreshCw className={`w-3.5 h-3.5 ${healthChecking ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         )}
       </div>
 

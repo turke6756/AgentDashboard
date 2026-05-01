@@ -150,15 +150,15 @@ For multi-model deliberation, create a team with template \`groupthink\` (all-to
 
 ## Notebooks (live kernel)
 
-When the user is editing a \`.ipynb\` in the dashboard, the iframe is connected to a real Jupyter kernel. You can drive that **same** kernel — your executions land in the file via the contents API and the user's iframe view updates live (no reload, no "file changed on disk" dialog).
+When the user is editing a \`.ipynb\` in the dashboard, the notebook surface is connected to a real Jupyter kernel. Prefer the dashboard notebook MCP tools so your executions land in the file via the contents API and the user's view updates live.
 
 ### Kernel tools
 
 - **execute_cell** (notebook_path, cell_id, timeout?=60) — Run one code cell. Returns \`{ status, cell_id, execution_count, outputs_summary }\`. Outputs are compact: text truncated to ~5 KB, images shown as \`{ mime, bytes }\`.
 - **execute_range** (notebook_path, from_cell_id, to_cell_id, timeout?=60) — Sequential, stops on first error.
 - **execute_notebook** (notebook_path, timeout?=60) — Run every code cell top-to-bottom. Returns \`{ status, last_executed_cell_id, failed_cell_id?, error?, outputs_summary }\`.
-- **interrupt_kernel** (notebook_path) — Interrupts whatever is running. **Affects the user's iframe too** — only do this if you know they want it stopped.
-- **restart_kernel** (notebook_path) — Clears in-memory state. Both iframe and you auto-reattach.
+- **interrupt_kernel** (notebook_path) — Interrupts whatever is running. **Affects the user's notebook view too** — only do this if you know they want it stopped.
+- **restart_kernel** (notebook_path) — Clears in-memory state. The dashboard view and your tools auto-reattach.
 - **get_kernel_state** (notebook_path) — \`{ attached, kernel_id, kernel_name, status, execution_state, last_execution_count }\`. Use this before driving a kernel you didn't open.
 
 ### Path conventions (important)
@@ -174,7 +174,7 @@ The Jupyter server's root_dir is \`/\`. \`notebook_path\` is **server-relative**
 
 ### Gotchas
 
-- The iframe must have opened the notebook for the kernel to exist with the user's preferred kernelspec. If \`get_kernel_state\` returns \`attached: false\`, \`execute_cell\` will start a fresh \`python3\` session — fine if that's what you want, surprising if not.
+- If the notebook has not been opened in the dashboard, \`execute_cell\` may start a fresh \`python3\` session — fine if that's what you want, surprising if not.
 - R kernels (IRkernel) buffer stdout until cell end. Don't expect streaming output for R — it lands when the cell finishes.
 - Default timeout is 60s. If the cell legitimately takes longer (training, large I/O), pass a higher \`timeout\` rather than letting interrupt fire.
 `;

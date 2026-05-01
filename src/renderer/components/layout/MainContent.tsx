@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import AgentGrid from '../agent/AgentGrid';
 import AgentLaunchDialog from '../agent/AgentLaunchDialog';
@@ -39,10 +40,21 @@ const SUPERVISOR_STATUS_COLORS: Record<AgentStatus, { dot: string; border: strin
 };
 
 export default function MainContent() {
-  const {
-    workspaces, selectedWorkspaceId, agents, supervisorAgent, fileViewerOpen, showFileViewer, openTabs,
-    loadSupervisor, launchSupervisor, setTerminalAgent, selectAgent, contextStats,
-  } = useDashboardStore();
+  const { workspaces, selectedWorkspaceId, supervisorAgent, fileViewerOpen, openTabs, contextStats } = useDashboardStore(
+    useShallow((s) => ({
+      workspaces: s.workspaces,
+      selectedWorkspaceId: s.selectedWorkspaceId,
+      supervisorAgent: s.supervisorAgent,
+      fileViewerOpen: s.fileViewerOpen,
+      openTabs: s.openTabs,
+      contextStats: s.contextStats,
+    })),
+  );
+  const showFileViewer = useDashboardStore((s) => s.showFileViewer);
+  const loadSupervisor = useDashboardStore((s) => s.loadSupervisor);
+  const launchSupervisor = useDashboardStore((s) => s.launchSupervisor);
+  const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
+  const selectAgent = useDashboardStore((s) => s.selectAgent);
   const [showLaunch, setShowLaunch] = useState(false);
   const [supervisorLoading, setSupervisorLoading] = useState(false);
 

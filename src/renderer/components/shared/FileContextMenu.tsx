@@ -7,9 +7,16 @@ interface Props {
   filePath: string;
   workingDirectory: string;
   pathType: PathType;
+  isDirectory: boolean;
   showRevealInTree?: boolean;
   onClose: () => void;
   onRevealInTree?: () => void;
+  onCreateFile?: () => void;
+  onCreateMarkdownFile?: () => void;
+  onCreateFolder?: () => void;
+  onCreateNotebook?: () => void;
+  onRename?: () => void;
+  onDelete?: () => void;
 }
 
 function getRelativePath(filePath: string, workingDirectory: string): string {
@@ -22,7 +29,8 @@ function getRelativePath(filePath: string, workingDirectory: string): string {
 }
 
 export default function FileContextMenu({
-  x, y, filePath, workingDirectory, pathType, showRevealInTree, onClose, onRevealInTree,
+  x, y, filePath, workingDirectory, pathType, isDirectory, showRevealInTree, onClose, onRevealInTree,
+  onCreateFile, onCreateMarkdownFile, onCreateFolder, onCreateNotebook, onRename, onDelete,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -57,6 +65,11 @@ export default function FileContextMenu({
     onClose();
   };
 
+  const runAction = (action?: () => void) => {
+    action?.();
+    onClose();
+  };
+
   return (
     <div
       ref={menuRef}
@@ -73,6 +86,38 @@ export default function FileContextMenu({
         Copy Relative Path
       </button>
       <div className="ui-menu-divider" />
+      {isDirectory && (
+        <>
+          <button onClick={() => runAction(onCreateFile)} className="ui-menu-item">
+            New File...
+          </button>
+          <button onClick={() => runAction(onCreateMarkdownFile)} className="ui-menu-item">
+            New Markdown File...
+          </button>
+          <button onClick={() => runAction(onCreateNotebook)} className="ui-menu-item">
+            New Notebook...
+          </button>
+          <button onClick={() => runAction(onCreateFolder)} className="ui-menu-item">
+            New Folder...
+          </button>
+          <div className="ui-menu-divider" />
+        </>
+      )}
+      {(onRename || onDelete) && (
+        <>
+          {onRename && (
+            <button onClick={() => runAction(onRename)} className="ui-menu-item">
+              Rename...
+            </button>
+          )}
+          {onDelete && (
+            <button onClick={() => runAction(onDelete)} className="ui-menu-item text-accent-red">
+              Delete...
+            </button>
+          )}
+          <div className="ui-menu-divider" />
+        </>
+      )}
       <button onClick={handleOpenInVSCode} className="ui-menu-item">
         Open in VS Code
       </button>

@@ -18,9 +18,11 @@ const REGISTRY: Record<string, React.FC<ToolBlockProps>> = {
   Glob: GlobToolBlock,
 };
 
-export default function ToolBlock(props: ToolBlockProps) {
+function ToolBlock(props: ToolBlockProps) {
   const Component = REGISTRY[props.toolName] || GenericToolBlock;
   return <Component {...props} />;
 }
+
+export default React.memo(ToolBlock);
 
 export type { ToolBlockProps };

@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron';
+import type { PathType, FsEvent } from '../shared/types';
 import { AgentSupervisor } from './supervisor';
 import {
   getWorkspaces, createWorkspace, deleteWorkspace, getWorkspace,
@@ -10,13 +11,21 @@ import {
   listAgentTemplates, createAgentTemplate, updateAgentTemplate, deleteAgentTemplate,
 } from './database';
 import { openInVSCode, openFileInVSCode, openFileInWorkspace } from './vscode-launcher';
-import { isWslAvailable, isTmuxAvailable, isClaudeAvailableInWsl } from './wsl-bridge';
+import { getPassiveWslStatus, isTmuxAvailable, isClaudeAvailableInWsl } from './wsl-bridge';
 import { execFileSync } from 'child_process';
 import { detectPathType } from './path-utils';
-import { readFileContents, listDirectoryEntries } from './file-reader';
+import { readFileContents, listDirectoryEntriesAsync } from './file-reader';
+import { writeFileContents, createFile, createDirectory, renameEntry, deleteEntry } from './file-writer';
 import { subscribe as subscribeFsWatch } from './fs-watcher';
 import { scanPersonas, scaffoldPersona } from './persona-scanner';
 import { ensureJupyterServer, listKernelspecs } from './jupyter-server';
+
+function resolveMutationPathType(primaryPath: string, rootDirectory: string, pathType?: PathType): PathType {
+  const primaryType = detectPathType(primaryPath);
+  const rootType = detectPathType(rootDirectory);
+  if (primaryType === rootType) return primaryType;
+  return pathType === 'windows' || pathType === 'wsl' ? pathType : primaryType;
+}
 
 export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: BrowserWindow): void {
   // Workspace handlers
@@ -41,7 +50,17 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:delete', (_e, id) => supervisor.deleteAgent(id));
   ipcMain.handle('agent:fork', (_e, id) => supervisor.forkAgent(id));
   ipcMain.handle('agent:query', (_e, targetAgentId, question, sourceAgentId) => supervisor.queryAgent(targetAgentId, question, sourceAgentId));
-  ipcMain.handle('agent:send-input', (_e, agentId, text) => supervisor.sendInput(agentId, text));
+  ipcMain.handle('agent:send-input', (_e, agentId, text) => {
+    // Fire-and-forget: the Windows codex/gemini path types one char at a time
+    // to dodge paste-burst, so multi-KB sends take 30+ seconds. Returning the
+    // delivery promise here would freeze the chat input UI for that whole
+    // window. Synchronous validation (no runner) still throws eagerly; once
+    // queued, errors are logged because there's no one to surface them to.
+    supervisor.sendInput(agentId, text).catch((err) => {
+      console.error(`[ipc] Background input delivery to ${agentId} failed:`, err);
+    });
+    return { ok: true, queued: true };
+  });
   ipcMain.handle('agent:check-agent-md', (_e, workingDirectory, pathType) => checkAgentMdExists(workingDirectory, pathType));
   ipcMain.handle('agent:workspace-heat', () => getWorkspaceAgentSummary());
   ipcMain.handle('agent:get-supervisor', (_e, workspaceId) => supervisor.getSupervisorAgent(workspaceId));
@@ -212,6 +231,7 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   });
 
   ipcMain.handle('system:health-check', async () => {
+    const wslStatus = await getPassiveWslStatus();
     let claudeWindowsAvailable = false;
     try {
       const env = { ...process.env };
@@ -222,13 +242,15 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
       // not available
     }
 
-    const [wslAvailable, tmuxAvailable, claudeWslAvailable] = await Promise.all([
-      isWslAvailable(),
-      isTmuxAvailable(),
-      isClaudeAvailableInWsl(),
-    ]);
+    const wslAvailable = wslStatus.state === 'running';
+    const [tmuxAvailable, claudeWslAvailable] = wslAvailable
+      ? await Promise.all([
+        isTmuxAvailable(),
+        isClaudeAvailableInWsl(),
+      ])
+      : [false, false];
 
-    return { wslAvailable, tmuxAvailable, claudeWindowsAvailable, claudeWslAvailable };
+    return { wslAvailable, tmuxAvailable, claudeWindowsAvailable, claudeWslAvailable, wslStatus };
   });
 
   // Notebook (Jupyter) handlers
@@ -241,30 +263,85 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   });
 
   // File viewer handlers
-  ipcMain.handle('files:read', (_e, filePath, pathType) => {
-    return readFileContents(filePath, pathType || detectPathType(filePath));
+  ipcMain.handle('files:read', async (_e, filePath, pathType) => {
+    return await readFileContents(filePath, pathType || detectPathType(filePath));
   });
 
-  ipcMain.handle('files:list-directory', (_e, dirPath, pathType) => {
-    return listDirectoryEntries(dirPath, pathType || detectPathType(dirPath));
+  ipcMain.handle('files:list-directory', async (_e, dirPath, pathType) => {
+    try {
+      return await listDirectoryEntriesAsync(dirPath, pathType || detectPathType(dirPath));
+    } catch (err: any) {
+      console.error('files:list-directory error:', err.message || err);
+      return [];
+    }
+  });
+
+  ipcMain.handle('files:write', async (_e, filePath, rootDirectory, pathType, content) => {
+    const resolved = resolveMutationPathType(filePath, rootDirectory, pathType);
+    return await writeFileContents(filePath, rootDirectory, resolved, content);
+  });
+
+  ipcMain.handle('files:create-file', async (_e, parentDir, rootDirectory, pathType, name, template) => {
+    const resolved = resolveMutationPathType(parentDir, rootDirectory, pathType);
+    return await createFile(parentDir, rootDirectory, resolved, name, template);
+  });
+
+  ipcMain.handle('files:mkdir', async (_e, parentDir, rootDirectory, pathType, name) => {
+    const resolved = resolveMutationPathType(parentDir, rootDirectory, pathType);
+    return await createDirectory(parentDir, rootDirectory, resolved, name);
+  });
+
+  ipcMain.handle('files:rename', async (_e, oldPath, rootDirectory, pathType, newName) => {
+    const resolved = resolveMutationPathType(oldPath, rootDirectory, pathType);
+    return await renameEntry(oldPath, rootDirectory, resolved, newName);
+  });
+
+  ipcMain.handle('files:delete', async (_e, entryPath, rootDirectory, pathType, recursive) => {
+    const resolved = resolveMutationPathType(entryPath, rootDirectory, pathType);
+    return await deleteEntry(entryPath, rootDirectory, resolved, !!recursive);
   });
 
   // Live file watcher — one entry per subscription id, keyed across renderers.
+  // Events are batched per-id with a short debounce so a 1000-file change produces
+  // a handful of IPC messages instead of a thousand.
   const activeFileWatches = new Map<string, () => void>();
+  const FS_EVENT_BATCH_MS = 50;
+  const pendingFsEvents = new Map<string, FsEvent[]>();
+  let flushTimer: NodeJS.Timeout | null = null;
+  const flushFsEvents = () => {
+    flushTimer = null;
+    if (mainWindow.isDestroyed()) {
+      pendingFsEvents.clear();
+      return;
+    }
+    for (const [id, events] of pendingFsEvents) {
+      if (events.length > 0) mainWindow.webContents.send('files:watch-event', { id, events });
+    }
+    pendingFsEvents.clear();
+  };
   ipcMain.handle('files:watch-start', (_e, id: string, dirPath: string, pathType) => {
     if (activeFileWatches.has(id)) return;
     const resolved = pathType || detectPathType(dirPath);
     const unsub = subscribeFsWatch(dirPath, resolved, (event) => {
       if (mainWindow.isDestroyed()) return;
-      mainWindow.webContents.send('files:watch-event', { id, event });
+      let queue = pendingFsEvents.get(id);
+      if (!queue) {
+        queue = [];
+        pendingFsEvents.set(id, queue);
+      }
+      queue.push(event);
+      if (flushTimer === null) flushTimer = setTimeout(flushFsEvents, FS_EVENT_BATCH_MS);
     });
     activeFileWatches.set(id, unsub);
   });
   ipcMain.handle('files:watch-stop', (_e, id: string) => {
     const unsub = activeFileWatches.get(id);
     if (unsub) { unsub(); activeFileWatches.delete(id); }
+    pendingFsEvents.delete(id);
   });
   mainWindow.on('closed', () => {
+    if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    pendingFsEvents.clear();
     for (const unsub of activeFileWatches.values()) {
       try { unsub(); } catch { /* ignore */ }
     }

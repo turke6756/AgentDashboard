@@ -1,13 +1,15 @@
 import React from 'react';
 import type { PathType } from '../../../shared/types';
 import { useFileContentCache } from './useFileContentCache';
-import { detectFileType } from './fileTypeUtils';
+import { detectFileType, isEditableFileType } from './fileTypeUtils';
 import FileContentRenderer from './FileContentRenderer';
+import CodeMirrorEditor from './CodeMirrorEditor';
 import ImageRenderer from './ImageRenderer';
 import PdfRenderer from './PdfRenderer';
 import GeoTiffRenderer from './GeoTiffRenderer';
 import ShapefileRenderer from './ShapefileRenderer';
 import GeoPackageRenderer from './GeoPackageRenderer';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 interface Props {
   tabId: string;
@@ -17,6 +19,9 @@ interface Props {
 
 export default function FileContentArea({ tabId, filePath, pathType }: Props) {
   const fileType = filePath ? detectFileType(filePath) : null;
+  const editState = useDashboardStore((state) => state.tabEditState[tabId]);
+  const setDraftContent = useDashboardStore((state) => state.setDraftContent);
+  const saveTab = useDashboardStore((state) => state.saveTab);
 
   // Media + geospatial binary types are fetched via media:// protocol — skip text file reading entirely
   const isMediaType =
@@ -64,9 +69,31 @@ export default function FileContentArea({ tabId, filePath, pathType }: Props) {
 
   if (!content) return null;
 
+  if (
+    editState?.mode === 'edit' &&
+    isEditableFileType(filePath) &&
+    !content.error
+  ) {
+    return (
+      <CodeMirrorEditor
+        key={tabId}
+        initialContent={editState.draftContent}
+        language={fileType === 'markdown' ? 'markdown' : 'text'}
+        saving={editState.saving}
+        error={editState.error}
+        onChange={(draft) => setDraftContent(tabId, draft)}
+        onSave={() => { void saveTab(tabId); }}
+      />
+    );
+  }
+
+  const renderedContent = editState && !editState.dirty && !content.error
+    ? editState.originalContent
+    : content.content;
+
   return (
     <FileContentRenderer
-      content={content.content}
+      content={renderedContent}
       filePath={filePath}
       pathType={pathType}
       error={content.error}

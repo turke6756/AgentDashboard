@@ -1,9 +1,14 @@
+import { ArrowDown, ArrowUp, Code2, FileText, Play, Trash2 } from 'lucide-react';
+import type { ReactNode } from 'react';
+
 interface CellToolbarProps {
   canRun: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   busy: boolean;
   onRun: () => void;
+  onAddCodeBelow: () => void;
+  onAddMarkdownBelow: () => void;
   onDelete: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -15,26 +20,63 @@ export function CellToolbar({
   canMoveDown,
   busy,
   onRun,
+  onAddCodeBelow,
+  onAddMarkdownBelow,
   onDelete,
   onMoveUp,
   onMoveDown,
 }: CellToolbarProps) {
   return (
-    <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+    <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
       {canRun ? (
-        <button type="button" className="ui-btn ui-btn-success min-h-0 px-2 py-1 text-[11px]" onClick={onRun} disabled={busy}>
-          Run
-        </button>
+        <IconButton label="Run cell" onClick={onRun} disabled={busy} tone="success">
+          <Play size={14} strokeWidth={2} />
+        </IconButton>
       ) : null}
-      <button type="button" className="ui-btn min-h-0 px-2 py-1 text-[11px]" onClick={onMoveUp} disabled={!canMoveUp || busy}>
-        Up
-      </button>
-      <button type="button" className="ui-btn min-h-0 px-2 py-1 text-[11px]" onClick={onMoveDown} disabled={!canMoveDown || busy}>
-        Down
-      </button>
-      <button type="button" className="ui-btn ui-btn-danger min-h-0 px-2 py-1 text-[11px]" onClick={onDelete} disabled={busy}>
-        Delete
-      </button>
+      <IconButton label="Add code cell below" onClick={onAddCodeBelow} disabled={busy}>
+        <Code2 size={14} strokeWidth={2} />
+      </IconButton>
+      <IconButton label="Add markdown cell below" onClick={onAddMarkdownBelow} disabled={busy}>
+        <FileText size={14} strokeWidth={2} />
+      </IconButton>
+      <IconButton label="Move cell up" onClick={onMoveUp} disabled={!canMoveUp || busy}>
+        <ArrowUp size={14} strokeWidth={2} />
+      </IconButton>
+      <IconButton label="Move cell down" onClick={onMoveDown} disabled={!canMoveDown || busy}>
+        <ArrowDown size={14} strokeWidth={2} />
+      </IconButton>
+      <IconButton label="Delete cell" onClick={onDelete} disabled={busy} tone="danger">
+        <Trash2 size={14} strokeWidth={2} />
+      </IconButton>
     </div>
+  );
+}
+
+function IconButton({
+  label,
+  tone,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  tone?: 'success' | 'danger';
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  const toneClass = tone === 'success' ? 'ui-btn-success' : tone === 'danger' ? 'ui-btn-danger' : '';
+
+  return (
+    <button
+      type="button"
+      className={`ui-btn notebook-icon-btn ${toneClass}`}
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
   );
 }

@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback, useMemo, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useResize } from '../../hooks/useResize';
 import FileViewerHeader from './FileViewerHeader';
@@ -26,18 +27,21 @@ function useSwipeRight(onSwipe: () => void) {
 }
 
 export default function FileViewerPanel() {
-  const {
-    openTabs,
-    activeTabId,
-    closeTab,
-    setActiveTab,
-    closeAllTabs,
-    hideFileViewer,
-    openTab,
-    panelLayout,
-    togglePanelCollapsed,
-    selectedWorkspaceId,
-  } = useDashboardStore();
+  const { openTabs, activeTabId, panelLayout, selectedWorkspaceId, tabEditState } = useDashboardStore(
+    useShallow((s) => ({
+      openTabs: s.openTabs,
+      activeTabId: s.activeTabId,
+      panelLayout: s.panelLayout,
+      selectedWorkspaceId: s.selectedWorkspaceId,
+      tabEditState: s.tabEditState,
+    })),
+  );
+  const closeTab = useDashboardStore((s) => s.closeTab);
+  const setActiveTab = useDashboardStore((s) => s.setActiveTab);
+  const hideFileViewer = useDashboardStore((s) => s.hideFileViewer);
+  const openTab = useDashboardStore((s) => s.openTab);
+  const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
+  const saveTab = useDashboardStore((s) => s.saveTab);
 
   const swipeToAgents = useSwipeRight(hideFileViewer);
 
@@ -71,34 +75,41 @@ export default function FileViewerPanel() {
 
   // Keyboard shortcuts — close the tab currently displayed in this workspace's viewer
   const displayedTabId = effectiveTab?.id;
+  const handleCloseTab = useCallback((tabId: string) => {
+    const editState = tabEditState[tabId];
+    if (editState?.dirty && !window.confirm('Discard unsaved changes?')) {
+      return;
+    }
+    evictTabCache(tabId);
+    closeTab(tabId);
+  }, [closeTab, tabEditState]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        const editState = displayedTabId ? tabEditState[displayedTabId] : null;
+        if (displayedTabId && editState?.mode === 'edit') {
+          e.preventDefault();
+          void saveTab(displayedTabId);
+        }
+      } else if (e.key === 'Escape') {
         if (displayedTabId) {
-          evictTabCache(displayedTabId);
-          closeTab(displayedTabId);
+          handleCloseTab(displayedTabId);
         }
       } else if (e.key === 'w' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         if (displayedTabId) {
-          evictTabCache(displayedTabId);
-          closeTab(displayedTabId);
+          handleCloseTab(displayedTabId);
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [displayedTabId, closeTab]);
+  }, [displayedTabId, handleCloseTab, saveTab, tabEditState]);
 
   // Clicking a file in the tree opens it as a new tab (or focuses existing)
   const handleFileSelect = useCallback((filePath: string) => {
     openTab(filePath, treeRoot, treePathType, effectiveTab?.agentId, selectedWorkspaceId ?? undefined);
   }, [openTab, treeRoot, treePathType, effectiveTab?.agentId, selectedWorkspaceId]);
-
-  const handleCloseTab = useCallback((tabId: string) => {
-    evictTabCache(tabId);
-    closeTab(tabId);
-  }, [closeTab]);
 
   const handleBreadcrumbNavigate = useCallback((_dirPath: string) => {
     // Could navigate tree in future
@@ -139,6 +150,7 @@ export default function FileViewerPanel() {
       {/* File Header — only for file tabs */}
       {hasFile && (
         <FileViewerHeader
+          tabId={effectiveTab.id}
           filePath={effectiveTab.filePath}
           pathType={effectiveTab.pathType}
           fileSize={0}

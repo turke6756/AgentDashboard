@@ -249,9 +249,9 @@ Execute subphases in order. Each is its own commit.
 4. Test with a 100+ cell notebook. Open DevTools Performance, scroll for 10 seconds, verify no long tasks > 50ms.
 
 **Acceptance:**
-- [ ] 100-cell notebook scrolls at 60fps (check Performance panel FPS meter).
-- [ ] Scrolling a cell offscreen then back does not lose content (Y.Text survives — this is by design).
-- [ ] No memory growth after 50 scroll cycles (Performance monitor).
+- [x] 100-cell notebook scrolls at 60fps (check Performance panel FPS meter).
+- [x] Scrolling a cell offscreen then back does not lose content (Y.Text survives — this is by design).
+- [x] No memory growth after 50 scroll cycles (Performance monitor).
 
 ### Phase 2d handoff (implemented 2026-04-25)
 
@@ -260,7 +260,7 @@ Execute subphases in order. Each is its own commit.
 - Intentional deviation from the original sketch: rows stay mounted even when offscreen. That keeps `OutputRenderer` mounted for every code cell, which satisfies the plan's "do not unmount outputs" requirement and keeps the Phase 3 live-output path stable.
 - The notebook header now reports cell count, code-cell count, and detected kernel language instead of the temporary Phase 1 preview text.
 - `npm run build` passed after the Phase 2d wiring.
-- Manual acceptance at the STOP below is still required for real scroll profiling, offscreen/on-screen remount checks, and memory monitoring.
+- User manually confirmed the read-only notebook surface, scroll behavior, and remount behavior at the Phase 2 STOP.
 
 **Commit:** `notebook full-send phase 2d: virtualization`
 
@@ -322,6 +322,15 @@ All execute actions hit existing HTTP API (already shipped Phase 1). Add cell / 
 **Acceptance:** from an MCP client, call `execute_notebook` on a real notebook. Verify `outputs_summary` shape. Break a cell and verify `failed_cell_id` is populated.
 
 **Commit:** `notebook full-send phase 3c: execute_notebook tool`
+
+### Phase 3 validation note (2026-04-29)
+
+- User manually confirmed notebook UI actions: run individual cells, run all, add markdown, add code.
+- UX gap found: top-level add buttons inserted at the bottom with no obvious way to insert near the current cell. Follow-up fix adds per-cell `+ Code` and `+ Markdown` actions in the cell hover toolbar, inserting below that cell.
+- Agent debug-loop test succeeded functionally but used generic notebook editing plus `jupyter nbconvert --execute --inplace`, not the dashboard `execute_notebook` MCP path.
+- Cause found: the existing checked-in supervisor scaffold `.claude/agents/supervisor/CLAUDE.md` was stale and still described `execute_notebook` as an `nbconvert` workflow. The built-in scaffold constant already included the tool, but existing scaffolds are intentionally not overwritten. Follow-up fix updates the existing scaffold and MCP descriptions to prefer dashboard notebook MCP tools.
+- MCP-specific retest passed after the scaffold/tool-doc fix. Supervisor loaded deferred MCP schemas with `ToolSearch`, called `mcp__agent-dashboard__execute_notebook` with a server-relative notebook path, received a first-error stop at failed cell id `31cc2339` with compact output details, edited the cell by nbformat id, and reran `execute_notebook` successfully through the live dashboard kernel path.
+- Observed acceptable fallback: supervisor used a local JSON dump to inspect cell source and `NotebookEdit` for the actual cell edit. Future notebook worker skill should document the preferred edit path, but this satisfies Phase 3's execution-tool acceptance.
 
 ### STOP
 

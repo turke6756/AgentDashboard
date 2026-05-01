@@ -58,10 +58,21 @@ const api: IpcApi = {
   files: {
     readFile: (filePath, pathType) => ipcRenderer.invoke('files:read', filePath, pathType),
     listDirectory: (dirPath, pathType) => ipcRenderer.invoke('files:list-directory', dirPath, pathType),
+    writeFile: (filePath, rootDirectory, pathType, content) =>
+      ipcRenderer.invoke('files:write', filePath, rootDirectory, pathType, content),
+    createFile: (parentDir, rootDirectory, pathType, name, template) =>
+      ipcRenderer.invoke('files:create-file', parentDir, rootDirectory, pathType, name, template),
+    mkdir: (parentDir, rootDirectory, pathType, name) =>
+      ipcRenderer.invoke('files:mkdir', parentDir, rootDirectory, pathType, name),
+    rename: (oldPath, rootDirectory, pathType, newName) =>
+      ipcRenderer.invoke('files:rename', oldPath, rootDirectory, pathType, newName),
+    deleteEntry: (entryPath, rootDirectory, pathType, recursive) =>
+      ipcRenderer.invoke('files:delete', entryPath, rootDirectory, pathType, recursive),
     watchDirectory: (dirPath, pathType, callback) => {
       const id = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const listener = (_event: any, msg: { id: string; event: any }) => {
-        if (msg.id === id) callback(msg.event);
+      const listener = (_event: any, msg: { id: string; events: any[] }) => {
+        if (msg.id !== id || !Array.isArray(msg.events)) return;
+        for (const ev of msg.events) callback(ev);
       };
       ipcRenderer.on('files:watch-event', listener);
       ipcRenderer.invoke('files:watch-start', id, dirPath, pathType);

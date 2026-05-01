@@ -87,6 +87,11 @@ export function isInteractiveNotebookFile(filePath: string): boolean {
   return getExtension(filePath) === '.ipynb';
 }
 
+export function isEditableFileType(filePath: string): boolean {
+  const type = detectFileType(filePath);
+  return type === 'markdown' || type === 'text' || type === 'code';
+}
+
 export function detectLanguage(filePath: string): string {
   const ext = getExtension(filePath);
   return CODE_EXTS[ext] || 'text';

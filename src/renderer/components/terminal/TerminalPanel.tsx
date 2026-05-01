@@ -89,7 +89,16 @@ interface TerminalPanelProps {
 }
 
 export default function TerminalPanel({ height }: TerminalPanelProps) {
-  const { terminalAgentId, setTerminalAgent, agents, terminalPinned, toggleTerminalPinned, panelLayout, togglePanelCollapsed } = useDashboardStore();
+  const terminalAgentId = useDashboardStore((s) => s.terminalAgentId);
+  const terminalPinned = useDashboardStore((s) => s.terminalPinned);
+  const panelLayout = useDashboardStore((s) => s.panelLayout);
+  const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
+  const toggleTerminalPinned = useDashboardStore((s) => s.toggleTerminalPinned);
+  const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
+  // Subscribe to just this terminal's agent — avoids re-render on every other agent's status change.
+  const agent = useDashboardStore((s) =>
+    s.terminalAgentId ? s.agents.find((a) => a.id === s.terminalAgentId) ?? null : null,
+  );
   const theme = useThemeStore((s) => s.theme);
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -99,7 +108,6 @@ export default function TerminalPanel({ height }: TerminalPanelProps) {
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isDragOver, setIsDragOver] = useState(false);
 
-  const agent = agents.find(a => a.id === terminalAgentId);
   const isOpen = terminalAgentId !== null;
   const isNub = panelLayout.terminalCollapsed && isOpen;
   const isLight = theme === 'light';

@@ -27,7 +27,23 @@ import {
 } from '../database';
 import { detectPathType, windowsToWslPath, uncToWslPath } from '../path-utils';
 import { getScriptPath } from './paths';
-import { tmuxListSessions, tmuxSendKeys } from '../wsl-bridge';
+import { tmuxListSessions, tmuxSendInput } from '../wsl-bridge';
+
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+const WINDOWS_SEND_INPUT_ENTER_DELAY_MS = 80;
+const WINDOWS_CODEX_TYPING_DELAY_MS = 8;
+
+// Win32 Input Mode CSI sequence for a VK_RETURN keypress (down + up).
+// Codex/gemini on Windows enable mode ?9001h and expect submit as a real
+// key event, not the auto-converted single KEY_DOWN ConPTY emits for raw '\r'.
+// Format: ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
+const WIN32_KEY_ENTER_DOWN = '\x1b[13;28;13;1;0;1_';
+const WIN32_KEY_ENTER_UP = '\x1b[13;28;13;0;0;1_';
+// Shift+Enter — inserts a newline in codex's prompt without submitting.
+// Cs=16 = SHIFT_PRESSED.
+const WIN32_KEY_SHIFT_ENTER_DOWN = '\x1b[13;28;13;1;16;1_';
+const WIN32_KEY_SHIFT_ENTER_UP = '\x1b[13;28;13;0;16;1_';
 
 /** Recover the workspace root from an agent whose cwd is a persona subdirectory. */
 function getEffectiveWorkspaceRoot(agent: Agent): string {
@@ -36,6 +52,14 @@ function getEffectiveWorkspaceRoot(agent: Agent): string {
   const winMatch = agent.workingDirectory.match(/^(.+)\\\.claude\\agents\\[^\\]+\\?$/);
   if (winMatch) return winMatch[1];
   return agent.workingDirectory;
+}
+
+function formatBracketedPaste(text: string): string {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const body = normalized
+    .replaceAll(BRACKETED_PASTE_START, '')
+    .replaceAll(BRACKETED_PASTE_END, '');
+  return `${BRACKETED_PASTE_START}${body}${BRACKETED_PASTE_END}`;
 }
 
 function parseQueryResponse(stdout: string): QueryResult {
@@ -145,6 +169,18 @@ export class AgentSupervisor extends EventEmitter {
 
   // Team message delivery
   private teamDeliveryEngine: TeamMessageDeliveryEngine;
+
+  // Per-agent serial input queue. The Windows codex/gemini path types one
+  // character at a time at WINDOWS_CODEX_TYPING_DELAY_MS to dodge the
+  // paste-burst dialog, so a single send can take 30+ seconds for a few KB
+  // of text. We chain sends per agent so two callers can't interleave their
+  // typing into a single prompt buffer, and we expose `isInputInFlight` so
+  // the HTTP layer can both reject concurrent sends and report status as
+  // 'working' while typing is in progress (the status monitor cannot infer
+  // 'working' on its own here — typed-char echoes do not count as a
+  // "meaningful burst", so it would otherwise read 'idle' the entire time).
+  private inputQueues = new Map<string, Promise<void>>();
+  private inputInFlight = new Set<string>();
 
   constructor() {
     super();
@@ -482,7 +518,12 @@ export class AgentSupervisor extends EventEmitter {
     }
     const provider = resolvedInput.provider || 'claude';
     const defaultCmd = PROVIDER_COMMANDS[provider][pathType];
-    const command = resolvedInput.command || (workspace.defaultCommand === DEFAULT_COMMAND ? defaultCmd : workspace.defaultCommand);
+    // If the workspace's defaultCommand is one of the framework defaults
+    // (Windows or WSL), respect the provider override. Otherwise the workspace
+    // has a customized launch command and we use it verbatim.
+    const isFrameworkDefault =
+      workspace.defaultCommand === DEFAULT_COMMAND || workspace.defaultCommand === DEFAULT_COMMAND_WSL;
+    const command = resolvedInput.command || (isFrameworkDefault ? defaultCmd : workspace.defaultCommand);
     const agentId = uuidv4().substring(0, 8);
     const logPath = path.join(this.logsDir, `${agentId}.log`);
 
@@ -954,17 +995,35 @@ export class AgentSupervisor extends EventEmitter {
         console.log(`[Windows] Fresh launch ${agent.title} (${agent.id}) with session-id: ${sessionId}`);
       }
 
-      // Use --resume with session ID if available, else fall back to --continue (Claude only)
+      // Resume by explicit session ID. Never fall back to --continue here:
+      // when multiple agents share a workdir, --continue picks the most recent
+      // session in cwd and silently cross-contaminates restarts. If the ID is
+      // missing, treat as a hard error so the supervisor surfaces a 'crashed'.
       if (resume && isClaude && !args.includes('--continue') && !args.includes('-c')) {
         const latest = getAgent(agent.id);
-        if (latest?.resumeSessionId) {
-          args.push('--resume', latest.resumeSessionId);
-          console.log(`[Windows] Resuming ${agent.title} (${agent.id}) with session: ${latest.resumeSessionId}`);
-        } else {
-          args.push('--continue');
-          console.log(`[Windows] Resuming ${agent.title} (${agent.id}) with --continue (no session ID)`);
+        if (!latest?.resumeSessionId) {
+          throw new Error(`Cannot resume ${agent.title} (${agent.id}): no resumeSessionId on record`);
         }
+        args.push('--resume', latest.resumeSessionId);
+        console.log(`[Windows] Resuming ${agent.title} (${agent.id}) with session: ${latest.resumeSessionId}`);
       }
+
+      // Gemini resume: bare --resume picks the most recent session for this user.
+      // Caveat: not scoped to cwd or to this specific agent — if multiple Gemini
+      // agents are running, the wrong one's session can be picked. Acceptable for
+      // single-Gemini-agent workflows; named-session (--resume <name> via /chat
+      // save) is the proper fix and can be layered on later.
+      if (resume && agent.provider === 'gemini' && !args.includes('--resume') && !args.includes('-r')) {
+        args.push('--resume');
+        console.log(`[Windows] Resuming ${agent.title} (${agent.id}) with gemini --resume (most-recent session)`);
+      }
+
+      // TODO(codex-resume): Codex needs a different shape — `codex resume <id>` is
+      // a subcommand, not a flag, and Codex mints its own session ID at launch
+      // (no --session-id injection). Implementation strategy: snapshot
+      // ~/.codex/sessions/ before launch, diff after launch to capture the new
+      // session file, store as resumeSessionId, and on restart rewrite the
+      // command from `codex --full-auto` to `codex resume <id> --full-auto`.
 
       // Append agent.md content as final positional argument (Claude only)
       if (agentMdPrompt && !resume && isClaude) {
@@ -1042,17 +1101,35 @@ export class AgentSupervisor extends EventEmitter {
         console.log(`[WSL] Fresh launch ${agent.title} (${agent.id}) with session-id: ${sessionId}`);
       }
 
-      // Use --resume with session ID if available, else fall back to --continue (Claude only)
+      // Resume by explicit session ID. Never fall back to --continue here:
+      // when multiple agents share a workdir, --continue picks the most recent
+      // session in cwd and silently cross-contaminates restarts. If the ID is
+      // missing, treat as a hard error so the supervisor surfaces a 'crashed'.
       if (resume && isClaude && !command.includes('--continue') && !command.includes('-c ')) {
         const latest = getAgent(agent.id);
-        if (latest?.resumeSessionId) {
-          command += ` --resume ${latest.resumeSessionId}`;
-          console.log(`[WSL] Resuming ${agent.title} (${agent.id}) with session: ${latest.resumeSessionId}`);
-        } else {
-          command += ' --continue';
-          console.log(`[WSL] Resuming ${agent.title} (${agent.id}) with --continue (no session ID)`);
+        if (!latest?.resumeSessionId) {
+          throw new Error(`Cannot resume ${agent.title} (${agent.id}): no resumeSessionId on record`);
         }
+        command += ` --resume ${latest.resumeSessionId}`;
+        console.log(`[WSL] Resuming ${agent.title} (${agent.id}) with session: ${latest.resumeSessionId}`);
       }
+
+      // Gemini resume: bare --resume picks the most recent session for this user.
+      // Caveat: not scoped to cwd or to this specific agent — if multiple Gemini
+      // agents are running, the wrong one's session can be picked. Acceptable for
+      // single-Gemini-agent workflows; named-session (/chat save <name> + --resume
+      // <name>) is the proper fix and can be layered on later.
+      if (resume && agent.provider === 'gemini' && !command.includes('--resume') && !command.includes(' -r ')) {
+        command += ' --resume';
+        console.log(`[WSL] Resuming ${agent.title} (${agent.id}) with gemini --resume (most-recent session)`);
+      }
+
+      // TODO(codex-resume): Codex needs a different shape — `codex resume <id>` is
+      // a subcommand, not a flag, and Codex mints its own session ID at launch
+      // (no --session-id injection). Implementation strategy: snapshot
+      // ~/.codex/sessions/ before launch, diff after launch to capture the new
+      // session file, store as resumeSessionId, and on restart rewrite the
+      // command from `codex --full-auto` to `codex resume <id> --full-auto`.
 
       // Append agent.md / system prompt as positional argument (Claude only).
       // Write the prompt to a file and inline the cat into the command, so the prompt
@@ -1116,15 +1193,6 @@ export class AgentSupervisor extends EventEmitter {
     this.emit('statusChanged', { agentId: agent.id, status: 'restarting' });
     incrementRestartCount(agent.id);
 
-    // Clear stale session ID so restart uses --continue instead of --resume.
-    // The old session may no longer exist (e.g. app was restarted), causing --resume to fail.
-    if (agent.resumeSessionId) {
-      updateAgentResumeSessionId(agent.id, '');
-      this.sessionLogReader.invalidatePath(agent.id);
-      console.log(`[auto-restart] Cleared stale session ID for ${agent.title} — will use --continue`);
-    }
-
-    // Wait a bit before restarting with --continue to resume conversation
     setTimeout(async () => {
       const latest = getAgent(agent.id);
       if (!latest || latest.status !== 'restarting') return;
@@ -1456,8 +1524,56 @@ export class AgentSupervisor extends EventEmitter {
     if (wslRunner) { wslRunner.write(data); }
   }
 
-  async sendInput(agentId: string, text: string): Promise<void> {
-    // For WSL agents, use tmux send-keys (reliable, doesn't need PTY host)
+  /**
+   * Returns true while a send to this agent is queued or actively typing.
+   * The HTTP layer uses this to (a) override the agent's reported status to
+   * 'working' so callers don't poll a stale 'idle' between enqueue and the
+   * agent's first response burst, and (b) reject concurrent POST /input
+   * requests with 409. See the inputQueues field comment for context.
+   */
+  isInputInFlight(agentId: string): boolean {
+    return this.inputInFlight.has(agentId);
+  }
+
+  /**
+   * Public entry point for sending input. Serializes per-agent: if a previous
+   * send is still typing, this one waits its turn. Resolves once delivery
+   * completes (so internal callers can still `await` for ordering).
+   *
+   * Callers that want fire-and-forget semantics (i.e. the HTTP layer) should
+   * not `await` the returned promise — it stays pending until typing is done.
+   * Synchronous validation (agent exists, has a runner) happens before the
+   * promise is even chained, so missing-runner errors still throw eagerly.
+   */
+  sendInput(agentId: string, text: string): Promise<void> {
+    if (!this.windowsRunners.get(agentId) && !this.wslRunners.get(agentId)) {
+      return Promise.reject(new Error(`No runner for agent ${agentId}`));
+    }
+    this.inputInFlight.add(agentId);
+    const previous = this.inputQueues.get(agentId) || Promise.resolve();
+    const ours: Promise<void> = previous
+      .catch(() => undefined) // a prior failed send must not poison the queue
+      .then(() => this._doSendInput(agentId, text));
+    this.inputQueues.set(agentId, ours);
+    // Clear in-flight only when the chain has fully drained for this agent.
+    // If more sends queued behind us, they own the cleanup.
+    void ours.finally(() => {
+      if (this.inputQueues.get(agentId) === ours) {
+        this.inputQueues.delete(agentId);
+        this.inputInFlight.delete(agentId);
+      }
+    });
+    return ours;
+  }
+
+  private async _doSendInput(agentId: string, text: string): Promise<void> {
+    // For WSL agents, dispatch by provider. All three providers enable the
+    // kitty keyboard protocol on Linux, so a bare `\r` from `tmux send-keys
+    // Enter` is dropped — submit must be the kitty CSI form `\x1b[13u`.
+    // claude additionally needs bracketed-paste wrapping so multi-line content
+    // renders without confusing the input handler; codex/gemini need each
+    // embedded `\n` encoded as Shift+Enter (`\x1b[13;2u`) so the final Enter
+    // is the only submit event. See `tmuxSendInput` for the encoding.
     const wslRunner = this.wslRunners.get(agentId);
     if (wslRunner) {
       const agent = getAgent(agentId);
@@ -1468,14 +1584,52 @@ export class AgentSupervisor extends EventEmitter {
           console.warn(`[sendInput] Skipping send to ${agent.title} — runner not alive`);
           return;
         }
-        await tmuxSendKeys(agent.tmuxSessionName, text);
+        const provider = agent.provider === 'claude' || agent.provider === 'codex' || agent.provider === 'gemini'
+          ? agent.provider
+          : 'unknown';
+        await tmuxSendInput(agent.tmuxSessionName, text, provider);
         return;
       }
     }
-    // For Windows agents, write directly with \r for Enter
+    // For Windows agents, bracketed-paste the body into Claude Code,
+    // then send Enter as a separate PTY write. Sending text + '\r' (or '\n') as
+    // one chunk leaves the message typed but unsubmitted in Claude Code v2.x's
+    // prompt buffer — the trailing newline is absorbed as part of the paste,
+    // so Enter must be delivered as its own input event.
     const winRunner = this.windowsRunners.get(agentId);
     if (winRunner) {
-      winRunner.write(text + '\r');
+      const agent = getAgent(agentId);
+      if (agent?.provider === 'claude') {
+        // Claude Code treats a raw text + Enter chunk as pasted text without a
+        // submit, so wrap in bracketed-paste markers and deliver Enter as a
+        // separate PTY write.
+        winRunner.write(formatBracketedPaste(text));
+        await new Promise((resolve) => setTimeout(resolve, WINDOWS_SEND_INPUT_ENTER_DELAY_MS));
+        winRunner.write('\r');
+      } else if (agent?.provider === 'codex' || agent?.provider === 'gemini') {
+        // Codex/gemini enable Win32 Input Mode (ESC[?9001h). In this mode the
+        // TUI expects key events as CSI sequences with both KEY_DOWN and
+        // KEY_UP. ConPTY auto-converts incoming bytes into a single KEY_DOWN
+        // event, which is enough to render typed characters but not enough to
+        // trigger Enter (submit). Type chars at a slow rate so codex's
+        // paste-detect doesn't fire, then send a real VK_RETURN down+up pair.
+        // Embedded '\n' becomes Shift+Enter (newline-without-submit) so the
+        // final plain Enter still triggers submit instead of inserting another
+        // line in multi-line input mode.
+        const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        for (const ch of normalized) {
+          if (ch === '\n') {
+            winRunner.write(WIN32_KEY_SHIFT_ENTER_DOWN + WIN32_KEY_SHIFT_ENTER_UP);
+          } else {
+            winRunner.write(ch);
+          }
+          await new Promise((resolve) => setTimeout(resolve, WINDOWS_CODEX_TYPING_DELAY_MS));
+        }
+        await new Promise((resolve) => setTimeout(resolve, WINDOWS_SEND_INPUT_ENTER_DELAY_MS));
+        winRunner.write(WIN32_KEY_ENTER_DOWN + WIN32_KEY_ENTER_UP);
+      } else {
+        winRunner.write(`${text}\r`);
+      }
       return;
     }
   }

@@ -32,6 +32,18 @@ type RenderItem =
     }
   | { kind: 'system'; uuid: string; text: string };
 
+// Cache wrapped result objects so identity is stable across pairEvents calls — without this,
+// React.memo on ToolBlock is mostly cosmetic because `result` would be a fresh literal each render.
+const resultWrappers = new WeakMap<ToolResultEvent, { content: string; truncated: boolean; isError?: boolean }>();
+function wrapResult(res: ToolResultEvent) {
+  let w = resultWrappers.get(res);
+  if (!w) {
+    w = { content: res.content, truncated: res.truncated, isError: res.isError };
+    resultWrappers.set(res, w);
+  }
+  return w;
+}
+
 /**
  * Pair tool-use ↔ tool-result by `toolUseId`, then flatten into a render list.
  * Usage events are consumed by ContextUsageBar and dropped from the list.
@@ -68,9 +80,7 @@ function pairEvents(events: SessionEvent[]): RenderItem[] {
           toolUseId: e.toolUseId,
           toolName: (e as ToolUseEvent).toolName,
           input: (e as ToolUseEvent).input,
-          result: res
-            ? { content: res.content, truncated: res.truncated, isError: res.isError }
-            : undefined,
+          result: res ? wrapResult(res) : undefined,
         });
         break;
       }
@@ -83,7 +93,7 @@ function pairEvents(events: SessionEvent[]): RenderItem[] {
             toolUseId: e.toolUseId,
             toolName: 'Result',
             input: undefined,
-            result: { content: e.content, truncated: e.truncated, isError: e.isError },
+            result: wrapResult(e),
           });
         }
         break;
@@ -110,7 +120,7 @@ function SenderLabel({ name, color, align }: { name: string; color: string; alig
   );
 }
 
-function UserBubble({ text }: { text: string }) {
+const UserBubble = React.memo(function UserBubble({ text }: { text: string }) {
   const isLight = useThemeStore((s) => s.theme) === 'light';
   return (
     <div className="flex flex-col items-end my-3">
@@ -126,9 +136,9 @@ function UserBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
-function AssistantBubble({ text, agentName }: { text: string; agentName: string }) {
+const AssistantBubble = React.memo(function AssistantBubble({ text, agentName }: { text: string; agentName: string }) {
   const isLight = useThemeStore((s) => s.theme) === 'light';
   return (
     <div className="flex flex-col items-start my-3 w-full">
@@ -145,9 +155,9 @@ function AssistantBubble({ text, agentName }: { text: string; agentName: string 
       </div>
     </div>
   );
-}
+});
 
-function ThinkingNote({ text }: { text: string }) {
+const ThinkingNote = React.memo(function ThinkingNote({ text }: { text: string }) {
   const isLight = useThemeStore((s) => s.theme) === 'light';
   return (
     <div
@@ -159,16 +169,16 @@ function ThinkingNote({ text }: { text: string }) {
       <span className="whitespace-pre-wrap">{text}</span>
     </div>
   );
-}
+});
 
-function SystemNote({ text }: { text: string }) {
+const SystemNote = React.memo(function SystemNote({ text }: { text: string }) {
   const isLight = useThemeStore((s) => s.theme) === 'light';
   return (
     <div className={`my-1 text-[10px] font-mono whitespace-pre-wrap select-text cursor-text ${isLight ? 'text-[#8b949e]' : 'text-gray-600'}`}>
       {text}
     </div>
   );
-}
+});
 
 export default function ChatPane({ agentId, agentStatus, agentName }: Props) {
   const isLight = useThemeStore((s) => s.theme) === 'light';

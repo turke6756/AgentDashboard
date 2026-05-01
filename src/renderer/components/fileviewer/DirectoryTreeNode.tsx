@@ -5,6 +5,8 @@ import * as Icons from 'lucide-react';
 import FileIcon from './FileIcon';
 import { fileDragStart } from '../../utils/drag-file';
 import { applyFsEvent } from './applyFsEvent';
+import { useDashboardStore } from '../../stores/dashboard-store';
+import type { PromptName } from '../../hooks/useNamePrompt';
 
 interface Props {
   entry: DirectoryEntry;
@@ -14,14 +16,42 @@ interface Props {
   workingDirectory: string;
   onFileSelect: (filePath: string) => void;
   loadChildren: (dirPath: string) => Promise<DirectoryEntry[]>;
+  onTreeChanged: (dirPath: string) => void;
+  onSiblingsChanged: () => void | Promise<void>;
+  promptName: PromptName;
 }
 
-export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathType, workingDirectory, onFileSelect, loadChildren }: Props) {
+function parentPath(entryPath: string): string {
+  const slash = Math.max(entryPath.lastIndexOf('/'), entryPath.lastIndexOf('\\'));
+  if (slash === 0) return '/';
+  if (slash > 0) return entryPath.slice(0, slash);
+  return entryPath;
+}
+
+function ensureExtension(name: string, ext: string): string {
+  return name.toLowerCase().endsWith(ext) ? name : `${name}${ext}`;
+}
+
+function DirectoryTreeNode({
+  entry,
+  depth,
+  activeFilePath,
+  pathType,
+  workingDirectory,
+  onFileSelect,
+  loadChildren,
+  onTreeChanged,
+  onSiblingsChanged,
+  promptName,
+}: Props) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirectoryEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTabsForPath = useDashboardStore((state) => state.closeTabsForPath);
+  const renameTabPath = useDashboardStore((state) => state.renameTabPath);
+  const hasDirtyTabForPath = useDashboardStore((state) => state.hasDirtyTabForPath);
 
   const isActive = activeFilePath === entry.path;
 
@@ -70,11 +100,96 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
   }, [entry.isDirectory, entry.path, pathType, expanded, childrenLoaded]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    if (entry.isDirectory) return;
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY });
-  }, [entry.isDirectory]);
+  }, []);
+
+  const reloadChildren = useCallback(async () => {
+    if (!entry.isDirectory) return;
+    setLoading(true);
+    onTreeChanged(entry.path);
+    try {
+      const items = await loadChildren(entry.path);
+      setChildren(items);
+    } finally {
+      setLoading(false);
+    }
+  }, [entry.isDirectory, entry.path, loadChildren, onTreeChanged]);
+
+  const createFileInDirectory = useCallback(async (template: 'text' | 'markdown' | 'notebook', label: string, ext?: string) => {
+    if (!entry.isDirectory) return;
+    const rawName = await promptName({ title: label, okLabel: 'Create' });
+    if (rawName === null) return;
+    const name = ext ? ensureExtension(rawName.trim(), ext) : rawName.trim();
+    if (!name) return;
+    const result = await window.api.files.createFile(entry.path, workingDirectory, pathType, name, template);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    setExpanded(true);
+    await reloadChildren();
+    if (result.path) onFileSelect(result.path);
+  }, [entry.isDirectory, entry.path, onFileSelect, pathType, promptName, reloadChildren, workingDirectory]);
+
+  const createFolderInDirectory = useCallback(async () => {
+    if (!entry.isDirectory) return;
+    const rawName = await promptName({ title: 'New folder name', okLabel: 'Create' });
+    if (rawName === null) return;
+    const name = rawName.trim();
+    if (!name) return;
+    const result = await window.api.files.mkdir(entry.path, workingDirectory, pathType, name);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    setExpanded(true);
+    await reloadChildren();
+  }, [entry.isDirectory, entry.path, pathType, promptName, reloadChildren, workingDirectory]);
+
+  const renameCurrentEntry = useCallback(async () => {
+    if (hasDirtyTabForPath(entry.path)) {
+      window.alert('Save or discard unsaved changes before renaming this item.');
+      return;
+    }
+    const rawName = await promptName({
+      title: `Rename "${entry.name}" to`,
+      defaultValue: entry.name,
+      okLabel: 'Rename',
+    });
+    if (rawName === null) return;
+    const name = rawName.trim();
+    if (!name || name === entry.name) return;
+    const result = await window.api.files.rename(entry.path, workingDirectory, pathType, name);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    if (result.path) {
+      renameTabPath(entry.path, result.path);
+    }
+    onTreeChanged(parentPath(entry.path));
+    await onSiblingsChanged();
+  }, [entry.name, entry.path, hasDirtyTabForPath, onSiblingsChanged, onTreeChanged, pathType, promptName, renameTabPath, workingDirectory]);
+
+  const deleteCurrentEntry = useCallback(async () => {
+    const confirmed = entry.isDirectory
+      ? window.confirm(`Delete folder "${entry.name}" and everything inside it?`)
+      : window.confirm(`Delete file "${entry.name}"?`);
+    if (!confirmed) return;
+    if (hasDirtyTabForPath(entry.path) && !window.confirm('This item has unsaved changes in an open tab. Delete anyway?')) {
+      return;
+    }
+    const result = await window.api.files.deleteEntry(entry.path, workingDirectory, pathType, entry.isDirectory);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    closeTabsForPath(entry.path);
+    onTreeChanged(parentPath(entry.path));
+    await onSiblingsChanged();
+  }, [closeTabsForPath, entry.isDirectory, entry.name, entry.path, hasDirtyTabForPath, onSiblingsChanged, onTreeChanged, pathType, workingDirectory]);
 
   const ChevronIcon = expanded ? Icons.ChevronDown : Icons.ChevronRight;
 
@@ -128,6 +243,9 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
               workingDirectory={workingDirectory}
               onFileSelect={onFileSelect}
               loadChildren={loadChildren}
+              onTreeChanged={onTreeChanged}
+              onSiblingsChanged={reloadChildren}
+              promptName={promptName}
             />
           ))}
         </div>
@@ -140,10 +258,19 @@ export default function DirectoryTreeNode({ entry, depth, activeFilePath, pathTy
           filePath={entry.path}
           workingDirectory={workingDirectory}
           pathType={pathType}
+          isDirectory={entry.isDirectory}
           showRevealInTree={false}
           onClose={() => setContextMenu(null)}
+          onCreateFile={() => createFileInDirectory('text', 'New file name')}
+          onCreateMarkdownFile={() => createFileInDirectory('markdown', 'New Markdown file name', '.md')}
+          onCreateNotebook={() => createFileInDirectory('notebook', 'New notebook name', '.ipynb')}
+          onCreateFolder={createFolderInDirectory}
+          onRename={renameCurrentEntry}
+          onDelete={deleteCurrentEntry}
         />
       )}
     </div>
   );
 }
+
+export default React.memo(DirectoryTreeNode);

@@ -47,7 +47,7 @@ export function OutputRenderer({ outputs }: OutputRendererProps) {
   if (normalizedOutputs.length === 0) return null;
 
   return (
-    <div className="border-t border-surface-3 bg-black/20">
+    <div className="notebook-output">
       {normalizedOutputs.map((output, index) => (
         <OutputItem
           key={index}
@@ -106,31 +106,31 @@ function OutputItem({
     case 'image/jpeg': {
       const base64 = mimeValueToText(output.data[mimeType]).trim();
       return (
-        <div className="overflow-auto px-4 py-3">
+        <div className="notebook-output-item overflow-auto px-4 py-3">
           <img
             src={getImageUrl(mimeType, base64)}
             alt="Cell output"
-            className="max-w-full"
+            className="max-w-full rounded-[3px]"
           />
         </div>
       );
     }
     case 'image/svg+xml': {
       const html = sanitizeHtml(mimeValueToText(output.data[mimeType]));
-      return <div className="overflow-auto px-4 py-3" dangerouslySetInnerHTML={{ __html: html }} />;
+      return <div className="notebook-output-item overflow-auto px-4 py-3" dangerouslySetInnerHTML={{ __html: html }} />;
     }
     case 'text/html': {
       const html = sanitizeHtml(mimeValueToText(output.data[mimeType]));
       return (
         <div
-          className="notebook-html-output overflow-auto px-4 py-3 text-sm text-fg-primary"
+          className="notebook-output-item notebook-html-output overflow-auto px-4 py-3 text-sm text-fg-primary"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       );
     }
     case 'text/markdown':
       return (
-        <div className="px-4 py-3 text-sm text-fg-primary">
+        <div className="notebook-output-item notebook-markdown px-4 py-3 text-sm text-fg-primary">
           <ReactMarkdown>{mimeValueToText(output.data[mimeType])}</ReactMarkdown>
         </div>
       );
@@ -157,14 +157,14 @@ function AnsiPre({
 
   const toneClass =
     tone === 'stderr'
-      ? 'text-accent-orange'
+      ? 'notebook-output-stderr text-accent-orange'
       : tone === 'error'
-        ? 'bg-accent-red/10 text-accent-red'
-        : 'text-fg-primary';
+        ? 'notebook-output-error text-accent-red'
+        : 'notebook-output-console text-fg-primary';
 
   return (
     <pre
-      className={`m-0 overflow-auto whitespace-pre-wrap px-4 py-2 font-mono text-xs leading-5 ${toneClass}`}
+      className={`notebook-output-item m-0 overflow-auto whitespace-pre-wrap px-4 py-2 font-mono text-xs leading-5 ${toneClass}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -176,7 +176,7 @@ function JsonOutput({ value }: { value: nbformat.IMimeBundle[string] | undefined
     : JSON.stringify(value, null, 2);
 
   return (
-    <details className="px-4 py-2 text-xs text-fg-primary">
+    <details className="notebook-output-item px-4 py-2 text-xs text-fg-primary">
       <summary className="cursor-pointer select-none font-sans text-fg-secondary">application/json</summary>
       <pre className="m-0 mt-2 overflow-auto whitespace-pre-wrap font-mono leading-5">{text}</pre>
     </details>
@@ -185,7 +185,7 @@ function JsonOutput({ value }: { value: nbformat.IMimeBundle[string] | undefined
 
 function UnsupportedWidget() {
   return (
-    <div className="px-4 py-3 font-sans text-sm text-fg-muted">
+    <div className="notebook-output-item px-4 py-3 font-sans text-sm text-fg-muted">
       [Interactive widget - not supported in v1]
     </div>
   );

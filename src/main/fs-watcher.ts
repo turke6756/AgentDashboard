@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { ChildProcess } from 'child_process';
 import { wslSpawn, isInotifywaitAvailable } from './wsl-bridge';
-import { listDirectoryEntries } from './file-reader';
+import { listDirectoryEntriesAsync } from './file-reader';
+import { ensureWslPath } from './path-utils';
 import type { FsEvent, PathType } from '../shared/types';
 
 type Listener = (event: FsEvent) => void;
@@ -16,9 +17,14 @@ interface Watcher {
 
 const watchers = new Map<string, Watcher>();
 const POLL_INTERVAL_MS = 2000;
+const POLL_BACKOFF_MS = [POLL_INTERVAL_MS, 5000, 10000, 30000];
 
 function keyFor(dirPath: string, pathType: PathType): string {
   return `${pathType}:${dirPath}`;
+}
+
+function backendPath(dirPath: string, pathType: PathType): string {
+  return pathType === 'wsl' ? ensureWslPath(dirPath, pathType) : dirPath;
 }
 
 function emit(key: string, event: FsEvent): void {
@@ -113,18 +119,48 @@ function toUnc(wslDir: string, wslEntryPath: string): string {
 
 function startPollingWatcher(dirPath: string, pathType: PathType, key: string): () => void {
   let previous = new Map<string, { isDirectory: boolean; size: number }>();
-  try {
-    for (const e of listDirectoryEntries(dirPath, pathType)) {
-      previous.set(e.path, { isDirectory: e.isDirectory, size: e.size });
-    }
-  } catch { /* start empty */ }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let closed = false;
+  let inFlight = false;
+  let initialized = false;
+  let consecutiveFailures = 0;
 
-  const timer = setInterval(() => {
+  const nextDelay = (): number =>
+    POLL_BACKOFF_MS[Math.min(Math.max(consecutiveFailures - 1, 0), POLL_BACKOFF_MS.length - 1)];
+
+  const schedule = (delay: number): void => {
+    if (closed) return;
+    timer = setTimeout(() => {
+      void poll();
+    }, delay);
+  };
+
+  const loadCurrent = async (): Promise<Map<string, { isDirectory: boolean; size: number }>> => {
+    const current = new Map<string, { isDirectory: boolean; size: number }>();
+    for (const e of await listDirectoryEntriesAsync(dirPath, pathType)) {
+      current.set(e.path, { isDirectory: e.isDirectory, size: e.size });
+    }
+    return current;
+  };
+
+  const poll = async (): Promise<void> => {
+    if (closed) return;
+    if (inFlight) {
+      schedule(nextDelay());
+      return;
+    }
+    inFlight = true;
     try {
-      const current = new Map<string, { isDirectory: boolean; size: number }>();
-      for (const e of listDirectoryEntries(dirPath, pathType)) {
-        current.set(e.path, { isDirectory: e.isDirectory, size: e.size });
+      const current = await loadCurrent();
+      if (closed) return;
+      consecutiveFailures = 0;
+
+      if (!initialized) {
+        previous = current;
+        initialized = true;
+        return;
       }
+
       // adds
       for (const [p, meta] of current) {
         const prev = previous.get(p);
@@ -142,20 +178,30 @@ function startPollingWatcher(dirPath: string, pathType: PathType, key: string): 
       }
       previous = current;
     } catch (err) {
-      console.error('polling watcher error:', err);
+      consecutiveFailures += 1;
+      console.error(`[fs-watcher] polling failed for ${dirPath}; retrying in ${nextDelay()}ms:`, err);
+    } finally {
+      inFlight = false;
+      schedule(nextDelay());
     }
-  }, POLL_INTERVAL_MS);
+  };
 
-  return () => clearInterval(timer);
+  schedule(0);
+
+  return () => {
+    closed = true;
+    if (timer !== null) clearTimeout(timer);
+  };
 }
 
 async function startBackend(dirPath: string, pathType: PathType, key: string): Promise<() => void> {
+  const watchPath = backendPath(dirPath, pathType);
   if (pathType === 'windows') {
-    return startWindowsWatcher(dirPath, key);
+    return startWindowsWatcher(watchPath, key);
   }
   // WSL
-  if (isMountedWindowsDrive(dirPath)) {
-    return startPollingWatcher(dirPath, pathType, key);
+  if (isMountedWindowsDrive(watchPath)) {
+    return startPollingWatcher(watchPath, pathType, key);
   }
   const hasInotify = await isInotifywaitAvailable();
   if (!hasInotify) {
@@ -163,9 +209,9 @@ async function startBackend(dirPath: string, pathType: PathType, key: string): P
       `[fs-watcher] inotifywait not found in WSL — falling back to polling for "${dirPath}". ` +
       `Install with: sudo apt install inotify-tools`
     );
-    return startPollingWatcher(dirPath, pathType, key);
+    return startPollingWatcher(watchPath, pathType, key);
   }
-  return startWslInotifyWatcher(dirPath, key);
+  return startWslInotifyWatcher(watchPath, key);
 }
 
 export function subscribe(dirPath: string, pathType: PathType, listener: Listener): () => void {

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { FileContent, PathType } from '../../../shared/types';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 // Module-level cache: tabId -> FileContent
 const contentCache = new Map<string, FileContent>();
@@ -15,6 +16,7 @@ export function evictAllCache() {
 export function useFileContentCache(tabId: string, filePath: string, pathType: PathType, skip = false) {
   const [content, setContent] = useState<FileContent | null>(() => skip ? null : (contentCache.get(tabId) || null));
   const [loading, setLoading] = useState(!skip && !contentCache.has(tabId));
+  const checkHealth = useDashboardStore((s) => s.checkHealth);
 
   useEffect(() => {
     if (!filePath || skip) {
@@ -39,10 +41,13 @@ export function useFileContentCache(tabId: string, filePath: string, pathType: P
       contentCache.set(tabId, result);
       setContent(result);
       setLoading(false);
+      if (pathType === 'wsl') {
+        void checkHealth();
+      }
     });
 
     return () => { cancelled = true; };
-  }, [tabId, filePath, pathType, skip]);
+  }, [tabId, filePath, pathType, skip, checkHealth]);
 
   return { content, loading };
 }

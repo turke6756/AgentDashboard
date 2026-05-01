@@ -1,5 +1,6 @@
 import { execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import type { WslStatus, WslDistroStatus } from '../shared/types';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,24 +21,218 @@ export interface WslExecResult {
   exitCode: number;
 }
 
-export async function wslExec(command: string, timeout = 10000): Promise<WslExecResult> {
-  try {
-    const env = { ...process.env };
-    delete env.CLAUDECODE;
-    delete env.ELECTRON_RUN_AS_NODE;
-    const { stdout, stderr } = await execFileAsync('wsl.exe', ['bash', '-lc', command], {
-      encoding: 'utf-8',
-      env,
-      timeout,
-    });
-    return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0 };
-  } catch (err: any) {
+export interface WslExecOptions {
+  timeout?: number;
+  maxBuffer?: number;
+  input?: string;
+  throwOnError?: boolean;
+  trimOutput?: boolean;
+}
+
+function wslEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  delete env.ELECTRON_RUN_AS_NODE;
+  return env;
+}
+
+function decodeWslListOutput(value: string | Buffer | undefined): string {
+  if (!value) return '';
+  if (Buffer.isBuffer(value)) {
+    const hasNullPadding = value.includes(0);
+    return value
+      .toString(hasNullPadding ? 'utf16le' : 'utf8')
+      .replace(/\u0000/g, '')
+      .replace(/^\uFEFF/, '');
+  }
+  return value.replace(/\u0000/g, '').replace(/^\uFEFF/, '');
+}
+
+function parseWslDistroRow(line: string): WslDistroStatus | null {
+  const trimmed = line.trim();
+  if (!trimmed || /^NAME\s+STATE\s+VERSION$/i.test(trimmed)) return null;
+
+  const isDefault = trimmed.startsWith('*');
+  const row = isDefault ? trimmed.slice(1).trim() : trimmed;
+  const columns = row.split(/\s{2,}/).filter(Boolean);
+  if (columns.length >= 2) {
     return {
-      stdout: err.stdout?.trim() || '',
-      stderr: err.stderr?.trim() || err.message,
-      exitCode: err.code || 1,
+      name: columns[0],
+      state: columns[1],
+      version: columns[2],
+      default: isDefault,
     };
   }
+
+  const fallback = row.match(/^(.+?)\s+(Running|Stopped|Installing|Converting|Uninstalling)(?:\s+(\d+))?$/i);
+  if (!fallback) return null;
+  return {
+    name: fallback[1].trim(),
+    state: fallback[2],
+    version: fallback[3],
+    default: isDefault,
+  };
+}
+
+function parseWslListVerbose(output: string, error?: string): WslStatus {
+  const normalized = output.replace(/\r/g, '\n');
+  if (/no installed distributions/i.test(normalized)) {
+    return { state: 'no-distro', distros: [], error };
+  }
+
+  const distros = normalized
+    .split('\n')
+    .map(parseWslDistroRow)
+    .filter((distro): distro is WslDistroStatus => distro !== null);
+  if (distros.length === 0) {
+    return { state: error ? 'unavailable' : 'unknown', distros: [], error };
+  }
+
+  const defaultDistro = distros.find((distro) => distro.default)?.name;
+  const hasRunning = distros.some((distro) => distro.state.toLowerCase() === 'running');
+  const hasStopped = distros.some((distro) => distro.state.toLowerCase() === 'stopped');
+
+  return {
+    state: hasRunning ? 'running' : hasStopped ? 'stopped' : 'unknown',
+    defaultDistro,
+    distros,
+    error,
+  };
+}
+
+export async function getPassiveWslStatus(): Promise<WslStatus> {
+  try {
+    const { stdout, stderr } = await execFileAsync('wsl.exe', ['-l', '-v'], {
+      encoding: 'buffer',
+      env: wslEnv(),
+      timeout: 5000,
+      maxBuffer: 256 * 1024,
+      windowsHide: true,
+    });
+    const output = decodeWslListOutput(stdout);
+    const error = decodeWslListOutput(stderr).trim() || undefined;
+    return parseWslListVerbose(output, error);
+  } catch (err: any) {
+    const output = `${decodeWslListOutput(err?.stdout)}\n${decodeWslListOutput(err?.stderr)}`;
+    if (/no installed distributions/i.test(output)) {
+      return { state: 'no-distro', distros: [] };
+    }
+    return {
+      state: 'unavailable',
+      distros: [],
+      error: decodeWslListOutput(err?.stderr).trim() || err?.message || 'WSL is unavailable',
+    };
+  }
+}
+
+function normalizeOutput(value: string | Buffer | undefined, trimOutput: boolean): string {
+  const text = value?.toString() || '';
+  return trimOutput ? text.trim() : text;
+}
+
+function makeWslExecError(command: string, result: WslExecResult): Error {
+  const detail = result.stderr || `exit code ${result.exitCode}`;
+  const err = new Error(`wsl.exe command failed: ${detail}`);
+  Object.assign(err, { command, ...result });
+  return err;
+}
+
+function wslExecWithInput(command: string, options: WslExecOptions, trimOutput: boolean): Promise<WslExecResult> {
+  return new Promise((resolve) => {
+    const timeout = options.timeout ?? 10000;
+    const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+    const proc = spawn('wsl.exe', ['bash', '-lc', command], {
+      env: wslEnv(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let exceededBuffer = false;
+
+    const finish = (exitCode: number): void => {
+      const timeoutMessage = timedOut ? `Command timed out after ${timeout}ms` : '';
+      const bufferMessage = exceededBuffer ? `Command exceeded maxBuffer ${maxBuffer}` : '';
+      resolve({
+        stdout: normalizeOutput(stdout, trimOutput),
+        stderr: normalizeOutput(stderr || timeoutMessage || bufferMessage, trimOutput),
+        exitCode,
+      });
+    };
+
+    const maybeKillForBuffer = (): void => {
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) <= maxBuffer) return;
+      exceededBuffer = true;
+      try { proc.kill(); } catch { /* ignore */ }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { proc.kill(); } catch { /* ignore */ }
+    }, timeout);
+
+    proc.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+      maybeKillForBuffer();
+    });
+    proc.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+      maybeKillForBuffer();
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      stderr = stderr || err.message;
+      finish(1);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      finish(typeof code === 'number' ? code : 1);
+    });
+
+    proc.stdin?.end(options.input);
+  });
+}
+
+export async function wslExecCommand(command: string, options: WslExecOptions = {}): Promise<WslExecResult> {
+  const trimOutput = options.trimOutput ?? true;
+  try {
+    if (options.input !== undefined) {
+      const result = await wslExecWithInput(command, options, trimOutput);
+      if (options.throwOnError && result.exitCode !== 0) {
+        throw makeWslExecError(command, result);
+      }
+      return result;
+    }
+
+    const { stdout, stderr } = await execFileAsync('wsl.exe', ['bash', '-lc', command], {
+      encoding: 'utf-8',
+      env: wslEnv(),
+      timeout: options.timeout ?? 10000,
+      maxBuffer: options.maxBuffer,
+      windowsHide: true,
+    });
+    return {
+      stdout: normalizeOutput(stdout, trimOutput),
+      stderr: normalizeOutput(stderr, trimOutput),
+      exitCode: 0,
+    };
+  } catch (err: any) {
+    const result: WslExecResult = {
+      stdout: normalizeOutput(err.stdout, trimOutput),
+      stderr: normalizeOutput(err.stderr, trimOutput) || err.message || 'WSL command failed',
+      exitCode: typeof err.code === 'number' ? err.code : 1,
+    };
+    if (options.throwOnError) {
+      throw makeWslExecError(command, result);
+    }
+    return result;
+  }
+}
+
+export async function wslExec(command: string, timeout = 10000): Promise<WslExecResult> {
+  return wslExecCommand(command, { timeout });
 }
 
 export async function isWslAvailable(): Promise<boolean> {
@@ -101,7 +296,7 @@ export async function tmuxSendKeys(name: string, text: string): Promise<void> {
   // either both happen or neither does. Splitting them across two wsl.exe
   // spawns lets a flaky second spawn drop the Enter silently, leaving the
   // message typed but unsubmitted in Claude Code's prompt buffer.
-  const escaped = text.replace(/'/g, "'\\''");
+  const escaped = shellSingleQuoteEscape(text);
   const result = await wslExec(
     `tmux send-keys -t '${name}' -l '${escaped}' \\; send-keys -t '${name}' Enter`,
     5000
@@ -109,6 +304,92 @@ export async function tmuxSendKeys(name: string, text: string): Promise<void> {
   if (result.exitCode !== 0) {
     throw new Error(`tmux send-keys failed: ${result.stderr || 'unknown error'}`);
   }
+}
+
+function shellSingleQuoteEscape(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
+// Hex byte sequences for tmux `send-keys -H`.
+// Kitty keyboard protocol (CSI-u) — codex/gemini on Linux enable this and
+// expect Enter as `\x1b[13u`, Shift+Enter as `\x1b[13;2u`. Plain `\r` from
+// `tmux send-keys Enter` is silently dropped in disambiguate mode.
+const TMUX_KITTY_ENTER_HEX = '1b 5b 31 33 75';            // \x1b[13u
+const TMUX_KITTY_SHIFT_ENTER_HEX = '1b 5b 31 33 3b 32 75'; // \x1b[13;2u
+// Bracketed paste markers — claude on Linux treats the wrapped body as pasted
+// content (renders multi-line correctly without entering paste-confirmation),
+// then accepts a separate kitty Enter to submit.
+const TMUX_BP_START_HEX = '1b 5b 32 30 30 7e';             // \x1b[200~
+const TMUX_BP_END_HEX = '1b 5b 32 30 31 7e';               // \x1b[201~
+
+// Sleep covers codex's PasteBurst (8 ms) and gemini's bufferFastReturn (30 ms,
+// only active when kitty mode is *off* — the WSL pty doesn't always advertise
+// it) so the trailing submit Enter isn't rewritten as newline-insert.
+const POST_BODY_SLEEP_SECONDS = '0.08';
+
+/**
+ * Send `text` to a WSL agent via tmux, then submit, using a provider-aware
+ * encoding. All three providers enable kitty keyboard protocol on Linux at
+ * startup; tmux's `send-keys Enter` (a bare `\r` byte) is dropped in that
+ * mode, so submit must be sent as the kitty CSI key event `\x1b[13u`.
+ *
+ * - claude: bracketed-paste-wrap the body so multi-line content renders without
+ *   triggering paste-confirmation, then submit.
+ * - codex/gemini: type body line-by-line, encoding embedded `\n` as kitty
+ *   Shift+Enter (`\x1b[13;2u`) so the final Enter is the only submit event.
+ *   Bracketed paste opens codex's external-editor confirmation flow on Linux
+ *   too (same regression as Windows), so don't wrap.
+ */
+export async function tmuxSendInput(
+  name: string,
+  text: string,
+  provider: 'claude' | 'codex' | 'gemini' | 'unknown' = 'unknown'
+): Promise<void> {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  if (provider === 'claude') {
+    // Strip nested bracketed-paste markers so a hostile payload can't escape
+    // the wrapper and reach claude's input handler outside paste mode.
+    const body = normalized.replaceAll('\x1b[200~', '').replaceAll('\x1b[201~', '');
+    const escaped = shellSingleQuoteEscape(body);
+    const cmd =
+      `tmux send-keys -t '${name}' -H ${TMUX_BP_START_HEX} \\; ` +
+      `send-keys -t '${name}' -l '${escaped}' \\; ` +
+      `send-keys -t '${name}' -H ${TMUX_BP_END_HEX} && ` +
+      `sleep ${POST_BODY_SLEEP_SECONDS} && ` +
+      `tmux send-keys -t '${name}' -H ${TMUX_KITTY_ENTER_HEX}`;
+    const result = await wslExec(cmd, 8000);
+    if (result.exitCode !== 0) {
+      throw new Error(`tmux send-keys (claude) failed: ${result.stderr || 'unknown error'}`);
+    }
+    return;
+  }
+
+  if (provider === 'codex' || provider === 'gemini') {
+    const lines = normalized.split('\n');
+    const parts: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].length > 0) {
+        parts.push(`send-keys -t '${name}' -l '${shellSingleQuoteEscape(lines[i])}'`);
+      }
+      if (i < lines.length - 1) {
+        parts.push(`send-keys -t '${name}' -H ${TMUX_KITTY_SHIFT_ENTER_HEX}`);
+      }
+    }
+    const bodyCmd = parts.length > 0 ? `tmux ${parts.join(' \\; ')}` : '';
+    const submitCmd = `tmux send-keys -t '${name}' -H ${TMUX_KITTY_ENTER_HEX}`;
+    const cmd = bodyCmd
+      ? `${bodyCmd} && sleep ${POST_BODY_SLEEP_SECONDS} && ${submitCmd}`
+      : submitCmd;
+    const result = await wslExec(cmd, 8000);
+    if (result.exitCode !== 0) {
+      throw new Error(`tmux send-keys (${provider}) failed: ${result.stderr || 'unknown error'}`);
+    }
+    return;
+  }
+
+  // Unknown provider: keep legacy `\r`-via-tmux-Enter path.
+  await tmuxSendKeys(name, text);
 }
 
 export async function tmuxKillSession(name: string): Promise<void> {

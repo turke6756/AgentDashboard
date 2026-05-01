@@ -3,6 +3,9 @@ import * as Icons from 'lucide-react';
 import type { DirectoryEntry, PathType } from '../../../shared/types';
 import DirectoryTreeNode from './DirectoryTreeNode';
 import { applyFsEvent } from './applyFsEvent';
+import FileContextMenu from '../shared/FileContextMenu';
+import { useNamePrompt } from '../../hooks/useNamePrompt';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 interface Props {
   rootPath: string;
@@ -15,10 +18,64 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
   const [rootEntries, setRootEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [rootContextMenu, setRootContextMenu] = useState<{ x: number; y: number } | null>(null);
   const cache = useRef(new Map<string, DirectoryEntry[]>());
+  const { prompt: promptName, modal: namePromptModal } = useNamePrompt();
+  const checkHealth = useDashboardStore((s) => s.checkHealth);
+
+  const reloadRoot = useCallback(async () => {
+    if (!rootPath) return;
+    setLoading(true);
+    cache.current.delete(rootPath);
+    const entries = await window.api.files.listDirectory(rootPath, pathType);
+    cache.current.set(rootPath, entries);
+    setRootEntries(entries);
+    setLoading(false);
+    if (pathType === 'wsl') {
+      void checkHealth();
+    }
+  }, [rootPath, pathType, checkHealth]);
+
+  const invalidateDir = useCallback((dirPath: string) => {
+    cache.current.delete(dirPath);
+  }, []);
 
   const handleRefresh = useCallback(() => {
+    cache.current.clear();
     setRefreshTick((n) => n + 1);
+  }, []);
+
+  const createFileAtRoot = useCallback(async (template: 'text' | 'markdown' | 'notebook', label: string, ext?: string) => {
+    const rawName = await promptName({ title: label, okLabel: 'Create' });
+    if (rawName === null) return;
+    const trimmed = rawName.trim();
+    if (!trimmed) return;
+    const name = ext && !trimmed.toLowerCase().endsWith(ext) ? `${trimmed}${ext}` : trimmed;
+    const result = await window.api.files.createFile(rootPath, rootPath, pathType, name, template);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    await reloadRoot();
+    if (result.path) onFileSelect(result.path);
+  }, [onFileSelect, pathType, promptName, reloadRoot, rootPath]);
+
+  const createFolderAtRoot = useCallback(async () => {
+    const rawName = await promptName({ title: 'New folder name', okLabel: 'Create' });
+    if (rawName === null) return;
+    const name = rawName.trim();
+    if (!name) return;
+    const result = await window.api.files.mkdir(rootPath, rootPath, pathType, name);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+    await reloadRoot();
+  }, [pathType, promptName, reloadRoot, rootPath]);
+
+  const handleRootContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setRootContextMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
   useEffect(() => {
@@ -41,10 +98,13 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
         cache.current.set(rootPath, entries);
         setRootEntries(entries);
         setLoading(false);
+        if (pathType === 'wsl') {
+          void checkHealth();
+        }
       }
     });
     return () => { cancelled = true; };
-  }, [rootPath, pathType, refreshTick]);
+  }, [rootPath, pathType, refreshTick, checkHealth]);
 
   useEffect(() => {
     if (!rootPath) return;
@@ -59,14 +119,20 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
     if (cached) return cached;
     const entries = await window.api.files.listDirectory(dirPath, pathType);
     cache.current.set(dirPath, entries);
+    if (pathType === 'wsl') {
+      void checkHealth();
+    }
     return entries;
-  }, [pathType]);
+  }, [pathType, checkHealth]);
 
   // Extract the root folder name from path
   const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
 
   return (
-    <div className="h-full flex flex-col border-r dark:border-white/10 light:border-black/10 bg-surface-0/40">
+    <div
+      className="h-full flex flex-col border-r dark:border-white/10 light:border-black/10 bg-surface-0/40"
+      onContextMenu={handleRootContextMenu}
+    >
       <div className="px-3 py-2 border-b dark:border-white/10 light:border-black/10 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[13px] font-sans   text-gray-300">Explorer</div>
@@ -98,10 +164,30 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
               workingDirectory={rootPath}
               onFileSelect={onFileSelect}
               loadChildren={loadChildren}
+              onTreeChanged={invalidateDir}
+              onSiblingsChanged={reloadRoot}
+              promptName={promptName}
             />
           ))
         )}
       </div>
+      {rootContextMenu && (
+        <FileContextMenu
+          x={rootContextMenu.x}
+          y={rootContextMenu.y}
+          filePath={rootPath}
+          workingDirectory={rootPath}
+          pathType={pathType}
+          isDirectory
+          showRevealInTree={false}
+          onClose={() => setRootContextMenu(null)}
+          onCreateFile={() => createFileAtRoot('text', 'New file name')}
+          onCreateMarkdownFile={() => createFileAtRoot('markdown', 'New Markdown file name', '.md')}
+          onCreateNotebook={() => createFileAtRoot('notebook', 'New notebook name', '.ipynb')}
+          onCreateFolder={createFolderAtRoot}
+        />
+      )}
+      {namePromptModal}
     </div>
   );
 }

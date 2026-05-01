@@ -7,7 +7,7 @@ export function CellStatusRing({ status }: { status: NotebookCellStatus }) {
       : status === 'queued'
         ? 'border-accent-yellow bg-transparent'
         : status === 'done'
-          ? 'border-accent-green bg-accent-green'
+          ? 'border-accent-green bg-accent-green notebook-status-ring-done'
           : status === 'error'
             ? 'border-accent-red bg-accent-red'
             : 'border-surface-3 bg-surface-2';

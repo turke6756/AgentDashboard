@@ -53,6 +53,21 @@ body {
   font-size: 13px;
 }
 
+:root {
+  --notebook-subtle-border: color-mix(in srgb, var(--color-surface-3) 82%, transparent);
+  --notebook-soft-bg: color-mix(in srgb, var(--color-surface-1) 74%, var(--color-surface-0));
+  --notebook-code-gutter-bg: color-mix(in srgb, var(--color-surface-1) 76%, transparent);
+  --notebook-active-line: rgba(255, 255, 255, 0.035);
+  --notebook-active-line-focused: rgba(55, 148, 255, 0.10);
+  --notebook-syntax-keyword: #c586c0;
+  --notebook-syntax-string: #89d185;
+  --notebook-syntax-number: #d7ba7d;
+  --notebook-syntax-comment: #7a8a78;
+  --notebook-syntax-name: #9cdcfe;
+  --notebook-syntax-function: #9cdcfe;
+  --notebook-syntax-type: #4ec9b0;
+}
+
 /* ── Tree row selection (VS Code "list.activeSelection") ── */
 
 .tree-row-selected {
@@ -352,6 +367,12 @@ select {
   100% { transform: scale(1); opacity: 0.7; }
 }
 
+@keyframes notebook-ring-done {
+  0% { transform: scale(1); opacity: 0.72; }
+  35% { transform: scale(1.32); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 @keyframes notebook-activity-slide {
   0% { transform: translateX(-45%); }
   100% { transform: translateX(45%); }
@@ -361,9 +382,196 @@ select {
   animation: notebook-ring-pulse 1s ease-in-out infinite;
 }
 
+.notebook-status-ring-done {
+  animation: notebook-ring-done 700ms ease-out 1;
+}
+
 .notebook-activity-bar-running {
   background-size: 200% 100%;
   animation: notebook-activity-slide 1.2s linear infinite alternate;
+}
+
+.notebook-surface {
+  background: var(--color-surface-0);
+}
+
+.notebook-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notebook-cell {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--notebook-subtle-border);
+  border-radius: 6px;
+  background: var(--color-surface-0);
+}
+
+.notebook-cell-running,
+.notebook-cell-queued {
+  border-color: color-mix(in srgb, var(--color-accent-blue) 44%, var(--color-surface-3));
+}
+
+.notebook-cell-error {
+  border-color: color-mix(in srgb, var(--color-accent-red) 58%, var(--color-surface-3));
+}
+
+.notebook-gutter {
+  padding: 12px 10px;
+  border-right: 1px solid var(--notebook-subtle-border);
+  background: var(--notebook-soft-bg);
+  color: var(--color-fg-muted);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.notebook-cell-label {
+  color: var(--color-fg-primary);
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.notebook-cell-meta {
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-fg-muted);
+}
+
+.notebook-execution-count {
+  margin-top: 6px;
+  color: var(--color-fg-secondary);
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.notebook-cell-body {
+  background: var(--color-surface-0);
+}
+
+.notebook-cell-body:focus-within {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-blue) 34%, transparent);
+}
+
+.notebook-cell-activity {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-accent-blue), var(--color-accent-green), var(--color-accent-blue-bright));
+  transform-origin: left center;
+  animation: notebook-activity-slide 1.1s linear infinite alternate;
+}
+
+.notebook-cell-activity-queued {
+  background: var(--color-accent-yellow);
+  opacity: 0.55;
+  animation: none;
+}
+
+.notebook-icon-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: var(--notebook-subtle-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-surface-2) 92%, transparent);
+  color: var(--color-fg-secondary);
+}
+
+.notebook-icon-btn:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  color: var(--color-fg-primary);
+}
+
+.notebook-toolbar .ui-btn {
+  border-radius: 4px;
+}
+
+.notebook-static-code {
+  background: var(--color-surface-0);
+}
+
+.notebook-markdown {
+  color: var(--color-fg-primary);
+}
+
+.notebook-markdown > div > *:first-child,
+.notebook-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.notebook-markdown > div > *:last-child,
+.notebook-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.notebook-markdown a {
+  text-decoration-thickness: 1px;
+}
+
+.notebook-markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.notebook-markdown-table thead {
+  background: var(--color-surface-1);
+  color: var(--color-fg-secondary);
+}
+
+.notebook-markdown-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--color-surface-1) 52%, transparent);
+}
+
+.notebook-markdown .katex-display {
+  margin: 0.85rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.notebook-output {
+  border-top: 1px solid var(--notebook-subtle-border);
+  background: color-mix(in srgb, var(--color-surface-base) 46%, var(--color-surface-0));
+}
+
+.notebook-output-item + .notebook-output-item {
+  border-top: 1px solid color-mix(in srgb, var(--color-surface-3) 62%, transparent);
+}
+
+.notebook-output-console {
+  background: color-mix(in srgb, #000000 22%, transparent);
+}
+
+.notebook-output-stderr {
+  background: color-mix(in srgb, var(--color-accent-orange) 10%, transparent);
+}
+
+.notebook-output-error {
+  background: color-mix(in srgb, var(--color-accent-red) 12%, transparent);
+}
+
+.notebook-html-output table {
+  border-collapse: collapse;
+}
+
+.notebook-html-output th,
+.notebook-html-output td {
+  border: 1px solid var(--notebook-subtle-border);
+  padding: 6px 8px;
+}
+
+@media (max-width: 760px) {
+  .notebook-cell {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .notebook-gutter {
+    padding: 10px 8px;
+  }
 }
 
 /* ── Light theme overrides ── */
@@ -406,6 +614,19 @@ select {
   --color-icon-db: #c25e00;
   --color-icon-package: #9a2a2a;
   --color-icon-default: #5a5a5a;
+
+  --notebook-subtle-border: #d8dee4;
+  --notebook-soft-bg: #f6f8fa;
+  --notebook-code-gutter-bg: #f6f8fa;
+  --notebook-active-line: rgba(0, 0, 0, 0.035);
+  --notebook-active-line-focused: rgba(0, 120, 212, 0.10);
+  --notebook-syntax-keyword: #8b2bb9;
+  --notebook-syntax-string: #2e7d32;
+  --notebook-syntax-number: #a15c00;
+  --notebook-syntax-comment: #6b7668;
+  --notebook-syntax-name: #005a9e;
+  --notebook-syntax-function: #005a9e;
+  --notebook-syntax-type: #0b7f79;
 }
 
 .light .tree-row-selected {
@@ -627,6 +848,11 @@ html.light ::-webkit-scrollbar-thumb:hover {
 
 .light .font-mono {
   -webkit-text-stroke: 0.2px currentColor;
+}
+
+.light .notebook-cell .font-mono,
+.light .notebook-cell .cm-scroller {
+  -webkit-text-stroke: 0;
 }
 
 /* ── Light mode: misc white-opacity inversions ── */

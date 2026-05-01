@@ -142,11 +142,28 @@ export interface QueryResult {
   isError: boolean;
 }
 
+export type WslPassiveState = 'running' | 'stopped' | 'unavailable' | 'no-distro' | 'unknown';
+
+export interface WslDistroStatus {
+  name: string;
+  state: 'Running' | 'Stopped' | string;
+  version?: string;
+  default: boolean;
+}
+
+export interface WslStatus {
+  state: WslPassiveState;
+  defaultDistro?: string;
+  distros: WslDistroStatus[];
+  error?: string;
+}
+
 export interface HealthCheck {
   wslAvailable: boolean;
   tmuxAvailable: boolean;
   claudeWindowsAvailable: boolean;
   claudeWslAvailable: boolean;
+  wslStatus: WslStatus;
 }
 
 export interface DirectoryEntry {
@@ -168,6 +185,10 @@ export interface FileContent {
   size: number;
   error?: string;
 }
+
+export type FileMutationResult =
+  | { ok: true; path?: string }
+  | { ok: false; error: string };
 
 export interface FileTab {
   id: string;
@@ -374,6 +395,37 @@ export interface IpcApi {
   files: {
     readFile: (filePath: string, pathType: PathType) => Promise<FileContent>;
     listDirectory: (dirPath: string, pathType: PathType) => Promise<DirectoryEntry[]>;
+    writeFile: (
+      filePath: string,
+      rootDirectory: string,
+      pathType: PathType,
+      content: string
+    ) => Promise<FileMutationResult>;
+    createFile: (
+      parentDir: string,
+      rootDirectory: string,
+      pathType: PathType,
+      name: string,
+      template?: 'text' | 'markdown' | 'notebook'
+    ) => Promise<FileMutationResult>;
+    mkdir: (
+      parentDir: string,
+      rootDirectory: string,
+      pathType: PathType,
+      name: string
+    ) => Promise<FileMutationResult>;
+    rename: (
+      oldPath: string,
+      rootDirectory: string,
+      pathType: PathType,
+      newName: string
+    ) => Promise<FileMutationResult>;
+    deleteEntry: (
+      entryPath: string,
+      rootDirectory: string,
+      pathType: PathType,
+      recursive: boolean
+    ) => Promise<FileMutationResult>;
     watchDirectory: (dirPath: string, pathType: PathType, callback: (event: FsEvent) => void) => () => void;
   };
   system: {

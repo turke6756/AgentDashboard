@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import StatusBadge from '../agent/StatusBadge';
 import DetailPaneContext from '../detail/DetailPaneContext';
@@ -6,7 +7,7 @@ import DetailPaneProducts from '../detail/DetailPaneProducts';
 import ChatPane from '../detail/ChatPane';
 import QueryDialog from '../agent/QueryDialog';
 import CollapseButton from './CollapseButton';
-import type { PathType, ContextStats, GroupThinkSession } from '../../../shared/types';
+import type { AgentProvider, PathType, ContextStats, GroupThinkSession } from '../../../shared/types';
 import { PROVIDER_META } from '../../../shared/constants';
 
 const TABS = [
@@ -64,7 +65,7 @@ function GroupThinkStatusSection({ session, agents: allAgents }: { session: Grou
         {session.memberAgentIds.map((id) => {
           const agent = allAgents.find((a) => a.id === id);
           if (!agent) return null;
-          const meta = PROVIDER_META[agent.provider || 'claude'];
+          const meta = PROVIDER_META[(agent.provider || 'claude') as AgentProvider];
           return (
             <span
               key={id}
@@ -86,7 +87,21 @@ function GroupThinkStatusSection({ session, agents: allAgents }: { session: Grou
 }
 
 export default function DetailPanel({ width }: DetailPanelProps) {
-  const { agents, selectedAgentId, setTerminalAgent, terminalAgentId, detailPane, setDetailPane, workspaces, contextStats, groupThinkSessions, panelLayout, togglePanelCollapsed } = useDashboardStore();
+  const { agents, selectedAgentId, terminalAgentId, detailPane, workspaces, contextStats, groupThinkSessions, panelLayout } = useDashboardStore(
+    useShallow((s) => ({
+      agents: s.agents,
+      selectedAgentId: s.selectedAgentId,
+      terminalAgentId: s.terminalAgentId,
+      detailPane: s.detailPane,
+      workspaces: s.workspaces,
+      contextStats: s.contextStats,
+      groupThinkSessions: s.groupThinkSessions,
+      panelLayout: s.panelLayout,
+    })),
+  );
+  const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
+  const setDetailPane = useDashboardStore((s) => s.setDetailPane);
+  const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
   const [contextCount, setContextCount] = useState(0);
   const [productsCount, setProductsCount] = useState(0);
   const [showMeta, setShowMeta] = useState(false);
@@ -97,9 +112,9 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   const workspace = agent ? workspaces.find((w) => w.id === agent.workspaceId) : null;
   const pathType: PathType = workspace?.pathType || 'windows';
 
-  // Fetch counts for tab badges
+  // Fetch counts for tab badges — gated on visibility so a collapsed pane stops polling.
   useEffect(() => {
-    if (!agent) return;
+    if (!agent || collapsed) return;
 
     const fetchCounts = async () => {
       const reads = await window.api.agents.getFileActivities(agent.id, 'read');
@@ -126,7 +141,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
       clearInterval(interval);
       unsub();
     };
-  }, [agent?.id]);
+  }, [agent?.id, collapsed]);
 
   // Collapsed detail panel: thin strip with expand button
   if (collapsed) {

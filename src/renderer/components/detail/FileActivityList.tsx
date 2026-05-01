@@ -1,4 +1,5 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { FileActivity, PathType } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import FileContextMenu from '../shared/FileContextMenu';
@@ -71,14 +72,19 @@ function groupByFile(activities: FileActivity[]): GroupedActivity[] {
 }
 
 export default function FileActivityList({ activities, pathType, agentId, title, embedded }: Props) {
-  const { openFileViewer, agents, workspaces } = useDashboardStore();
+  const openFileViewer = useDashboardStore((s) => s.openFileViewer);
+  // Narrow to just this agent + its workspace — re-renders only when those specific entries change.
+  const { agent, workspace } = useDashboardStore(
+    useShallow((s) => {
+      const a = agentId ? s.agents.find((x) => x.id === agentId) ?? null : null;
+      const w = a ? s.workspaces.find((x) => x.id === a.workspaceId) ?? null : null;
+      return { agent: a, workspace: w };
+    }),
+  );
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
-  const grouped = groupByFile(activities);
+  const grouped = useMemo(() => groupByFile(activities), [activities]);
 
-  // Resolve workspace context for this agent
-  const agent = agentId ? agents.find((a) => a.id === agentId) : null;
-  const workspace = agent ? workspaces.find((w) => w.id === agent.workspaceId) : null;
   const workingDirectory = agent?.workingDirectory || '';
   const resolvedPathType = workspace?.pathType || pathType || 'wsl';
 
@@ -201,6 +207,7 @@ export default function FileActivityList({ activities, pathType, agentId, title,
           filePath={contextMenu.filePath}
           workingDirectory={workingDirectory}
           pathType={resolvedPathType}
+          isDirectory={false}
           showRevealInTree={!!agentId}
           onClose={() => setContextMenu(null)}
           onRevealInTree={handleRevealInTree}

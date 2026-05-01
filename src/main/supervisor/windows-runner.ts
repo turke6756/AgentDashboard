@@ -18,6 +18,7 @@ export class WindowsRunner extends EventEmitter {
   private _outputWindowStart: number = 0;
   private _pid: number | null = null;
   private _alive: boolean = false;
+  private _intentionalKill: boolean = false;
   private buffer: string = '';
   // In-memory ring buffer for instant log retrieval (avoids fs.createWriteStream flush delays)
   private outputRing: string[] = [];
@@ -83,7 +84,8 @@ export class WindowsRunner extends EventEmitter {
         this._alive = false;
         this.logStream?.end();
         this.logStream = null;
-        this.emit('exit', 1, null);
+        const reportedCode = this._intentionalKill ? 0 : 137;
+        this.emit('exit', reportedCode, null);
       }
       this.host = null;
     });
@@ -154,7 +156,10 @@ export class WindowsRunner extends EventEmitter {
         this._alive = false;
         this.logStream?.end();
         this.logStream = null;
-        this.emit('exit', msg.exitCode ?? 1, msg.signal);
+        {
+          const reportedCode = this._intentionalKill ? 0 : ((msg.exitCode ?? 1) || 137);
+          this.emit('exit', reportedCode, msg.signal);
+        }
         // Kill the host process too
         if (this.host && !this.host.killed) {
           this.host.kill();
@@ -211,6 +216,7 @@ export class WindowsRunner extends EventEmitter {
   }
 
   kill(): void {
+    this._intentionalKill = true;
     this._alive = false;
     this.sendToHost({ type: 'kill' });
     setTimeout(() => {

@@ -39,7 +39,21 @@ const BORDER_COLORS: Record<string, string> = {
 };
 
 export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agent; onGroupThink?: (agentId: string) => void; onTeam?: (agentId: string) => void }) {
-  const { selectAgent, selectedAgentId, terminalAgentId, setTerminalAgent, deleteAgent, forkAgent, queryAgent, contextStats, groupThinkSessions } = useDashboardStore();
+  // Each card subscribes only to its own agent's slice of contextStats/groupThinkSessions —
+  // a sibling agent's status update won't re-render this card.
+  const isSelected = useDashboardStore((s) => s.selectedAgentId === agent.id);
+  const isTerminalActive = useDashboardStore((s) => s.terminalAgentId === agent.id);
+  const cs = useDashboardStore((s) => s.contextStats[agent.id] ?? null);
+  const gtSession = useDashboardStore((s) =>
+    s.groupThinkSessions.find(
+      (gt) => gt.status === 'active' && gt.memberAgentIds.includes(agent.id),
+    ) ?? null,
+  );
+  const selectAgent = useDashboardStore((s) => s.selectAgent);
+  const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
+  const deleteAgent = useDashboardStore((s) => s.deleteAgent);
+  const forkAgent = useDashboardStore((s) => s.forkAgent);
+  const queryAgent = useDashboardStore((s) => s.queryAgent);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [forking, setForking] = useState(false);
@@ -59,9 +73,6 @@ export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agen
       }
     });
   }, [agent.id]);
-
-  const isSelected = selectedAgentId === agent.id;
-  const isTerminalActive = terminalAgentId === agent.id;
 
   const borderColor = BORDER_COLORS[agent.status] || 'border-l-gray-600';
 
@@ -242,20 +253,14 @@ export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agen
              {agent.isSupervised && (
                 <span className="text-[11px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 font-semibold">Supervised</span>
              )}
-             {(() => {
-               const gtSession = groupThinkSessions.find(
-                 (s) => s.status === 'active' && s.memberAgentIds.includes(agent.id)
-               );
-               if (!gtSession) return null;
-               return (
-                 <span
-                   className="text-[11px] text-fuchsia-400 bg-fuchsia-500/15 px-1.5 py-0.5 font-semibold"
-                   title={`Group Think R${gtSession.roundCount}/${gtSession.maxRounds}: ${gtSession.topic}`}
-                 >
-                   GT R{gtSession.roundCount}/{gtSession.maxRounds}
-                 </span>
-               );
-             })()}
+             {gtSession && (
+               <span
+                 className="text-[11px] text-fuchsia-400 bg-fuchsia-500/15 px-1.5 py-0.5 font-semibold"
+                 title={`Group Think R${gtSession.roundCount}/${gtSession.maxRounds}: ${gtSession.topic}`}
+               >
+                 GT R{gtSession.roundCount}/{gtSession.maxRounds}
+               </span>
+             )}
            </div>
            <h4 className={`font-semibold text-[13px] truncate ${isSelected ? 'text-accent-blue' : 'text-gray-200 group-hover:text-gray-100'}`}>
              {agent.title}
@@ -311,8 +316,7 @@ export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agen
       </div>
 
       {/* Context Stats Bar */}
-      {(agent.provider || 'claude') === 'claude' && contextStats[agent.id] && (() => {
-        const cs = contextStats[agent.id];
+      {(agent.provider || 'claude') === 'claude' && cs && (() => {
         const pct = cs.contextPercentage;
         const isWarning = pct > 60;
         const isCritical = pct > 85;

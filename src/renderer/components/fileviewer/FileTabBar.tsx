@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import type { FileTab } from '../../../shared/types';
 import { fileDragStart } from '../../utils/drag-file';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 interface Props {
   tabs: FileTab[];
@@ -27,6 +28,7 @@ function getDisplayLabel(tab: FileTab, allTabs: FileTab[]): string {
 
 export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const tabEditState = useDashboardStore((state) => state.tabEditState);
 
   // Scroll active tab into view
   useEffect(() => {
@@ -54,6 +56,7 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           const displayLabel = getDisplayLabel(tab, tabs);
+          const dirty = !!tabEditState[tab.id]?.dirty;
           return (
             <div
               key={tab.id}
@@ -67,6 +70,12 @@ export default function FileTabBar({ tabs, activeTabId, onSelectTab, onCloseTab 
               <span className="text-[13px] truncate select-none">
                 {displayLabel}
               </span>
+              {dirty && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-accent-blue-bright shrink-0"
+                  title="Unsaved changes"
+                />
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();

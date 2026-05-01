@@ -89,6 +89,23 @@ export class ApiServer {
     this.server = null;
   }
 
+  /**
+   * Override status to 'working' while an input send is in flight.
+   * The status monitor cannot infer 'working' from typed-char echoes, so the
+   * DB still reads 'idle' for the duration of a slow per-char Win32 send.
+   * Without this override, callers would see 'idle' and think their send
+   * landed before any of it had been typed yet.
+   */
+  private withInputInFlight<T extends { id: string; status: string }>(agent: T): T {
+    if (
+      this.supervisor.isInputInFlight(agent.id) &&
+      (agent.status === 'idle' || agent.status === 'waiting')
+    ) {
+      return { ...agent, status: 'working' };
+    }
+    return agent;
+  }
+
   private async route(method: string, url: URL, req: http.IncomingMessage): Promise<any> {
     const path = url.pathname;
 
@@ -97,7 +114,7 @@ export class ApiServer {
       const workspaceId = url.searchParams.get('workspaceId');
       const agents = workspaceId ? getAgentsByWorkspace(workspaceId) : getAllAgents();
       // Enrich with context stats
-      return agents.map(a => ({
+      return agents.map(a => this.withInputInFlight({
         ...a,
         contextStats: this.supervisor.getContextStats(a.id),
       }));
@@ -108,10 +125,10 @@ export class ApiServer {
     if (method === 'GET' && agentGetMatch) {
       const agent = getAgent(agentGetMatch[1]);
       if (!agent) throw Object.assign(new Error('Agent not found'), { statusCode: 404 });
-      return {
+      return this.withInputInFlight({
         ...agent,
         contextStats: this.supervisor.getContextStats(agent.id),
-      };
+      });
     }
 
     // GET /api/agents/:id/log — read agent log
@@ -130,26 +147,40 @@ export class ApiServer {
       return { agentId: ctxMatch[1], stats };
     }
 
-    // POST /api/agents/:id/input — send message to agent
+    // POST /api/agents/:id/input — queue a message for delivery and return.
+    // Delivery is fire-and-forget: the Windows codex/gemini path types one
+    // character at a time at WINDOWS_CODEX_TYPING_DELAY_MS to dodge the
+    // paste-burst dialog, so multi-KB sends can take 30+ seconds. Holding
+    // the HTTP request open that long invariably breaks callers' timeouts.
+    // The supervisor serializes per-agent and surfaces `isInputInFlight` so
+    // subsequent GETs see the agent as 'working' until typing finishes.
     const inputMatch = path.match(/^\/api\/agents\/([^/]+)\/input$/);
     if (method === 'POST' && inputMatch) {
+      const agentId = inputMatch[1];
       const body = await readBody(req);
       const { text } = JSON.parse(body);
       if (!text) throw Object.assign(new Error('Missing "text" in request body'), { statusCode: 400 });
 
-      const agent = getAgent(inputMatch[1]);
+      const agent = getAgent(agentId);
       if (!agent) throw Object.assign(new Error('Agent not found'), { statusCode: 404 });
 
-      // Safety gate: only send to idle/waiting agents
-      if (['working', 'launching'].includes(agent.status)) {
+      // Safety gate: only send to idle/waiting agents. `isInputInFlight`
+      // covers the window between enqueue and the agent's first response
+      // burst, where the DB still reads 'idle' but typing is in progress.
+      if (this.supervisor.isInputInFlight(agentId) || ['working', 'launching'].includes(agent.status)) {
+        const reportedStatus = this.supervisor.isInputInFlight(agentId) ? 'working' : agent.status;
         throw Object.assign(
-          new Error(`Cannot send input to agent in "${agent.status}" state. Wait until it is idle or waiting.`),
+          new Error(`Cannot send input to agent in "${reportedStatus}" state. Wait until it is idle or waiting.`),
           { statusCode: 409 }
         );
       }
 
-      await this.supervisor.sendInput(inputMatch[1], text);
-      return { ok: true, agentId: inputMatch[1], message: 'Input sent' };
+      // Don't await — typing happens in the background. Errors are logged
+      // because there's no caller to return them to once we've responded.
+      this.supervisor.sendInput(agentId, text).catch((err) => {
+        console.error(`[api] Background input delivery to ${agentId} failed:`, err);
+      });
+      return { ok: true, agentId, queued: true, message: 'Input queued' };
     }
 
     // POST /api/agents — launch a new agent

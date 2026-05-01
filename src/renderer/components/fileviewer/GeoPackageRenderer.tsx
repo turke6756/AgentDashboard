@@ -167,7 +167,7 @@ export default function GeoPackageRenderer({ filePath }: Props) {
           }
         }
 
-        const geomCol = layer.geomColumn;
+        const geomCol = layer.geomColumn!;
         const rowsRaw = queryAll(db, `SELECT * FROM "${layer.tableName}" LIMIT 20000`);
 
         const features: any[] = [];

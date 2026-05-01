@@ -22,6 +22,7 @@ export class WslRunner extends EventEmitter {
   private _outputWindowStart: number = 0;
   private _pid: number | null = null;
   private _alive: boolean = false;
+  private _intentionalKill: boolean = false;
   private buffer: string = '';
   private logStream: fs.WriteStream | null = null;
 
@@ -119,7 +120,8 @@ export class WslRunner extends EventEmitter {
         this._alive = false;
         this.logStream?.end();
         this.logStream = null;
-        this.emit('exit', code ?? 1, null);
+        const reportedCode = this._intentionalKill ? 0 : ((code ?? 1) || 137);
+        this.emit('exit', reportedCode, null);
       }
       this.host = null;
     });
@@ -175,7 +177,10 @@ export class WslRunner extends EventEmitter {
         this._alive = false;
         this.logStream?.end();
         this.logStream = null;
-        this.emit('exit', msg.exitCode ?? 1, msg.signal);
+        {
+          const reportedCode = this._intentionalKill ? 0 : ((msg.exitCode ?? 1) || 137);
+          this.emit('exit', reportedCode, msg.signal);
+        }
         if (this.host && !this.host.killed) {
           this.host.kill();
         }
@@ -245,6 +250,7 @@ export class WslRunner extends EventEmitter {
   }
 
   async kill(): Promise<void> {
+    this._intentionalKill = true;
     this._alive = false;
 
     // Graceful shutdown attempt: try to save session state

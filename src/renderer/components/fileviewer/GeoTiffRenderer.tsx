@@ -57,13 +57,13 @@ export default function GeoTiffRenderer({ filePath }: Props) {
         const width = image.getWidth();
         const height = image.getHeight();
         const bands = image.getSamplesPerPixel();
-        const dtype = String((image as any).getSampleFormat?.() || image.getBitsPerSample()?.[0] || 'unknown');
+        const dtype = String((image as any).getSampleFormat?.() || (image.getBitsPerSample() as any)?.[0] || 'unknown');
 
         let bbox: number[] | null = null;
         try { bbox = image.getBoundingBox(); } catch {}
         const gk = image.getGeoKeys() as any;
         const epsg: number | null = gk?.ProjectedCSTypeGeoKey || gk?.GeographicTypeGeoKey || null;
-        const noDataStr = image.getFileDirectory()?.GDAL_NODATA;
+        const noDataStr = (image.getFileDirectory() as any)?.GDAL_NODATA;
         const noData = noDataStr ? parseFloat(String(noDataStr)) : null;
 
         // Downsample very large rasters for preview

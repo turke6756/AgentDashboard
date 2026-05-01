@@ -4,15 +4,19 @@ import { MarkdownCell } from './MarkdownCell';
 import { OutputRenderer } from './OutputRenderer';
 import { StaticCodeBlock } from './StaticCodeBlock';
 import { CellToolbar } from './CellToolbar';
+import type { NotebookCellStatus } from '../../stores/cellStatus';
 
 interface CellShellProps {
   cell: ISharedCell;
   index: number;
   totalCells: number;
+  status: NotebookCellStatus;
   isVisible: boolean;
   language: string;
   busy: boolean;
   onRunCell: (cellId: string) => void;
+  onAddCodeBelow: (index: number) => void;
+  onAddMarkdownBelow: (index: number) => void;
   onDeleteCell: (index: number) => void;
   onMoveCellUp: (index: number) => void;
   onMoveCellDown: (index: number) => void;
@@ -22,22 +26,30 @@ export function CellShell({
   cell,
   index,
   totalCells,
+  status,
   isVisible,
   language,
   busy,
   onRunCell,
+  onAddCodeBelow,
+  onAddMarkdownBelow,
   onDeleteCell,
   onMoveCellUp,
   onMoveCellDown,
 }: CellShellProps) {
   return (
-    <article className="group relative border-b border-surface-3 bg-surface-0">
+    <article className="notebook-cell-body group relative min-w-0">
+      {status === 'running' || status === 'queued' ? (
+        <div className={`notebook-cell-activity ${status === 'queued' ? 'notebook-cell-activity-queued' : ''}`} />
+      ) : null}
       <CellToolbar
         canRun={cell.cell_type === 'code'}
         canMoveUp={index > 0}
         canMoveDown={index < totalCells - 1}
         busy={busy}
         onRun={() => onRunCell(cell.id)}
+        onAddCodeBelow={() => onAddCodeBelow(index)}
+        onAddMarkdownBelow={() => onAddMarkdownBelow(index)}
         onDelete={() => onDeleteCell(index)}
         onMoveUp={() => onMoveCellUp(index)}
         onMoveDown={() => onMoveCellDown(index)}
@@ -66,23 +78,16 @@ function CodeCellShell({
 }) {
   return (
     <>
-      <div className="grid grid-cols-[56px_minmax(0,1fr)]">
-        <div className="border-r border-surface-3 px-2 py-3 text-right font-mono text-[11px] text-fg-muted">
-          {formatExecutionCount(cell.execution_count)}
-        </div>
-        <div className="min-w-0">
-          {isVisible && cell.awareness ? (
-            <CodeCell
-              cellId={cell.id}
-              ytext={cell.ysource}
-              awareness={cell.awareness}
-              language={language}
-            />
-          ) : (
-            <StaticCodeBlock source={cell.source} language={language} />
-          )}
-        </div>
-      </div>
+      {isVisible && cell.awareness ? (
+        <CodeCell
+          cellId={cell.id}
+          ytext={cell.ysource}
+          awareness={cell.awareness}
+          language={language}
+        />
+      ) : (
+        <StaticCodeBlock source={cell.source} language={language} />
+      )}
       <OutputRenderer outputs={cell.outputs} />
     </>
   );
@@ -107,8 +112,4 @@ function UnknownCellShell({ cell }: { cell: ISharedCell }) {
       </pre>
     </div>
   );
-}
-
-function formatExecutionCount(executionCount: number | null) {
-  return executionCount == null ? '[ ]' : `[${executionCount}]`;
 }

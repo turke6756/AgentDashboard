@@ -3,39 +3,36 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import type { IMarkdownCell } from '@jupyterlab/nbformat';
-import { useThemeStore } from '../../stores/theme-store';
 
 interface MarkdownCellProps {
   cell: Pick<IMarkdownCell, 'source' | 'metadata'>;
 }
 
 export function MarkdownCell({ cell }: MarkdownCellProps) {
-  const theme = useThemeStore((state) => state.theme);
-  const isLight = theme === 'light';
   const source = Array.isArray(cell.source) ? cell.source.join('') : cell.source;
 
   return (
-    <div className="px-5 py-4">
-      <div className="prose prose-sm max-w-none font-sans dark:prose-invert">
+    <div className="notebook-markdown px-5 py-4">
+      <div className="max-w-none font-sans">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
           components={{
             h1: ({ children }) => (
-              <h1 className="mb-4 border-b border-accent-blue/20 pb-2 text-xl font-semibold text-fg-primary">
+              <h1 className="mb-3 border-b border-surface-3 pb-2 text-xl font-semibold text-fg-primary">
                 {children}
               </h1>
             ),
             h2: ({ children }) => (
-              <h2 className="mb-3 mt-6 border-b border-surface-3 pb-1 text-lg font-semibold text-fg-primary">
+              <h2 className="mb-2 mt-5 border-b border-surface-3 pb-1 text-[17px] font-semibold text-fg-primary">
                 {children}
               </h2>
             ),
             h3: ({ children }) => (
-              <h3 className="mb-2 mt-5 text-base font-semibold text-fg-primary">{children}</h3>
+              <h3 className="mb-2 mt-4 text-[15px] font-semibold text-fg-primary">{children}</h3>
             ),
             p: ({ children }) => (
-              <p className="mb-3 text-sm leading-6 text-fg-primary">{children}</p>
+              <p className="mb-3 text-[13px] leading-6 text-fg-primary">{children}</p>
             ),
             a: ({ href, children }) => (
               <a
@@ -46,29 +43,25 @@ export function MarkdownCell({ cell }: MarkdownCellProps) {
               </a>
             ),
             ul: ({ children }) => (
-              <ul className="mb-3 list-disc pl-5 text-sm text-fg-primary">{children}</ul>
+              <ul className="mb-3 list-disc pl-5 text-[13px] leading-6 text-fg-primary">{children}</ul>
             ),
             ol: ({ children }) => (
-              <ol className="mb-3 list-decimal pl-5 text-sm text-fg-primary">{children}</ol>
+              <ol className="mb-3 list-decimal pl-5 text-[13px] leading-6 text-fg-primary">{children}</ol>
             ),
             li: ({ children }) => <li className="mb-1">{children}</li>,
             blockquote: ({ children }) => (
-              <blockquote className="my-4 border-l-2 border-accent-blue/40 pl-4 italic text-fg-secondary">
+              <blockquote className="my-4 border-l-2 border-accent-blue/50 bg-surface-1/70 py-2 pl-4 pr-3 text-fg-secondary">
                 {children}
               </blockquote>
             ),
             table: ({ children }) => (
               <div className="mb-4 overflow-x-auto">
-                <table className="w-full border-collapse text-sm">{children}</table>
+                <table className="notebook-markdown-table w-full border-collapse text-[13px]">{children}</table>
               </div>
             ),
-            thead: ({ children }) => (
-              <thead className={isLight ? 'bg-gray-100 text-gray-700' : 'bg-surface-2 text-fg-secondary'}>
-                {children}
-              </thead>
-            ),
+            thead: ({ children }) => <thead>{children}</thead>,
             th: ({ children }) => (
-              <th className="border border-surface-3 px-3 py-2 text-left font-medium">{children}</th>
+              <th className="border border-surface-3 px-3 py-2 text-left font-medium text-fg-secondary">{children}</th>
             ),
             td: ({ children }) => (
               <td className="border border-surface-3 px-3 py-2 text-fg-primary">{children}</td>
@@ -76,19 +69,20 @@ export function MarkdownCell({ cell }: MarkdownCellProps) {
             code: ({ className, children }) => {
               if (className) {
                 return (
-                  <code className="block overflow-x-auto rounded border border-surface-3 bg-surface-1 px-3 py-2 font-mono text-xs text-fg-primary">
+                  <code className="block overflow-x-auto rounded-[4px] border border-surface-3 bg-surface-1 px-3 py-2 font-mono text-xs leading-5 text-fg-primary">
                     {String(children).replace(/\n$/, '')}
                   </code>
                 );
               }
 
               return (
-                <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[12px] text-accent-orange">
+                <code className="rounded-[3px] bg-surface-2 px-1.5 py-0.5 font-mono text-[12px] text-accent-orange">
                   {children}
                 </code>
               );
             },
             pre: ({ children }) => <pre className="my-3 overflow-x-auto">{children}</pre>,
+            hr: () => <hr className="my-5 border-surface-3" />,
           }}
         >
           {source}
