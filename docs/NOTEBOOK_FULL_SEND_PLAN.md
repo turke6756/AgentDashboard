@@ -9,6 +9,16 @@ Replace the iframe-embedded JupyterLab renderer with a custom React surface that
 
 **Do not change the server side.** `src/main/jupyter-server.ts`, `src/main/jupyter-kernel-client.ts`, the HTTP API in `src/main/api-server.ts`, and the MCP servers in `scripts/mcp-*.js` all stay working. We are replacing the view only. The one exception is *adding* (never modifying) a new `execute_notebook` endpoint in Phase 3.
 
+## Current status (2026-05-01)
+
+- Work has been consolidated back onto `master`; the original `notebook-full-send` feature branch was deleted after the catch-up commit.
+- Latest known integration commit: `b7a1ef2 catch-up: notebook polish, codex input-path, fileviewer, docs`.
+- User confirmed the new notebook UI looks good, notebook actions work, and the supervisor is using the dashboard MCP notebook path.
+- Phases 0 through 4a are accepted.
+- Phase 4b skill source has been authored in the app repo at `.claude/skills/notebook-debug-loop/SKILL.md`; `quick_validate.py` passes.
+- Remaining follow-up: distribute/sync the canonical skill into supervisor workspaces so agents running outside the app repo can discover it automatically.
+- Phase 4c edge-case checks and Phase 5 cleanup are final validation/cleanup.
+
 ## Before any agent starts
 
 **Human prerequisites** (the user handles these — the agent should refuse to start until confirmed):
@@ -348,6 +358,13 @@ Show the human the fully functional notebook with execution. Debug loop is now t
 
 **Acceptance:** notebook visually matches the dashboard chrome. Dark/light mode (if the dashboard supports it) switches cleanly.
 
+### Phase 4a handoff (confirmed 2026-05-01)
+
+- User confirmed the rebuilt notebook UI visually matches the dashboard direction and "looks great".
+- Theme polish was included in the catch-up commit on `master`: `b7a1ef2 catch-up: notebook polish, codex input-path, fileviewer, docs`.
+- The notebook renderer is no longer being treated as a branch-only rebuild; follow-up work should happen directly from clean `master` unless a new task branch is created.
+- Next step is Phase 4b: create the `notebook-debug-loop` skill. Current repo layout has `.claude/agents/` and `.claude/plans/`, but no checked-in `.claude/skills/` directory yet, so create that directory as part of the skill commit unless the project establishes a different skill home before implementation.
+
 **Commit:** `notebook full-send phase 4a: theme`
 
 ### 4b — `notebook-debug-loop` agent skill (~1 day)
@@ -363,6 +380,22 @@ Show the human the fully functional notebook with execution. Debug loop is now t
 5. Loop until status === 'ok' or a stopping condition (e.g., same error twice).
 
 **Acceptance:** hand the supervisor a deliberately broken GIS notebook, watch it fix itself while the human scrolls the UI.
+
+**Skill implementation notes (prepared 2026-05-01):**
+- Keep the skill short and procedural. It should teach the agent to prefer dashboard MCP tools over `jupyter nbconvert` or direct shell execution.
+- Primary path: `execute_notebook` -> inspect `failed_cell_id` and `outputs_summary` -> edit only the failing cell -> rerun with `execute_range` from the failed cell or `execute_cell` for isolated fixes.
+- Use server-relative notebook paths, matching the successful MCP retest in Phase 3.
+- Mention the observed acceptable fallback: inspect the notebook JSON if needed, then edit by nbformat cell id, but keep execution through the dashboard MCP path so the UI, live kernel, and persisted outputs stay aligned.
+- Stop after repeated identical failures or when the fix would require changing notebook intent rather than repairing execution.
+
+### Phase 4b handoff (implemented 2026-05-01)
+
+- Created canonical skill source: `.claude/skills/notebook-debug-loop/SKILL.md`.
+- Created generated UI metadata: `.claude/skills/notebook-debug-loop/agents/openai.yaml`.
+- Skill instructs agents to use dashboard MCP notebook tools as the execution path of record, address cells by nbformat id, rerun focused scopes with `execute_cell`/`execute_range`, and finish validation with `execute_notebook`.
+- Skill documents role-sensitive behavior: supervisors that must not edit directly should brief/monitor a worker using the same loop; agents allowed to edit can run the loop directly.
+- Validation passed with `quick_validate.py`.
+- Distribution into arbitrary target workspaces is not automated yet. The canonical source now exists in the app repo; a follow-up should copy/sync it during supervisor scaffold creation or repair.
 
 **Commit:** `notebook full-send phase 4b: agent skill`
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Notebook Debug Loop"
+  short_description: "Repair notebooks through dashboard MCP execution."
+  default_prompt: "Use the notebook debug loop to execute this notebook through the dashboard MCP tools, fix the first failing cell, and rerun until it passes or a clear stopping condition is reached."
