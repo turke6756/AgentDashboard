@@ -21,6 +21,11 @@ const api: IpcApi = {
     fork: (id) => ipcRenderer.invoke('agent:fork', id),
     query: (targetAgentId, question, sourceAgentId) => ipcRenderer.invoke('agent:query', targetAgentId, question, sourceAgentId),
     sendInput: (agentId, text) => ipcRenderer.invoke('agent:send-input', agentId, text),
+    onSendInputError: (callback) => {
+      const listener = (_event: any, data: { agentId: string; error: string }) => callback(data);
+      ipcRenderer.on('agent:send-input-error', listener);
+      return () => ipcRenderer.removeListener('agent:send-input-error', listener);
+    },
     getSupervisor: (workspaceId) => ipcRenderer.invoke('agent:get-supervisor', workspaceId),
     updateSupervised: (id, supervised) => ipcRenderer.invoke('agent:update-supervised', id, supervised),
     onFileActivity: (callback) => {
@@ -89,13 +94,6 @@ const api: IpcApi = {
     openFileInWorkspace: (filePath, workspaceDir, pathType) =>
       ipcRenderer.invoke('system:open-file-in-workspace', filePath, workspaceDir, pathType),
   },
-  groupthink: {
-    start: (workspaceId, topic, agentIds, maxRounds) =>
-      ipcRenderer.invoke('groupthink:start', workspaceId, topic, agentIds, maxRounds),
-    getStatus: (sessionId) => ipcRenderer.invoke('groupthink:status', sessionId),
-    list: (workspaceId) => ipcRenderer.invoke('groupthink:list', workspaceId),
-    cancel: (sessionId) => ipcRenderer.invoke('groupthink:cancel', sessionId),
-  },
   teams: {
     create: (input) => ipcRenderer.invoke('team:create', input),
     get: (teamId) => ipcRenderer.invoke('team:get', teamId),
@@ -129,11 +127,6 @@ const api: IpcApi = {
     const listener = (_event: any, data: any) => callback(data);
     ipcRenderer.on('agent:status-changed', listener);
     return () => ipcRenderer.removeListener('agent:status-changed', listener);
-  },
-  onGroupThinkUpdated: (callback) => {
-    const listener = (_event: any, session: any) => callback(session);
-    ipcRenderer.on('groupthink:updated', listener);
-    return () => ipcRenderer.removeListener('groupthink:updated', listener);
   },
   onTeamUpdated: (callback) => {
     const listener = (_event: any, team: any) => callback(team);

@@ -1,0 +1,354 @@
+#!/usr/bin/env node
+
+/**
+ * GroupThink Orchestration Script (v1 - Basic)
+ * 
+ * Drives a two-agent deliberation loop:
+ * 1. Launches a Lead Planner (Agent A) and a Reviewer (Agent B).
+ * 2. Relays messages between them with framing prose.
+ * 3. Terminates when Agent A writes the final markdown plan file.
+ * 4. Persists session IDs and adheres to the plan schema.
+ */
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// --- Configuration ---
+const DEFAULT_PORTS = [24678, 24679, 24680, 24681];
+const READY_STATUSES = new Set(['idle', 'waiting']);
+const MAX_TURNS = 10;
+const POLL_INTERVAL_MS = 2000;
+const MIN_READY_POLLS = 3;
+
+// --- State ---
+const lastRelayedTs = {}; // agentId -> ISO timestamp
+
+// --- Utils ---
+function log(level, message) {
+  const line = `[${new Date().toISOString()}] [${level}] ${message}`;
+  console.log(line);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseArgs(argv) {
+  const args = {};
+  const orphans = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('--')) {
+      const [key, value] = arg.slice(2).split('=');
+      args[key] = value || argv[++i];
+    } else {
+      orphans.push(arg);
+    }
+  }
+  if (orphans.length > 0) {
+    log('WARN', `Ignored argv tokens (likely shell quote-stripping on a multi-word flag value — e.g. --topic="A B C" arriving as 3 tokens): ${JSON.stringify(orphans)}`);
+  }
+  return args;
+}
+
+function isWsl() {
+  return Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft');
+}
+
+function readWslHost() {
+  if (!isWsl()) return null;
+  try {
+    const resolv = fs.readFileSync('/etc/resolv.conf', 'utf8');
+    const match = resolv.match(/^nameserver\s+(\S+)/m);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveHost(args) {
+  return args['api-host'] || process.env.AGENT_DASHBOARD_API_HOST || readWslHost() || '127.0.0.1';
+}
+
+function candidatePorts(args) {
+  const ports = [];
+  if (args['api-port']) ports.push(Number(args['api-port']));
+  for (const port of DEFAULT_PORTS) ports.push(port);
+  return ports.filter((port, index, all) => Number.isInteger(port) && port > 0 && all.indexOf(port) === index);
+}
+
+// --- API Client ---
+async function requestJson(base, method, apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const req = http.request({
+      hostname: base.host,
+      port: base.port,
+      path: apiPath,
+      method,
+      timeout: 60000,
+      headers: payload ? {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      } : undefined,
+    }, res => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => text += chunk);
+      res.on('end', () => {
+        let json = null;
+        if (text) {
+          try { json = JSON.parse(text); }
+          catch (e) { json = null; }
+        }
+        resolve({ status: res.statusCode || 0, text, json });
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error(`Request timed out: ${method} ${apiPath}`));
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function apiJson(base, method, apiPath, body) {
+  const res = await requestJson(base, method, apiPath, body);
+  if (res.status < 200 || res.status >= 300) {
+    const err = new Error(`${method} ${apiPath} failed with HTTP ${res.status}: ${res.text}`);
+    err.status = res.status;
+    err.body = res.text;
+    throw err;
+  }
+  return res.json;
+}
+
+async function connectApi(host, ports) {
+  let lastError = null;
+  for (const port of ports) {
+    const base = { host, port };
+    try {
+      const res = await requestJson(base, 'GET', '/api/agents');
+      if (res.status >= 200 && res.status < 300 && Array.isArray(res.json)) {
+        log('INFO', `Connected to AgentDashboard API at http://${host}:${port}`);
+        return base;
+      }
+      lastError = new Error(`HTTP ${res.status}: ${res.text}`);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('Could not connect to AgentDashboard API');
+}
+
+async function waitReady(base, agentId, label, timeoutMs = 300000) {
+  const deadline = Date.now() + timeoutMs;
+  let readyCount = 0;
+  while (Date.now() < deadline) {
+    const agent = await apiJson(base, 'GET', `/api/agents/${agentId}`);
+    if (READY_STATUSES.has(agent.status)) {
+      readyCount++;
+      if (readyCount >= MIN_READY_POLLS) return agent;
+    } else {
+      readyCount = 0;
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Timeout waiting for ${label} (${agentId})`);
+}
+
+async function readNextMessage(base, agentId) {
+  const result = await apiJson(base, 'GET', `/api/agents/${agentId}/messages?limit=1&role=assistant`);
+  const msg = result?.messages?.[0];
+  if (!msg || !msg.turnComplete) return null;
+  if (lastRelayedTs[agentId] && msg.ts <= lastRelayedTs[agentId]) return null; // stale
+  return msg;
+}
+
+async function waitTurnComplete(base, agentId, label, timeoutMs = 300000) {
+  const deadline = Date.now() + timeoutMs;
+  let stableIdlePolls = 0;
+  while (Date.now() < deadline) {
+    const agent = await apiJson(base, 'GET', `/api/agents/${agentId}`);
+    if (READY_STATUSES.has(agent.status)) {
+      const msg = await readNextMessage(base, agentId);
+      if (msg) {
+        stableIdlePolls++;
+        if (stableIdlePolls >= MIN_READY_POLLS) return msg;
+      } else {
+        stableIdlePolls = 0; // idle but no fresh turn yet
+      }
+    } else {
+      stableIdlePolls = 0;
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`Timeout waiting for ${label} (${agentId}) to complete turn`);
+}
+
+// --- Main ---
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const workspaceId = args.workspaceId;
+  const supervisorId = args.supervisorId;
+  const topic = args.topic || "Research and plan a feature.";
+  const planPath = args.planPath || "plans/new-plan.md";
+
+  if (!workspaceId || !supervisorId) {
+    console.error("Usage: groupthink.js --workspaceId=<id> --supervisorId=<id> [--topic=<topic>] [--planPath=<path>] [--api-host=<host>] [--api-port=<port>]");
+    process.exit(1);
+  }
+
+  const base = await connectApi(resolveHost(args), candidatePorts(args));
+
+  log('INFO', `Starting GroupThink on topic: ${topic}`);
+
+  // 1. Launch or Resume Agents
+  let leadAgentId = args['resume-lead-id'];
+  let reviewerAgentId = args['resume-reviewer-id'];
+  let lead, reviewer;
+
+  if (leadAgentId) {
+      lead = await apiJson(base, 'GET', `/api/agents/${leadAgentId}`);
+      log('INFO', `Resuming Lead: ${lead.id}`);
+  } else {
+      lead = await apiJson(base, 'POST', '/api/agents', {
+        workspaceId,
+        title: `Lead Planner (GroupThink)`,
+        roleDescription: "Lead planner in charge of making the final call. You will receive feedback from a reviewer.",
+        provider: args.leadProvider || 'claude',
+        systemPrompt: `You are the Lead Planner in a GroupThink deliberation.
+
+Topic: ${topic}
+
+You are working with a Reviewer agent. Each of your assistant turns will be relayed verbatim to the Reviewer as your message — put your actual draft plan, questions, or responses directly in your message body. Do not write meta-narration like "I'll now do X" or "I just finished Y" — produce the deliberation content itself.
+
+Plan schema when you finalize: file paths, specific edits, clear instructions a worker agent could execute without further questions.
+
+Termination contract: write the plan file to ${planPath} ONLY after the Reviewer has explicitly approved the latest draft in their own message. The file-write ends the orchestration — a premature write terminates the deliberation before consensus.
+
+Begin by producing your first draft of the plan as your next message.`
+      });
+      leadAgentId = lead.id;
+  }
+
+  if (reviewerAgentId) {
+      reviewer = await apiJson(base, 'GET', `/api/agents/${reviewerAgentId}`);
+      log('INFO', `Resuming Reviewer: ${reviewer.id}`);
+  } else {
+      reviewer = await apiJson(base, 'POST', '/api/agents', {
+        workspaceId,
+        title: `Reviewer (GroupThink)`,
+        roleDescription: "Reviewer agent providing feedback to the Lead Planner.",
+        provider: args.reviewerProvider || 'codex',
+        systemPrompt: `You are the Reviewer in a GroupThink deliberation.
+
+Topic: ${topic}
+
+You are working with a Lead Planner who is drafting a worker-ready plan. Each of your assistant turns will be relayed verbatim to the Lead as your message — put your critique, risk callouts, or approval directly in your message body. Do not write meta-narration about what you're about to do.
+
+Review their drafts critically: point out risks, suggest better file paths or implementation details, push back on weak choices, and ensure the plan is robust.
+
+Approval contract: the Lead is instructed NOT to finalize the plan file until you have explicitly approved the latest draft. When you approve, say so clearly in your message (e.g., "Approved — ready to finalize") so the Lead can act on it. Until then, keep iterating.
+
+Wait for the Lead's first draft; your first message will be your response to it.`
+      });
+      reviewerAgentId = reviewer.id;
+  }
+
+  log('INFO', `Active Lead: ${lead.id}, Reviewer: ${reviewer.id}`);
+
+  // 2. Relay Loop — Lead is self-starting from its system prompt (topic baked in).
+  let turn = 0;
+  const members = {
+      lead: { id: lead.id, sid: lead.resumeSessionId, provider: lead.provider },
+      reviewer: { id: reviewer.id, sid: reviewer.resumeSessionId, provider: reviewer.provider }
+  };
+
+  try {
+      while (turn < MAX_TURNS) {
+        turn++;
+        log('INFO', `--- Turn ${turn} ---`);
+
+        // Lead -> Reviewer
+        const leadMsg = await waitTurnComplete(base, lead.id, 'Lead');
+        lastRelayedTs[lead.id] = leadMsg.ts;
+
+        if (fs.existsSync(planPath)) {
+            log('INFO', `Plan file detected at ${planPath}. Termination condition met.`);
+            break;
+        }
+        log('INFO', `Relaying Lead -> Reviewer`);
+        await apiJson(base, 'POST', `/api/agents/${reviewer.id}/input`, {
+            text: `Feedback from Lead Planner:\n\n${leadMsg.content}\n\nWhat is your review?`
+        });
+
+        // Reviewer -> Lead
+        const revMsg = await waitTurnComplete(base, reviewer.id, 'Reviewer');
+        lastRelayedTs[reviewer.id] = revMsg.ts;
+
+        log('INFO', `Relaying Reviewer -> Lead`);
+        await apiJson(base, 'POST', `/api/agents/${lead.id}/input`, {
+            text: `Reviewer Feedback:\n\n${revMsg.content}\n\nRespond to this feedback or finalize the plan.`
+        });
+
+        if (fs.existsSync(planPath)) {
+            log('INFO', `Plan file detected at ${planPath}. Termination condition met.`);
+            break;
+        }
+      }
+
+      if (turn >= MAX_TURNS && !fs.existsSync(planPath)) {
+          throw new Error("STALL: Max turns reached without plan completion.");
+      }
+  } catch (err) {
+      if (err.message.startsWith("STALL") || err.message.includes("Timeout")) {
+          log('WARN', `GroupThink stalled: ${err.message}`);
+          const event = {
+              reason: err.message.includes("Max turns") ? "turn_cap_reached" : "timeout",
+              topic,
+              turns: turn,
+              planners: [
+                  { role: "lead", ...members.lead },
+                  { role: "reviewer", ...members.reviewer }
+              ],
+              planPath,
+              resume_hint: `node scripts/groupthink-v1.js --workspaceId=${workspaceId} --supervisorId=${supervisorId} --resume-lead-id=${members.lead.id} --resume-reviewer-id=${members.reviewer.id} --topic="${topic}" --planPath="${planPath}"`
+          };
+          await apiJson(base, 'POST', `/api/agents/${supervisorId}/input`, {
+              text: `[DASHBOARD EVENT] orchestration.groupthink.stalled\n${JSON.stringify(event, null, 2)}`
+          });
+          process.exit(2);
+      }
+      throw err;
+  }
+
+  // 4. Success & Cleanup
+  log('INFO', `GroupThink complete. Members: ${members.lead.sid}, ${members.reviewer.sid}`);
+  
+  if (fs.existsSync(planPath)) {
+      let content = fs.readFileSync(planPath, 'utf8');
+      const sessionBlock = `\n\n<!-- groupthink_members: ${members.lead.sid}, ${members.reviewer.sid} -->\n`;
+      if (!content.includes('groupthink_members:')) {
+          fs.writeFileSync(planPath, content + sessionBlock);
+      }
+  }
+
+  await apiJson(base, 'POST', `/api/agents/${supervisorId}/input`, {
+      text: `[DASHBOARD EVENT] groupthink.complete: Plan produced at ${planPath}. Members: ${members.lead.sid}, ${members.reviewer.sid}`
+  });
+
+  if (!args.keepAgents) {
+      await apiJson(base, 'DELETE', `/api/agents/${lead.id}`);
+      await apiJson(base, 'DELETE', `/api/agents/${reviewer.id}`);
+      log('INFO', "Agents cleaned up.");
+  }
+}
+
+main().catch(err => {
+  log('ERROR', err.stack || err);
+  process.exit(1);
+});

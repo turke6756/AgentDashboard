@@ -67,6 +67,25 @@ or output genuinely belongs under `.claude/`, the orchestrator (a Node script,
 the dashboard, or a supervisor MCP call) should write it on the agent's
 behalf. See `docs/ORCHESTRATION_SPIKE.md` for the run that surfaced this.
 
+## Supervisor scaffold: local edits vs. app-wide changes
+
+A supervisor's files (`.dashboard/supervisor/CLAUDE.md`, `.dashboard/supervisor/.claude/skills/<name>/SKILL.md`, etc.) are **scaffolded once** by the dashboard the first time a workspace is opened that doesn't already have a `.dashboard/supervisor/` directory. The scaffold logic lives in `src/main/supervisor/index.ts` (`ensureSupervisorScaffold()`) and explicitly **never overwrites existing files** — it only writes ones that are missing.
+
+This means two different things depending on what you want:
+
+**1. Local-only tweak (one workspace).** Edit the file under `.dashboard/supervisor/` directly. The change sticks for this workspace and survives restarts, but it's lost if anyone wipes that folder, and **no other workspace gets it** — the next supervisor scaffolded anywhere else still gets the old content from the constants.
+
+**2. Change what every future supervisor gets (app-wide).** Edit the source constant in `src/shared/constants.ts` — `SUPERVISOR_AGENT_MD` (the CLAUDE.md), `SUPERVISOR_RUN_ORCHESTRATION_SKILL`, `SUPERVISOR_ORCHESTRATION_SPIKE_SKILL`, etc. Then **rebuild the main process** (`npm run build:main`) and restart Electron. From that point on, any workspace that gets a fresh supervisor scaffold receives the updated content.
+
+**Verifying the app-wide change in a workspace that already has a supervisor:** because the scaffolder won't overwrite, you have to force a fresh scaffold. The reliable sequence is:
+
+1. Stop the supervisor running in that workspace (or close the dashboard).
+2. Delete the `.dashboard/supervisor/` folder (or just the specific files you want regenerated — `CLAUDE.md`, the relevant `SKILL.md`).
+3. Remove the workspace from the dashboard.
+4. Re-add the workspace. The dashboard rescaffolds from the current (rebuilt) constants.
+
+If you only edit the on-disk file without touching the constant, you've made a local-only change. If you only edit the constant without rebuilding + removing the stale folder, the running app keeps emitting the old content. Both steps matter.
+
 ## Notebook execution convention
 
 When asked to run or debug an `.ipynb` from this dashboard workspace, prefer the

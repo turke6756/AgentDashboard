@@ -191,7 +191,11 @@ function getToolDefinitions() {
     },
     {
       name: 'send_message_to_agent',
-      description: 'Send a message to an idle/waiting agent. Rejects if agent is working.',
+      description:
+        'Send a message to an idle/waiting agent. Rejects if agent is working. ' +
+        'For interactive widgets (AskUserQuestion pickers, slash-command menus, arrow keys, Ctrl-C), ' +
+        'use `send_keys_to_agent` instead — this tool\'s bracketed-paste wrapping deposits bytes into ' +
+        'the input box as text, not as key events.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -202,12 +206,62 @@ function getToolDefinitions() {
       },
     },
     {
+      name: 'send_keys_to_agent',
+      description:
+        'Send raw keystroke bytes to an agent\'s PTY without bracketed-paste wrapping. ' +
+        'Use this to drive interactive widgets — AskUserQuestion pickers, codex slash-command menus, ' +
+        'arrow-key navigation, Ctrl-C / Ctrl-D, Tab completion, digit-jump, filter typing — anywhere ' +
+        'the target needs to see each byte as a real key event instead of one pasted blob. ' +
+        'For prose messages, use `send_message_to_agent` instead; this tool sends nothing extra ' +
+        '(no automatic Enter, no line-ending normalization). The caller is responsible for the full byte sequence.\n\n' +
+        'Common byte conventions:\n' +
+        '  Down arrow:        "\\x1b[B"\n' +
+        '  Up arrow:          "\\x1b[A"\n' +
+        '  Right / Left:      "\\x1b[C" / "\\x1b[D"\n' +
+        '  Enter (Claude Windows ConPTY, Claude WSL):  "\\r"\n' +
+        '  Enter (codex/gemini Windows ConPTY):        "\\x1b[13;28;13;1;0;1_\\x1b[13;28;13;0;0;1_"\n' +
+        '  Enter (codex/gemini WSL, kitty mode):       "\\x1b[13u"\n' +
+        '  Ctrl-C / SIGINT:   "\\x03"\n' +
+        '  Ctrl-D / EOF:      "\\x04"\n' +
+        '  Tab:               "\\t"\n' +
+        '  Escape:            "\\x1b"\n\n' +
+        'WSL caveat: bytes are forwarded through the attached tmux session to the focused pane. ' +
+        'Do NOT send the tmux prefix byte ("\\x02" by default, C-b) — tmux will swallow it. ' +
+        'For SIGINT inside a WSL agent, "\\x03" works (it reaches the pane unchanged).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'The agent ID.' },
+          keys: {
+            type: 'string',
+            description:
+              'Literal byte sequence to write to the agent\'s PTY. JS-style escapes ("\\x1b", "\\r", "\\n") ' +
+              'are interpreted by the JSON parser as their byte values, then written verbatim. No wrapping, no Enter appended.',
+          },
+        },
+        required: ['agent_id', 'keys'],
+      },
+    },
+    {
       name: 'get_context_stats',
       description: 'Get context window usage (tokens, percentage, model, turns) for an agent.',
       inputSchema: {
         type: 'object',
         properties: {
           agent_id: { type: 'string', description: 'The agent ID.' },
+        },
+        required: ['agent_id'],
+      },
+    },
+    {
+      name: 'read_agent_chat',
+      description: 'Read the structured conversation history of an agent (turns/messages). Preferred over read_agent_log for orchestration.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'The agent ID.' },
+          limit: { type: 'number', description: 'Max messages to return (newest first, default 50).' },
+          role: { type: 'string', enum: ['assistant', 'user'], description: 'Optional: filter by role.' },
         },
         required: ['agent_id'],
       },
@@ -240,7 +294,7 @@ function getToolDefinitions() {
           command: { type: 'string', description: 'Custom command to launch the agent process. Overrides the provider default.' },
           working_directory: { type: 'string', description: 'Working directory for the agent. Defaults to workspace root.' },
           auto_restart: { type: 'boolean', description: 'Auto-restart the agent on crash (default: true).' },
-          supervised: { type: 'boolean', description: 'Whether the supervisor is notified on agent status changes (default: false).' },
+          supervised: { type: 'boolean', description: 'Whether the supervisor is notified on agent status changes (default: true for supervisor-launched workers — set false to opt out).' },
         },
         required: ['workspace_id', 'title'],
       },
@@ -280,54 +334,6 @@ function getToolDefinitions() {
         required: ['agent_id'],
       },
     },
-    {
-      name: 'start_groupthink',
-      description: 'Start a Group Think session — enroll agents to deliberate on a topic across multiple rounds.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          workspace_id: { type: 'string', description: 'The workspace ID.' },
-          topic: { type: 'string', description: 'The topic or question for agents to deliberate on.' },
-          agent_ids: { type: 'array', items: { type: 'string' }, description: 'Agent IDs to enroll.' },
-          max_rounds: { type: 'number', description: 'Max deliberation rounds (default 3, max 5).' },
-        },
-        required: ['workspace_id', 'topic', 'agent_ids'],
-      },
-    },
-    {
-      name: 'get_groupthink_status',
-      description: 'Get the status of a Group Think session including per-member agent status.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session_id: { type: 'string', description: 'The Group Think session ID.' },
-        },
-        required: ['session_id'],
-      },
-    },
-    {
-      name: 'advance_groupthink_round',
-      description: 'Advance a Group Think session to the next round after cross-pollinating findings.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session_id: { type: 'string', description: 'The Group Think session ID.' },
-        },
-        required: ['session_id'],
-      },
-    },
-    {
-      name: 'complete_groupthink',
-      description: 'Complete a Group Think session with a synthesis report.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session_id: { type: 'string', description: 'The Group Think session ID.' },
-          synthesis: { type: 'string', description: 'The final synthesis report (markdown).' },
-        },
-        required: ['session_id', 'synthesis'],
-      },
-    },
     // ── Team management tools ──────────────────────────────────────────
     {
       name: 'create_team',
@@ -338,7 +344,7 @@ function getToolDefinitions() {
           workspace_id: { type: 'string', description: 'The workspace ID.' },
           name: { type: 'string', description: 'Team name.' },
           description: { type: 'string', description: 'Team purpose/description.' },
-          template: { type: 'string', enum: ['groupthink', 'pipeline', 'custom'], description: 'Channel template: groupthink (all-to-all), pipeline (linear chain A→B→C), custom (define channels explicitly).' },
+          template: { type: 'string', enum: ['mesh', 'pipeline', 'custom'], description: 'Channel template: mesh (all-to-all), pipeline (linear chain A→B→C), custom (define channels explicitly).' },
           members: { type: 'array', items: { type: 'object', properties: { agentId: { type: 'string' }, role: { type: 'string' } }, required: ['agentId'] }, description: 'Agent IDs to enroll as members.' },
           channels: { type: 'array', items: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' }, label: { type: 'string' } }, required: ['from', 'to'] }, description: 'Explicit channels (for custom template or additions to template).' },
         },
@@ -557,9 +563,25 @@ async function handleToolCall(name, args) {
       return { content: [{ type: 'text', text: `Message sent to agent ${args.agent_id}: "${args.message}"` }] };
     }
 
+    case 'send_keys_to_agent': {
+      await apiRequest('POST', `/api/agents/${args.agent_id}/keys`, { keys: args.keys });
+      const preview = args.keys.length > 60 ? args.keys.slice(0, 60) + '…' : args.keys;
+      return { content: [{ type: 'text', text: `Sent ${args.keys.length} byte(s) to agent ${args.agent_id}: ${JSON.stringify(preview)}` }] };
+    }
+
     case 'get_context_stats': {
       const result = await apiRequest('GET', `/api/agents/${args.agent_id}/context-stats`);
       return { content: [{ type: 'text', text: JSON.stringify(result.stats || { message: 'No context stats available yet' }, null, 2) }] };
+    }
+
+    case 'read_agent_chat': {
+      let p = `/api/agents/${args.agent_id}/messages`;
+      const q = [];
+      if (args.limit) q.push(`limit=${args.limit}`);
+      if (args.role) q.push(`role=${args.role}`);
+      if (q.length) p += '?' + q.join('&');
+      const result = await apiRequest('GET', p);
+      return { content: [{ type: 'text', text: JSON.stringify(result.messages, null, 2) }] };
     }
 
     case 'stop_agent': {
@@ -580,17 +602,47 @@ async function handleToolCall(name, args) {
       if (args.command) input.command = args.command;
       if (args.working_directory) input.workingDirectory = args.working_directory;
       if (args.auto_restart !== undefined) input.autoRestartEnabled = args.auto_restart;
-      if (args.supervised !== undefined) input.isSupervised = args.supervised;
+      // Default supervised=true when called via the supervisor MCP — workers
+      // launched by the supervisor should bump it on idle/done/crashed so it
+      // can react without polling. Caller can pass supervised:false to opt out.
+      input.isSupervised = args.supervised !== undefined ? args.supervised : true;
       const agent = await apiRequest('POST', '/api/agents', input);
       let text = `Launched agent "${agent.title}" (${agent.id}) in workspace ${agent.workspaceId}`;
       if (args.template_id) text += `\nTemplate: ${args.template_id}`;
       if (args.prompt) {
-        await new Promise(r => setTimeout(r, 3000));
-        try {
-          await apiRequest('POST', `/api/agents/${agent.id}/input`, { text: args.prompt });
-          text += `\nSent initial prompt: "${args.prompt.substring(0, 100)}..."`;
-        } catch {
-          text += `\nNote: Agent launched but initial prompt could not be sent yet.`;
+        // Poll until the worker leaves 'launching'/'working' before posting the
+        // prompt. The /input route returns 409 in those states (the per-agent
+        // input queue blocks reentry), and a Claude cold-start needs >8s of
+        // silence to flip to 'idle' — well past any fixed wait we could pick.
+        const READY_TIMEOUT_MS = 60_000;
+        const POLL_INTERVAL_MS = 1000;
+        const deadline = Date.now() + READY_TIMEOUT_MS;
+        let ready = false;
+        let lastStatus = agent.status;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+          try {
+            const current = await apiRequest('GET', `/api/agents/${agent.id}`);
+            lastStatus = current.status;
+            if (current.status === 'idle' || current.status === 'waiting') {
+              ready = true;
+              break;
+            }
+            if (current.status === 'crashed' || current.status === 'done') break;
+          } catch (err) {
+            lastStatus = `error: ${err.message}`;
+            break;
+          }
+        }
+        if (!ready) {
+          text += `\nNote: Agent launched but did not reach idle within ${READY_TIMEOUT_MS / 1000}s (last status: ${lastStatus}). Initial prompt NOT sent — retry with send_message_to_agent once the agent is idle.`;
+        } else {
+          try {
+            await apiRequest('POST', `/api/agents/${agent.id}/input`, { text: args.prompt });
+            text += `\nSent initial prompt: "${args.prompt.substring(0, 100)}..."`;
+          } catch (err) {
+            text += `\nNote: Agent reached idle but POST /input failed: ${err.message}. Initial prompt NOT sent — retry with send_message_to_agent.`;
+          }
         }
       }
       return { content: [{ type: 'text', text }] };
@@ -634,32 +686,6 @@ async function handleToolCall(name, args) {
       return { content: [{ type: 'text', text: `Forked agent ${args.agent_id} → new agent "${newAgent.title}" (${newAgent.id})` }] };
     }
 
-    case 'start_groupthink': {
-      const session = await apiRequest('POST', '/api/groupthink', {
-        workspaceId: args.workspace_id,
-        topic: args.topic,
-        agentIds: args.agent_ids,
-        maxRounds: args.max_rounds,
-      });
-      return { content: [{ type: 'text', text: `Group Think session started: "${session.topic}" (${session.id})\nMembers: ${session.memberAgentIds.length} agents, max ${session.maxRounds} rounds` }] };
-    }
-
-    case 'get_groupthink_status': {
-      const session = await apiRequest('GET', `/api/groupthink/${args.session_id}`);
-      return { content: [{ type: 'text', text: JSON.stringify(session, null, 2) }] };
-    }
-
-    case 'advance_groupthink_round': {
-      const session = await apiRequest('POST', `/api/groupthink/${args.session_id}/advance`);
-      return { content: [{ type: 'text', text: `Advanced to round ${session.roundCount}/${session.maxRounds}` }] };
-    }
-
-    case 'complete_groupthink': {
-      const session = await apiRequest('POST', `/api/groupthink/${args.session_id}/complete`, {
-        synthesis: args.synthesis,
-      });
-      return { content: [{ type: 'text', text: `Group Think completed. Synthesis stored (${args.synthesis.length} chars).` }] };
-    }
 
     // ── Team management handlers ─────────────────────────────────────
     case 'create_team': {

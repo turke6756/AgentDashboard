@@ -2,8 +2,8 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentProvider, AgentStatus, AgentTemplate, CreateAgentTemplateInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, GroupThinkSession, GroupThinkStatus, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, Workspace } from '../shared/types';
-import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, GROUPTHINK_DEFAULT_MAX_ROUNDS, SUPERVISOR_AGENT_MD } from '../shared/constants';
+import { Agent, AgentProvider, AgentStatus, AgentTemplate, CreateAgentTemplateInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, Workspace } from '../shared/types';
+import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, SUPERVISOR_AGENT_MD } from '../shared/constants';
 
 let db: SqlJsDatabase;
 let dbPath: string;
@@ -96,28 +96,6 @@ export async function initDatabase(): Promise<void> {
       event_type  TEXT NOT NULL,
       payload     TEXT,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS groupthink_sessions (
-      id              TEXT PRIMARY KEY,
-      workspace_id    TEXT NOT NULL,
-      topic           TEXT NOT NULL,
-      status          TEXT NOT NULL DEFAULT 'active',
-      round_count     INTEGER NOT NULL DEFAULT 0,
-      max_rounds      INTEGER NOT NULL DEFAULT ${GROUPTHINK_DEFAULT_MAX_ROUNDS},
-      synthesis       TEXT,
-      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS groupthink_members (
-      session_id  TEXT NOT NULL,
-      agent_id    TEXT NOT NULL,
-      PRIMARY KEY (session_id, agent_id)
     )
   `);
 
@@ -224,6 +202,32 @@ export async function initDatabase(): Promise<void> {
        VALUES (?, NULL, ?, ?, ?, ?, 'claude', 1, 0, 1)`,
       ['builtin-supervisor', 'Supervisor', 'Coordinates worker agents, approves continuations, manages context.', SUPERVISOR_AGENT_MD, 'Autonomous supervisor agent — coordinates workers, approves continuations, manages context.']
     );
+  }
+
+  // Phase 4a cleanup: purge file_activities rows where the legacy PTY-based tracker
+  // captured codex/gemini TUI output as a comma-separated "file_path" string.
+  // Naturally idempotent — the tracker is now gated to claude-only, so re-running
+  // this delete is a no-op once the bad rows are cleared.
+  try {
+    db.run(`
+      DELETE FROM file_activities
+      WHERE file_path LIKE '%, %'
+        AND agent_id IN (SELECT id FROM agents WHERE provider <> 'claude')
+    `);
+  } catch (err) {
+    console.warn('[database] phase-4a file_activities purge failed:', err);
+  }
+
+  // Cleanup for Claude/Codex/Gemini aggregate context summaries that are not
+  // files, e.g. "3 files, listed 1 directory" or "1 file, recalled 2 memories".
+  try {
+    db.run(`
+      DELETE FROM file_activities
+      WHERE lower(file_path) LIKE '%listed % director%'
+         OR lower(file_path) LIKE '%recalled % memor%'
+    `);
+  } catch (err) {
+    console.warn('[database] aggregate file_activities purge failed:', err);
   }
 
   saveDb();
@@ -589,86 +593,6 @@ export function getWorkspaceAgentSummary(): { workspaceId: string; activeCount: 
   }));
 }
 
-// ── Group Think operations ──────────────────────────────────────────────
-
-function rowToGroupThinkSession(row: any, memberAgentIds: string[]): GroupThinkSession {
-  return {
-    id: row.id,
-    workspaceId: row.workspace_id,
-    topic: row.topic,
-    status: row.status as GroupThinkStatus,
-    roundCount: row.round_count,
-    maxRounds: row.max_rounds,
-    memberAgentIds,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    synthesis: row.synthesis,
-  };
-}
-
-function getGroupThinkMemberIds(sessionId: string): string[] {
-  return queryAll('SELECT agent_id FROM groupthink_members WHERE session_id = ?', [sessionId])
-    .map(r => r.agent_id);
-}
-
-export function createGroupThinkSession(workspaceId: string, topic: string, agentIds: string[], maxRounds?: number): GroupThinkSession {
-  const id = uuidv4();
-  run(
-    `INSERT INTO groupthink_sessions (id, workspace_id, topic, max_rounds) VALUES (?, ?, ?, ?)`,
-    [id, workspaceId, topic, maxRounds || GROUPTHINK_DEFAULT_MAX_ROUNDS]
-  );
-  for (const agentId of agentIds) {
-    run('INSERT INTO groupthink_members (session_id, agent_id) VALUES (?, ?)', [id, agentId]);
-  }
-  return getGroupThinkSession(id)!;
-}
-
-export function getGroupThinkSession(id: string): GroupThinkSession | null {
-  const row = queryOne('SELECT * FROM groupthink_sessions WHERE id = ?', [id]);
-  if (!row) return null;
-  return rowToGroupThinkSession(row, getGroupThinkMemberIds(id));
-}
-
-export function listGroupThinkSessions(workspaceId: string): GroupThinkSession[] {
-  const rows = queryAll('SELECT * FROM groupthink_sessions WHERE workspace_id = ? ORDER BY created_at DESC', [workspaceId]);
-  return rows.map(row => rowToGroupThinkSession(row, getGroupThinkMemberIds(row.id)));
-}
-
-export function advanceGroupThinkRound(sessionId: string): GroupThinkSession | null {
-  run(
-    "UPDATE groupthink_sessions SET round_count = round_count + 1, updated_at = datetime('now') WHERE id = ?",
-    [sessionId]
-  );
-  return getGroupThinkSession(sessionId);
-}
-
-export function completeGroupThink(sessionId: string, synthesis: string): GroupThinkSession | null {
-  run(
-    "UPDATE groupthink_sessions SET status = 'completed', synthesis = ?, updated_at = datetime('now') WHERE id = ?",
-    [synthesis, sessionId]
-  );
-  return getGroupThinkSession(sessionId);
-}
-
-export function cancelGroupThink(sessionId: string): void {
-  run(
-    "UPDATE groupthink_sessions SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
-    [sessionId]
-  );
-}
-
-export function getActiveGroupThinkForAgent(agentId: string): GroupThinkSession | null {
-  const row = queryOne(
-    `SELECT gs.* FROM groupthink_sessions gs
-     JOIN groupthink_members gm ON gs.id = gm.session_id
-     WHERE gm.agent_id = ? AND gs.status = 'active'
-     LIMIT 1`,
-    [agentId]
-  );
-  if (!row) return null;
-  return rowToGroupThinkSession(row, getGroupThinkMemberIds(row.id));
-}
-
 // ── Team operations ───────────────────────────────────────────────────────
 
 function rowToTeam(row: any): Team {
@@ -756,7 +680,7 @@ export function createTeam(input: CreateTeamInput): Team {
   }
 
   // Generate channels based on template
-  if (input.template === 'groupthink') {
+  if (input.template === 'mesh') {
     // All-to-all: every member can message every other member
     for (const a of input.members) {
       for (const b of input.members) {

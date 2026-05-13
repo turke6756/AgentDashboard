@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout, GroupThinkSession, Team, TeamMessage, CreateTeamInput } from '../../shared/types';
+import type { Agent, Workspace, HealthCheck, FileActivity, QueryResult, ContextStats, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput } from '../../shared/types';
 import { evictTabCache } from '../components/fileviewer/useFileContentCache';
+import { clearDraft } from '../lib/chat-drafts';
 
 interface WorkspaceHeat {
   activeCount: number;
@@ -51,6 +52,20 @@ function labelFromPath(filePath: string): string {
   return segments[segments.length - 1] || filePath;
 }
 
+function isAbsolutePath(filePath: string): boolean {
+  return filePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(filePath) || /^\\\\/.test(filePath);
+}
+
+function resolveAgainstRoot(filePath: string, rootDirectory: string): string {
+  if (!filePath || !rootDirectory || isAbsolutePath(filePath)) return filePath;
+  const trimmedRoot = rootDirectory.replace(/[\\/]+$/, '');
+  const trimmedFile = filePath.replace(/^[\\/]+/, '');
+  if (rootDirectory.startsWith('/')) {
+    return `${trimmedRoot}/${trimmedFile.replace(/\\/g, '/')}`;
+  }
+  return `${trimmedRoot}\\${trimmedFile.replace(/\//g, '\\')}`;
+}
+
 interface TabEditState {
   mode: 'view' | 'edit';
   draftContent: string;
@@ -75,7 +90,6 @@ interface DashboardState {
   fileActivities: FileActivity[];
   workspaceHeat: Record<string, WorkspaceHeat>;
   contextStats: Record<string, ContextStats>;
-  groupThinkSessions: GroupThinkSession[];
 
   // Teams
   teams: Team[];
@@ -115,12 +129,6 @@ interface DashboardState {
   queryAgent: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult | null>;
   loadSupervisor: (workspaceId: string) => Promise<void>;
   launchSupervisor: (workspaceId: string) => Promise<Agent | null>;
-
-  // Group Think actions
-  loadGroupThinkSessions: (workspaceId: string) => Promise<void>;
-  startGroupThink: (workspaceId: string, topic: string, agentIds: string[], maxRounds?: number) => Promise<GroupThinkSession | null>;
-  cancelGroupThink: (sessionId: string) => Promise<void>;
-  updateGroupThinkSession: (session: GroupThinkSession) => void;
 
   // Team actions
   loadTeams: (workspaceId: string) => Promise<void>;
@@ -168,7 +176,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   fileActivities: [],
   workspaceHeat: {},
   contextStats: {},
-  groupThinkSessions: [],
   teams: [],
   teamMessages: {},
 
@@ -523,7 +530,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (!agent) return;
     const workspace = get().workspaces.find((w) => w.id === agent.workspaceId);
     const pathType = workspace?.pathType || 'wsl';
-    get().openTab(filePath, agent.workingDirectory, pathType, agentId, agent.workspaceId);
+    get().openTab(resolveAgainstRoot(filePath, agent.workingDirectory), agent.workingDirectory, pathType, agentId, agent.workspaceId);
   },
 
   closeFileViewer: () => get().closeAllTabs(),
@@ -578,7 +585,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     }
     if (id) {
       get().loadAgents(id);
-      get().loadGroupThinkSessions(id);
       get().loadTeams(id);
     }
   },
@@ -607,6 +613,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   removeAgent: (id) => {
+    clearDraft(id);
     set((state) => ({
       agents: state.agents.filter((a) => a.id !== id),
       supervisorAgent: state.supervisorAgent?.id === id ? null : state.supervisorAgent,
@@ -724,55 +731,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set((state) => ({
       contextStats: { ...state.contextStats, [stats.agentId]: stats },
     }));
-  },
-
-  loadGroupThinkSessions: async (workspaceId: string) => {
-    try {
-      const sessions = await window.api.groupthink.list(workspaceId);
-      set({ groupThinkSessions: sessions });
-    } catch (err) {
-      console.error('Failed to load group think sessions:', err);
-    }
-  },
-
-  startGroupThink: async (workspaceId, topic, agentIds, maxRounds?) => {
-    try {
-      const session = await window.api.groupthink.start(workspaceId, topic, agentIds, maxRounds);
-      set((state) => ({
-        groupThinkSessions: [session, ...state.groupThinkSessions],
-      }));
-      return session;
-    } catch (err) {
-      console.error('Failed to start group think:', err);
-      return null;
-    }
-  },
-
-  cancelGroupThink: async (sessionId) => {
-    try {
-      await window.api.groupthink.cancel(sessionId);
-      set((state) => ({
-        groupThinkSessions: state.groupThinkSessions.map((s) =>
-          s.id === sessionId ? { ...s, status: 'cancelled' as const } : s
-        ),
-      }));
-    } catch (err) {
-      console.error('Failed to cancel group think:', err);
-    }
-  },
-
-  updateGroupThinkSession: (session) => {
-    set((state) => {
-      const exists = state.groupThinkSessions.some((s) => s.id === session.id);
-      if (exists) {
-        return {
-          groupThinkSessions: state.groupThinkSessions.map((s) =>
-            s.id === session.id ? session : s
-          ),
-        };
-      }
-      return { groupThinkSessions: [session, ...state.groupThinkSessions] };
-    });
   },
 
   // ── Team actions ───────────────────────────────────────────────────────

@@ -5,7 +5,6 @@ import {
   getWorkspaces, createWorkspace, deleteWorkspace, getWorkspace,
   getAgentsByWorkspace, getAllAgents, getAgent, getFileActivities, getWorkspaceAgentSummary,
   checkAgentMdExists, updateAgentSupervised,
-  createGroupThinkSession, getGroupThinkSession, listGroupThinkSessions, cancelGroupThink,
   createTeam, getTeam, listTeams, updateTeamStatus, addTeamMember, removeTeamMember,
   createChannel, removeChannel, getTeamMessages, getTeamTasks, createTeamTask, updateTeamTask,
   listAgentTemplates, createAgentTemplate, updateAgentTemplate, deleteAgentTemplate,
@@ -51,13 +50,31 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:fork', (_e, id) => supervisor.forkAgent(id));
   ipcMain.handle('agent:query', (_e, targetAgentId, question, sourceAgentId) => supervisor.queryAgent(targetAgentId, question, sourceAgentId));
   ipcMain.handle('agent:send-input', (_e, agentId, text) => {
+    // Mirror the HTTP route's safety gate (api-server.ts) so the IPC path
+    // can't bypass it when the renderer's idle detection is eager. Without
+    // this, a chat-input Enter against a "looks-idle but actually-busy"
+    // agent silently writes into a non-receptive PTY and the message
+    // vanishes with no trace anywhere.
+    const agent = getAgent(agentId);
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+    if (supervisor.isInputInFlight(agentId) || ['working', 'launching'].includes(agent.status)) {
+      const reportedStatus = supervisor.isInputInFlight(agentId) ? 'working' : agent.status;
+      throw new Error(`Agent is "${reportedStatus}" — wait until it's idle before sending.`);
+    }
     // Fire-and-forget: the Windows codex/gemini path types one char at a time
     // to dodge paste-burst, so multi-KB sends take 30+ seconds. Returning the
     // delivery promise here would freeze the chat input UI for that whole
-    // window. Synchronous validation (no runner) still throws eagerly; once
-    // queued, errors are logged because there's no one to surface them to.
-    supervisor.sendInput(agentId, text).catch((err) => {
+    // window. Async failures (PTY closed mid-typing, runner removed, etc.)
+    // are surfaced to the renderer via 'agent:send-input-error' so the chat
+    // input can render them inline instead of swallowing them.
+    supervisor.sendInput(agentId, text).catch((err: Error) => {
       console.error(`[ipc] Background input delivery to ${agentId} failed:`, err);
+      mainWindow.webContents.send('agent:send-input-error', {
+        agentId,
+        error: err.message,
+      });
     });
     return { ok: true, queued: true };
   });
@@ -80,22 +97,6 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   ipcMain.handle('agent:update-supervised', (_e, id, supervised) => {
     updateAgentSupervised(id, supervised);
     return getAgent(id);
-  });
-
-  // Group Think handlers
-  ipcMain.handle('groupthink:start', (_e, workspaceId, topic, agentIds, maxRounds) => {
-    const session = createGroupThinkSession(workspaceId, topic, agentIds, maxRounds);
-    supervisor.notifyGroupThinkStart(session);
-    return session;
-  });
-  ipcMain.handle('groupthink:status', (_e, sessionId) => getGroupThinkSession(sessionId));
-  ipcMain.handle('groupthink:list', (_e, workspaceId) => listGroupThinkSessions(workspaceId));
-  ipcMain.handle('groupthink:cancel', (_e, sessionId) => {
-    cancelGroupThink(sessionId);
-    const session = getGroupThinkSession(sessionId);
-    if (session && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('groupthink:updated', session);
-    }
   });
 
   // Team handlers
@@ -383,13 +384,6 @@ export function registerIpcHandlers(supervisor: AgentSupervisor, mainWindow: Bro
   supervisor.on('chatEvents', (batch) => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('agent:chat-events', batch);
-    }
-  });
-
-  // Forward group think updates to renderer
-  supervisor.on('groupThinkUpdated', (session) => {
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('groupthink:updated', session);
     }
   });
 

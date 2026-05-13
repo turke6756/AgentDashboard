@@ -1,15 +1,44 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import type { AgentStatus } from '../../../shared/types';
 import { useThemeStore } from '../../stores/theme-store';
+import { loadDraft, saveDraft } from '../../lib/chat-drafts';
 
 const ACCEPTING_INPUT: AgentStatus[] = ['idle', 'waiting', 'done', 'crashed'];
 
 export default function ChatInputBar({ agentId, agentStatus }: { agentId: string; agentStatus: AgentStatus }) {
   const isLight = useThemeStore((s) => s.theme) === 'light';
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState<string>(() => loadDraft(agentId));
   const [sending, setSending] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const lastAgentIdRef = useRef(agentId);
+
+  // If the selected agent changes while this component stays mounted, swap to that agent's draft.
+  useEffect(() => {
+    if (lastAgentIdRef.current === agentId) return;
+    lastAgentIdRef.current = agentId;
+    setInput(loadDraft(agentId));
+    setSendError(null);
+  }, [agentId]);
+
+  // Async delivery failures (PTY closed mid-typing, runner removed, etc.)
+  // arrive via this event channel because the IPC handler is fire-and-forget
+  // for the multi-KB codex/gemini typing path. Synchronous failures (status
+  // gate, agent missing) come through the await rejection in handleSend.
+  useEffect(() => {
+    const unsubscribe = window.api.agents.onSendInputError(({ agentId: errAgent, error }) => {
+      if (errAgent !== agentId) return;
+      setSendError(error);
+    });
+    return unsubscribe;
+  }, [agentId]);
+
+  const updateInput = useCallback((next: string) => {
+    setInput(next);
+    saveDraft(agentId, next);
+    if (sendError) setSendError(null);
+  }, [agentId, sendError]);
 
   const canSend = ACCEPTING_INPUT.includes(agentStatus) && input.trim().length > 0 && !sending;
   const isDisabled = !ACCEPTING_INPUT.includes(agentStatus);
@@ -19,14 +48,19 @@ export default function ChatInputBar({ agentId, agentStatus }: { agentId: string
     if (!text || !canSend) return;
 
     setSending(true);
+    setSendError(null);
     try {
       await window.api.agents.sendInput(agentId, text);
-      setInput('');
+      updateInput('');
+    } catch (err) {
+      // Preserve the message in the input so the user can retry. The IPC
+      // handler rejects here for the status gate and missing-agent cases.
+      setSendError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
       inputRef.current?.focus();
     }
-  }, [agentId, input, canSend]);
+  }, [agentId, input, canSend, updateInput]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -88,8 +122,8 @@ export default function ChatInputBar({ agentId, agentStatus }: { agentId: string
         ta?.setSelectionRange(caret, caret);
       });
     }
-    setInput(next);
-  }, [input]);
+    updateInput(next);
+  }, [input, updateInput]);
 
   const statusHint = isDragOver
     ? 'Drop to attach file path…'
@@ -122,7 +156,7 @@ export default function ChatInputBar({ agentId, agentStatus }: { agentId: string
         <textarea
           ref={inputRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => updateInput(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={isDisabled}
           placeholder={statusHint}
@@ -140,7 +174,21 @@ export default function ChatInputBar({ agentId, agentStatus }: { agentId: string
           {sending ? '…' : 'Send'}
         </button>
       </div>
-      {isDisabled && (agentStatus === 'working' || agentStatus === 'launching') && (
+      {sendError ? (
+        <div className="flex items-start gap-1.5 mt-1.5 px-2">
+          <span className="inline-block w-1.5 h-1.5 mt-1.5 rounded-full bg-[var(--color-accent-red)] shrink-0" />
+          <span className="text-[11px] text-[var(--color-accent-red)] leading-snug break-words">
+            Send failed: {sendError}
+          </span>
+          <button
+            onClick={() => setSendError(null)}
+            className="ml-auto text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300 shrink-0"
+            aria-label="Dismiss error"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : isDisabled && (agentStatus === 'working' || agentStatus === 'launching') ? (
         <div className="flex items-center gap-1.5 mt-1.5 px-2">
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-accent-yellow)] animate-pulse" />
           <span
@@ -151,7 +199,7 @@ export default function ChatInputBar({ agentId, agentStatus }: { agentId: string
             {agentStatus === 'launching' ? 'Initializing' : 'Thinking…'}
           </span>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

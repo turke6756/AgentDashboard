@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'child_process';
 import type {
   SessionEvent,
   UserTextEvent,
@@ -13,7 +12,13 @@ import type {
 } from '../../../shared/session-events';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS, getContextWindowForModel } from '../../../shared/constants';
 import type { AgentProvider } from '../../../shared/types';
-import type { ChatLogReader, ChatLogReaderSession } from './types';
+import {
+  flattenToolResultContent,
+  resolveHomeSubdir,
+  truncateForChat,
+  type ChatLogReader,
+  type ChatLogReaderSession,
+} from './types';
 
 interface ToolResultLocation {
   jsonlPath: string;
@@ -22,7 +27,6 @@ interface ToolResultLocation {
   endOffset: number;
 }
 
-const TOOL_RESULT_TRUNCATE_BYTES = 20_000;
 const EOF_STREAK_REREGISTER = 3;
 
 export class ClaudeJsonlReader implements ChatLogReader {
@@ -40,29 +44,9 @@ export class ClaudeJsonlReader implements ChatLogReader {
   private eofStreak = new Map<string, number>(); // agentId
 
   constructor() {
-    this.resolveProjectsDirs();
-  }
-
-  private resolveProjectsDirs(): void {
-    const userProfile = process.env.USERPROFILE || '';
-    const windowsPath = path.join(userProfile, '.claude', 'projects');
-    if (fs.existsSync(windowsPath)) this.windowsProjectsDir = windowsPath;
-
-    try {
-      const home = execFileSync('wsl.exe', ['bash', '-lc', 'echo $HOME'], {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-      }).trim();
-      if (home) {
-        const uncPath =
-          `\\\\wsl.localhost\\Ubuntu${home.replace(/\//g, '\\')}` +
-          '\\.claude\\projects';
-        if (fs.existsSync(uncPath)) this.wslProjectsUncDir = uncPath;
-      }
-    } catch {
-      // WSL not available
-    }
+    const { windowsDir, wslUncDir } = resolveHomeSubdir('.claude/projects');
+    this.windowsProjectsDir = windowsDir;
+    this.wslProjectsUncDir = wslUncDir;
   }
 
   invalidatePath(agentId: string): void {
@@ -71,6 +55,13 @@ export class ClaudeJsonlReader implements ChatLogReader {
       this.resolvedPaths.delete(agentId);
       this.fileOffsets.delete(cached);
       this.partialLines.delete(cached);
+    }
+    this.eofStreak.delete(agentId);
+  }
+
+  private forgetResolvedPath(agentId: string): void {
+    if (this.resolvedPaths.has(agentId)) {
+      this.resolvedPaths.delete(agentId);
     }
     this.eofStreak.delete(agentId);
   }
@@ -91,7 +82,7 @@ export class ClaudeJsonlReader implements ChatLogReader {
         if (!Array.isArray(content)) return null;
         const block = content[loc.blockIndex];
         if (!block || block.type !== 'tool_result') return null;
-        return this.flattenToolResultContent(block.content);
+        return flattenToolResultContent(block.content);
       } finally {
         fs.closeSync(fd);
       }
@@ -116,7 +107,7 @@ export class ClaudeJsonlReader implements ChatLogReader {
       const streak = (this.eofStreak.get(session.agentId) || 0) + 1;
       this.eofStreak.set(session.agentId, streak);
       if (streak >= EOF_STREAK_REREGISTER && session.subscribed) {
-        this.invalidatePath(session.agentId);
+        this.forgetResolvedPath(session.agentId);
       }
       return [];
     }
@@ -241,8 +232,8 @@ export class ClaudeJsonlReader implements ChatLogReader {
             };
             out.push(ev);
           } else if (block.type === 'tool_result') {
-            const rawContent = this.flattenToolResultContent(block.content);
-            const { content: truncatedContent, truncated } = this.truncateForChat(rawContent);
+            const rawContent = flattenToolResultContent(block.content);
+            const { content: truncatedContent, truncated } = truncateForChat(rawContent);
             const toolUseId = block.tool_use_id || '';
             const ev: ToolResultEvent = {
               type: 'tool-result',
@@ -274,6 +265,8 @@ export class ClaudeJsonlReader implements ChatLogReader {
       if (!msg) return;
       const model: string = msg.model || 'unknown';
       const content = msg.content;
+      const stopReason: string | undefined = msg.stop_reason;
+      const turnComplete = stopReason === 'end_turn';
 
       if (Array.isArray(content)) {
         for (let i = 0; i < content.length; i++) {
@@ -290,6 +283,8 @@ export class ClaudeJsonlReader implements ChatLogReader {
               agentId: session.agentId,
               text,
               model,
+              turnComplete,
+              stopReason,
             };
             out.push(ev);
           } else if (block.type === 'thinking') {
@@ -345,26 +340,6 @@ export class ClaudeJsonlReader implements ChatLogReader {
         out.push(ev);
       }
     }
-  }
-
-  private flattenToolResultContent(content: unknown): string {
-    if (typeof content === 'string') return content;
-    if (!Array.isArray(content)) return '';
-    const parts: string[] = [];
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      if ((block as any).type === 'text' && typeof (block as any).text === 'string') {
-        parts.push((block as any).text);
-      }
-    }
-    return parts.join('\n');
-  }
-
-  private truncateForChat(text: string): { content: string; truncated: boolean } {
-    const bytes = Buffer.byteLength(text, 'utf-8');
-    if (bytes <= TOOL_RESULT_TRUNCATE_BYTES) return { content: text, truncated: false };
-    const sliced = text.slice(0, TOOL_RESULT_TRUNCATE_BYTES);
-    return { content: sliced, truncated: true };
   }
 
   // ── JSONL path resolution ────────────────────────────────────────────

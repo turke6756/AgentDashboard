@@ -21,6 +21,9 @@ export interface AssistantTextEvent extends BaseEvent {
   type: 'assistant-text';
   text: string;
   model?: string;
+  // Metadata for orchestration and structured extraction
+  turnComplete?: boolean;
+  stopReason?: string;
 }
 
 export interface ThinkingEvent extends BaseEvent {
@@ -54,6 +57,10 @@ export interface UsageEvent extends BaseEvent {
   cumulativeContextTokens: number;
   contextWindowMax: number;
   contextPercentage: number;
+  // Additive (Codex/Gemini): Anthropic-shaped readers leave these undefined.
+  // Phase 6 will redesign this surface with required `provider` and per-provider fields.
+  cachedTokens?: number;
+  totalTokens?: number;
 }
 
 export interface SystemInitEvent extends BaseEvent {

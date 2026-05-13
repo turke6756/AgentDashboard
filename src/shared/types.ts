@@ -2,11 +2,10 @@ import type { SessionEvent, ChatEventBatch } from './session-events';
 
 export type PathType = 'windows' | 'wsl';
 export type AgentProvider = 'claude' | 'gemini' | 'codex';
-export type GroupThinkStatus = 'active' | 'synthesizing' | 'completed' | 'cancelled';
 
 // ── Team types ──────────────────────────────────────────────────────────
 export type TeamStatus = 'active' | 'paused' | 'disbanded';
-export type TeamTemplate = 'groupthink' | 'pipeline' | 'custom';
+export type TeamTemplate = 'mesh' | 'pipeline' | 'custom';
 export type TeamTaskStatus = 'todo' | 'in_progress' | 'done' | 'blocked';
 export type TeamMessageStatus = 'request' | 'question' | 'complete' | 'blocked' | 'update';
 
@@ -200,19 +199,6 @@ export interface FileTab {
   label: string;           // display name (filename or dirname/)
 }
 
-export interface GroupThinkSession {
-  id: string;
-  workspaceId: string;
-  topic: string;
-  status: GroupThinkStatus;
-  roundCount: number;
-  maxRounds: number;
-  memberAgentIds: string[];
-  createdAt: string;
-  updatedAt: string;
-  synthesis: string | null;
-}
-
 // ── Team interfaces ─────────────────────────────────────────────────────
 
 export interface Team {
@@ -382,6 +368,7 @@ export interface IpcApi {
     fork: (id: string) => Promise<Agent>;
     query: (targetAgentId: string, question: string, sourceAgentId?: string) => Promise<QueryResult>;
     sendInput: (agentId: string, text: string) => Promise<void>;
+    onSendInputError: (callback: (data: { agentId: string; error: string }) => void) => () => void;
     getSupervisor: (workspaceId: string) => Promise<Agent | null>;
     updateSupervised: (id: string, supervised: boolean) => Promise<Agent>;
   };
@@ -434,12 +421,6 @@ export interface IpcApi {
     openFile: (filePath: string, pathType: PathType) => Promise<void>;
     openFileInWorkspace: (filePath: string, workspaceDir: string, pathType: PathType) => Promise<void>;
   };
-  groupthink: {
-    start: (workspaceId: string, topic: string, agentIds: string[], maxRounds?: number) => Promise<GroupThinkSession>;
-    getStatus: (sessionId: string) => Promise<GroupThinkSession>;
-    list: (workspaceId: string) => Promise<GroupThinkSession[]>;
-    cancel: (sessionId: string) => Promise<void>;
-  };
   teams: {
     create: (input: CreateTeamInput) => Promise<Team>;
     get: (teamId: string) => Promise<Team>;
@@ -470,7 +451,6 @@ export interface IpcApi {
     listKernelspecs: () => Promise<KernelspecsResponse>;
   };
   onAgentStatusChanged: (callback: (data: { agentId: string; status: AgentStatus; agent: Agent }) => void) => () => void;
-  onGroupThinkUpdated: (callback: (session: GroupThinkSession) => void) => () => void;
   onTeamUpdated: (callback: (team: Team) => void) => () => void;
   onTeamMessageCreated: (callback: (message: TeamMessage) => void) => () => void;
 }

@@ -67,10 +67,6 @@ function AppInner() {
       useDashboardStore.getState().updateContextStats(stats);
     });
 
-    const unsubGroupThink = window.api.onGroupThinkUpdated((session) => {
-      useDashboardStore.getState().updateGroupThinkSession(session);
-    });
-
     const unsubTeam = window.api.onTeamUpdated((team) => {
       useDashboardStore.getState().updateTeam(team);
     });
@@ -82,7 +78,6 @@ function AppInner() {
     return () => {
       unsubStatus();
       unsubContext();
-      unsubGroupThink();
       unsubTeam();
       unsubTeamMsg();
     };
@@ -102,6 +97,7 @@ function AppInner() {
     min: 280,
     max: 700,
     storageKey: 'panel-detail-width',
+    invert: true,
   });
 
   const terminalResize = useResize({
@@ -110,6 +106,7 @@ function AppInner() {
     min: 100,
     max: 600,
     storageKey: 'panel-terminal-height',
+    invert: true,
   });
 
   // Sync resize values to store when they change

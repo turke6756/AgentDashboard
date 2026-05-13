@@ -38,17 +38,12 @@ const BORDER_COLORS: Record<string, string> = {
   done: 'border-l-gray-600',
 };
 
-export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agent; onGroupThink?: (agentId: string) => void; onTeam?: (agentId: string) => void }) {
-  // Each card subscribes only to its own agent's slice of contextStats/groupThinkSessions —
+export default function AgentCard({ agent, onTeam }: { agent: Agent; onTeam?: (agentId: string) => void }) {
+  // Each card subscribes only to its own agent's slice of contextStats —
   // a sibling agent's status update won't re-render this card.
   const isSelected = useDashboardStore((s) => s.selectedAgentId === agent.id);
   const isTerminalActive = useDashboardStore((s) => s.terminalAgentId === agent.id);
   const cs = useDashboardStore((s) => s.contextStats[agent.id] ?? null);
-  const gtSession = useDashboardStore((s) =>
-    s.groupThinkSessions.find(
-      (gt) => gt.status === 'active' && gt.memberAgentIds.includes(agent.id),
-    ) ?? null,
-  );
   const selectAgent = useDashboardStore((s) => s.selectAgent);
   const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
   const deleteAgent = useDashboardStore((s) => s.deleteAgent);
@@ -253,14 +248,6 @@ export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agen
              {agent.isSupervised && (
                 <span className="text-[11px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 font-semibold">Supervised</span>
              )}
-             {gtSession && (
-               <span
-                 className="text-[11px] text-fuchsia-400 bg-fuchsia-500/15 px-1.5 py-0.5 font-semibold"
-                 title={`Group Think R${gtSession.roundCount}/${gtSession.maxRounds}: ${gtSession.topic}`}
-               >
-                 GT R{gtSession.roundCount}/{gtSession.maxRounds}
-               </span>
-             )}
            </div>
            <h4 className={`font-semibold text-[13px] truncate ${isSelected ? 'text-accent-blue' : 'text-gray-200 group-hover:text-gray-100'}`}>
              {agent.title}
@@ -382,14 +369,6 @@ export default function AgentCard({ agent, onGroupThink, onTeam }: { agent: Agen
           >
             {agent.isSupervised ? 'Disable Supervision' : 'Enable Supervision'}
           </button>
-          {onGroupThink && !agent.isSupervisor && !['done', 'crashed'].includes(agent.status) && (
-            <button
-              onClick={() => { setContextMenu(null); onGroupThink(agent.id); }}
-              className="ui-menu-item"
-            >
-              Start Group Think
-            </button>
-          )}
           {onTeam && !agent.isSupervisor && !['done', 'crashed'].includes(agent.status) && (
             <button
               onClick={() => { setContextMenu(null); onTeam(agent.id); }}

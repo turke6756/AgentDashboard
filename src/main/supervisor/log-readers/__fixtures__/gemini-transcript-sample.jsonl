@@ -1,0 +1,11 @@
+{"sessionId":"512a598e-5202-45b2-8089-5d961d1935fe","projectHash":"5ab047245784b8fc9bada1cd9a4441d566bce1aaa692a6eee9602808d18c85e7","startTime":"2026-05-01T17:39:09.730Z","lastUpdated":"2026-05-01T17:39:09.730Z","kind":"main"}
+{"id":"info1","timestamp":"2026-05-01T17:39:18.937Z","type":"info","content":"Update successful! The new version will be used on your next run."}
+{"$set":{"lastUpdated":"2026-05-01T17:39:18.938Z"}}
+{"id":"u1","timestamp":"2026-05-01T17:39:37.553Z","type":"user","content":[{"text":"hello"}]}
+{"$set":{"lastUpdated":"2026-05-01T17:39:37.555Z"}}
+{"id":"T1","timestamp":"2026-05-01T17:39:41.033Z","type":"gemini","content":"","thoughts":[{"subject":"Considering Project Structure","description":"Reviewing the project structure for AgentDashboard. Looks like Electron with main/preload/renderer.","timestamp":"2026-05-01T17:39:40.264Z"}],"tokens":{"input":12000,"output":95,"cached":3811,"thoughts":236,"tool":0,"total":12331},"model":"gemini-3-flash-preview"}
+{"$set":{"lastUpdated":"2026-05-01T17:39:41.034Z"}}
+{"id":"T1","timestamp":"2026-05-01T17:39:41.033Z","type":"gemini","content":"","thoughts":[{"subject":"Considering Project Structure","description":"Reviewing the project structure for AgentDashboard. Looks like Electron with main/preload/renderer.","timestamp":"2026-05-01T17:39:40.264Z"}],"tokens":{"input":12000,"output":95,"cached":3811,"thoughts":236,"tool":0,"total":12331},"model":"gemini-3-flash-preview","toolCalls":[{"id":"rf_1","name":"read_file","args":{"file_path":"CLAUDE.md"},"result":[{"functionResponse":{"id":"rf_1","name":"read_file","response":{"output":"# Claude rules\nfollow these rules"}}}],"status":"success","timestamp":"2026-05-01T17:39:43.356Z","resultDisplay":"","description":"CLAUDE.md","displayName":"ReadFile","renderOutputAsMarkdown":true}]}
+{"$set":{"lastUpdated":"2026-05-01T17:39:43.303Z"}}
+{"id":"T2","timestamp":"2026-05-01T17:39:50.000Z","type":"gemini","content":"Done.","thoughts":[],"tokens":{"input":12411,"output":22,"cached":11420,"thoughts":94,"tool":0,"total":12527},"model":"gemini-3-flash-preview"}
+{"$set":{"lastUpdated":"2026-05-01T17:39:50.001Z"}}

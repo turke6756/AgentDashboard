@@ -17,23 +17,14 @@ export default function ResizeDivider({ direction, isResizing, onMouseDown }: Pr
           : 'h-[4px] cursor-row-resize hover:bg-gray-500/20'
       } ${isResizing ? 'bg-gray-500/40' : 'bg-transparent'} transition-colors`}
     >
-      {/* Extended hit area */}
+      {/* Extended hit area. The adjacent panel borders provide the single visible line at rest;
+          the divider only renders its hover/resize highlight via the parent's background. */}
       <div
         className={`absolute ${
           isHoriz
             ? 'top-0 bottom-0 -left-[4px] -right-[4px]'
             : 'left-0 right-0 -top-[4px] -bottom-[4px]'
         }`}
-      />
-      {/* Visible line */}
-      <div
-        className={`absolute ${
-          isHoriz
-            ? 'top-0 bottom-0 left-[1px] w-[1px]'
-            : 'left-0 right-0 top-[1px] h-[1px]'
-        } dark:bg-white/10 light:bg-black/10 group-hover:bg-accent-blue ${
-          isResizing ? 'bg-accent-blue' : ''
-        } transition-colors`}
       />
     </div>
   );

@@ -8,11 +8,13 @@ import { useThemeStore } from '../../stores/theme-store';
 import { shellEscapePath } from '../../utils/drag-file';
 import type { Agent } from '../../../shared/types';
 
-/** Strip .claude/agents/supervisor suffix to show the workspace root name. */
+/** Strip persona-folder suffix to show the workspace root name.
+ *  Handles both the new .dashboard/supervisor layout and the legacy
+ *  .claude/agents/<name> layout still in persisted agent rows. */
 function getDisplayDirectory(agent: Agent): string {
   const dir = agent.workingDirectory.replace(/\\/g, '/');
   const stripped = agent.isSupervisor
-    ? dir.replace(/\/\.claude\/agents\/[^/]+$/, '')
+    ? dir.replace(/\/\.dashboard\/supervisor$/, '').replace(/\/\.claude\/agents\/[^/]+$/, '')
     : dir;
   return stripped.split('/').filter(Boolean).pop() || stripped;
 }

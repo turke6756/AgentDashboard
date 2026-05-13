@@ -67,6 +67,7 @@ export class FileActivityTracker extends EventEmitter {
     if (!rawPath || rawPath.length < 2) return null;
     // Skip paths that look like arguments or flags
     if (rawPath.startsWith('-')) return null;
+    if (!isPlausibleFileActivityPath(rawPath)) return null;
 
     // If already absolute, use as-is
     if (path.isAbsolute(rawPath) || rawPath.startsWith('/')) {
@@ -90,4 +91,22 @@ export class FileActivityTracker extends EventEmitter {
       .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '')  // Mode changes
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''); // Control chars (keep \n \r \t)
   }
+}
+
+export function isPlausibleFileActivityPath(rawPath: string): boolean {
+  const p = rawPath.trim();
+  if (!p || p.length < 2) return false;
+
+  // Claude status summaries can look like "3 files, listed 1 directory" or
+  // "1 file, recalled 2 memories"; those are not clickable paths.
+  if (/^\d+\s*files?\b/i.test(p)) return false;
+  if (/\b(listed|recalled)\b/i.test(p)) return false;
+  if (p.includes(',')) return false;
+
+  // Keep this intentionally path-shaped. It still allows extensionless files
+  // when they include a directory separator or are absolute Windows paths.
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true;
+  if (p.startsWith('/') || p.startsWith('~/') || p.startsWith('./') || p.startsWith('../')) return true;
+  if (p.includes('/') || p.includes('\\')) return true;
+  return /^[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+$/.test(p);
 }

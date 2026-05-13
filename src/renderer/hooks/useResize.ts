@@ -6,9 +6,13 @@ interface UseResizeOptions {
   min: number;
   max: number;
   storageKey: string;
+  // Invert delta direction. Use for panels anchored to the right or bottom: there
+  // the divider sits on the panel's leading edge, so dragging the mouse toward
+  // the panel must shrink it for the divider to follow the cursor.
+  invert?: boolean;
 }
 
-export function useResize({ direction, initialSize, min, max, storageKey }: UseResizeOptions) {
+export function useResize({ direction, initialSize, min, max, storageKey, invert = false }: UseResizeOptions) {
   const [size, setSize] = useState<number>(() => {
     const stored = localStorage.getItem(storageKey);
     if (stored) {
@@ -42,7 +46,8 @@ export function useResize({ direction, initialSize, min, max, storageKey }: UseR
       rafId.current = requestAnimationFrame(() => {
         const currentPos = direction === 'horizontal' ? e.clientX : e.clientY;
         const delta = currentPos - startPos.current;
-        const newSize = Math.min(max, Math.max(min, startSize.current + delta));
+        const signedDelta = invert ? -delta : delta;
+        const newSize = Math.min(max, Math.max(min, startSize.current + signedDelta));
         setSize(newSize);
       });
     };
@@ -63,7 +68,7 @@ export function useResize({ direction, initialSize, min, max, storageKey }: UseR
       window.removeEventListener('mouseup', handleMouseUp);
       cancelAnimationFrame(rafId.current);
     };
-  }, [direction, min, max]);
+  }, [direction, min, max, invert]);
 
   // Persist to localStorage on change (debounced)
   useEffect(() => {

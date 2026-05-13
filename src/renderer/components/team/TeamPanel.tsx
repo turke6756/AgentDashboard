@@ -24,7 +24,7 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 const TEMPLATE_BADGE: Record<string, { bg: string; text: string }> = {
-  groupthink: { bg: 'bg-purple-500/20', text: 'text-purple-400' },
+  mesh:       { bg: 'bg-purple-500/20', text: 'text-purple-400' },
   pipeline:   { bg: 'bg-blue-500/20',   text: 'text-blue-400' },
   custom:     { bg: 'bg-gray-500/20',   text: 'text-gray-400' },
 };

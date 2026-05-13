@@ -12,12 +12,27 @@ interface AgentSession {
   sessionId: string;
   workingDirectory: string;
   provider: AgentProvider;
+  startedAt?: string;
 }
 
 const MASTER_TICK_MS = 1000;
 const SUBSCRIBED_POLL_MS = 1000;
 const UNSUBSCRIBED_POLL_MS = 5000;
 const RING_BUFFER_MAX = 2000;
+const SEEN_UUID_MAX = RING_BUFFER_MAX * 3;
+
+// Match window for reconciling a synthetic user-echo against the real
+// `user-text` that arrives on disk seconds later. 30s spec + 5s clock skew slack.
+const SYNTHETIC_DEDUPE_WINDOW_MS = 35_000;
+
+interface SyntheticMarker {
+  text: string; // already normalized
+  timestamp: number;
+}
+
+function normalizeUserText(s: string): string {
+  return s.trim().replace(/\s+/g, ' ');
+}
 
 export class SessionLogDispatcher extends EventEmitter {
   private getActiveAgentSessions: () => AgentSession[];
@@ -29,6 +44,9 @@ export class SessionLogDispatcher extends EventEmitter {
   private subscribers = new Set<string>();
   private nextPollAt = new Map<string, number>();
   private interval: ReturnType<typeof setInterval> | null = null;
+  private syntheticMarkers = new Map<string, SyntheticMarker[]>(); // agentId -> markers
+  private seenEventUuids = new Map<string, Set<string>>();
+  private seenEventUuidOrder = new Map<string, string[]>();
 
   constructor(getActiveAgentSessions: () => AgentSession[]) {
     super();
@@ -64,22 +82,87 @@ export class SessionLogDispatcher extends EventEmitter {
     this.subscribers.delete(agentId);
   }
 
-  // Synthetic echo for codex/gemini (no on-disk user-message echo). TODO(reconcile-synthetic): dedupe vs real reader within ~30s once codex/gemini readers land.
+  // Synthetic echo for codex/gemini. The real `user-text` can arrive later via
+  // the on-disk reader; pollOne dedupes it against markers stored here.
   appendSyntheticUserText(agentId: string, text: string): void {
+    const now = Date.now();
+    this.recordSyntheticMarker(agentId, text, now);
+
     const ev: UserTextEvent = {
       type: 'user-text',
-      uuid: `synthetic:${agentId}:${Date.now()}`,
-      timestamp: new Date().toISOString(),
+      uuid: `synthetic:${agentId}:${now}`,
+      timestamp: new Date(now).toISOString(),
       agentId,
       text,
     };
     this.appendToRingBuffer(agentId, [ev]);
+    this.markEventUuidSeen(agentId, ev.uuid);
     const batch: ChatEventBatch = {
       agentId,
       events: [ev],
       truncated: this.truncatedByAgent.get(agentId) || false,
     };
     this.emit('chat-events', batch);
+  }
+
+  private recordSyntheticMarker(agentId: string, text: string, now: number): void {
+    let ring = this.syntheticMarkers.get(agentId);
+    if (!ring) {
+      ring = [];
+      this.syntheticMarkers.set(agentId, ring);
+    }
+    // TTL-evict stale entries on every push so the ring can't grow unbounded.
+    const cutoff = now - SYNTHETIC_DEDUPE_WINDOW_MS;
+    let writeIdx = 0;
+    for (let i = 0; i < ring.length; i++) {
+      if (ring[i].timestamp >= cutoff) {
+        ring[writeIdx++] = ring[i];
+      }
+    }
+    ring.length = writeIdx;
+    ring.push({ text: normalizeUserText(text), timestamp: now });
+  }
+
+  /** Returns true if `event` should be dropped (matches a recent synthetic marker). */
+  private dedupeAgainstSynthetic(event: SessionEvent): boolean {
+    if (event.type !== 'user-text') return false;
+    const ring = this.syntheticMarkers.get(event.agentId);
+    if (!ring || ring.length === 0) return false;
+    const eventTs = Date.parse(event.timestamp);
+    const refTs = isFinite(eventTs) ? eventTs : Date.now();
+    const target = normalizeUserText(event.text);
+    for (let i = 0; i < ring.length; i++) {
+      const m = ring[i];
+      if (Math.abs(m.timestamp - refTs) > SYNTHETIC_DEDUPE_WINDOW_MS) continue;
+      if (m.text === target) {
+        ring.splice(i, 1); // consume the marker on hit
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private markEventUuidSeen(agentId: string, uuid: string): boolean {
+    let seen = this.seenEventUuids.get(agentId);
+    let order = this.seenEventUuidOrder.get(agentId);
+    if (!seen) {
+      seen = new Set();
+      this.seenEventUuids.set(agentId, seen);
+    }
+    if (!order) {
+      order = [];
+      this.seenEventUuidOrder.set(agentId, order);
+    }
+    if (seen.has(uuid)) return false;
+
+    seen.add(uuid);
+    order.push(uuid);
+    if (order.length > SEEN_UUID_MAX) {
+      const overflow = order.length - SEEN_UUID_MAX;
+      const removed = order.splice(0, overflow);
+      for (const oldUuid of removed) seen.delete(oldUuid);
+    }
+    return true;
   }
 
   invalidatePath(agentId: string): void {
@@ -131,10 +214,19 @@ export class SessionLogDispatcher extends EventEmitter {
       sessionId: session.sessionId,
       workingDirectory: session.workingDirectory,
       provider: session.provider,
+      startedAt: session.startedAt,
       subscribed: this.subscribers.has(session.agentId),
     };
 
-    const newEvents = reader.pollSession(readerSession);
+    const rawEvents = reader.pollSession(readerSession);
+    if (rawEvents.length === 0) return;
+
+    const newEvents: SessionEvent[] = [];
+    for (const ev of rawEvents) {
+      if (!this.markEventUuidSeen(ev.agentId, ev.uuid)) continue;
+      if (this.dedupeAgainstSynthetic(ev)) continue;
+      newEvents.push(ev);
+    }
     if (newEvents.length === 0) return;
 
     this.appendToRingBuffer(session.agentId, newEvents);
@@ -149,6 +241,7 @@ export class SessionLogDispatcher extends EventEmitter {
     for (const ev of newEvents) {
       if (ev.type === 'usage') this.emit('usage', ev);
       else if (ev.type === 'tool-use') this.emit('tool-use', ev);
+      else if (ev.type === 'tool-result') this.emit('tool-result', ev);
     }
   }
 

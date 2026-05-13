@@ -3,8 +3,6 @@ import { URL } from 'url';
 import type { AgentSupervisor } from './supervisor';
 import {
   getAgent, getAllAgents, getAgentsByWorkspace, getWorkspace,
-  createGroupThinkSession, getGroupThinkSession, listGroupThinkSessions,
-  advanceGroupThinkRound, completeGroupThink, cancelGroupThink,
   createTeam, getTeam, listTeams, updateTeamStatus, saveTeamManifest, getTeamManifest,
   addTeamMember, removeTeamMember, getTeamMembers,
   createChannel, removeChannel, getChannel, listChannels,
@@ -147,6 +145,16 @@ export class ApiServer {
       return { agentId: ctxMatch[1], stats };
     }
 
+    // GET /api/agents/:id/messages — read structured agent chat
+    const messagesMatch = path.match(/^\/api\/agents\/([^/]+)\/messages$/);
+    if (method === 'GET' && messagesMatch) {
+      const agentId = messagesMatch[1];
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const role = url.searchParams.get('role') as 'assistant' | 'user' | undefined;
+      const messages = await this.supervisor.getChatService().getMessages(agentId, { limit, role });
+      return { agentId, limit, messages };
+    }
+
     // POST /api/agents/:id/input — queue a message for delivery and return.
     // Delivery is fire-and-forget: the Windows codex/gemini path types one
     // character at a time at WINDOWS_CODEX_TYPING_DELAY_MS to dodge the
@@ -183,6 +191,36 @@ export class ApiServer {
       return { ok: true, agentId, queued: true, message: 'Input queued' };
     }
 
+    // POST /api/agents/:id/keys — write raw keystroke bytes to the agent's PTY.
+    // Bypasses the bracketed-paste wrapping that `:id/input` applies (intentional —
+    // pickers and other widgets need bytes dispatched as key events, not as one
+    // pasted blob). Synchronous: a single PTY write per call, no typing loop,
+    // no per-agent queue. Concurrent calls race like any keyboard input — that
+    // matches the dashboard xterm panel's behavior, which uses the same channel
+    // (`Supervisor.writeToAgent`, see `terminal:write` IPC handler).
+    const keysMatch = path.match(/^\/api\/agents\/([^/]+)\/keys$/);
+    if (method === 'POST' && keysMatch) {
+      const agentId = keysMatch[1];
+      const body = await readBody(req);
+      const { keys } = JSON.parse(body);
+      if (typeof keys !== 'string') {
+        throw Object.assign(new Error('Missing or non-string "keys" in request body'), { statusCode: 400 });
+      }
+      // Empty string is a no-op rather than an error — easier to script.
+      if (keys.length === 0) {
+        return { ok: true, agentId, bytes: 0, message: 'No bytes to send' };
+      }
+
+      const agent = getAgent(agentId);
+      if (!agent) throw Object.assign(new Error('Agent not found'), { statusCode: 404 });
+      if (!this.supervisor.hasRunner(agentId)) {
+        throw Object.assign(new Error('Agent has no live runner (likely crashed or stopped)'), { statusCode: 409 });
+      }
+
+      this.supervisor.writeToAgent(agentId, keys);
+      return { ok: true, agentId, bytes: keys.length };
+    }
+
     // POST /api/agents — launch a new agent
     if (method === 'POST' && path === '/api/agents') {
       const body = await readBody(req);
@@ -203,76 +241,6 @@ export class ApiServer {
     if (method === 'POST' && forkMatch) {
       const newAgent = await this.supervisor.forkAgent(forkMatch[1]);
       return newAgent;
-    }
-
-    // ── Group Think routes ────────────────────────────────────────────
-
-    // POST /api/groupthink — create session
-    if (method === 'POST' && path === '/api/groupthink') {
-      const body = await readBody(req);
-      const { workspaceId, topic, agentIds, maxRounds } = JSON.parse(body);
-      if (!workspaceId || !topic || !agentIds?.length) {
-        throw Object.assign(new Error('Missing workspaceId, topic, or agentIds'), { statusCode: 400 });
-      }
-      const session = createGroupThinkSession(workspaceId, topic, agentIds, maxRounds);
-      // Notify supervisor of the new session
-      this.supervisor.notifyGroupThinkStart(session);
-      return session;
-    }
-
-    // GET /api/groupthink/:id — get session with member agent statuses
-    const gtGetMatch = path.match(/^\/api\/groupthink\/([^/]+)$/);
-    if (method === 'GET' && gtGetMatch) {
-      const session = getGroupThinkSession(gtGetMatch[1]);
-      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
-      // Enrich with per-member agent status
-      const members = session.memberAgentIds.map(id => {
-        const agent = getAgent(id);
-        return {
-          agentId: id,
-          title: agent?.title || 'unknown',
-          status: agent?.status || 'unknown',
-          provider: agent?.provider || 'unknown',
-        };
-      });
-      return { ...session, members };
-    }
-
-    // GET /api/groupthink?workspaceId=... — list sessions
-    if (method === 'GET' && path === '/api/groupthink') {
-      const workspaceId = url.searchParams.get('workspaceId');
-      if (!workspaceId) throw Object.assign(new Error('Missing workspaceId'), { statusCode: 400 });
-      return listGroupThinkSessions(workspaceId);
-    }
-
-    // POST /api/groupthink/:id/advance — advance round
-    const gtAdvanceMatch = path.match(/^\/api\/groupthink\/([^/]+)\/advance$/);
-    if (method === 'POST' && gtAdvanceMatch) {
-      const session = advanceGroupThinkRound(gtAdvanceMatch[1]);
-      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
-      return session;
-    }
-
-    // POST /api/groupthink/:id/complete — complete with synthesis
-    const gtCompleteMatch = path.match(/^\/api\/groupthink\/([^/]+)\/complete$/);
-    if (method === 'POST' && gtCompleteMatch) {
-      const body = await readBody(req);
-      const { synthesis } = JSON.parse(body);
-      if (!synthesis) throw Object.assign(new Error('Missing synthesis'), { statusCode: 400 });
-      const session = completeGroupThink(gtCompleteMatch[1], synthesis);
-      if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
-      // Notify renderer
-      this.supervisor.emit('groupThinkUpdated', session);
-      return session;
-    }
-
-    // DELETE /api/groupthink/:id — cancel session
-    const gtCancelMatch = path.match(/^\/api\/groupthink\/([^/]+)$/);
-    if (method === 'DELETE' && gtCancelMatch) {
-      cancelGroupThink(gtCancelMatch[1]);
-      const session = getGroupThinkSession(gtCancelMatch[1]);
-      if (session) this.supervisor.emit('groupThinkUpdated', session);
-      return { ok: true, sessionId: gtCancelMatch[1], message: 'Session cancelled' };
     }
 
     // ── Team routes ──────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
-import { AgentStatus, GroupThinkSession } from '../../shared/types';
+import { AgentStatus } from '../../shared/types';
 
 export interface SupervisorEvent {
-  type: 'status_change' | 'context_threshold' | 'groupthink_start' | 'team_created' | 'team_loop_detected';
+  type: 'status_change' | 'context_threshold' | 'team_created' | 'team_loop_detected';
   agentId: string;
   agentTitle: string;
   workspaceId: string;
@@ -14,11 +14,6 @@ export interface SupervisorEvent {
   turnCount?: number;
   model?: string;
   logTail?: string;
-  // Group Think fields
-  groupthinkSessionId?: string;
-  groupthinkTopic?: string;
-  groupthinkMembers?: { agentId: string; title: string; provider: string }[];
-  groupthinkMaxRounds?: number;
   // Team fields
   teamId?: string;
   teamName?: string;
@@ -77,21 +72,6 @@ export function buildEventPayload(event: SupervisorEvent): string {
       formatContext(event),
       `Threshold: ${event.contextPercentage}% — compact this agent (read log, launch new agent with summary, stop old agent)`,
     ].filter(Boolean).join('\n');
-  }
-
-  if (event.type === 'groupthink_start') {
-    const members = (event.groupthinkMembers || [])
-      .map(m => `  - "${m.title}" (${m.agentId.slice(0, 8)}) [${m.provider}]`)
-      .join('\n');
-    return [
-      '[DASHBOARD EVENT] Group Think session started',
-      `Session: ${event.groupthinkSessionId}`,
-      `Topic: ${event.groupthinkTopic}`,
-      `Max rounds: ${event.groupthinkMaxRounds}`,
-      `Enrolled agents:\n${members}`,
-      '',
-      'Follow the Group Think protocol in your instructions: brief each agent, monitor rounds, cross-pollinate, and synthesize.',
-    ].join('\n');
   }
 
   if (event.type === 'team_created') {

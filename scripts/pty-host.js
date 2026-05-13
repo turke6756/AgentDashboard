@@ -34,6 +34,16 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+// Quote a single arg for `cmd.exe /c <joined>`. Without this, args containing
+// whitespace get re-split by cmd.exe — e.g. `--append-system-prompt "Workspace
+// root: ..."` is shredded into `--append-system-prompt Workspace`, `root:`,
+// and trailing tokens that Claude treats as a positional prompt.
+function quoteForCmd(arg) {
+  if (arg.length === 0) return '""';
+  if (!/[\s"&|<>^()%!]/.test(arg)) return arg;
+  return '"' + arg.replace(/"/g, '""') + '"';
+}
+
 function handleMessage(msg) {
   switch (msg.type) {
     case 'spawn': {
@@ -57,7 +67,7 @@ function handleMessage(msg) {
       let spawnCmd, spawnArgs;
       if (process.platform === 'win32' && !msg.directSpawn && msg.command !== 'cmd.exe' && msg.command !== 'wsl.exe') {
         spawnCmd = 'cmd.exe';
-        const fullCommand = [msg.command, ...(msg.args || [])].join(' ');
+        const fullCommand = [msg.command, ...(msg.args || [])].map(quoteForCmd).join(' ');
         spawnArgs = ['/c', fullCommand];
       } else {
         spawnCmd = msg.command;

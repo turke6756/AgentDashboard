@@ -7,7 +7,7 @@ import DetailPaneProducts from '../detail/DetailPaneProducts';
 import ChatPane from '../detail/ChatPane';
 import QueryDialog from '../agent/QueryDialog';
 import CollapseButton from './CollapseButton';
-import type { AgentProvider, PathType, ContextStats, GroupThinkSession } from '../../../shared/types';
+import type { AgentProvider, PathType, ContextStats } from '../../../shared/types';
 import { PROVIDER_META } from '../../../shared/constants';
 
 const TABS = [
@@ -44,50 +44,8 @@ interface DetailPanelProps {
   width: number;
 }
 
-function GroupThinkStatusSection({ session, agents: allAgents }: { session: GroupThinkSession; agents: { id: string; title: string; provider: string }[] }) {
-  const statusColors: Record<string, string> = {
-    active: 'text-fuchsia-400',
-    synthesizing: 'text-amber-400',
-    completed: 'text-green-400',
-    cancelled: 'text-gray-400',
-  };
-
-  return (
-    <div className="mx-4 mb-3 p-3 bg-fuchsia-500/5 border border-fuchsia-500/20 rounded-sm">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[11px] text-fuchsia-400 font-bold uppercase tracking-wider">Group Think</span>
-        <span className={`text-[11px] font-bold ${statusColors[session.status] || 'text-gray-400'}`}>
-          {session.status.toUpperCase()} R{session.roundCount}/{session.maxRounds}
-        </span>
-      </div>
-      <p className="text-[12px] text-gray-300 mb-2 line-clamp-2">{session.topic}</p>
-      <div className="flex flex-wrap gap-1">
-        {session.memberAgentIds.map((id) => {
-          const agent = allAgents.find((a) => a.id === id);
-          if (!agent) return null;
-          const meta = PROVIDER_META[(agent.provider || 'claude') as AgentProvider];
-          return (
-            <span
-              key={id}
-              className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-700"
-              style={{ color: meta.color }}
-            >
-              {agent.title}
-            </span>
-          );
-        })}
-      </div>
-      {session.synthesis && (
-        <div className="mt-2 p-2 bg-surface-0/60 border border-gray-700 max-h-32 overflow-y-auto text-[11px] text-gray-300 whitespace-pre-wrap">
-          {session.synthesis}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function DetailPanel({ width }: DetailPanelProps) {
-  const { agents, selectedAgentId, terminalAgentId, detailPane, workspaces, contextStats, groupThinkSessions, panelLayout } = useDashboardStore(
+  const { agents, selectedAgentId, terminalAgentId, detailPane, workspaces, contextStats, panelLayout } = useDashboardStore(
     useShallow((s) => ({
       agents: s.agents,
       selectedAgentId: s.selectedAgentId,
@@ -95,7 +53,6 @@ export default function DetailPanel({ width }: DetailPanelProps) {
       detailPane: s.detailPane,
       workspaces: s.workspaces,
       contextStats: s.contextStats,
-      groupThinkSessions: s.groupThinkSessions,
       panelLayout: s.panelLayout,
     })),
   );
@@ -304,15 +261,6 @@ export default function DetailPanel({ width }: DetailPanelProps) {
           );
         })()}
       </div>
-
-      {/* Group Think status (if agent is in an active session) */}
-      {(() => {
-        const gtSession = groupThinkSessions.find(
-          (s) => ['active', 'synthesizing', 'completed'].includes(s.status) && s.memberAgentIds.includes(agent.id)
-        );
-        if (!gtSession) return null;
-        return <GroupThinkStatusSection session={gtSession} agents={agents} />;
-      })()}
 
       {/* Controls */}
       <div className="panel-header grid grid-cols-2 gap-2 p-3">

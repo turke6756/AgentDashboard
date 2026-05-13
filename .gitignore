@@ -10,3 +10,6 @@ vscode-extension/out/
 release/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Private documentation — not pushed to public repo
+docs/

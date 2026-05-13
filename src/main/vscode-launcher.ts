@@ -1,4 +1,5 @@
 import { exec } from 'child_process';
+import path from 'path';
 import { PathType } from '../shared/types';
 
 /** Strip Electron env vars so VS Code spawns with a clean environment */
@@ -32,9 +33,22 @@ export function openFileInVSCode(filePath: string, pathType: PathType): void {
 
 export function openFileInWorkspace(filePath: string, workspaceDir: string, pathType: PathType): void {
   const env = cleanEnv();
+  const resolvedFilePath = resolveFileInWorkspace(filePath, workspaceDir, pathType);
   if (pathType === 'wsl') {
-    exec(`code --remote wsl+Ubuntu "${workspaceDir}" --goto "${filePath}"`, { env });
+    exec(`code --remote wsl+Ubuntu "${workspaceDir}" --goto "${resolvedFilePath}"`, { env });
   } else {
-    exec(`code "${workspaceDir}" --goto "${filePath}"`, { env });
+    exec(`code "${workspaceDir}" --goto "${resolvedFilePath}"`, { env });
   }
+}
+
+function resolveFileInWorkspace(filePath: string, workspaceDir: string, pathType: PathType): string {
+  if (!filePath || !workspaceDir || isAbsolutePath(filePath)) return filePath;
+  if (pathType === 'wsl' || workspaceDir.startsWith('/')) {
+    return `${workspaceDir.replace(/\/+$/, '')}/${filePath.replace(/^[/\\]+/, '').replace(/\\/g, '/')}`;
+  }
+  return path.resolve(workspaceDir, filePath);
+}
+
+function isAbsolutePath(filePath: string): boolean {
+  return filePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(filePath) || /^\\\\/.test(filePath);
 }

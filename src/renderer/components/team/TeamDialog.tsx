@@ -14,7 +14,7 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
   const { createTeam } = useDashboardStore();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [template, setTemplate] = useState<TeamTemplate>('groupthink');
+  const [template, setTemplate] = useState<TeamTemplate>('mesh');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     preSelectedAgentId ? new Set([preSelectedAgentId]) : new Set()
   );
@@ -94,7 +94,7 @@ export default function TeamDialog({ workspaceId, agents, preSelectedAgentId, on
   };
 
   const templateOptions: { value: TeamTemplate; label: string; desc: string }[] = [
-    { value: 'groupthink', label: 'Groupthink', desc: 'All-to-all communication' },
+    { value: 'mesh', label: 'Mesh', desc: 'All-to-all communication' },
     { value: 'pipeline', label: 'Pipeline', desc: 'Linear chain A\u2192B\u2192C' },
     { value: 'custom', label: 'Custom', desc: 'Define channels manually' },
   ];
