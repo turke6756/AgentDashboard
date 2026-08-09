@@ -24,7 +24,6 @@ import type {
   Workspace,
   ObservedOverviewSourceToken,
   DeleteProposalRequest,
-  DeleteProposalResult,
   PlanLedgerProjection,
 } from '../../shared/types';
 import {
@@ -107,7 +106,15 @@ import { parseStrictJson } from './strict-json';
 import { reconcilePlanFolderProjections } from './plan-folder-reconciler';
 import { derivePromotedLifecycle } from './promoted-lifecycle';
 import { latestLifecycleEvent, type LifecycleEvent } from './plan-manifest';
-import { deleteProposal } from './proposal-delete';
+import {
+  deleteProposal,
+  type ProposalDeleteResult,
+} from './proposal-delete';
+import {
+  permanentlyDeletePlan,
+  type PermanentDeletePlanRequest,
+  type PermanentDeletePlanResult,
+} from './plan-lifecycle';
 import {
   transitionPlanPackage,
   type CompletionDeclaration,
@@ -1448,7 +1455,7 @@ export function registerBlameToIntentIpc(
 
 export function registerProposalDeleteIpc(
   ipc: PlanIpcLike,
-  remove: (request: DeleteProposalRequest) => DeleteProposalResult = deleteProposal,
+  remove: (request: DeleteProposalRequest) => ProposalDeleteResult = deleteProposal,
 ): void {
   ipc.handle('proposal:delete', (_event, raw: unknown) => {
     if (!raw || typeof raw !== 'object') return { ok: false, reason: 'not-found' };
@@ -1461,6 +1468,26 @@ export function registerProposalDeleteIpc(
       workspaceId: request.workspaceId,
       proposalDocumentId: request.proposalDocumentId,
     });
+  });
+}
+
+export function registerPermanentPlanDeleteIpc(
+  ipc: PlanIpcLike,
+  remove: (request: PermanentDeletePlanRequest) => Promise<PermanentDeletePlanResult>
+    = permanentlyDeletePlan,
+): void {
+  ipc.handle('plan:deletePermanent', (_event, raw: unknown) => {
+    if (!raw || typeof raw !== 'object') {
+      return { ok: false, reason: 'confirmation-required', runState: null };
+    }
+    const request = raw as Partial<PermanentDeletePlanRequest>;
+    if (typeof request.planId !== 'string' || request.planId === '') {
+      return { ok: false, reason: 'plan-not-found', runState: null };
+    }
+    if (request.confirmed !== true) {
+      return { ok: false, reason: 'confirmation-required', runState: null };
+    }
+    return remove({ planId: request.planId, confirmed: true });
   });
 }
 
@@ -1548,6 +1575,7 @@ export function registerPlanIpc(delivery: PlanDispatchDelivery): void {
   // through this server-authoritative preflight.
   registerPromotionPreflightIpc(ipcMain);
   registerProposalDeleteIpc(ipcMain);
+  registerPermanentPlanDeleteIpc(ipcMain);
 
   // WP-P2L-proj: mid-altitude intent history + confidence, derived from the
   // canonical ledger/orchestration join and current plan.md disk presence.

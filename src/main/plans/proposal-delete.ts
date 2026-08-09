@@ -17,7 +17,20 @@ import { listPlanningEntries } from './planning-reader';
 interface PlanSourceReference {
   artifactId: string | null;
   relPath: string | null;
+  governingPlan?: GoverningPlan | null;
 }
+
+export interface GoverningPlan {
+  id: string;
+  name: string;
+}
+
+export type ProposalDeleteResult = DeleteProposalResult
+  | {
+      ok: false;
+      reason: 'promoted' | 'plan-source-reference';
+      governingPlan: GoverningPlan;
+    };
 
 type PlanSourceScanResult =
   | { ok: true; references: PlanSourceReference[] }
@@ -109,6 +122,14 @@ function scanPlanSources(workspace: Workspace): PlanSourceScanResult {
       references.push({
         artifactId: typeof sourceRecord.artifact_id === 'string' ? sourceRecord.artifact_id : null,
         relPath: typeof sourceRecord.rel_path === 'string' ? sourceRecord.rel_path : null,
+        governingPlan: typeof (parsed as Record<string, unknown>).plan_sku === 'string'
+          ? {
+              id: typeof (parsed as Record<string, unknown>).plan_artifact_id === 'string'
+                ? String((parsed as Record<string, unknown>).plan_artifact_id)
+                : entry.name,
+              name: String((parsed as Record<string, unknown>).plan_sku),
+            }
+          : null,
       });
     } catch {
       return { ok: false };
@@ -185,7 +206,7 @@ function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
 export function deleteProposal(
   request: DeleteProposalRequest,
   overrides: Partial<ProposalDeleteDeps> = {},
-): DeleteProposalResult {
+): ProposalDeleteResult {
   const deps = { ...defaultDeps(), ...overrides };
   const workspace = deps.getWorkspace(request.workspaceId);
   if (!workspace) return { ok: false, reason: 'workspace-not-found' };
@@ -205,17 +226,21 @@ export function deleteProposal(
 
   const firstValidation = validateDeleteTarget(workspace, document.name);
   if (!firstValidation.ok) return firstValidation;
-  if (proposal.state === 'promoted' || proposal.promotedToPlanId !== null) {
-    return { ok: false, reason: 'promoted' };
-  }
-
   const sources = deps.scanPlanSources(workspace);
   if (!sources.ok) return { ok: false, reason: 'io-error' };
   const normalizedRelPath = normalizedPath(proposalRelPath);
-  if (sources.references.some((reference) =>
+  const governingReference = sources.references.find((reference) =>
     (proposal.artifactId !== null && reference.artifactId === proposal.artifactId)
-    || (reference.relPath !== null && normalizedPath(reference.relPath) === normalizedRelPath))) {
-    return { ok: false, reason: 'plan-source-reference' };
+    || (reference.relPath !== null && normalizedPath(reference.relPath) === normalizedRelPath));
+  if (proposal.state === 'promoted' || proposal.promotedToPlanId !== null) {
+    return governingReference?.governingPlan
+      ? { ok: false, reason: 'promoted', governingPlan: governingReference.governingPlan }
+      : { ok: false, reason: 'promoted' };
+  }
+  if (governingReference) {
+    return governingReference.governingPlan
+      ? { ok: false, reason: 'plan-source-reference', governingPlan: governingReference.governingPlan }
+      : { ok: false, reason: 'plan-source-reference' };
   }
 
   // Destructive boundary: repeat every filesystem guard after the slower plan

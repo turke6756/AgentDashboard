@@ -16,6 +16,7 @@
 
 import type { Plan, PlanTabKey } from '../../shared/types';
 import { createHash, randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   archivePlanClosingRun,
@@ -26,6 +27,7 @@ import {
   getActivePlanningActivityWorktree,
   getDb,
   getPlan,
+  getWorkspace,
   getPlanWorkPackage,
   insertPlanDispatchAttempt,
   markPlanDispatchAttemptFailed,
@@ -41,6 +43,8 @@ import {
   type PlanWpLifecycleEvent,
   type PlanWpTransitionState,
 } from '../database';
+import { deletePlanBaselineRefs } from '../git-checkpoints/plan-baseline-refs';
+import { workspaceStateDir } from '../workspace-state-dir';
 import {
   resolvePackageDispatchContext,
   withResolvedIntentStamp,
@@ -506,6 +510,132 @@ export async function markPlanReady(
 
 export const PLAN_RUN_STATE_EXECUTING = 'executing';
 export const PLAN_RUN_STATE_ARCHIVED = 'archived';
+
+export type PermanentDeletePlanFailure =
+  | 'confirmation-required'
+  | 'plan-not-found'
+  | 'plan-not-archived'
+  | 'workspace-not-found'
+  | 'unsafe-path'
+  | 'baseline-release-failed'
+  | 'delete-failed';
+
+export type PermanentDeletePlanResult =
+  | { ok: true; planId: string; releasedBaselineRefs: string[] }
+  | { ok: false; reason: PermanentDeletePlanFailure; runState: string | null };
+
+export interface PermanentDeletePlanRequest {
+  planId: string;
+  /** Must be literally true. The destructive operation is never inferred from intent. */
+  confirmed: boolean;
+}
+
+export interface PermanentDeletePlanDeps {
+  getPlan?: (planId: string) => Plan | null;
+  getWorkspace?: typeof getWorkspace;
+  listBaselineRefs?: (planId: string) => string[];
+  releaseBaselineRefs?: (workspaceRoot: string, refs: string[]) => Promise<boolean>;
+  removePlanFolder?: (workspace: import('../../shared/types').Workspace, plan: Plan) => boolean;
+  cascadeDelete?: (planId: string) => boolean;
+}
+
+function contained(parent: string, child: string): boolean {
+  const normalize = (value: string): string => {
+    let resolved = path.resolve(value).replace(/\\/g, '/').replace(/\/+$/, '');
+    if (process.platform === 'win32') resolved = resolved.toLowerCase();
+    return resolved;
+  };
+  const boundary = normalize(parent);
+  const candidate = normalize(child);
+  return candidate === boundary || candidate.startsWith(`${boundary}/`);
+}
+
+function removePlanFolderSafely(
+  workspace: import('../../shared/types').Workspace,
+  plan: Plan,
+): boolean {
+  const planDocument = path.resolve(workspace.path, plan.path);
+  const folder = path.dirname(planDocument);
+  const configuredPlansHome = path.join(
+    workspaceStateDir(workspace.path, workspace.pathType),
+    'plans',
+  );
+  const allowedHomes = [
+    configuredPlansHome,
+    path.join(workspace.path, '.lares', 'plans'),
+    path.join(workspace.path, '.dashboard', 'plans'),
+  ];
+  const plansHome = allowedHomes.find((candidate) =>
+    path.resolve(path.dirname(folder)) === path.resolve(candidate));
+  if (!plansHome || !contained(plansHome, folder) || folder === path.resolve(plansHome)) return false;
+  try {
+    const homeStat = fs.lstatSync(plansHome);
+    const folderStat = fs.lstatSync(folder);
+    const documentStat = fs.lstatSync(planDocument);
+    if (homeStat.isSymbolicLink() || !homeStat.isDirectory()
+        || folderStat.isSymbolicLink() || !folderStat.isDirectory()
+        || documentStat.isSymbolicLink() || !documentStat.isFile()) return false;
+    const realHome = fs.realpathSync.native(plansHome);
+    const realFolder = fs.realpathSync.native(folder);
+    if (!contained(realHome, realFolder) || path.dirname(realFolder) !== realHome) return false;
+    fs.rmSync(folder, { recursive: true, force: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Permanently remove an archived plan. The caller must explicitly confirm, every
+ * baseline ref is released before its execution rows disappear, and package rows
+ * are deleted explicitly because the legacy table has no plan foreign key.
+ */
+export async function permanentlyDeletePlan(
+  input: PermanentDeletePlanRequest,
+  deps: PermanentDeletePlanDeps = {},
+): Promise<PermanentDeletePlanResult> {
+  if (input.confirmed !== true) {
+    return { ok: false, reason: 'confirmation-required', runState: null };
+  }
+  const getPlanFn = deps.getPlan ?? getPlan;
+  const plan = getPlanFn(input.planId);
+  if (!plan) return { ok: false, reason: 'plan-not-found', runState: null };
+  if (plan.runState !== PLAN_RUN_STATE_ARCHIVED) {
+    return { ok: false, reason: 'plan-not-archived', runState: plan.runState };
+  }
+  const workspace = (deps.getWorkspace ?? getWorkspace)(plan.workspaceId);
+  if (!workspace) return { ok: false, reason: 'workspace-not-found', runState: plan.runState };
+  const listBaselineRefs = deps.listBaselineRefs ?? ((planId: string): string[] =>
+    (getDb().prepare(
+      'SELECT baseline_ref FROM plan_execution_runs WHERE plan_id = ? AND baseline_ref IS NOT NULL',
+    ).all(planId) as Array<{ baseline_ref: string }>).map((row) => row.baseline_ref));
+  const refs = listBaselineRefs(plan.id);
+  const release = deps.releaseBaselineRefs ?? (async (workspaceRoot: string, baselineRefs: string[]) =>
+    (await deletePlanBaselineRefs({ repoRoot: workspaceRoot, refs: baselineRefs })).ok);
+  if (!(await release(workspace.path, refs))) {
+    return { ok: false, reason: 'baseline-release-failed', runState: plan.runState };
+  }
+  const removeFolder = deps.removePlanFolder ?? removePlanFolderSafely;
+  if (!removeFolder(workspace, plan)) {
+    return { ok: false, reason: 'unsafe-path', runState: plan.runState };
+  }
+  const cascadeDelete = deps.cascadeDelete ?? ((planId: string): boolean => {
+    const database = getDb();
+    return database.transaction(() => {
+      const current = database.prepare('SELECT run_state FROM plans WHERE id = ?').get(planId) as
+        { run_state: string | null } | undefined;
+      if (current?.run_state !== PLAN_RUN_STATE_ARCHIVED) return false;
+      database.prepare('DELETE FROM plan_work_packages WHERE plan_id = ?').run(planId);
+      return database.prepare(
+        "DELETE FROM plans WHERE id = ? AND run_state = 'archived'",
+      ).run(planId).changes === 1;
+    })();
+  });
+  if (!cascadeDelete(plan.id)) {
+    return { ok: false, reason: 'delete-failed', runState: plan.runState };
+  }
+  return { ok: true, planId: plan.id, releasedBaselineRefs: refs };
+}
 
 export type ArchivePlanFailure = 'plan-not-found' | 'plan-not-archivable';
 
