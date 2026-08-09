@@ -218,11 +218,15 @@ test('one reconciliation migrates an exact v3-era workspace and provisions the p
   assert.match(constants.READ_PLANNING_SURFACE_SKILL_MD, /never appends `assigned`/);
 
   const migratedSidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as Record<string, number>;
+  const liveScaffold = supervisorModule.proposalToPlanEntries('proposal-to-plan');
+  const liveVersion = (rel: string): number => liveScaffold[`proposal-to-plan/${rel}`].version;
   for (const skillRoot of roots) {
     const keyRoot = skillRoot.replace(/^\.lares\//, '');
-    assert.equal(migratedSidecar[`${keyRoot}/SKILL.md`], 4);
-    assert.equal(migratedSidecar[`${keyRoot}/references/activities/promote.md`], 4);
-    assert.equal(migratedSidecar[`${keyRoot}/scripts/plan-manifest.mjs`], 4);
+    assert.equal(migratedSidecar[`${keyRoot}/SKILL.md`], liveVersion('SKILL.md'));
+    assert.equal(migratedSidecar[`${keyRoot}/references/activities/promote.md`],
+      liveVersion('references/activities/promote.md'));
+    assert.equal(migratedSidecar[`${keyRoot}/scripts/plan-manifest.mjs`],
+      liveVersion('scripts/plan-manifest.mjs'));
     assert.equal(migratedSidecar[`${keyRoot}/references/activities/capture.md`], 4,
       'sidecar must durably record capture retirement');
   }
