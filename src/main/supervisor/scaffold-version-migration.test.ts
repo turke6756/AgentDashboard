@@ -67,6 +67,7 @@ import {
   readPlanningSurfaceEntry,
   proveProductionEntryPointEntry,
   WRITE_PROPOSAL_SKILL_MD_V1_HASH,
+  WRITE_PROPOSAL_SKILL_MD_V2_HASH,
   PROPOSAL_TO_PLAN_SKILL_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V2_HASH,
@@ -76,6 +77,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
+  PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V1_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_HUMAN_OVERVIEW_MD_V1_HASH,
@@ -119,6 +121,7 @@ import {
   WORKER_CLAUDE_MD_V9,
   WORKER_CLAUDE_MD_V10,
   WRITE_PROPOSAL_SKILL_MD,
+  WRITE_PROPOSAL_SKILL_MD_V2,
   READ_PLANNING_SURFACE_SKILL_MD,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   WORKER_CODEX_AGENTS_MD_V2,
@@ -131,6 +134,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3,
+  PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4,
   PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
   PROPOSAL_TO_PLAN_CONTRACT_ARC_MD,
@@ -3974,10 +3978,11 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     2: PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V2_HASH,
     3: PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V3_HASH,
   } }],
-  ['references/activities/package.md', { version: 4, previousHashes: {
+  ['references/activities/package.md', { version: 5, previousHashes: {
     1: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
     2: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
     3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
+    4: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH,
   } }],
   ['references/activities/orient.md', { version: 3, previousHashes: {
     1: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
@@ -4321,12 +4326,12 @@ test('WP-1-CONTENT. write-proposal owns the conceptual model, bounded decisions,
     'Tell the human the proposal exists and where it is; the lifecycle continues only\nfrom the Plans pane.'));
 });
 
-test('WP-1-MIG. write-proposal is a managed v2 skill in every native lane', () => {
+test('WP-1-MIG. write-proposal is a managed v3 skill in every native lane', () => {
   const helperEntry = writeProposalEntry('.lares/example/.agents/skills/write-proposal');
   assert.deepEqual(helperEntry['.lares/example/.agents/skills/write-proposal/SKILL.md'], {
     content: WRITE_PROPOSAL_SKILL_MD,
-    version: 2,
-    previousHashes: { 1: WRITE_PROPOSAL_SKILL_MD_V1_HASH },
+    version: 3,
+    previousHashes: { 1: WRITE_PROPOSAL_SKILL_MD_V1_HASH, 2: WRITE_PROPOSAL_SKILL_MD_V2_HASH },
   });
 
   const workDir = mktmp('write-proposal-all-lanes');
@@ -4348,7 +4353,7 @@ test('WP-1-MIG. write-proposal is a managed v2 skill in every native lane', () =
     for (const rel of paths) {
       assert.equal(fs.readFileSync(path.join(workDir, ...rel.split('/')), 'utf8'), WRITE_PROPOSAL_SKILL_MD,
         `${rel} must contain the exact shared skill body`);
-      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 2, `${rel} must be recorded at v2`);
+      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 3, `${rel} must be recorded at v3`);
     }
   } finally {
     cleanup();
@@ -4356,7 +4361,7 @@ test('WP-1-MIG. write-proposal is a managed v2 skill in every native lane', () =
   }
 });
 
-test('WP-1-MIG-UPGRADE. a pristine write-proposal v1 silently upgrades to v2', () => {
+test('WP-1-MIG-UPGRADE. a pristine write-proposal v1 silently upgrades to v3', () => {
   const workDir = mktmp('write-proposal-v1');
   const { supervisor, cleanup } = makeSupervisor();
   const rel = '.lares/workers/codex/.agents/skills/write-proposal/SKILL.md';
@@ -4371,12 +4376,83 @@ test('WP-1-MIG-UPGRADE. a pristine write-proposal v1 silently upgrades to v2', (
     supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
 
     assert.equal(fs.readFileSync(skillPath, 'utf8'), WRITE_PROPOSAL_SKILL_MD);
-    assert.equal(readSidecar(workDir)[sidecarKey], 2);
+    assert.equal(readSidecar(workDir)[sidecarKey], 3);
     assert.equal(
       fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length,
       0,
       'a pristine v1 body must upgrade without a backup',
     );
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-10-CONTENT. authoring skills require one dual-register Markdown with a conceptual model and strict Gloss lines', () => {
+  assert.equal(sha256Hex(WRITE_PROPOSAL_SKILL_MD_V2), WRITE_PROPOSAL_SKILL_MD_V2_HASH,
+    'frozen write-proposal v2 must match previousHashes[2]');
+  assert.equal(sha256Hex(PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4), PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH,
+    'frozen package.md v4 must match previousHashes[4]');
+  assert.notEqual(sha256Hex(WRITE_PROPOSAL_SKILL_MD), WRITE_PROPOSAL_SKILL_MD_V2_HASH);
+  assert.notEqual(sha256Hex(PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD), PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH);
+
+  for (const phrase of [
+    '`## Conceptual model`',
+    'Name the important moving parts and\nexplain how they relate',
+    'must add useful structure beyond the `## In plain terms` summary',
+    'one proposal whose plain-language and technical registers describe\nthe same model',
+  ]) assert.ok(WRITE_PROPOSAL_SKILL_MD.includes(phrase), `write-proposal missing ${phrase}`);
+
+  for (const phrase of [
+    'every prose package must contain exactly one plain-language\n  gloss on one physical line',
+    '`**Gloss:** <plain-language summary>`',
+    'follow it with a blank line',
+    'complete\n  line at most 200 characters',
+    'Do not put Gloss in the additive machine block',
+    'two registers of the same Markdown, never\n  separate documents',
+  ]) assert.ok(PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD.includes(phrase), `package.md missing ${phrase}`);
+});
+
+test('WP-10-MIG. pristine write-proposal v2 and package.md v4 silently upgrade to current', () => {
+  const workDir = mktmp('wp10-dual-register');
+  const { supervisor, cleanup } = makeSupervisor();
+  const fixtures = [
+    {
+      rel: '.lares/workers/codex/.agents/skills/write-proposal/SKILL.md',
+      body: WRITE_PROPOSAL_SKILL_MD_V2,
+      diskVersion: 2,
+      live: WRITE_PROPOSAL_SKILL_MD,
+      currentVersion: 3,
+    },
+    {
+      rel: '.lares/workers/codex/.agents/skills/proposal-to-plan/references/activities/package.md',
+      body: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4,
+      diskVersion: 4,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD,
+      currentVersion: 5,
+    },
+  ] as const;
+  try {
+    const sidecar: Record<string, number> = {};
+    for (const fixture of fixtures) {
+      const fullPath = path.join(workDir, ...fixture.rel.split('/'));
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, fixture.body, 'utf8');
+      sidecar[fixture.rel.replace(/^\.lares\//, '')] = fixture.diskVersion;
+    }
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify(sidecar, null, 2) + '\n', 'utf8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    for (const fixture of fixtures) {
+      const fullPath = path.join(workDir, ...fixture.rel.split('/'));
+      assert.equal(fs.readFileSync(fullPath, 'utf8'), fixture.live);
+      assert.equal(readSidecar(workDir)[fixture.rel.replace(/^\.lares\//, '')], fixture.currentVersion);
+      assert.equal(fs.readdirSync(path.dirname(fullPath)).filter((name) =>
+        name.startsWith(path.basename(fullPath) + '.bak.')).length, 0,
+        `${fixture.rel} must upgrade without a backup`);
+    }
   } finally {
     cleanup();
     rmrf(workDir);
@@ -4580,17 +4656,22 @@ test('WP-2-MIG. pristine historical work-packages and package bodies silently up
     {
       name: 'package-v1', rel: 'references/activities/package.md',
       body: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1, diskVersion: 1,
-      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 4,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 5,
     },
     {
       name: 'package-v2', rel: 'references/activities/package.md',
       body: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2, diskVersion: 2,
-      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 4,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 5,
     },
     {
       name: 'package-v3', rel: 'references/activities/package.md',
       body: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3, diskVersion: 3,
-      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 4,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 5,
+    },
+    {
+      name: 'package-v4', rel: 'references/activities/package.md',
+      body: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4, diskVersion: 4,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, currentVersion: 5,
     },
   ] as const;
 

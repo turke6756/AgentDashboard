@@ -5697,7 +5697,7 @@ export const SAVE_CARD_COMMIT_COORDINATOR_ENABLED = true; // enabled after the S
 // ══════════════════════════════════════════════════════════════════════════
 // WP-2 — workspace-shared proposal authoring skill. This is a new managed
 // scaffold file (v1), so it intentionally has no previousHashes entry.
-export const WRITE_PROPOSAL_SKILL_MD = `---
+export const WRITE_PROPOSAL_SKILL_MD_V2 = `---
 name: write-proposal
 description: >-
   Author a substantial, new, self-contained idea that awaits human review.
@@ -5818,6 +5818,27 @@ holds.
 Tell the human the proposal exists and where it is; the lifecycle continues only
 from the Plans pane.
 `;
+
+const WRITE_PROPOSAL_CONCEPTUAL_MODEL_ANCHOR = '## 5. Write with zero further ceremony';
+const WRITE_PROPOSAL_CONCEPTUAL_MODEL_SECTION = `## 5. Explain the conceptual model
+
+After the compact plain-language lead, the same proposal Markdown must include a
+section titled exactly \`## Conceptual model\`. Name the important moving parts and
+explain how they relate: what each part is responsible for, what passes between
+parts, and which parts depend on or govern which others. Keep this explanation in
+plain language even when the technical detail that follows uses precise implementation
+terms.
+
+This section must add useful structure beyond the \`## In plain terms\` summary; do
+not merely repeat its six bullets. It is not a second document or a separate human
+version. Maintain one proposal whose plain-language and technical registers describe
+the same model, and reconcile both whenever either changes.
+
+## 6. Write with zero further ceremony`;
+export const WRITE_PROPOSAL_SKILL_MD = WRITE_PROPOSAL_SKILL_MD_V2.replace(
+  WRITE_PROPOSAL_CONCEPTUAL_MODEL_ANCHOR,
+  WRITE_PROPOSAL_CONCEPTUAL_MODEL_SECTION,
+);
 
 // WP-3 — workspace-shared planning-surface reader. This is a new managed
 // scaffold file (v1), so it intentionally has no previousHashes entry.
@@ -6490,13 +6511,26 @@ const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_RULE = `- Add an \`Entry\` s
   its entering test, and its mutation reference. For a package that adds or changes no independently
   reachable behavior, write \`Entry: none — <reviewed one-line rationale>\`; a refactor that changes
   an existing seam is behavior, not \`none\`.`;
-export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD = PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3
+export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4 = PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3
   .split('PLAN-WORK-PACKAGES:v1').join('PLAN-WORK-PACKAGES:v2')
   .replace('Verify · Outcome', 'Verify · Entry · Outcome')
   .replace(
     PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_ANCHOR,
     `${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_RULE}\n${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_ANCHOR}`,
   );
+
+const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V5_GLOSS_ANCHOR =
+  '- Write exactly one `kind: work-packages` supplement.';
+const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V5_GLOSS_RULE = `- In that one supplement, every prose package must contain exactly one plain-language
+  gloss on one physical line, formatted exactly as \`**Gloss:** <plain-language summary>\`.
+  Put it inside the package section, follow it with a blank line, and keep the complete
+  line at most 200 characters. Do not put Gloss in the additive machine block. The
+  gloss and technical package contract are two registers of the same Markdown, never
+  separate documents; reconcile them whenever either changes.`;
+export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD = PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4.replace(
+  PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V5_GLOSS_ANCHOR,
+  `${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V5_GLOSS_RULE}\n${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V5_GLOSS_ANCHOR}`,
+);
 
 export const PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD = `# Activity playbook — \`complete\`
 

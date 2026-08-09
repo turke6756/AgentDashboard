@@ -46,6 +46,7 @@ import {
   FILE_ACTIVITY_RETENTION_SESSIONS,
   LARES_DIR_NAME, LEGACY_LARES_DIR_NAME,
   WRITE_PROPOSAL_SKILL_MD,
+  WRITE_PROPOSAL_SKILL_MD_V2,
   READ_PLANNING_SURFACE_SKILL_MD,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   PROPOSAL_TO_PLAN_SKILL_MD,
@@ -56,6 +57,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_INTEGRATE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3,
+  PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4,
   PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
   PROPOSAL_TO_PLAN_CONTRACT_ARC_MD,
@@ -1359,6 +1361,10 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH = 'b8610cb4bde9c8
 // body lives in the test-only write-proposal-old-body-fixtures.ts module.
 export const WRITE_PROPOSAL_SKILL_MD_V1_HASH = 'e025a7762b1765c2cb402fd851c816d44b57ca589b211266ac32eee2f6236078';
 
+// WP-10 (plan_37cf5261) - frozen hash of the pristine write-proposal v2 body
+// before the conceptual-model section shipped. Older rows remain cumulative.
+export const WRITE_PROPOSAL_SKILL_MD_V2_HASH = '779685b50573f1e41d4046dc666e2938499aa42c76771c37c8126ad57b879e56';
+
 // WP-2 - hashes of the pristine pre-Outcome contract bodies. The byte-exact
 // bodies live in the test-only proposal-to-plan-old-body-fixtures.ts module.
 export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH = '97fd1cf2f4945aeed0a0b3543a71885429ded54c08dd1ffbe79aace4b495b461';
@@ -1368,6 +1374,10 @@ export const PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V1_HASH = '1332922da5b48
 // work-packages contract v2. Older history rows remain cumulative below.
 export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH = '504d1a3f4f7b14b480ff1f19941b8e762c80fa237c80ebe8d3ea9a29b368a32b';
 export const PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH = 'f2588c4d3e52a2d9d16d7b0f0fb376ac11594d02da7607728ef956681504ebd4';
+
+// WP-10 (plan_37cf5261) - frozen hash of the pristine package activity v4
+// before the prose Gloss rule shipped. Older rows remain cumulative.
+export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH = 'f2180e3204ad263fb64fec83d87ea79951ab6cfd6bdf3bbe381ab28f12ca4532';
 
 // WP-3 - frozen hash of the pristine pre-clarification human-overview v1 body.
 // The byte-exact body lives in proposal-to-plan-old-body-fixtures.ts.
@@ -1406,10 +1416,11 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
                       3: PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V3_HASH } },
   { rel: 'references/activities/deliberate.md', content: PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD },
   { rel: 'references/activities/integrate.md', content: PROPOSAL_TO_PLAN_ACTIVITY_INTEGRATE_MD },
-  { rel: 'references/activities/package.md', content: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, version: 4,
+  { rel: 'references/activities/package.md', content: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD, version: 5,
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
-                      3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH } },
+                      3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
+                      4: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH } },
   { rel: 'references/activities/complete.md', content: PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD },
   { rel: 'references/activities/orient.md', content: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD, version: 3,
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
@@ -1454,8 +1465,8 @@ export function writeProposalEntry(rootPrefix: string): Record<string, ScaffoldF
   return {
     [`${rootPrefix}/SKILL.md`]: {
       content: WRITE_PROPOSAL_SKILL_MD,
-      version: 2,
-      previousHashes: { 1: WRITE_PROPOSAL_SKILL_MD_V1_HASH },
+      version: 3,
+      previousHashes: { 1: WRITE_PROPOSAL_SKILL_MD_V1_HASH, 2: WRITE_PROPOSAL_SKILL_MD_V2_HASH },
     },
   };
 }
