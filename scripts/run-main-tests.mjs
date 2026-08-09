@@ -646,6 +646,9 @@ const TESTS = [
   // WP-P3-manifest: plan.json sidecar manifest loader + TS/JS interop.
   'dist/main/main/plans/plan-manifest.test.js',
   'dist/main/main/plans/plan-manifest-interop.test.js',
+  // plan_37cf5261 WP-15: deterministic progressive-ingestion byte ceilings
+  // over isolated fixture plans (the fresh-agent layer remains env-gated).
+  'dist/main/main/plans/progressive-ingestion-acceptance.test.js',
   // Legacy launch binding remains covered until its retired data is fully drained.
   'dist/main/main/supervisor/promotion-launch-binding.test.js',
   // WP-P3-reconcile: pending-promotion startup reconstruction.
