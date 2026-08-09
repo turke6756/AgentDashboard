@@ -5922,7 +5922,7 @@ safe next actions addressed explicitly to the responsible supervisor or the
 human. Do not take those actions.
 `;
 
-export const PROPOSAL_TO_PLAN_SKILL_MD = `---
+export const PROPOSAL_TO_PLAN_SKILL_MD_V4 = `---
 name: proposal-to-plan
 description: >-
   Promotion-entry method for turning the proposal selected by the Plans pane
@@ -6069,6 +6069,24 @@ later hardening.
 When a captured proposal looks worth hardening, the responsible supervisor runs **\`scope\`** next
 (hardening triage + markup). Capture itself makes no such judgment.
 `;
+
+// WP-2 (plan_37cf5261) — add the terminal complete activity without rewriting
+// the frozen v4 carrier. The v4 hash is pinned in the scaffold migration map.
+export const PROPOSAL_TO_PLAN_SKILL_MD = PROPOSAL_TO_PLAN_SKILL_MD_V4
+  .replace(
+    'then scope, promote, deliberate, integrate, package, or\n  orient from the plan folder on disk',
+    'then scope, promote, deliberate, integrate, package, complete, or\n  orient from the plan folder on disk',
+  )
+  .replace('## Pick a mode (six public entries)', '## Pick a mode (seven public entries)')
+  .replace(
+    '| `orient` | **Responsible-supervisor re-entry methods.**',
+    '| `complete` | **Terminal implementation step:** record completion, optionally archive, and refresh `ARC.md`. | `references/activities/complete.md` |\n| `orient` | **Responsible-supervisor re-entry methods.**',
+  )
+  .replace(
+    '**`mark` (inside `scope`) / `integrate` / `package` — the responsible supervisor ONLY.**',
+    '**`mark` (inside `scope`) / `integrate` / `package` / `complete` — the responsible supervisor ONLY.**',
+  )
+  .replace('Choosing and running one of the six modes', 'Choosing and running one of the seven modes');
 
 const PROPOSAL_TO_PLAN_CAPTURE_AUTHOR_ROLE_LINE = '   author_role: supervisor | worker\n';
 const PROPOSAL_TO_PLAN_CAPTURE_AUTHOR_LINE =
@@ -6479,6 +6497,61 @@ export const PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD = PROPOSAL_TO_PLAN_ACTIVITY_PA
     PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_ANCHOR,
     `${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_RULE}\n${PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_ENTRY_ANCHOR}`,
   );
+
+export const PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD = `# Activity playbook — \`complete\`
+
+**Purpose.** Record that implementation of this plan is complete in the folder-portable
+\`plan.json.lifecycle_events\` log, optionally record archival, and refresh \`ARC.md\` freshness.
+
+**Lane. Responsible supervisor only.** As with \`integrate\` and \`package\`, a non-supervisor lane
+is **rejected and instructed** to hand off. The current responsible supervisor is the agent named by
+the **last \`assigned\` event** in \`plan.json.responsibility_events\`.
+
+**Contracts loaded.** \`references/contracts/responsibility.md\` (§Determination),
+\`references/contracts/manifest-lock.md\` (§P3-MANIFEST-LOCK), and
+\`references/contracts/arc.md\` (§R2 freshness).
+
+---
+
+## Invocation
+
+Run this activity as \`complete\`. Add \`--archive\` only when the human asked to close/archive the
+plan as well as report it complete.
+
+## Steps
+
+1. **Inspect and verify responsibility before any mutation.** Run:
+
+   \`node scripts/plan-manifest.mjs inspect --dir <plan-folder>\`
+
+   Read \`current_responsible\` from that output. Its event must be \`assigned\`, and its
+   \`agent_id\` must exactly match the current supervisor's agent id. If either check fails, **stop
+   without writing**, reject this lane, and hand off to that responsible supervisor. Do not infer
+   ownership from folder location, display label, or an earlier event.
+2. **Choose the completion event id once.** Create one stable id in the production form
+   \`ple_<24 lowercase hex>\`; retain and reuse that exact id if the command is retried. Never mint a
+   new id merely because the first command's result was uncertain.
+3. **Append \`completed\` through the helper-only lock/CAS path:**
+
+   \`node scripts/plan-manifest.mjs manifest --dir <plan-folder> --append-lifecycle --event-id <ple_id> --kind completed --agent-id <current-supervisor-id> --display "<label>" --source manual-skill [--note "<one-line note>"]\`
+
+   The helper accepts only \`promoted|implementation_started|completed|archived|reopened\`, is
+   append-only, and treats an existing \`event_id\` as a byte-preserving no-op. Lock exhaustion is a
+   blocking result; there is no direct-edit fallback.
+4. **Optional \`--archive\`.** When this activity was invoked with \`--archive\`, choose a second,
+   distinct stable \`ple_<24 lowercase hex>\` id and append \`archived\` with the same helper command,
+   same verified \`agent-id\`, and \`--kind archived\`. Reuse that archive id on retry. Without
+   \`--archive\`, do not append an archive event.
+5. **Refresh ARC freshness after the lifecycle append(s):**
+
+   \`node scripts/plan-manifest.mjs refresh-arc --dir <plan-folder>\`
+
+   This refreshes only \`ARC-META\`; update any completion prose in \`ARC.md\` as a native
+   responsible-supervisor edit before the refresh.
+6. Re-run \`inspect\` and report the recorded event id(s), whether each append was \`appended\` or
+   \`no-op\`, and the refreshed ARC timestamp. Never claim completion when an append or refresh
+   failed.
+`;
 
 export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD = `# Activity playbook — \`orient\`
 
@@ -7174,7 +7247,7 @@ export function derivePlanIdentityFromMarkdown(markdown, overrides = {}) {
 }
 `;
 
-export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = `#!/usr/bin/env node
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4 = `#!/usr/bin/env node
 // plan-manifest.mjs — the proposal-to-plan skill's ONLY write path for plan.json,
 // plus the atomic complete-folder scaffold and a read-only inspect dump.
 //
@@ -7689,4 +7762,64 @@ switch (cmd) {
 lock tuning (manifest/scaffold): --max-wait-ms N --poll-ms N   |   exit codes: 2 usage · 3 collision · 4 lock-exhaustion\`);
 }
 `;
+
+const PROPOSAL_TO_PLAN_APPEND_LIFECYCLE_BLOCK = `
+  if (args['append-lifecycle']) {
+    if (!fs.existsSync(manifestPath)) die(2, \`manifest: no plan.json at \${manifestPath}\`);
+    const kind = args.kind || die(2, 'manifest --append-lifecycle: --kind required');
+    const allowedKinds = new Set(['promoted', 'implementation_started', 'completed', 'archived', 'reopened']);
+    if (!allowedKinds.has(kind)) {
+      die(2, 'manifest --append-lifecycle: --kind must be promoted|implementation_started|completed|archived|reopened');
+    }
+    const eventId = args['event-id'] || die(2, 'manifest --append-lifecycle: --event-id required');
+    if (!/^ple_[0-9a-f]{24}$/.test(eventId)) {
+      die(2, 'manifest --append-lifecycle: --event-id must be ple_<24 lowercase hex>');
+    }
+    const at = args.at === undefined ? nowMs() : Number(args.at);
+    if (!Number.isFinite(at) || at < 0) die(2, 'manifest --append-lifecycle: --at must be a non-negative number');
+    if (args.note && /[\\r\\n]/.test(args.note)) die(2, 'manifest --append-lifecycle: --note must be one line');
+    const source = args.source || 'manual-skill';
+    let lifecycleCount = 0;
+    try {
+      const next = withManifestCAS(dir, (obj) => {
+        if (!obj) throw new Error('plan.json is empty/unreadable');
+        const events = Array.isArray(obj.lifecycle_events) ? obj.lifecycle_events : [];
+        lifecycleCount = events.length;
+        if (events.some((event) => event && event.event_id === eventId)) return null;
+        const event = { event_id: eventId, kind, at, source };
+        if (args['agent-id']) event.agent_id = args['agent-id'];
+        if (args.display) event.display = args.display;
+        if (args.note) event.note = args.note;
+        obj.lifecycle_events = [...events, event];
+        obj.updated_at = nowMs();
+        lifecycleCount = obj.lifecycle_events.length;
+        return obj;
+      }, args);
+      out({ action: next === null ? 'no-op' : 'appended', event_id: eventId, lifecycle_events: lifecycleCount });
+    } catch (e) {
+      if (e instanceof LockExhaustion) die(4, 'manifest: LOCK EXHAUSTION — mutation BLOCKED, no direct edit performed.', e.message);
+      throw e;
+    }
+    return;
+  }
+`;
+
+// WP-2 (plan_37cf5261) — frozen-v4 derive keeps the migration hash auditable.
+// The helper's existing withManifestCAS already owns the shared sidecar-lock,
+// heartbeat, stale-reclaim, hash guard, atomic write, and bounded retry protocol.
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4
+  .replace(
+    "      const next = mutate(obj);\n      const serialized = JSON.stringify(next, null, 2) + '\\n';",
+    "      const next = mutate(obj);\n      if (next === null) return null;                    // idempotent append -> byte-preserving no-op\n      const serialized = JSON.stringify(next, null, 2) + '\\n';",
+  )
+  .replace(
+    "  die(2, 'manifest: specify --append-responsibility (the only supported mutation in P0).');",
+    PROPOSAL_TO_PLAN_APPEND_LIFECYCLE_BLOCK +
+      "  die(2, 'manifest: specify --append-responsibility or --append-lifecycle.');",
+  )
+  .replace(
+    '  manifest    --dir <plan-folder> --append-responsibility --agent-id <id> [--display x] [--source manual-skill|promotion-service]',
+    '  manifest    --dir <plan-folder> --append-responsibility --agent-id <id> [--display x] [--source manual-skill|promotion-service]\\n' +
+      '              OR --append-lifecycle --event-id <ple_24hex> --kind <kind> [--agent-id id] [--display x] [--source x] [--note x] [--at ms]',
+  );
 

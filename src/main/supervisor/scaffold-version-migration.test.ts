@@ -82,12 +82,14 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
   PROPOSAL_TO_PLAN_SKILL_MD_V2_HASH,
   PROPOSAL_TO_PLAN_SKILL_MD_V3_HASH,
+  PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V3_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH,
   normalizeManagedKey,
   sha256Hex,
@@ -122,11 +124,13 @@ import {
   WORKER_CODEX_AGENTS_MD_V3,
   WORKER_CODEX_AGENTS_MD_V4,
   PROPOSAL_TO_PLAN_SKILL_MD,
+  PROPOSAL_TO_PLAN_SKILL_MD_V4,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V2,
   PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3,
+  PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
   PROPOSAL_TO_PLAN_CONTRACT_ARC_MD,
   PROPOSAL_TO_PLAN_CONTRACT_HUMAN_OVERVIEW_MD,
@@ -136,6 +140,7 @@ import {
   PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
   SUPERVISOR_CONTEXT_ANALYTICS_SKILL,
   WORKER_CLAUDE_MD,
@@ -3657,6 +3662,7 @@ const PROPOSAL_TO_PLAN_REL_FILES = [
   'references/activities/deliberate.md',
   'references/activities/integrate.md',
   'references/activities/package.md',
+  'references/activities/complete.md',
   'references/activities/orient.md',
   'references/contracts/arc.md',
   'references/contracts/folder-schema.md',
@@ -3950,10 +3956,11 @@ test('WP-P0C-TREE-SUP. fresh supervisor scaffold writes the whole proposal-to-pl
 // Every entry is cumulative. WP-4 advances the dispatcher, orient, and responsibility
 // contract and permanently retains capture.md as a v4 retirement entry.
 const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; previousHashes: Record<number, string> }>([
-  ['SKILL.md', { version: 4, previousHashes: {
+  ['SKILL.md', { version: 5, previousHashes: {
     1: PROPOSAL_TO_PLAN_SKILL_MD_V1_HASH,
     2: PROPOSAL_TO_PLAN_SKILL_MD_V2_HASH,
     3: PROPOSAL_TO_PLAN_SKILL_MD_V3_HASH,
+    4: PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH,
   } }],
   ['references/activities/capture.md', { version: 4, previousHashes: {
     1: PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V1_HASH,
@@ -3985,10 +3992,11 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     2: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH,
   } }],
   ['references/contracts/manifest-lock.md', { version: 2, previousHashes: { 1: PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH } }],
-  ['scripts/plan-manifest.mjs', { version: 4, previousHashes: {
+  ['scripts/plan-manifest.mjs', { version: 5, previousHashes: {
     1: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
     2: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
     3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
+    4: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
   } }],
 ]);
 
@@ -4023,6 +4031,93 @@ test('WP-P0C-TREE-HELPER. proposalToPlanEntries expands the full tree under a ro
       3: PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V3_HASH,
     },
   }, 'capture.md must remain in the managed tree as a cumulative v4 retirement entry');
+});
+
+test('REACHABILITY:wp2-scaffold-complete existing workspaces receive complete.md and the idempotent append-lifecycle helper', () => {
+  assert.equal(sha256Hex(PROPOSAL_TO_PLAN_SKILL_MD_V4), PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH,
+    'frozen dispatcher v4 must match previousHashes[4]');
+  assert.equal(sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
+    'frozen plan-manifest.mjs v4 must match previousHashes[4]');
+  assert.notEqual(sha256Hex(PROPOSAL_TO_PLAN_SKILL_MD), PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH);
+  assert.notEqual(sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH);
+  assert.match(PROPOSAL_TO_PLAN_SKILL_MD, /\| `complete` \|/);
+  assert.match(PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD, /last `assigned` event/);
+  assert.match(PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD, /--archive/);
+  assert.match(PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD, /plan-manifest\.mjs refresh-arc/);
+
+  const workDir = mktmp('wp2-scaffold-complete');
+  const { supervisor, cleanup } = makeSupervisor();
+  const rootRel = '.lares/workers/codex/.agents/skills/proposal-to-plan';
+  const skillRel = `${rootRel}/SKILL.md`;
+  const scriptRel = `${rootRel}/scripts/plan-manifest.mjs`;
+  const completeRel = `${rootRel}/references/activities/complete.md`;
+  try {
+    for (const [rel, body] of [
+      [skillRel, PROPOSAL_TO_PLAN_SKILL_MD_V4],
+      [scriptRel, PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4],
+    ] as const) {
+      const full = path.join(workDir, ...rel.split('/'));
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, body, 'utf8');
+    }
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
+      [skillRel.slice('.lares/'.length)]: 4,
+      [scriptRel.slice('.lares/'.length)]: 4,
+    }, null, 2) + '\n', 'utf8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    const deployedSkill = path.join(workDir, ...skillRel.split('/'));
+    const deployedScript = path.join(workDir, ...scriptRel.split('/'));
+    const deployedComplete = path.join(workDir, ...completeRel.split('/'));
+    assert.equal(fs.readFileSync(deployedSkill, 'utf8'), PROPOSAL_TO_PLAN_SKILL_MD);
+    assert.equal(fs.readFileSync(deployedScript, 'utf8'), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS);
+    assert.equal(fs.readFileSync(deployedComplete, 'utf8'), PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD);
+    assert.equal(fs.readdirSync(path.dirname(deployedSkill)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
+    assert.equal(fs.readdirSync(path.dirname(deployedScript)).filter((name) => name.startsWith('plan-manifest.mjs.bak.')).length, 0);
+    const migrated = readSidecar(workDir);
+    assert.equal(migrated[skillRel.slice('.lares/'.length)], 5);
+    assert.equal(migrated[scriptRel.slice('.lares/'.length)], 5);
+    assert.equal(migrated[completeRel.slice('.lares/'.length)], 1);
+
+    const scratchPlan = path.join(workDir, 'scratch-plan');
+    fs.mkdirSync(scratchPlan, { recursive: true });
+    fs.writeFileSync(path.join(scratchPlan, 'plan.json'), JSON.stringify({
+      schema_version: 1,
+      plan_artifact_id: 'plan_test',
+      responsibility_events: [{
+        event_id: 'rev_owner', event: 'assigned', agent_id: 'supervisor-test',
+        at: 1, source: 'manual-skill',
+      }],
+    }, null, 2) + '\n', 'utf8');
+    const eventId = 'ple_0123456789abcdef01234567';
+    const run = () => spawnSync(process.execPath, [
+      deployedScript, 'manifest', '--dir', scratchPlan, '--append-lifecycle',
+      '--event-id', eventId, '--kind', 'completed', '--agent-id', 'supervisor-test',
+      '--source', 'manual-skill', '--at', '1234',
+    ], { encoding: 'utf8' });
+    const first = run();
+    assert.equal(first.status, 0, `first append must succeed: ${first.stderr}`);
+    assert.equal(JSON.parse(first.stdout).action, 'appended');
+    const afterFirst = fs.readFileSync(path.join(scratchPlan, 'plan.json'), 'utf8');
+    const second = run();
+    assert.equal(second.status, 0, `idempotent append must succeed: ${second.stderr}`);
+    assert.equal(JSON.parse(second.stdout).action, 'no-op');
+    assert.equal(fs.readFileSync(path.join(scratchPlan, 'plan.json'), 'utf8'), afterFirst,
+      'same event_id must be a byte-preserving no-op');
+    const manifest = JSON.parse(afterFirst);
+    assert.deepEqual(manifest.lifecycle_events, [{
+      event_id: eventId,
+      kind: 'completed',
+      at: 1234,
+      source: 'manual-skill',
+      agent_id: 'supervisor-test',
+    }]);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
 });
 
 test('WP-1-PRECONDITION. frozen write-proposal v1 hashes to its literal and differs from the live v2 body', () => {
@@ -4604,7 +4699,7 @@ test('WP-4-MIG. pristine bodies upgrade silently and pristine or edited capture.
     assert.equal(fs.readFileSync(path.join(workDir, ...codexRoot.split('/'), 'references/activities/orient.md'), 'utf8'), PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD);
     assert.equal(fs.readFileSync(path.join(workDir, ...codexRoot.split('/'), 'references/contracts/responsibility.md'), 'utf8'), PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD);
     const migratedSidecar = readSidecar(workDir);
-    assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/SKILL.md'], 4);
+    assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/SKILL.md'], 5);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/activities/capture.md'], 4);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/activities/orient.md'], 3);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/contracts/responsibility.md'], 2);

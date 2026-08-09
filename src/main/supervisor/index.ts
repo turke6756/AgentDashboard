@@ -56,6 +56,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_INTEGRATE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3,
+  PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
   PROPOSAL_TO_PLAN_CONTRACT_ARC_MD,
   PROPOSAL_TO_PLAN_CONTRACT_FOLDER_SCHEMA_MD,
@@ -1344,6 +1345,12 @@ export const PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH = '64a1f0a1f880
 // through read-planning-surface. Older entries remain cumulative below.
 export const PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V3_HASH = '0294b56880d8faf9481bd8dae747d1877b0fd6e30569c670d684971b47f453c5';
 
+// WP-2 (plan_37cf5261) — frozen hashes of the pristine dispatcher/helper
+// bodies immediately before complete + append-lifecycle shipped. These extend
+// the existing cumulative maps; older rows remain required for direct upgrades.
+export const PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH = 'f730d69c23663f7c6b41afb2fdd163b82b0634171b7c2456e18c3de21639fefe';
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH = '2bb66afe9089b6031f9bb8f314a05548350dc2ae803640b08be409f6530ce503';
+
 // WP-1 - frozen hash of the pristine write-proposal v1 body. The byte-exact
 // body lives in the test-only write-proposal-old-body-fixtures.ts module.
 export const WRITE_PROPOSAL_SKILL_MD_V1_HASH = 'e025a7762b1765c2cb402fd851c816d44b57ca589b211266ac32eee2f6236078';
@@ -1379,10 +1386,11 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
   rel: string; content: string; executable?: boolean;
   version?: number; previousHashes?: Record<number, string>; removed?: boolean;
 }> = [
-  { rel: 'SKILL.md', content: PROPOSAL_TO_PLAN_SKILL_MD, version: 4,
+  { rel: 'SKILL.md', content: PROPOSAL_TO_PLAN_SKILL_MD, version: 5,
     previousHashes: { 1: PROPOSAL_TO_PLAN_SKILL_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_SKILL_MD_V2_HASH,
-                      3: PROPOSAL_TO_PLAN_SKILL_MD_V3_HASH } },
+                      3: PROPOSAL_TO_PLAN_SKILL_MD_V3_HASH,
+                      4: PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH } },
   { rel: 'references/activities/capture.md', content: '', removed: true, version: 4,
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V2_HASH,
@@ -1398,6 +1406,7 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
                       3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH } },
+  { rel: 'references/activities/complete.md', content: PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD },
   { rel: 'references/activities/orient.md', content: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD, version: 3,
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH } },
@@ -1414,10 +1423,11 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
     previousHashes: { 1: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH } },
   { rel: 'scripts/plan-identity.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS, executable: true },
-  { rel: 'scripts/plan-manifest.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, executable: true, version: 4,
+  { rel: 'scripts/plan-manifest.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, executable: true, version: 5,
     previousHashes: { 1: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
                       2: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
-                      3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH } },
+                      3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
+                      4: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH } },
 ];
 /** Expand the proposal-to-plan tree under a skill-root prefix into scaffold
  *  entries. Called for all four roots (Claude+Codex supervisor + worker). Each
