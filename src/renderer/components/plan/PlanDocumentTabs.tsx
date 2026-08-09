@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type {
   PlanDocumentRef,
   PlanDocumentsModel,
@@ -12,6 +10,7 @@ import type {
 import { PLAN_TAB_KEYS, hasSupervisorPrivilege } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import IntentLifecycleStrip from './IntentLifecycleStrip';
+import PlanOverviewBar from './PlanOverviewBar';
 import ProposalReader from './ProposalReader';
 
 // WP-P4B — the tabbed, folder-native plan **document home**. Consumes the
@@ -417,9 +416,9 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
             when present; "overview pending" on a populated tab that has none;
             an in-place editor for a supervisor (WP-P4C-editor). */}
         {(hasOverview || editing || (activeTab?.populated && !overviewLoading)) && (
-          <div className="shrink-0 border-b border-white/10 bg-surface-1/40 px-6 py-3" data-testid="plan-tab-overview">
+          <div className="shrink-0 border-b border-white/10 bg-surface-1/40" data-testid="plan-tab-overview">
             {editing ? (
-              <div className="max-w-3xl" data-testid="plan-overview-editor">
+              <div className="max-w-3xl px-6 py-3" data-testid="plan-overview-editor">
                 <textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -481,31 +480,17 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
                 </div>
               </div>
             ) : (
-              <div className="flex items-start justify-between gap-3">
-                {hasOverview ? (
-                  <div className="prose-custom min-w-0 max-w-3xl flex-1 text-[13px] text-gray-300" data-testid="plan-tab-overview-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview!.body!}</ReactMarkdown>
-                  </div>
-                ) : (
-                  <div className="flex-1 text-[12px] italic text-gray-500" data-testid="plan-overview-pending">
-                    {diskOverview?.sourceStatus === 'invalid'
-                      ? 'The human overview could not be read. Repair OVERVIEW.md; the last valid summaries remain visible but cannot make the plan ready.'
-                      : diskOverview?.sourceStatus === 'absent'
-                        ? 'No human overview has been written yet. Package this plan or add an overview before Mark Ready.'
-                        : 'This tab has content but no plain-language summary. Add its section before Mark Ready.'}
-                  </div>
-                )}
-                {canEdit && (
-                  <button
-                    type="button"
-                    onClick={startEdit}
-                    data-testid="plan-overview-edit"
-                    className="shrink-0 rounded border border-white/15 px-2 py-0.5 text-[11px] text-gray-400 hover:text-gray-200"
-                  >
-                    {hasOverview ? 'Edit' : 'Add overview'}
-                  </button>
-                )}
-              </div>
+              <PlanOverviewBar
+                key={`${planId}:${activeKey}`}
+                body={hasOverview ? overview!.body : null}
+                pendingMessage={diskOverview?.sourceStatus === 'invalid'
+                  ? 'The human overview could not be read. Repair OVERVIEW.md; the last valid summaries remain visible but cannot make the plan ready.'
+                  : diskOverview?.sourceStatus === 'absent'
+                    ? 'No human overview has been written yet. Package this plan or add an overview before Mark Ready.'
+                    : 'This tab has content but no plain-language summary. Add its section before Mark Ready.'}
+                canEdit={canEdit}
+                onEdit={startEdit}
+              />
             )}
           </div>
         )}
