@@ -106,12 +106,35 @@ export interface ResponsibilityEvent {
   source: 'manual-skill' | 'promotion-service' | string;
 }
 
+export type LifecycleEventKind =
+  | 'promoted'
+  | 'implementation_started'
+  | 'completed'
+  | 'archived'
+  | 'reopened';
+
+export interface LifecycleEvent {
+  event_id: string;
+  kind: LifecycleEventKind;
+  agent_id?: string | null;
+  display?: string;
+  at: number;
+  source: 'manual-skill' | 'promotion-service' | 'renderer-user-action' | string;
+  note?: string;
+}
+
+/** Stable id for a milestone owned by a durable production identity (plan/run id). */
+export function lifecycleEventId(kind: LifecycleEventKind, identity: string): string {
+  return `ple_${crypto.createHash('sha256').update(`${kind}\0${identity}`, 'utf8').digest('hex').slice(0, 24)}`;
+}
+
 export interface PlanManifest {
   schema_version?: number;
   plan_artifact_id?: string;
   plan_sku?: string;
   source_proposal?: { artifact_id?: string; rel_path?: string };
   responsibility_events?: ResponsibilityEvent[];
+  lifecycle_events?: LifecycleEvent[];
   created_at?: number;
   updated_at?: number;
   [k: string]: unknown;
@@ -800,4 +823,90 @@ export async function casAppendResponsibilityEvent(
     return { ...current, responsibility_events: [...events, event] };
   };
   return casMutate(plansHomeRoot, planFolderRelPath, transform, opts);
+}
+
+/**
+ * Append a lifecycle milestone under the same sidecar-lock/CAS protocol as
+ * responsibility events. Re-appending an existing event_id is a byte-preserving
+ * no-op. Existing manifests without lifecycle_events remain valid.
+ */
+export async function casAppendLifecycleEvent(
+  plansHomeRoot: string,
+  planFolderRelPath: string,
+  event: LifecycleEvent,
+  opts: AppendResponsibilityOpts = {},
+): Promise<CasResult> {
+  if (!event || typeof event.event_id !== 'string' || event.event_id.length === 0) {
+    throw new PlanManifestError('invalid-arg', 'lifecycle event requires a non-empty event_id');
+  }
+  const transform: ManifestTransform = (current) => {
+    const events = Array.isArray(current.lifecycle_events)
+      ? current.lifecycle_events
+      : [];
+    if (events.some((existing) => existing && existing.event_id === event.event_id)) {
+      return null;
+    }
+    return { ...current, lifecycle_events: [...events, event] };
+  };
+  return casMutate(plansHomeRoot, planFolderRelPath, transform, opts);
+}
+
+export async function appendPromotedLifecycleEvent(input: {
+  plansHomeRoot: string;
+  planFolderRelPath: string;
+  planArtifactId: string;
+  agentId?: string | null;
+  display?: string;
+  at: number;
+  append?: typeof casAppendLifecycleEvent;
+}): Promise<void> {
+  await (input.append ?? casAppendLifecycleEvent)(input.plansHomeRoot, input.planFolderRelPath, {
+    event_id: lifecycleEventId('promoted', input.planArtifactId),
+    kind: 'promoted',
+    agent_id: input.agentId ?? null,
+    display: input.display,
+    at: input.at,
+    source: 'promotion-service',
+  }, { ownerId: 'promotion-service' });
+}
+
+export async function appendImplementationLifecycleEvents(input: {
+  plansHomeRoot: string;
+  planFolderRelPath: string;
+  runId: string;
+  isReimplementation: boolean;
+  agentId: string;
+  at: number;
+  append?: typeof casAppendLifecycleEvent;
+}): Promise<void> {
+  const append = input.append ?? casAppendLifecycleEvent;
+  const common = {
+    agent_id: input.agentId,
+    display: input.agentId,
+    at: input.at,
+    source: 'renderer-user-action',
+  } satisfies Omit<LifecycleEvent, 'event_id' | 'kind'>;
+  if (input.isReimplementation) {
+    await append(input.plansHomeRoot, input.planFolderRelPath, {
+      ...common,
+      event_id: lifecycleEventId('reopened', input.runId),
+      kind: 'reopened',
+    }, { ownerId: 'renderer-user-action' });
+  }
+  await append(input.plansHomeRoot, input.planFolderRelPath, {
+    ...common,
+    event_id: lifecycleEventId('implementation_started', input.runId),
+    kind: 'implementation_started',
+  }, { ownerId: 'renderer-user-action' });
+}
+
+/** Effective milestone: greatest `at`, with later array position winning ties. */
+export function latestLifecycleEvent(
+  events: readonly LifecycleEvent[] | undefined,
+): LifecycleEvent | null {
+  let latest: LifecycleEvent | null = null;
+  for (const event of events ?? []) {
+    if (!latest || event.at >= latest.at) latest = event;
+  }
+  return latest;
 }

@@ -4,6 +4,7 @@ import type { Workspace } from '../../shared/types';
 import { isPlanArtifactId } from '../../shared/planning-artifact-ids';
 import {
   adoptStructuredPlan,
+  getPlanByWorkspaceArtifactId,
   recordPlanSourceProposalProjectionStatus,
   type StructuredPlanChange,
 } from '../database';
@@ -17,6 +18,9 @@ import {
   reconcilePlanSourceProposal,
   type SourceProposalProjectionResult,
 } from './plan-source-proposal-reconciler';
+import {
+  appendPromotedLifecycleEvent,
+} from './plan-manifest';
 
 export type PlanFolderReconcileChangeKind = 'boot' | 'adopted' | 'changed' | 'manual';
 export type AdoptFailureReason = 'absent' | 'malformed' | 'no-artifact-id' | 'non-contract-artifact-id' | 'conflict';
@@ -110,6 +114,24 @@ export async function adoptPlanFolderRow(
     }
   } catch { /* plan.md absence is tolerated by the structured folder contract */ }
   try {
+    // Promotion is a small cross-store saga: append the portable milestone first,
+    // then mint the DB row in hardening. A retry sees the stable event_id as a no-op.
+    // Existing adopted folders (including legacy manifests with no event array) are
+    // left byte-for-byte alone by ordinary reconciliation.
+    if (!getPlanByWorkspaceArtifactId(workspace.id, manifest.plan_artifact_id)) {
+      const responsibility = Array.isArray(manifest.responsibility_events)
+        ? manifest.responsibility_events.filter((event): event is Record<string, unknown> =>
+          !!event && typeof event === 'object' && !Array.isArray(event)).at(-1)
+        : undefined;
+      await appendPromotedLifecycleEvent({
+        plansHomeRoot: path.join(workspaceStateDir(workspace.path, workspace.pathType), 'plans'),
+        planFolderRelPath: path.basename(resolved.folderAbs),
+        planArtifactId: manifest.plan_artifact_id,
+        agentId: typeof responsibility?.agent_id === 'string' ? responsibility.agent_id : null,
+        display: typeof responsibility?.display === 'string' ? responsibility.display : undefined,
+        at: Number.isSafeInteger(manifest.created_at) ? manifest.created_at as number : Date.now(),
+      });
+    }
     const adopted = adoptStructuredPlan({
       workspaceId: workspace.id,
       artifactId: manifest.plan_artifact_id,

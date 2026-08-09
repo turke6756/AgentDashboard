@@ -33,6 +33,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import * as os from 'os';
+import * as path from 'path';
 import { app } from 'electron';
 
 import type { Plan, PlanTabKey } from '../../shared/types';
@@ -44,6 +45,7 @@ import {
   insertPlanExecutionRunActivating,
   listManagedPlanWorkPackages,
   listPlanWorkPackages,
+  planHasExecutionRuns,
   planHasValidResponsibleSupervisor,
   type PlanBaselineKind,
   type PlanExecutionRun,
@@ -59,6 +61,11 @@ import {
 import { resolveInternalGit } from '../git/git-runtime';
 import { buildPlanDocuments } from './plan-documents';
 import { reconcilePlanFolderProjections } from './plan-folder-reconciler';
+import { workspaceStateDir } from '../workspace-state-dir';
+import {
+  appendImplementationLifecycleEvents,
+  casAppendLifecycleEvent,
+} from './plan-manifest';
 import {
   provisionPlanningActivity,
   type ProvisionPlanningActivityResult,
@@ -129,6 +136,8 @@ export interface ImplementPlanDeps {
   refreshAndGetReadiness?: typeof refreshAndGetPlanReadiness;
   appUserDataPath?: string;
   provisionActivity?: typeof provisionPlanningActivity;
+  hasExecutionRuns?: (planId: string) => boolean;
+  appendLifecycleEvent?: typeof casAppendLifecycleEvent;
 }
 
 export type PlanReadinessFailure =
@@ -331,6 +340,8 @@ export async function implementPlan(
   const insertRun = deps.insertRun ?? insertPlanExecutionRunActivating;
   const newRunId = deps.newRunId ?? uuidv4;
   const now = deps.now ?? Date.now;
+  const hasExecutionRuns = deps.hasExecutionRuns ?? planHasExecutionRuns;
+  const appendLifecycleEvent = deps.appendLifecycleEvent ?? casAppendLifecycleEvent;
 
   const failures: ImplementFailure[] = [];
   let tabsMissingOverview: PlanTabKey[] = [];
@@ -358,6 +369,7 @@ export async function implementPlan(
     failures.push('plan-not-found');
     return fail();
   }
+  const isReimplementation = hasExecutionRuns(plan.id);
 
   // ── baseline probe (repo / bare / unborn / head) ─────────────────────────────
   const ctx = await resolveRepoContext(plan);
@@ -424,6 +436,25 @@ export async function implementPlan(
     if (!activatedRun) {
       failures.push('worktree-provision-failed');
       return fail();
+    }
+    // Structured production rows always carry their plan.md path. Some narrow unit
+    // fixtures intentionally model only the eligibility fields and omit it.
+    if (typeof plan.path === 'string' && plan.path !== '') {
+      const workspace = getWorkspace(plan.workspaceId);
+      const folderRelPath = path.posix.basename(path.posix.dirname(plan.path.replace(/\\/g, '/')));
+      if (!workspace || !folderRelPath) {
+        throw new Error(`implementPlan: cannot resolve plan folder for lifecycle append (${plan.id})`);
+      }
+      const plansHome = path.join(workspaceStateDir(workspace.path, workspace.pathType), 'plans');
+      await appendImplementationLifecycleEvents({
+        plansHomeRoot: plansHome,
+        planFolderRelPath: folderRelPath,
+        runId,
+        isReimplementation,
+        agentId: input.appUserId!,
+        at: now(),
+        append: appendLifecycleEvent,
+      });
     }
     return { ok: true, run: activatedRun, failures: [], tabsMissingOverview: [] };
   }

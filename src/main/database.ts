@@ -7736,6 +7736,11 @@ export function listAllPlanExecutionRunIds(): Set<string> {
   return new Set(rows.map((r: any) => String(r.id)));
 }
 
+/** True when a plan has ever minted an execution run (active or archived). */
+export function planHasExecutionRuns(planId: string): boolean {
+  return queryOne('SELECT 1 AS present FROM plan_execution_runs WHERE plan_id = ? LIMIT 1', [planId]) != null;
+}
+
 // ── Planning-surface WP-P5-archive — plan archive (run closure) primitive ──────
 //
 // The atomic "archive" write that pairs the run-lifecycle closure with the plan-level
