@@ -8,6 +8,7 @@ import type { CommitCoordinatorConsumeResponse, PlanReviewProjection } from '../
 import { useDashboardStore } from '../../stores/dashboard-store';
 import MissionBoard from './MissionBoard';
 import PlanReviewView from './PlanReviewView';
+import PlanPackageChecklist from './PlanPackageChecklist';
 
 /** Right-hand rail for the folder-native plan surface. Its evidence comes from
  * the review/package ledgers; the retired HTML section/activity projection is
@@ -97,9 +98,15 @@ function PlanSurfaceView({
       {commitRefusal && <div role="alert" data-testid="plan-save-refusal">{commitRefusal}</div>}
       {commitOutcome && <CommitOutcome response={commitOutcome} onRepreview={() => setCommitOutcome(null)} />}
       {activePlanId ? (
-        <MissionBoard planId={activePlanId} paneVisible />
+        <PlanPackageChecklist planId={activePlanId} />
       ) : (
         <div className="mission-board__empty" data-testid="mission-board-no-plan">No active plan selected.</div>
+      )}
+      {activePlanId && (
+        <details data-testid="plan-package-operations">
+          <summary>Advanced package operations</summary>
+          <MissionBoard planId={activePlanId} paneVisible />
+        </details>
       )}
       <details data-testid="plan-review-evidence" onToggle={loadReviewEvidence}>
         <summary>Change evidence (diff)</summary>

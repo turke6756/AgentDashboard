@@ -38,7 +38,9 @@ export default function PlanReviewView({
     : 'Unborn repository baseline';
 
   return (
-    <div className="plan-review" data-testid="plan-review-view">
+    <details className="plan-review" data-testid="plan-review-view">
+      <summary>Advanced change and commit evidence</summary>
+      <div className="plan-review__advanced">
       <p className="plan-review__disclaimer" data-testid="plan-review-disclaimer">
         Review evidence only — activity and changed bytes do not imply completion.
       </p>
@@ -92,6 +94,7 @@ export default function PlanReviewView({
           showCommitAction={false}
         />
       </section>
-    </div>
+      </div>
+    </details>
   );
 }
