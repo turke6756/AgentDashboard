@@ -25,16 +25,17 @@ function test(name: string, fn: () => void): void {
 
 test('provider sources the real plans tool defs', () => {
   const defs = makePlansAwareDefsProvider().defsFor('plans');
-  assert.ok(Array.isArray(defs) && defs.length === 3, `expected 3 plans defs, got ${defs?.length}`);
+  assert.ok(Array.isArray(defs) && defs.length === 4, `expected 4 plans defs, got ${defs?.length}`);
   const names = defs!.map((d) => d.name);
   assert.ok(names.includes('focus_plan'), 'focus_plan present');
+  assert.ok(names.includes('read_plan_progress'), 'read_plan_progress present');
 });
 
 test('provider also sources the plans-read subset (GT-A WP-A4.5)', () => {
   const defs = makePlansAwareDefsProvider().defsFor('plans-read');
-  assert.ok(Array.isArray(defs) && defs.length === 1, `expected exactly 1 plans-read def, got ${defs?.length}`);
+  assert.ok(Array.isArray(defs) && defs.length === 2, `expected exactly 2 plans-read defs, got ${defs?.length}`);
   const names = defs!.map((d) => d.name).sort();
-  assert.deepEqual(names, ['record_planning_event']);
+  assert.deepEqual(names, ['read_plan_progress', 'record_planning_event']);
 });
 
 test('reverse map: first-wins routes the shared demand probe to plans-read and focus_plan to plans', () => {
@@ -44,6 +45,7 @@ test('reverse map: first-wins routes the shared demand probe to plans-read and f
   const resolver = buildMcpToolsetReverseMap(makePlansAwareDefsProvider());
   assert.equal(resolver.resolve('mcp__agent-dashboard__focus_plan'), 'plans', 'focus_plan → plans');
   assert.equal(resolver.resolve('mcp__agent-dashboard__record_planning_event'), 'plans-read');
+  assert.equal(resolver.resolve('mcp__agent-dashboard__read_plan_progress'), 'plans-read');
 });
 
 test('non-plans toolsets still resolve through the decorated provider', () => {

@@ -17,10 +17,11 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Tool surface ────────────────────────────────────────────────────────────
 
-test('the plans toolset exposes focus verbs + the demand probe', () => {
+test('the plans toolset exposes progress read, focus verbs, and the demand probe', () => {
   const names = getPlansToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
     'focus_plan',
+    'read_plan_progress',
     'record_planning_event',
     'unfocus_plan',
   ]);
@@ -59,9 +60,10 @@ test('every definition has a description and an object inputSchema with required
 
 // ── WP-A4: plans-read read-only subset (worker lane) ────────────────────────
 
-test('getPlansReadToolDefinitions returns only record_planning_event', () => {
+test('getPlansReadToolDefinitions returns progress read and record_planning_event', () => {
   const names = getPlansReadToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
+    'read_plan_progress',
     'record_planning_event',
   ]);
 });

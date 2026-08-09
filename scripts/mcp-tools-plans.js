@@ -20,7 +20,23 @@
 // `plan_id` is optional in every schema here: supervisors normally pass it
 // explicitly, but an omitted plan_id falls back to AGENT_DASHBOARD_PLAN_ID (the
 // dispatched plan) at handler time; still-falsy yields a clear error.
-const READ_DEFS = [];
+const READ_DEFS = [
+  {
+    name: 'read_plan_progress',
+    description:
+      "Read a plan's bounded live progress projection without opening its files. " +
+      "Use detail 'card' for the Stage-0 identity/badge/owner/activity view, or " +
+      "'packages' for the priority-ordered live package ledger and omission counts.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string', description: 'Plan ID (optional — defaults to AGENT_DASHBOARD_PLAN_ID).' },
+        detail: { type: 'string', enum: ['card', 'packages'] },
+      },
+      required: ['detail'],
+    },
+  },
+];
 // focus_plan / unfocus_plan — supervisor-only subscription verbs (planning-surface
 // P1). A supervisor auto-subscribes on plan-bound launch_agent / run_orchestration,
 // but these let it curate the set explicitly so a
@@ -95,7 +111,7 @@ function getPlansToolDefinitions() {
 }
 
 /** WP-A4 (D-1): the read-only subset advertised to the worker `plans-read`
- *  toolset — the three read tools. record_planning_event is
+ *  toolset. record_planning_event is
  *  included: it is a telemetry ping, not a plan write. */
 function getPlansReadToolDefinitions() {
   return [...READ_DEFS, recordPlanningEventDef];
@@ -117,6 +133,16 @@ function missingPlanIdError() {
 
 async function handlePlansToolCall(name, args, apiRequest) {
   switch (name) {
+    case 'read_plan_progress': {
+      const planId = resolvePlanId(args);
+      if (!planId) return missingPlanIdError();
+      const result = await apiRequest(
+        'GET',
+        `/api/plans/${encodeURIComponent(planId)}/progress?detail=${encodeURIComponent(args.detail)}`,
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     case 'focus_plan': {
       const planId = resolvePlanId(args);
       if (!planId) return missingPlanIdError();
@@ -153,8 +179,8 @@ const PLANS_WRITE_ONLY = new Set(['focus_plan', 'unfocus_plan']);
 
 /** WP-A4 (D-1): dispatcher for the read-only `plans-read` toolset. Supervisor-only
  *  focus controls are never advertised to this toolset; this belt-and-suspenders
- *  check errors if one is somehow invoked. The three read
- *  tools delegate to the shared handlePlansToolCall (incl. the env-default
+ *  check errors if one is somehow invoked. The read tools delegate to the
+ *  shared handlePlansToolCall (incl. the env-default
  *  plan_id scoping). */
 async function handlePlansReadToolCall(name, args, apiRequest) {
   if (PLANS_WRITE_ONLY.has(name)) {

@@ -24,6 +24,7 @@ import {
   planItemInPlan,
   getSupervisorFocus, upsertSupervisorFocus, deleteSupervisorFocus,
   bumpSupervisorFocusAttended, getSupervisorFocusedPlans,
+  listPlanWorkPackagesOrdered,
 } from './database';
 import { readFileContents } from './file-reader';
 import {
@@ -93,6 +94,8 @@ import { buildOverheadSnapshot, scrubPaths } from './context-overhead/overhead-d
 import type { AgentRoleLane, BehaviorEvidenceTier, ContextOptimizerProposalKind, ContextOptimizerResult, AgentKnowledgeGraph, SkillUsageResult, McpToolUsageRollupDTO, WorkspaceScopeMode, PathRole, OverheadModel } from '../shared/types';
 import type { DiffResult, RestoreOutcome, CheckpointPreviewResult, FileHistoryVersion } from './git-checkpoints/checkpoint-service';
 import type { RequestedPlanBinding } from '../shared/commit-candidates';
+import { listPromotedPlanFolders } from './plans/plan-ipc';
+import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import {
   resolveRequestedPlanBinding,
   withResolvedPlanStamp,
@@ -3733,6 +3736,41 @@ export class ApiServer {
         workspaceId: url.searchParams.get('workspaceId') || undefined,
         includeDeleted: url.searchParams.get('includeDeleted') === 'true',
       });
+    }
+
+    // REACHABILITY:wp13-plan-progress
+    // GET /api/plans/:id/progress?detail=card|packages — authenticated by the
+    // listener and scoped ONLY from the validated X-Workspace-Id caller header.
+    const planProgress = path.match(/^\/api\/plans\/([^/]+)\/progress$/);
+    if (method === 'GET' && planProgress) {
+      if (!identity.asserted || !identity.workspaceId) {
+        throw Object.assign(
+          new Error('workspace identity required (send X-Workspace-Id header)'),
+          { statusCode: 400 },
+        );
+      }
+      const detail = url.searchParams.get('detail');
+      if (detail !== 'card' && detail !== 'packages') {
+        throw Object.assign(new Error("detail must be 'card' or 'packages'"), { statusCode: 400 });
+      }
+      const planId = decodeURIComponent(planProgress[1]);
+      const plan = getPlan(planId);
+      if (!plan || plan.deletedAt !== null) {
+        throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
+      }
+      if (plan.workspaceId !== identity.workspaceId) {
+        throw Object.assign(new Error('Plan does not belong to the caller workspace'), { statusCode: 403 });
+      }
+      const workspace = getWorkspace(identity.workspaceId);
+      if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
+      const packages = listPlanWorkPackagesOrdered(planId)
+        .filter((pkg) => pkg.workspaceId === identity.workspaceId && pkg.planId === planId);
+      const card = listPromotedPlanFolders(
+        identity.workspaceId,
+        workspace.path,
+        workspace.pathType,
+      ).plans.find((candidate) => candidate.planId === planId) ?? null;
+      return buildPlanProgressProjection({ detail, plan, card, packages });
     }
 
     // GET /api/plans/:id
