@@ -5840,9 +5840,8 @@ export const WRITE_PROPOSAL_SKILL_MD = WRITE_PROPOSAL_SKILL_MD_V2.replace(
   WRITE_PROPOSAL_CONCEPTUAL_MODEL_SECTION,
 );
 
-// WP-3 — workspace-shared planning-surface reader. This is a new managed
-// scaffold file (v1), so it intentionally has no previousHashes entry.
-export const READ_PLANNING_SURFACE_SKILL_MD = `---
+// WP-14 — frozen pristine v1 workspace-shared planning-surface reader.
+export const READ_PLANNING_SURFACE_SKILL_MD_V1 = `---
 name: read-planning-surface
 description: >-
   Read and interpret the whole planning surface without changing it. Report
@@ -5942,6 +5941,119 @@ per-intent lifecycle state, observed responsibility, and ambiguities. End with
 safe next actions addressed explicitly to the responsible supervisor or the
 human. Do not take those actions.
 `;
+
+const READ_PLANNING_SURFACE_V2_DESCRIPTION = `description: >-
+  Read and interpret the planning surface progressively without changing it.
+  Start with the bounded card and summaries, descend to one anchored slice only
+  when needed, and reserve whole-disk reading for explicit exhaustive audits.`;
+const READ_PLANNING_SURFACE_V2_INTRO = `# Read the planning surface progressively
+
+This skill produces a bounded, evidence-based state report and a list of **safe
+next actions**. Progressive staged reading is the default. Start at the cheapest
+stage that can answer the question, stop as soon as it does, and descend only to
+the next named artifact when the current stage's boundary requires it. It is the
+read-only half of planning orientation and is safe for every lane.`;
+const READ_PLANNING_SURFACE_V2_LADDER = `## Canonical progressive read ladder
+
+This section is the single source of truth for stages 0–3. Callers, including
+\`proposal-to-plan\`'s \`orient\` activity, cite this ladder rather than restating it.
+
+### Stage 0 — card projection (default first contact)
+
+Call \`read_plan_progress({planId, detail:"card"})\` once and perform no supervisor
+filesystem reads. The serialized card is at most **2 KiB UTF-8**. On a healthy
+read it guarantees identity, stage/badge, explicit completion, owner, live
+activity tier, and live rollup counts. It does not provide rationale,
+deliberation content, per-package detail, or blocked package names; descend to
+Stage 1 only when one of those boundaries matters.
+
+### Stage 1 — bounded decision, manifest, and live-package summaries
+
+Read exactly these three sources: \`ARC.md\` (at most **8 KiB UTF-8**),
+\`plan-manifest.mjs inspect --summary\` (at most **2 KiB UTF-8**), and
+\`read_plan_progress({planId, detail:"packages"})\` (at most **4 KiB UTF-8**).
+The healthy total is therefore at most **14 KiB UTF-8**. It guarantees the
+current decision spine, bounded current-intent index with fold status and
+anchor pointers, live package rollup and bounded priority-ordered
+blocked/executing package projection with explicit omission counts, ownership,
+and freshness. ARC package rows are only an informational/offline snapshot;
+live package state comes from \`read_plan_progress\`.
+
+Stage 1 does not provide the argument inside a deliberation, complete section
+text, or per-package Files/Outcome. Follow one named anchor into Stage 2 only
+when that detail is required.
+
+### Stage 2 — one anchor-addressed section slice
+
+Read exactly one section slice from \`plan.md\` or one
+\`deliberations/<file>\`, addressed by the explicit anchor supplied at Stage 1.
+The slice ceiling is **8 KiB UTF-8**. A healthy read guarantees the complete
+reasoning, options, and decision for that one concern only when the whole
+section fits. A second concern requires a second separately budgeted slice.
+When the section exceeds the ceiling, return the bounded slice with
+\`truncated:true\` and \`continuation_required:true\`; disclose that the healthy
+reasoning guarantee was not met.
+
+### Stage 3 — full markdown, explicit exhaustive-audit mode only
+
+Read full \`plan.md\` and all \`deliberations/*\` only when the caller explicitly
+requests **exhaustive-audit mode** or must edit the relevant sources. Stage 3 is
+unbounded. A whole-disk or whole-tree read must never be the default path and
+must never be an automatic fallback merely to understand the plan.
+
+## Degraded reads
+
+Every degraded path follows the same contract: **disclose the defect; preserve
+every still-supported answer; mark unsupported fields \`unknown\` or
+\`unverified\`; read only the minimum named source; never auto-escalate to Stage
+3.** Never silently read everything to compensate.
+
+- If the card tool is unavailable, use \`inspect --summary\` plus ARC only for
+  identity/stage and mark live activity \`unknown\`: “no card; activity unknown”.
+- If \`ARC.md\` is absent, use \`inspect --summary\`, only the
+  \`## Deliberation writebacks\` headings for the index, and the live package
+  projection: “ARC absent; index from headings”.
+- If ARC is stale or \`ledger_updated_at\` is unverifiable, keep its stable
+  decision spine, mark the ARC roster \`unverified\`, and use the live package
+  projection: “ARC stale/roster unverifiable”.
+- If \`plan.json\` is unparseable or \`inspect --summary\` fails, mark lifecycle
+  fields \`unknown\`; read only \`plan.md\` frontmatter if identity is needed:
+  “plan.json unreadable; lifecycle unknown”.
+- If a deliberation reference is broken or mismatched, mark that intent
+  \`invalid, not folded\` and do not scan the tree to compensate.
+- If a Stage-2 section exceeds 8 KiB, return the bounded slice marked
+  \`truncated\` / \`continuation_required\` and disclose “section truncated;
+  continuation required”.`;
+const READ_PLANNING_SURFACE_V2_EVIDENCE_BOUNDARIES = `## Evidence boundaries
+
+The bounded card and live package projections are first-class evidence at
+Stages 0 and 1. Keep database-witnessed state, disk evidence, and self-claimed
+frontmatter authorship distinct. Gallery grouping, collapse behavior, and
+write-side readiness gates remain outside this read-only skill. A bare proposal
+with a valid \`artifact_id\` remains terminal-valid and does not imply that
+hardening should begin.`;
+
+export const READ_PLANNING_SURFACE_SKILL_MD = READ_PLANNING_SURFACE_SKILL_MD_V1
+  .replace(
+    `description: >-\n  Read and interpret the whole planning surface without changing it. Report\n  flat proposals, plan folders, lifecycle state, observed responsibility, and\n  safe next actions from disk-derived evidence only.`,
+    READ_PLANNING_SURFACE_V2_DESCRIPTION,
+  )
+  .replace(
+    `# Read the planning surface\n\nThis skill produces a **whole-surface state report** and a list of **safe next\nactions**. It is the read-only half of planning orientation and is safe for every\nlane.`,
+    READ_PLANNING_SURFACE_V2_INTRO,
+  )
+  .replace(
+    /## Read the whole disk surface[\s\S]*?(?=\n## Lifecycle reporting)/,
+    READ_PLANNING_SURFACE_V2_LADDER,
+  )
+  .replace(
+    /## Deferred surfaces[\s\S]*?(?=\n## Output)/,
+    READ_PLANNING_SURFACE_V2_EVIDENCE_BOUNDARIES,
+  )
+  .replace(
+    `Return one concise state report covering proposals, plan folders, joins/gaps,\nper-intent lifecycle state, observed responsibility, and ambiguities. End with\nsafe next actions addressed explicitly to the responsible supervisor or the\nhuman. Do not take those actions.`,
+    `Return one concise state report limited to the requested scope and the evidence\nthe selected stage supports. Name the highest stage used, disclose every degraded\nread and omission, and mark unsupported claims unknown or unverified. In explicit\nexhaustive-audit mode, additionally cover proposals, plan folders, joins/gaps,\nper-intent lifecycle state, observed responsibility, and ambiguities. End with safe\nnext actions addressed explicitly to the responsible supervisor or the human. Do\nnot take those actions.`,
+  );
 
 export const PROPOSAL_TO_PLAN_SKILL_MD_V4 = `---
 name: proposal-to-plan
@@ -6587,7 +6699,7 @@ plan as well as report it complete.
    failed.
 `;
 
-export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD = `# Activity playbook — \`orient\`
+export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3 = `# Activity playbook — \`orient\`
 
 **Purpose.** The responsible-supervisor **re-entry method library**. It retains the two steps that
 gate or perform plan-folder writes: determine responsibility, then refresh \`ARC.md\`/\`ARC-META\`
@@ -6627,6 +6739,16 @@ responsible supervisor**.
    derivation and report. That read-only skill owns the decision table and reporting rules; it does
    not perform this playbook's responsibility-gated refresh.
 `;
+
+export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD = PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3
+  .replace(
+    `1. **Inspect the folder.** Run \`scripts/plan-manifest.mjs inspect\` (read-only \`plan.json\` + folder\n   listing) and read \`ARC.md\`.`,
+    `1. **Re-enter at Stage 1.** Follow the canonical progressive read ladder in the\n   \`read-planning-surface\` skill. Read only bounded \`ARC.md\`,\n   \`scripts/plan-manifest.mjs inspect --summary\`, and\n   \`read_plan_progress({planId, detail:"packages"})\`; do not begin with a whole-folder listing or\n   full Markdown read.`,
+  )
+  .replace(
+    `4. **Read the planning surface.** Use \`read-planning-surface\` for the moved cross-surface lifecycle\n   derivation and report. That read-only skill owns the decision table and reporting rules; it does\n   not perform this playbook's responsibility-gated refresh.`,
+    `4. **Report from the bounded re-entry evidence.** Continue through the canonical\n   \`read-planning-surface\` ladder only as the question requires: one anchored Stage-2 slice when\n   needed, or Stage 3 only for an explicitly requested exhaustive audit or source edit. This step\n   must not trigger an unconditional whole-surface read. The read-only skill owns the decision table\n   and reporting rules; it does not perform this playbook's responsibility-gated refresh.`,
+  );
 
 export const ARC_BOUNDS_CONTRACT = {
   artifactMaxBytes: 8 * 1024,

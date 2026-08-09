@@ -1341,6 +1341,12 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH = '54261f6c4a0c88
 export const PROPOSAL_TO_PLAN_SKILL_MD_V3_HASH = '68bd246eb7907c247b1442fb80df5d44acec0a217decd8b782ac58bb496a68fc';
 export const PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V3_HASH = '34917448550d78f430bb3909f807398224003f5c08477b121a937093d39e767a';
 export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH = '9d5263fb61bae51fe985fc95b9f121c7f72b0386059595efe6ca383a69a09c20';
+
+// WP-14 (plan_37cf5261) — frozen hashes of the pristine read-skill v1 and
+// orient v3 bodies before progressive staged reading shipped. Orient history
+// remains cumulative; the reader's first prior row is version 1.
+export const READ_PLANNING_SURFACE_SKILL_MD_V1_HASH = '2e99819b30450ec4429743bd61a479fee8192aca8f5b7a837b4736567bea0a33';
+export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH = '1a8c41724e5bff02964ca58afe4dbc3d05182aad969733e2d85cc137203b3ad4';
 export const PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH = '64a1f0a1f880fec8c56f702e8560eacd82b1d447278376ce01598368eb73bbcf';
 
 // WP-3 — the pristine v3 promote playbook before its EEXIST read was routed
@@ -1422,9 +1428,10 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
                       3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
                       4: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH } },
   { rel: 'references/activities/complete.md', content: PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD },
-  { rel: 'references/activities/orient.md', content: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD, version: 3,
+  { rel: 'references/activities/orient.md', content: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD, version: 4,
     previousHashes: { 1: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
-                      2: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH } },
+                      2: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH,
+                      3: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH } },
   { rel: 'references/contracts/arc.md', content: PROPOSAL_TO_PLAN_CONTRACT_ARC_MD },
   { rel: 'references/contracts/folder-schema.md', content: PROPOSAL_TO_PLAN_CONTRACT_FOLDER_SCHEMA_MD },
   { rel: 'references/contracts/human-overview.md', content: PROPOSAL_TO_PLAN_CONTRACT_HUMAN_OVERVIEW_MD, version: 2,
@@ -1471,11 +1478,14 @@ export function writeProposalEntry(rootPrefix: string): Record<string, ScaffoldF
   };
 }
 
-/** The planning-surface reader is shared by every native lane. It starts at
- * version 1 because WP-3 is its first managed workspace deployment. */
+/** The planning-surface reader is shared by every native lane. */
 export function readPlanningSurfaceEntry(rootPrefix: string): Record<string, ScaffoldFile> {
   return {
-    [`${rootPrefix}/SKILL.md`]: { content: READ_PLANNING_SURFACE_SKILL_MD, version: 1 },
+    [`${rootPrefix}/SKILL.md`]: {
+      content: READ_PLANNING_SURFACE_SKILL_MD,
+      version: 2,
+      previousHashes: { 1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH },
+    },
   };
 }
 

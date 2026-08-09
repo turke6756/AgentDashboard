@@ -66,6 +66,7 @@ import {
   writeProposalEntry,
   readPlanningSurfaceEntry,
   proveProductionEntryPointEntry,
+  READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
   WRITE_PROPOSAL_SKILL_MD_V1_HASH,
   WRITE_PROPOSAL_SKILL_MD_V2_HASH,
   PROPOSAL_TO_PLAN_SKILL_MD_V1_HASH,
@@ -87,6 +88,7 @@ import {
   PROPOSAL_TO_PLAN_SKILL_MD_V4_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V3_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH,
+  PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
@@ -123,6 +125,7 @@ import {
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2,
   READ_PLANNING_SURFACE_SKILL_MD,
+  READ_PLANNING_SURFACE_SKILL_MD_V1,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   WORKER_CODEX_AGENTS_MD_V2,
   WORKER_CODEX_AGENTS_MD_V3,
@@ -137,6 +140,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4,
   PROPOSAL_TO_PLAN_ACTIVITY_COMPLETE_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
+  PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3,
   PROPOSAL_TO_PLAN_CONTRACT_ARC_MD,
   PROPOSAL_TO_PLAN_CONTRACT_HUMAN_OVERVIEW_MD,
   PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD,
@@ -3984,9 +3988,10 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     3: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
     4: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V4_HASH,
   } }],
-  ['references/activities/orient.md', { version: 3, previousHashes: {
+  ['references/activities/orient.md', { version: 4, previousHashes: {
     1: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH,
     2: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH,
+    3: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH,
   } }],
   ['references/contracts/responsibility.md', { version: 2, previousHashes: {
     1: PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH,
@@ -4459,13 +4464,12 @@ test('WP-10-MIG. pristine write-proposal v2 and package.md v4 silently upgrade t
   }
 });
 
-test('WP-3-CONTENT. read-planning-surface is whole-surface, read-only, epistemically bounded reporting', () => {
+test('WP-3-CONTENT. read-planning-surface remains read-only and epistemically bounded', () => {
   for (const phrase of [
     '**never writes**',
     'never launches agents',
     'never appends `assigned`',
     'never refreshes `ARC-META`',
-    'promoted-but-bare-card gap',
     'terminal-valid',
     '`ran: unavailable`',
     'whether to look closer',
@@ -4473,23 +4477,19 @@ test('WP-3-CONTENT. read-planning-surface is whole-surface, read-only, epistemic
     '`supporting/` is subordinate',
     'responsibility.md` §`Determination`',
     'it never decides that a supervisor may act',
-    'Gallery grouping or collapse',
-    'database projections of work packages or responsibility',
-    'readiness gates',
-    'documentation is deferred to plan_e0001372 after its WP-Z gates',
   ]) {
     assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes(phrase), `missing WP-3 contract phrase: ${phrase}`);
   }
   assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes('| Disk evidence | Report | Safe next action |'));
   assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes('may\nrecommend “run `orient` on plan X” without running it'));
-  assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes('never with\n   `derivePlanSku()`'));
 });
 
-test('WP-3-MIG. read-planning-surface is a managed v1 skill in every native lane', () => {
+test('WP-3-MIG. read-planning-surface is a managed v2 skill in every native lane', () => {
   const helperEntry = readPlanningSurfaceEntry('.lares/example/.agents/skills/read-planning-surface');
   assert.deepEqual(helperEntry['.lares/example/.agents/skills/read-planning-surface/SKILL.md'], {
     content: READ_PLANNING_SURFACE_SKILL_MD,
-    version: 1,
+    version: 2,
+    previousHashes: { 1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH },
   });
 
   const workDir = mktmp('read-planning-surface-all-lanes');
@@ -4511,7 +4511,91 @@ test('WP-3-MIG. read-planning-surface is a managed v1 skill in every native lane
     for (const rel of paths) {
       assert.equal(fs.readFileSync(path.join(workDir, ...rel.split('/')), 'utf8'), READ_PLANNING_SURFACE_SKILL_MD,
         `${rel} must contain the exact shared skill body`);
-      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 1, `${rel} must be recorded at v1`);
+      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 2, `${rel} must be recorded at v2`);
+    }
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-14-CONTENT. read skills default to the canonical bounded ladder and bounded Stage-1 re-entry', () => {
+  assert.equal(sha256Hex(READ_PLANNING_SURFACE_SKILL_MD_V1), READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
+    'frozen read-planning-surface v1 must match previousHashes[1]');
+  assert.equal(sha256Hex(PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3), PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH,
+    'frozen orient v3 must match previousHashes[3]');
+  assert.notEqual(sha256Hex(READ_PLANNING_SURFACE_SKILL_MD), READ_PLANNING_SURFACE_SKILL_MD_V1_HASH);
+  assert.notEqual(sha256Hex(PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD), PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH);
+
+  for (const phrase of [
+    'single source of truth for stages 0–3',
+    '### Stage 0 — card projection',
+    '`read_plan_progress({planId, detail:"card"})`',
+    'at most **2 KiB UTF-8**',
+    '### Stage 1 — bounded decision, manifest, and live-package summaries',
+    '`plan-manifest.mjs inspect --summary`',
+    'at most **14 KiB UTF-8**',
+    '### Stage 2 — one anchor-addressed section slice',
+    'The slice ceiling is **8 KiB UTF-8**',
+    '### Stage 3 — full markdown, explicit exhaustive-audit mode only',
+    'must never be the default path',
+    'disclose the defect; preserve',
+    'mark unsupported fields `unknown` or\n`unverified`',
+    'read only the minimum named source',
+    'Never silently read everything',
+    '`truncated:true` and `continuation_required:true`',
+  ]) assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes(phrase), `reader missing ${phrase}`);
+
+  for (const phrase of [
+    '**Re-enter at Stage 1.**',
+    'canonical progressive read ladder',
+    '`scripts/plan-manifest.mjs inspect --summary`',
+    'must not trigger an unconditional whole-surface read',
+  ]) assert.ok(PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD.includes(phrase), `orient missing ${phrase}`);
+  assert.ok(!PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD.includes(
+    'Run `scripts/plan-manifest.mjs inspect` (read-only `plan.json` + folder\n   listing) and read `ARC.md`.'),
+  'orient must not retain its unconditional whole-folder entry');
+});
+
+test('WP-14-MIG. pristine reader v1 and orient v3 silently upgrade without backups', () => {
+  const workDir = mktmp('wp14-progressive-read');
+  const { supervisor, cleanup } = makeSupervisor();
+  const fixtures = [
+    {
+      rel: '.lares/workers/codex/.agents/skills/read-planning-surface/SKILL.md',
+      body: READ_PLANNING_SURFACE_SKILL_MD_V1,
+      diskVersion: 1,
+      live: READ_PLANNING_SURFACE_SKILL_MD,
+      currentVersion: 2,
+    },
+    {
+      rel: '.lares/workers/codex/.agents/skills/proposal-to-plan/references/activities/orient.md',
+      body: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3,
+      diskVersion: 3,
+      live: PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD,
+      currentVersion: 4,
+    },
+  ] as const;
+  try {
+    const sidecar: Record<string, number> = {};
+    for (const fixture of fixtures) {
+      const fullPath = path.join(workDir, ...fixture.rel.split('/'));
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, fixture.body, 'utf8');
+      sidecar[fixture.rel.replace(/^\.lares\//, '')] = fixture.diskVersion;
+    }
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify(sidecar, null, 2) + '\n', 'utf8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    for (const fixture of fixtures) {
+      const fullPath = path.join(workDir, ...fixture.rel.split('/'));
+      assert.equal(fs.readFileSync(fullPath, 'utf8'), fixture.live);
+      assert.equal(readSidecar(workDir)[fixture.rel.replace(/^\.lares\//, '')], fixture.currentVersion);
+      assert.equal(fs.readdirSync(path.dirname(fullPath)).filter((name) =>
+        name.startsWith(path.basename(fullPath) + '.bak.')).length, 0,
+      `${fixture.rel} must upgrade without a backup`);
     }
   } finally {
     cleanup();
@@ -4888,7 +4972,7 @@ test('WP-4-MIG. pristine bodies upgrade silently and pristine or edited capture.
     const migratedSidecar = readSidecar(workDir);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/SKILL.md'], 5);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/activities/capture.md'], 4);
-    assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/activities/orient.md'], 3);
+    assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/activities/orient.md'], 4);
     assert.equal(migratedSidecar['workers/codex/.agents/skills/proposal-to-plan/references/contracts/responsibility.md'], 2);
     assert.equal(migratedSidecar['workers/claude/.claude/skills/proposal-to-plan/references/activities/capture.md'], 4);
   } finally {
