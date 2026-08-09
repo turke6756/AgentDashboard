@@ -5719,9 +5719,14 @@ export interface PromotedPlanFolder {
   archived: boolean;
   updatedAt: string | number | null;
   responsibleSupervisor: PlanGalleryOwner | null;
-  lifecycle: 'hardening' | 'ready' | 'executing' | 'archived' | 'unknown';
+  latestLifecycleKind?: 'promoted' | 'implementation_started' | 'completed' | 'archived' | 'reopened';
+  /** Main projects a badge lifecycle; kept string-wide until the WP-4 renderer
+   *  replaces its legacy `unknown` fallback and exhaustive label map. */
+  lifecycle: string;
   rollup: PackageRollup | null;
   activeVerifiedTurnCount: number;
+  /** Always emitted by the main projection; optional for pre-WP-4 consumers. */
+  activityTier?: 'active' | 'owner-live' | 'idle';
 }
 
 export interface PromotedPlanFolderListResult {

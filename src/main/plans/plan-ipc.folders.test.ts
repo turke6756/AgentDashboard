@@ -44,11 +44,12 @@ try {
     lifecycle: 'executing',
     rollup: { total: 3, landed: 1, remaining: 1, archived: 1, completed: false },
     activeVerifiedTurnCount: 0,
+    activityTier: 'idle',
   });
   assert.deepEqual(result.plans[1], {
     planArtifactId: 'plan_archived', planId: 'plan_archived', folderName: 'archived', title: 'Archived title',
     status: 'archived', archived: true, updatedAt: 10, responsibleSupervisor: null,
-    lifecycle: 'unknown', rollup: null, activeVerifiedTurnCount: 0,
+    lifecycle: 'promoted', rollup: null, activeVerifiedTurnCount: 0, activityTier: 'idle',
   });
   console.log('  ok  maps plan-folder metadata and last assigned supervisor');
 } finally {

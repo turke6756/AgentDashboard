@@ -53,6 +53,7 @@ import {
   listRecoveryOperations,
   listTurnRecords,
   getPlanPackageEvidenceProjection,
+  getActiveAgents,
 } from '../database';
 import type { PlanWorkPackage } from '../database';
 import { listPlanningEntries, readPlanningDocument } from './planning-reader';
@@ -105,6 +106,7 @@ import { observeOverviewSource, parsePlanHumanOverview,
 import { parseStrictJson } from './strict-json';
 import { reconcilePlanFolderProjections } from './plan-folder-reconciler';
 import { derivePromotedLifecycle } from './promoted-lifecycle';
+import { latestLifecycleEvent, type LifecycleEvent } from './plan-manifest';
 import { deleteProposal } from './proposal-delete';
 import {
   transitionPlanPackage,
@@ -122,6 +124,7 @@ export interface PromotedPlanFolderDeps {
   getPlan: typeof dbGetPlan;
   listPackages: typeof listPlanWorkPackagesOrdered;
   listTurns: (workspaceId: string) => ReturnType<typeof listTurnRecords>;
+  listAgents?: typeof getActiveAgents;
 }
 
 function defaultPromotedPlanFolderDeps(): PromotedPlanFolderDeps {
@@ -129,6 +132,7 @@ function defaultPromotedPlanFolderDeps(): PromotedPlanFolderDeps {
     getPlan: dbGetPlan,
     listPackages: listPlanWorkPackagesOrdered,
     listTurns: (workspaceId) => listTurnRecords(workspaceId, { limit: 200 }),
+    listAgents: getActiveAgents,
   };
 }
 
@@ -177,6 +181,7 @@ export function listPromotedPlanFolders(
     return { plans, warnings };
   }
   const turns = deps.listTurns(workspaceId);
+  const liveAgents = (deps.listAgents?.() ?? []).filter((agent) => agent.workspaceId === workspaceId);
   for (const folder of folders.filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
     const manifestPath = path.join(plansRoot, folder.name, 'plan.json');
     try {
@@ -194,13 +199,22 @@ export function listPromotedPlanFolders(
       const status = manifestString(manifest, 'status', 'run_state', 'phase') ?? 'promoted';
       const planId = resolvePlanId(workspaceId, planArtifactId) ?? planArtifactId;
       const plan = deps.getPlan(planId);
+      const responsibleSupervisor = manifestOwner(manifest);
+      const latestLifecycleKind = latestLifecycleEvent(
+        Array.isArray(manifest.lifecycle_events)
+          ? manifest.lifecycle_events as LifecycleEvent[]
+          : undefined,
+      )?.kind;
       const lifecycle = derivePromotedLifecycle({
         planId,
         runState: plan?.runState,
+        ...(latestLifecycleKind ? { latestLifecycleKind } : {}),
+        responsibleSupervisorAgentId: responsibleSupervisor?.agentId,
         packages: deps.listPackages(planId).filter(
           (pkg) => pkg.planId === planId && pkg.workspaceId === workspaceId,
         ),
         turns,
+        liveAgents,
       });
       plans.push({
         planArtifactId,
@@ -212,7 +226,8 @@ export function listPromotedPlanFolders(
         updatedAt: typeof manifest.updated_at === 'string' || typeof manifest.updated_at === 'number'
           ? manifest.updated_at
           : null,
-        responsibleSupervisor: manifestOwner(manifest),
+        responsibleSupervisor,
+        ...(latestLifecycleKind ? { latestLifecycleKind } : {}),
         ...lifecycle,
       });
     } catch {
