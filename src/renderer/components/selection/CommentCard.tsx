@@ -11,7 +11,7 @@
 // `onSendAll` that call `sendPersistedComments`, so text and PDF comments share
 // one dispatch path.
 import React, { useState } from 'react';
-import type { SelectionComment } from '../../../shared/types';
+import type { SelectionComment, SelectionCommentReply } from '../../../shared/types';
 import type { SelectionAgentTarget } from '../../lib/selection/selection-types';
 import AgentPickerDropdown from './AgentPickerDropdown';
 
@@ -36,6 +36,9 @@ export interface CommentCardProps {
   onSendAll?: (target: SelectionAgentTarget) => void;
   onResolve: () => void;
   onDelete: () => void;
+  replies?: SelectionCommentReply[];
+  replyAgents?: Array<{ id: string; title: string }>;
+  onReply?: (body: string, callerAgentId: string) => Promise<{ ok: boolean; error?: string }>;
   /** Overridable so the markdown gutter keeps its existing test id. */
   testId?: string;
 }
@@ -55,9 +58,17 @@ export default function CommentCard({
   onSendAll,
   onResolve,
   onDelete,
+  replies = [],
+  replyAgents = [],
+  onReply,
   testId = 'comment-card',
 }: CommentCardProps) {
   const [pickerFor, setPickerFor] = useState<'one' | 'all' | null>(null);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyBody, setReplyBody] = useState('');
+  const [replyAgentId, setReplyAgentId] = useState(replyAgents[0]?.id ?? '');
+  const [replyBusy, setReplyBusy] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
   const showSendAll = draftCount > 1 && !!onSendAll;
 
   return (
@@ -85,6 +96,15 @@ export default function CommentCard({
       <div className="text-[13px] text-gray-200 whitespace-pre-wrap max-h-40 overflow-auto mb-2">
         {comment.body}
       </div>
+      {replies.length > 0 && (
+        <div className="mb-2 space-y-1 border-l border-white/10 pl-2" data-testid="plan-comment-replies">
+          {replies.map((reply) => (
+            <div key={reply.id} className="text-[12px] text-gray-300" data-testid="plan-comment-reply-body">
+              {reply.body}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         {sendable && (
           <button
@@ -121,7 +141,62 @@ export default function CommentCard({
         >
           Delete
         </button>
+        {onReply && replyAgents.length > 0 && (
+          <button
+            className="ui-btn text-[12px]"
+            data-testid="plan-comment-reply-open"
+            onClick={() => {
+              setReplyAgentId((prior) => replyAgents.some((agent) => agent.id === prior) ? prior : replyAgents[0].id);
+              setReplyError(null);
+              setReplyOpen((open) => !open);
+            }}
+          >
+            Reply
+          </button>
+        )}
       </div>
+      {replyOpen && onReply && (
+        <div className="mt-2" data-testid="plan-comment-reply-form">
+          <textarea
+            value={replyBody}
+            onChange={(event) => setReplyBody(event.target.value)}
+            disabled={replyBusy}
+            rows={2}
+            data-testid="plan-comment-reply-textarea"
+            className="w-full resize-y rounded border border-white/15 bg-surface-0 px-2 py-1 text-[12px] text-gray-200"
+          />
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            {replyAgents.length > 1 && (
+              <select
+                value={replyAgentId}
+                onChange={(event) => setReplyAgentId(event.target.value)}
+                data-testid="plan-comment-reply-supervisor-select"
+                className="rounded border border-white/15 bg-surface-0 px-1.5 py-1 text-[12px] text-gray-200"
+              >
+                {replyAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.title}</option>)}
+              </select>
+            )}
+            <button
+              className="ui-btn text-[12px]"
+              data-testid="plan-comment-reply-submit"
+              disabled={replyBusy || !replyBody.trim() || !replyAgentId}
+              onClick={() => {
+                setReplyBusy(true);
+                setReplyError(null);
+                void onReply(replyBody.trim(), replyAgentId).then((result) => {
+                  if (result.ok) {
+                    setReplyBody('');
+                    setReplyOpen(false);
+                  } else setReplyError(result.error ?? 'Could not post the reply.');
+                }).finally(() => setReplyBusy(false));
+              }}
+            >
+              {replyBusy ? 'Posting…' : 'Post reply'}
+            </button>
+            {replyError && <span role="alert" className="text-[11px] text-red-400">{replyError}</span>}
+          </div>
+        </div>
+      )}
       {pickerFor && (
         <div className="mt-1.5">
           <AgentPickerDropdown

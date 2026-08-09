@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SelectionComment } from '../../../shared/types';
+import type { PlanCommentThread, SelectionComment } from '../../../shared/types';
+import { hasSupervisorPrivilege } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { findQuoteInDom } from '../../lib/selection/comment-anchors';
 import {
@@ -11,6 +12,7 @@ import {
 import { onCommentsChanged } from '../../lib/selection/comment-events';
 import type { SelectionAgentTarget } from '../../lib/selection/selection-types';
 import CommentCard from './CommentCard';
+import type { PlanCommentSurface } from './SelectionSurface';
 
 // Comment marker column for file surfaces (WP-P5-B). Mounts as an absolute
 // overlay over the surface's scroll container: one marker per non-resolved
@@ -29,6 +31,8 @@ interface Props {
   /** Explicit identity for an embedded file surface without a file tab. */
   filePath?: string;
   workspaceId?: string;
+  planDocument?: PlanCommentSurface;
+  refreshToken?: number;
   /** The surface's scrolling element — measure target and scroll source. */
   scrollRef: React.RefObject<HTMLElement | null>;
 }
@@ -162,14 +166,16 @@ const STATUS_LABEL: Record<string, string> = {
 
 const SENDABLE = new Set(['draft', 'send_failed', 'orphaned']);
 
-export default function FileCommentGutter({ tabId, filePath: explicitFilePath, workspaceId: explicitWorkspaceId, scrollRef }: Props) {
+export default function FileCommentGutter({ tabId, filePath: explicitFilePath, workspaceId: explicitWorkspaceId, planDocument, refreshToken, scrollRef }: Props) {
   const tab = useDashboardStore((s) =>
     tabId ? s.openTabs.find((t) => t.id === tabId) : undefined,
   );
   const filePath = explicitFilePath || tab?.filePath || '';
   const workspaceId = explicitWorkspaceId || tab?.workspaceId || '';
+  const agents = useDashboardStore((s) => s.agents);
 
   const [comments, setComments] = useState<SelectionComment[]>([]);
+  const [planThreads, setPlanThreads] = useState<Map<string, PlanCommentThread>>(new Map());
   const [positions, setPositions] = useState<Map<string, MarkerPosition | null>>(new Map());
   const [highlightPositions, setHighlightPositions] = useState<Map<string, MarkerPosition | null>>(
     new Map(),
@@ -193,28 +199,45 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
 
   // ── Row loading ──────────────────────────────────────────────────────
   const reload = useCallback(async () => {
-    if (!workspaceId || !filePath) return;
+    if (!workspaceId || (!filePath && !planDocument)) return;
     try {
+      if (planDocument) {
+        const listPlanComments = window.api.plans?.listComments;
+        if (typeof listPlanComments !== 'function') {
+          setPlanThreads(new Map());
+          setComments([]);
+          return;
+        }
+        const projection = await listPlanComments(planDocument.planId);
+        const threads = (projection?.threads ?? []).filter(
+          (thread) => thread.target.kind !== 'orphaned'
+            && thread.target.documentId === planDocument.ref.documentId,
+        );
+        flipsInFlight.current.clear();
+        setPlanThreads(new Map(threads.map((thread) => [thread.comment.id, thread])));
+        setComments(threads.map((thread) => thread.comment));
+        return;
+      }
       const rows = await window.api.comments.list(workspaceId, filePath);
       flipsInFlight.current.clear();
       setComments(rows);
     } catch (err) {
       console.error('[FileCommentGutter] failed to load comments', err);
     }
-  }, [workspaceId, filePath]);
+  }, [workspaceId, filePath, planDocument, refreshToken]);
 
   useEffect(() => {
-    if (!workspaceId || !filePath) return;
+    if (!workspaceId || (!filePath && !planDocument)) return;
     void reload();
     const offLocal = onCommentsChanged(filePath, () => void reload());
-    const offMain = window.api.comments.onChanged(({ comments: changed }) => {
-      if (changed.some((c) => c.filePath === filePath)) void reload();
-    });
+    const offMain = window.api.comments?.onChanged?.(({ comments: changed }) => {
+      if (planDocument || changed.some((c) => c.filePath === filePath)) void reload();
+    }) ?? (() => {});
     return () => {
       offLocal();
       offMain();
     };
-  }, [workspaceId, filePath, reload]);
+  }, [workspaceId, filePath, planDocument, reload]);
 
   // ── Measurement: quote → DOM range → marker top ──────────────────────
   const measure = useCallback(() => {
@@ -281,20 +304,20 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
 
     // Reattach bookkeeping — only against a doc that actually has text (an
     // editor still mounting must not orphan everything).
-    if (hasText && filePath) {
+    if (hasText && (filePath || planDocument)) {
       for (const c of visible) {
         if (flipsInFlight.current.has(c.id)) continue;
         const pos = next.get(c.id);
         if (!pos && c.status === 'draft') {
           flipsInFlight.current.add(c.id);
-          void setCommentStatus(c.id, 'orphaned', filePath);
+          void setCommentStatus(c.id, 'orphaned', c.filePath ?? filePath);
         } else if (pos && !pos.fuzzy && c.status === 'orphaned') {
           flipsInFlight.current.add(c.id);
-          void setCommentStatus(c.id, 'draft', filePath);
+          void setCommentStatus(c.id, 'draft', c.filePath ?? filePath);
         }
       }
     }
-  }, [scrollRef, visible, highlights, filePath]);
+  }, [scrollRef, visible, highlights, filePath, planDocument]);
 
   useEffect(() => {
     measure();
@@ -353,7 +376,7 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
     return () => setActiveHighlight(null);
   }, [expandedId, visible, scrollRef, positions]);
 
-  if ((!tabId && !explicitFilePath) || !filePath || !workspaceId || (visible.length === 0 && highlights.length === 0)) {
+  if ((!tabId && !explicitFilePath && !planDocument) || (!filePath && !planDocument) || !workspaceId || (visible.length === 0 && highlights.length === 0)) {
     return null;
   }
 
@@ -410,6 +433,10 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
     setExpandedId(null);
     if (draftIds.length > 0) void sendPersistedComments(draftIds, target, filePath);
   };
+  const replyAgents = planDocument
+    ? agents.filter((agent) => agent.workspaceId === workspaceId && hasSupervisorPrivilege(agent))
+      .map((agent) => ({ id: agent.id, title: agent.title }))
+    : [];
 
   return (
     <div
@@ -459,8 +486,15 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
           onClose={() => setExpandedId(null)}
           onSendOne={(target) => sendOne(expanded, target)}
           onSendAll={(target) => sendAll(target)}
-          onResolve={() => void resolveComment(expanded.id, filePath)}
-          onDelete={() => void deleteComment(expanded.id, filePath)}
+          onResolve={() => void resolveComment(expanded.id, expanded.filePath ?? filePath).then(reload)}
+          onDelete={() => void deleteComment(expanded.id, expanded.filePath ?? filePath).then(reload)}
+          replies={planThreads.get(expanded.id)?.replies}
+          replyAgents={replyAgents}
+          onReply={planDocument ? async (body, callerAgentId) => {
+            const result = await window.api.plans.replyComment({ commentId: expanded.id, body, callerAgentId });
+            if (result.ok) await reload();
+            return result.ok ? { ok: true } : { ok: false, error: result.error };
+          } : undefined}
         />
       )}
 

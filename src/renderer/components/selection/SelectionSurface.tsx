@@ -30,9 +30,11 @@ import {
   sendPersistedComments,
 } from '../../lib/selection/comment-actions';
 import { showSelectionToast } from '../../lib/selection/selection-toast';
-import type { PathType } from '../../../shared/types';
+import type { PathType, PlanDocumentRef, SelectionComment } from '../../../shared/types';
 import type { SelectionAgentTarget, SelectionContext } from '../../lib/selection/selection-types';
 import { getCanvasEditorHandle } from '../fileviewer/MilkdownEditor';
+import { computeSourceAnchor } from '../../lib/selection/comment-anchors';
+import { contentHash } from '../fileviewer/markdownSplice';
 
 export type SurfaceSelectionContext = Omit<SelectionContext, 'quotedText'>;
 export interface ExplicitFileSurface {
@@ -42,10 +44,19 @@ export interface ExplicitFileSurface {
   rootDirectory?: string;
 }
 
+export interface PlanCommentSurface {
+  planId: string;
+  ref: PlanDocumentRef;
+  workspaceId: string;
+  sourceLabel: string;
+}
+
 interface Props {
   tabId?: string;
   /** Explicit file identity for embedded readers that do not own a file tab. */
   file?: ExplicitFileSurface;
+  planDocument?: PlanCommentSurface;
+  onPlanCommentCreated?: (comment: SelectionComment) => void;
   getContext?: () => SurfaceSelectionContext;
   /** Markdown source for anchor capture (read-mode renderers pass their
    * content prop). Fallback chain: this → canvas editor handle → tab edit
@@ -87,7 +98,7 @@ export function deriveFileSelectionContext(
   };
 }
 
-export default function SelectionSurface({ tabId, file, getContext, getDocText, children }: Props) {
+export default function SelectionSurface({ tabId, file, planDocument, onPlanCommentCreated, getContext, getDocText, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tab = useDashboardStore((s) =>
     tabId ? s.openTabs.find((t) => t.id === tabId) : undefined,
@@ -111,6 +122,28 @@ export default function SelectionSurface({ tabId, file, getContext, getDocText, 
 
   const persistDraft = useCallback(
     async (detail: SelectionCommentDetail) => {
+      if (planDocument) {
+        const docText = resolveDocText();
+        const anchor = docText != null
+          ? computeSourceAnchor(docText, detail.context.quotedText, detail.prefix, detail.suffix)
+          : null;
+        const result = await window.api.plans.createComment({
+          planId: planDocument.planId,
+          ref: planDocument.ref,
+          body: detail.body,
+          quotedText: detail.context.quotedText,
+          prefix: detail.prefix || undefined,
+          suffix: detail.suffix || undefined,
+          docHash: docText != null ? contentHash(docText) : undefined,
+          anchorStart: anchor?.anchorStart,
+          anchorEnd: anchor?.anchorEnd,
+          lineStart: anchor?.lineStart,
+          lineEnd: anchor?.lineEnd,
+        });
+        if (!result.ok) throw new Error(result.error);
+        onPlanCommentCreated?.(result.comment);
+        return result.comment;
+      }
       const filePath = detail.context.file?.filePath;
       if (!filePath) throw new Error('No file path for this surface');
       const currentTab = tabId
@@ -128,7 +161,7 @@ export default function SelectionSurface({ tabId, file, getContext, getDocText, 
         docText: resolveDocText(),
       });
     },
-    [tabId, file, resolveDocText],
+    [tabId, file, planDocument, onPlanCommentCreated, resolveDocText],
   );
 
   const handleSaveComment = useCallback(
@@ -148,6 +181,7 @@ export default function SelectionSurface({ tabId, file, getContext, getDocText, 
 
   const handleHighlight = useCallback(
     async (detail: SelectionCommentDetail) => {
+      if (planDocument) return;
       const filePath = detail.context.file?.filePath;
       if (!filePath) return;
       const currentTab = tabId
@@ -171,11 +205,15 @@ export default function SelectionSurface({ tabId, file, getContext, getDocText, 
         );
       }
     },
-    [tabId, file, resolveDocText],
+    [tabId, file, planDocument, resolveDocText],
   );
 
   const handleCommentAndSend = useCallback(
     async (detail: SelectionCommentDetail, target: SelectionAgentTarget) => {
+      if (planDocument) {
+        await persistDraft(detail);
+        return;
+      }
       const filePath = detail.context.file?.filePath;
       if (!detail.context.capabilities.comment || !filePath) {
         // Non-persisting context: slice-1 dispatch, comment rides the prompt.
@@ -194,15 +232,23 @@ export default function SelectionSurface({ tabId, file, getContext, getDocText, 
         );
       }
     },
-    [persistDraft],
+    [persistDraft, planDocument],
   );
 
   const { menuElement } = useSelectionActions({
     containerRef,
-    getContext: getContext ?? (() => deriveFileSelectionContext(file ?? tab, selectedWorkspaceId)),
+    getContext: getContext ?? (() => planDocument
+      ? {
+          targetType: 'file',
+          workspaceId: planDocument.workspaceId,
+          sourceLabel: planDocument.sourceLabel,
+          file: { filePath: planDocument.sourceLabel },
+          capabilities: { comment: true },
+        }
+      : deriveFileSelectionContext(file ?? tab, selectedWorkspaceId)),
     onSaveComment: handleSaveComment,
     onCommentAndSend: handleCommentAndSend,
-    onHighlight: handleHighlight,
+    onHighlight: planDocument ? undefined : handleHighlight,
   });
 
   return (

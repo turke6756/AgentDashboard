@@ -12,7 +12,6 @@ import type {
 import { PLAN_TAB_KEYS, hasSupervisorPrivilege } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import IntentLifecycleStrip from './IntentLifecycleStrip';
-import PlanCommentsRail from './PlanCommentsRail';
 import ProposalReader from './ProposalReader';
 
 // WP-P4B — the tabbed, folder-native plan **document home**. Consumes the
@@ -565,6 +564,11 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
                   truncated={doc?.truncated ?? false}
                   error={doc?.error ?? null}
                   loading={doc?.loading ?? false}
+                  planCommentTarget={activeDoc && selectedWorkspaceId ? {
+                    planId,
+                    ref: activeDoc.ref,
+                    workspaceId: selectedWorkspaceId,
+                  } : undefined}
                 />
               )}
             </div>
@@ -572,10 +576,6 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
         )}
        </div>
 
-        {/* WP-P4E — comments rail. Threads scope to the open document; a compose
-            box routes create through the server (which picks the recipient), and
-            orphaned targets stay visible but non-clickable. */}
-        <PlanCommentsRail planId={planId} activeDoc={activeDoc} />
       </div>
     </div>
   );

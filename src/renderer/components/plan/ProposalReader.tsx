@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { PlanDocumentRef } from '../../../shared/types';
+import SelectionSurface, { type PlanCommentSurface } from '../selection/SelectionSurface';
+import FileCommentGutter from '../selection/FileCommentGutter';
 
 // WP-P1B — the read-only markdown pane on the right of the proposal/plan reader.
-// Deliberately minimal and self-contained: NO edit affordances, no comment
-// gutter, no selection surface, no file-open side effects. It renders whatever
+// Deliberately minimal and self-contained: no edit affordances or file-open side
+// effects. Plan documents opt into the shared selection/comment surface. It renders whatever
 // document text `ProposalReaderPane` fetched via `planning-reader:read` and does
 // nothing else. Links are rendered inert (no navigation) to keep the surface
 // strictly read-only for this stage — tabs/overviews/opening come in P4.
@@ -20,6 +23,11 @@ interface ProposalReaderProps {
   error?: string | null;
   /** True while a read is in flight. */
   loading?: boolean;
+  planCommentTarget?: {
+    planId: string;
+    ref: PlanDocumentRef;
+    workspaceId: string;
+  };
 }
 
 export default function ProposalReader({
@@ -28,7 +36,13 @@ export default function ProposalReader({
   truncated = false,
   error = null,
   loading = false,
+  planCommentTarget,
 }: ProposalReaderProps): React.ReactElement {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [commentRefresh, setCommentRefresh] = useState(0);
+  const surface: PlanCommentSurface | undefined = planCommentTarget && name
+    ? { ...planCommentTarget, sourceLabel: name }
+    : undefined;
   return (
     <div className="flex h-full min-w-0 flex-col bg-surface-0" data-testid="proposal-reader">
       {name && (
@@ -50,7 +64,13 @@ export default function ProposalReader({
           </span>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto p-6" data-testid="proposal-reader-body">
+      <SelectionSurface
+        planDocument={surface}
+        getDocText={() => content}
+        onPlanCommentCreated={() => setCommentRefresh((value) => value + 1)}
+      >
+      <div className="relative min-h-0 flex-1">
+      <div ref={scrollRef} className="h-full overflow-auto p-6" data-testid="proposal-reader-body">
         {error ? (
           <div className="text-[13px] text-accent-red" data-testid="proposal-reader-error">
             {error}
@@ -144,6 +164,16 @@ export default function ProposalReader({
           </div>
         )}
       </div>
+      {surface && (
+        <FileCommentGutter
+          planDocument={surface}
+          workspaceId={surface.workspaceId}
+          refreshToken={commentRefresh}
+          scrollRef={scrollRef}
+        />
+      )}
+      </div>
+      </SelectionSurface>
     </div>
   );
 }
