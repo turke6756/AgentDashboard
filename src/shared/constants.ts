@@ -7807,7 +7807,7 @@ const PROPOSAL_TO_PLAN_APPEND_LIFECYCLE_BLOCK = `
 // WP-2 (plan_37cf5261) — frozen-v4 derive keeps the migration hash auditable.
 // The helper's existing withManifestCAS already owns the shared sidecar-lock,
 // heartbeat, stale-reclaim, hash guard, atomic write, and bounded retry protocol.
-export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5 = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4
   .replace(
     "      const next = mutate(obj);\n      const serialized = JSON.stringify(next, null, 2) + '\\n';",
     "      const next = mutate(obj);\n      if (next === null) return null;                    // idempotent append -> byte-preserving no-op\n      const serialized = JSON.stringify(next, null, 2) + '\\n';",
@@ -7821,5 +7821,79 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT
     '  manifest    --dir <plan-folder> --append-responsibility --agent-id <id> [--display x] [--source manual-skill|promotion-service]',
     '  manifest    --dir <plan-folder> --append-responsibility --agent-id <id> [--display x] [--source manual-skill|promotion-service]\\n' +
       '              OR --append-lifecycle --event-id <ple_24hex> --kind <kind> [--agent-id id] [--display x] [--source x] [--note x] [--at ms]',
+  );
+
+const PROPOSAL_TO_PLAN_INSPECT_SUMMARY_BLOCK = `  if (args.summary) {
+    const planBody = fs.existsSync(path.join(dir, 'plan.md'))
+      ? fs.readFileSync(path.join(dir, 'plan.md'), 'utf8')
+      : '';
+    const intentIds = [];
+    const seenIntentIds = new Set();
+    const intentRe = /<!--PLAN-INTENT\\s*([\\s\\S]*?)-->/g;
+    let intentMatch;
+    while ((intentMatch = intentRe.exec(planBody)) !== null) {
+      try {
+        const record = JSON.parse(intentMatch[1].trim());
+        if (record && typeof record.intent_id === 'string' && !seenIntentIds.has(record.intent_id)) {
+          seenIntentIds.add(record.intent_id);
+          intentIds.push(record.intent_id);
+        }
+      } catch { /* malformed intent sentinels are omitted from this bounded projection */ }
+    }
+    const lifecycleEvents = Array.isArray(manifest?.lifecycle_events) ? manifest.lifecycle_events : [];
+    let latestLifecycleEvent = null;
+    for (const event of lifecycleEvents) {
+      if (event && (latestLifecycleEvent === null || event.at >= latestLifecycleEvent.at)) {
+        latestLifecycleEvent = event; // >= makes array order the tie-break: the later row wins
+      }
+    }
+    const responsibilityEvents = Array.isArray(manifest?.responsibility_events) ? manifest.responsibility_events : [];
+    let currentOwner = null;
+    for (const event of responsibilityEvents) {
+      if (event && event.event === 'assigned') currentOwner = event;
+    }
+    const summary = {
+      artifact_id: manifest?.plan_artifact_id ?? null,
+      title: typeof manifest?.title === 'string' ? manifest.title : null,
+      source_proposal: manifest?.source_proposal ?? null,
+      latest_lifecycle_event: latestLifecycleEvent,
+      current_owner: currentOwner,
+      intent_ids: intentIds.slice(0, 20),
+      intents_omitted: Math.max(0, intentIds.length - Math.min(intentIds.length, 20)),
+      counts: {
+        intents: intentIds.length,
+        lifecycle_events: lifecycleEvents.length,
+        responsibility_events: responsibilityEvents.length,
+      },
+    };
+    let serialized = JSON.stringify(summary) + '\\n';
+    while (Buffer.byteLength(serialized, 'utf8') > 2048 && summary.intent_ids.length > 0) {
+      summary.intent_ids.pop();
+      summary.intents_omitted = intentIds.length - summary.intent_ids.length;
+      serialized = JSON.stringify(summary) + '\\n';
+    }
+    if (Buffer.byteLength(serialized, 'utf8') > 2048) {
+      die(2, 'inspect --summary: fixed fields exceed the 2 KiB UTF-8 ceiling');
+    }
+    process.stdout.write(serialized);
+    return;
+  }
+`;
+
+// WP-12 (plan_37cf5261) — freeze the shipped v5 helper, then add the bounded
+// Stage-1 projection without changing legacy inspect's stage-3 audit response.
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5
+  .replace(
+    "  if (!('ledger_updated_at' in meta.source_cutoffs)) meta.source_cutoffs.ledger_updated_at = null;\n",
+    '',
+  )
+  .replace(
+    "  const listing = fs.existsSync(dir)\n    ? fs.readdirSync(dir, { withFileTypes: true }).map((d) => ({",
+    PROPOSAL_TO_PLAN_INSPECT_SUMMARY_BLOCK +
+      "  const listing = fs.existsSync(dir)\n    ? fs.readdirSync(dir, { withFileTypes: true }).map((d) => ({",
+  )
+  .replace(
+    '  inspect     --dir <plan-folder>',
+    '  inspect     --dir <plan-folder> [--summary]',
   );
 

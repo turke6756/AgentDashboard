@@ -90,6 +90,7 @@ import {
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
   PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH,
   normalizeManagedKey,
   sha256Hex,
@@ -141,6 +142,7 @@ import {
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
   SUPERVISOR_CONTEXT_ANALYTICS_SKILL,
   WORKER_CLAUDE_MD,
@@ -3992,11 +3994,12 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     2: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH,
   } }],
   ['references/contracts/manifest-lock.md', { version: 2, previousHashes: { 1: PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH } }],
-  ['scripts/plan-manifest.mjs', { version: 5, previousHashes: {
+  ['scripts/plan-manifest.mjs', { version: 6, previousHashes: {
     1: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
     2: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
     3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
     4: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
+    5: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
   } }],
 ]);
 
@@ -4078,7 +4081,7 @@ test('REACHABILITY:wp2-scaffold-complete existing workspaces receive complete.md
     assert.equal(fs.readdirSync(path.dirname(deployedScript)).filter((name) => name.startsWith('plan-manifest.mjs.bak.')).length, 0);
     const migrated = readSidecar(workDir);
     assert.equal(migrated[skillRel.slice('.lares/'.length)], 5);
-    assert.equal(migrated[scriptRel.slice('.lares/'.length)], 5);
+    assert.equal(migrated[scriptRel.slice('.lares/'.length)], 6);
     assert.equal(migrated[completeRel.slice('.lares/'.length)], 1);
 
     const scratchPlan = path.join(workDir, 'scratch-plan');
@@ -4114,6 +4117,109 @@ test('REACHABILITY:wp2-scaffold-complete existing workspaces receive complete.md
       source: 'manual-skill',
       agent_id: 'supervisor-test',
     }]);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('REACHABILITY:wp12-inspect-summary v5 workspaces receive a bounded summary and refresh-arc preserves ledger freshness', () => {
+  assert.equal(
+    sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5),
+    PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
+    'frozen plan-manifest.mjs v5 must match previousHashes[5]',
+  );
+  assert.notEqual(
+    sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS),
+    PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
+    'live v6 helper must differ from the frozen v5 body',
+  );
+
+  const workDir = mktmp('wp12-inspect-summary');
+  const { supervisor, cleanup } = makeSupervisor();
+  const rootRel = '.lares/workers/codex/.agents/skills/proposal-to-plan';
+  const scriptRel = `${rootRel}/scripts/plan-manifest.mjs`;
+  try {
+    const deployedScript = path.join(workDir, ...scriptRel.split('/'));
+    fs.mkdirSync(path.dirname(deployedScript), { recursive: true });
+    fs.writeFileSync(deployedScript, PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5, 'utf8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
+      [scriptRel.slice('.lares/'.length)]: 5,
+    }, null, 2) + '\n', 'utf8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    assert.equal(fs.readFileSync(deployedScript, 'utf8'), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS);
+    assert.equal(
+      fs.readdirSync(path.dirname(deployedScript)).filter((name) => name.startsWith('plan-manifest.mjs.bak.')).length,
+      0,
+      'a pristine v5 helper must migrate silently without a backup',
+    );
+    assert.equal(readSidecar(workDir)[scriptRel.slice('.lares/'.length)], 6);
+
+    const planDir = path.join(workDir, 'scratch-plan');
+    fs.mkdirSync(planDir, { recursive: true });
+    const intentIds = Array.from({ length: 36 }, (_, i) => `int_${i.toString(16).padStart(8, '0')}`);
+    fs.writeFileSync(path.join(planDir, 'plan.md'), intentIds.map((intentId) =>
+      `<!--PLAN-INTENT\n${JSON.stringify({ intent_id: intentId, kind: 'groupthink-serial' })}\n-->`,
+    ).join('\n'), 'utf8');
+    const owner1 = { event_id: 'rev_1', event: 'assigned', agent_id: 'owner-1', at: 1, source: 'manual-skill' };
+    const released = { event_id: 'rev_2', event: 'released', agent_id: 'owner-1', at: 4, source: 'manual-skill' };
+    const owner2 = { event_id: 'rev_3', event: 'assigned', agent_id: 'owner-2', display: 'x'.repeat(180), at: 2, source: 'manual-skill' };
+    const tiedEarlier = { event_id: 'ple_111111111111111111111111', kind: 'promoted', at: 9, source: 'manual-skill' };
+    const tiedLater = { event_id: 'ple_222222222222222222222222', kind: 'completed', at: 9, source: 'manual-skill', note: 'n'.repeat(1250) };
+    fs.writeFileSync(path.join(planDir, 'plan.json'), JSON.stringify({
+      schema_version: 1,
+      plan_artifact_id: 'plan_wp12',
+      source_proposal: { artifact_id: 'prop_wp12', rel_path: '.lares/proposals/wp12.md' },
+      responsibility_events: [owner1, owner2, released],
+      lifecycle_events: [tiedEarlier, tiedLater],
+    }, null, 2) + '\n', 'utf8');
+    const ledgerUpdatedAt = 987654321;
+    fs.writeFileSync(path.join(planDir, 'ARC.md'),
+      `# ARC\n<!--ARC-META ${JSON.stringify({ last_refreshed_at: 1, source_cutoffs: { folder_mtime_ms: 1, ledger_updated_at: ledgerUpdatedAt } })} -->\n## Decisions\n`,
+      'utf8');
+
+    const summaryRun = spawnSync(process.execPath, [deployedScript, 'inspect', '--summary', '--dir', planDir], { encoding: 'utf8' });
+    assert.equal(summaryRun.status, 0, `inspect --summary must succeed: ${summaryRun.stderr}`);
+    assert.ok(Buffer.byteLength(summaryRun.stdout, 'utf8') <= 2048, 'summary must stay within 2 KiB UTF-8');
+    const summary = JSON.parse(summaryRun.stdout);
+    assert.equal(summary.artifact_id, 'plan_wp12');
+    assert.equal(summary.title, null);
+    assert.deepEqual(summary.source_proposal, { artifact_id: 'prop_wp12', rel_path: '.lares/proposals/wp12.md' });
+    assert.deepEqual(summary.latest_lifecycle_event, tiedLater, 'later array row must win an at tie');
+    assert.deepEqual(summary.current_owner, owner2, 'last assigned event must win even when followed by another event kind');
+    assert.ok(summary.intent_ids.length < 20, 'the byte ceiling must dynamically truncate below the nominal 20-id cap');
+    assert.deepEqual(summary.intent_ids, intentIds.slice(0, summary.intent_ids.length));
+    assert.equal(summary.intents_omitted, intentIds.length - summary.intent_ids.length);
+    assert.deepEqual(summary.counts, { intents: 36, lifecycle_events: 2, responsibility_events: 3 });
+    assert.equal('listing' in summary, false, 'summary must not expose the legacy child listing');
+
+    const legacyRun = spawnSync(process.execPath, [deployedScript, 'inspect', '--dir', planDir], { encoding: 'utf8' });
+    assert.equal(legacyRun.status, 0, `legacy inspect must succeed: ${legacyRun.stderr}`);
+    const legacy = JSON.parse(legacyRun.stdout);
+    assert.equal(legacy.action, 'inspect');
+    assert.ok(Array.isArray(legacy.listing), 'legacy inspect must retain its stage-3 folder listing');
+    assert.deepEqual(legacy.manifest.lifecycle_events, [tiedEarlier, tiedLater]);
+
+    const refreshRun = spawnSync(process.execPath, [deployedScript, 'refresh-arc', '--dir', planDir], { encoding: 'utf8' });
+    assert.equal(refreshRun.status, 0, `refresh-arc must succeed: ${refreshRun.stderr}`);
+    const refreshedArc = fs.readFileSync(path.join(planDir, 'ARC.md'), 'utf8');
+    const refreshedMeta = JSON.parse(refreshedArc.match(/<!--ARC-META\s*([\s\S]*?)-->/)![1].trim());
+    assert.equal(refreshedMeta.source_cutoffs.ledger_updated_at, ledgerUpdatedAt,
+      'refresh-arc must never touch ledger_updated_at');
+
+    fs.writeFileSync(path.join(planDir, 'ARC.md'),
+      `# ARC\n<!--ARC-META ${JSON.stringify({ last_refreshed_at: 1, source_cutoffs: { folder_mtime_ms: 1 } })} -->\n## Decisions\n`,
+      'utf8');
+    const refreshWithoutLedger = spawnSync(process.execPath, [deployedScript, 'refresh-arc', '--dir', planDir], { encoding: 'utf8' });
+    assert.equal(refreshWithoutLedger.status, 0, `refresh-arc without a ledger stamp must succeed: ${refreshWithoutLedger.stderr}`);
+    const absentLedgerMeta = JSON.parse(
+      fs.readFileSync(path.join(planDir, 'ARC.md'), 'utf8').match(/<!--ARC-META\s*([\s\S]*?)-->/)![1].trim(),
+    );
+    assert.equal('ledger_updated_at' in absentLedgerMeta.source_cutoffs, false,
+      'refresh-arc must not invent ledger_updated_at when it is absent');
   } finally {
     cleanup();
     rmrf(workDir);
