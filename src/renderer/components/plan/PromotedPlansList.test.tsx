@@ -11,6 +11,7 @@ const workspace = { id: 'ws-1', path: 'C:\\work', pathType: 'windows', title: 'W
 let host: HTMLDivElement;
 let root: Root | null;
 const openPlanTab = vi.fn();
+const selectAgent = vi.fn();
 let listPromotedFolders: ReturnType<typeof vi.fn>;
 
 function plan(overrides: Partial<PromotedPlanFolder> = {}): PromotedPlanFolder {
@@ -26,6 +27,7 @@ function plan(overrides: Partial<PromotedPlanFolder> = {}): PromotedPlanFolder {
     lifecycle: 'ready',
     rollup: { total: 2, landed: 1, remaining: 1, archived: 0, completed: false },
     activeVerifiedTurnCount: 0,
+    activityTier: 'owner-live',
     ...overrides,
   };
 }
@@ -39,13 +41,14 @@ function deferred<T>() {
 beforeEach(() => {
   vi.useFakeTimers();
   openPlanTab.mockClear();
+  selectAgent.mockClear();
   listPromotedFolders = vi.fn(async () => ({ plans: [
     plan(),
     plan({ planArtifactId: 'old-art', planId: 'old-id', folderName: 'old', title: 'Archived plan',
       lifecycle: 'archived', status: 'archived', archived: true, updatedAt: 1, responsibleSupervisor: null }),
   ], warnings: [] }));
   (window as any).api = { plans: { listPromotedFolders } };
-  useDashboardStore.setState({ workspaces: [workspace], selectedWorkspaceId: 'ws-1', openPlanTab } as any);
+  useDashboardStore.setState({ workspaces: [workspace], selectedWorkspaceId: 'ws-1', openPlanTab, selectAgent } as any);
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -78,36 +81,75 @@ describe('PromotedPlansList', () => {
     expect(openPlanTab).toHaveBeenCalledWith('active-id', 'Active plan', 'ws-1');
   });
 
-  it('renders completion before lifecycle, falls back to raw status, and keeps archived separate', async () => {
+  it('REACHABILITY:wp4-card-renderer renders the projected lifecycle and treats an all-landed rollup as a completion prompt', async () => {
     listPromotedFolders.mockResolvedValueOnce({ plans: [
       plan({ title: 'Done plan', lifecycle: 'executing',
         rollup: { total: 2, landed: 2, remaining: 0, archived: 0, completed: true } }),
-      plan({ planId: 'fallback', folderName: 'fallback', title: 'Fallback plan', lifecycle: 'unknown',
-        status: 'promoted-fallback', rollup: null }),
+      plan({ planId: 'completed', folderName: 'completed', title: 'Completed plan', lifecycle: 'completed',
+        latestLifecycleKind: 'completed', rollup: null }),
       plan({ planId: 'mixed', folderName: 'mixed', title: 'Mixed plan', lifecycle: 'ready',
         rollup: { total: 2, landed: 1, remaining: 0, archived: 1, completed: false } }),
     ], warnings: [] });
     await render();
+    expect(host.querySelector('[data-testid="plans-promoted-region"]')).not.toBeNull();
     const rows = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="promoted-plan-row"]'));
     const doneStatus = rows[0].querySelector<HTMLElement>('[data-testid="promoted-plan-status"]')!;
-    expect(doneStatus.textContent).toBe('Completed');
+    expect(doneStatus.textContent).toBe('In implementation');
     expect(doneStatus.dataset.lifecycle).toBe('executing');
-    expect(doneStatus.dataset.completed).toBe('true');
-    expect(rows[1].querySelector('[data-testid="promoted-plan-status"]')?.textContent).toBe('promoted-fallback');
+    expect(rows[0].querySelector('[data-testid="promoted-plan-all-landed"]')?.textContent)
+      .toContain('All 2 packages landed');
+    expect(rows[1].querySelector('[data-testid="promoted-plan-status"]')?.textContent).toBe('Completed');
     expect(rows[2].querySelector('[data-testid="promoted-plan-status"]')?.textContent).toBe('Ready');
     expect(rows[2].querySelector('[data-testid="promoted-plan-archived-count"]')?.textContent).toContain('1 archived');
   });
 
-  it('shows the verified-active dot separately and retains the owner', async () => {
+  it('renders pulse, steady dim, and no activity indicator directly from the DTO tier', async () => {
     listPromotedFolders.mockResolvedValueOnce({ plans: [
-      plan({ activeVerifiedTurnCount: 1 }),
-      plan({ planId: 'idle', folderName: 'idle', title: 'Idle plan', responsibleSupervisor: null }),
+      plan({ activeVerifiedTurnCount: 2, activityTier: 'active' }),
+      plan({ planId: 'owner-live', folderName: 'owner-live', title: 'Owner live plan', activityTier: 'owner-live' }),
+      plan({ planId: 'idle', folderName: 'idle', title: 'Idle plan', responsibleSupervisor: null, activityTier: 'idle' }),
     ], warnings: [] });
     await render();
-    const dots = host.querySelectorAll('[data-testid="promoted-plan-active"]');
-    expect(dots).toHaveLength(1);
-    expect(dots[0].getAttribute('aria-label')).toBe('Open verified turn stamped to this plan');
+    const dots = host.querySelectorAll<HTMLElement>('[data-testid="promoted-plan-activity"]');
+    expect(dots).toHaveLength(2);
+    expect(dots[0].dataset.activityTier).toBe('active');
+    expect(dots[0].getAttribute('title')).toBe('2 agents active');
+    expect(dots[0].className).toContain('animate-pulse');
+    expect(dots[1].dataset.activityTier).toBe('owner-live');
+    expect(dots[1].className).not.toContain('animate-pulse');
     expect(host.querySelector('[data-testid="promoted-plan-owner"]')?.textContent).toContain('Edward');
+  });
+
+  it('focuses the live responsible agent with one click and disables an offline owner', async () => {
+    listPromotedFolders.mockResolvedValueOnce({ plans: [
+      plan(),
+      plan({ planId: 'offline', folderName: 'offline', title: 'Offline plan', activityTier: 'idle' }),
+    ], warnings: [] });
+    await render();
+    const owners = host.querySelectorAll<HTMLButtonElement>('[data-testid="promoted-plan-owner"]');
+    act(() => owners[0].click());
+    expect(selectAgent).toHaveBeenCalledWith('s1');
+    expect(owners[1].disabled).toBe(true);
+    expect(owners[1].textContent).toContain('owner offline');
+  });
+
+  it('offers lifecycle actions only in the states allowed by policy', async () => {
+    listPromotedFolders.mockResolvedValueOnce({ plans: [
+      plan({ title: 'Ready plan' }),
+      plan({ planId: 'done', folderName: 'done', title: 'Done plan', lifecycle: 'completed' }),
+      plan({ planId: 'archived', folderName: 'archived', title: 'Archived plan', lifecycle: 'archived', archived: true }),
+    ], warnings: [] });
+    await render();
+    const toggle = host.querySelector<HTMLInputElement>('[data-testid="promoted-history-toggle"] input')!;
+    act(() => toggle.click());
+    const rows = host.querySelectorAll<HTMLElement>('[data-testid="promoted-plan-row"]');
+    expect(rows[0].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toContain('Archive');
+    expect(rows[0].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toContain('Complete');
+    act(() => rows[0].querySelector<HTMLButtonElement>('[aria-label="Complete Ready plan"]')?.click());
+    expect(selectAgent).toHaveBeenCalledWith('s1');
+    expect(rows[1].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Archive');
+    expect(rows[2].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Delete');
+    expect(rows[2].querySelector<HTMLButtonElement>('[data-testid="promoted-plan-actions"] button')?.disabled).toBe(true);
   });
 
   it('keeps rows visible while a background refresh is pending', async () => {

@@ -4,24 +4,34 @@ import type { PromotedPlanFolder, Workspace } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
 const REFRESH_INTERVAL_MS = 10_000;
-const LIFECYCLE_LABELS: Record<Exclude<PromotedPlanFolder['lifecycle'], 'unknown'>, string> = {
+const LIFECYCLE_LABELS: Readonly<Record<string, string>> = {
+  completed: 'Completed',
+  archived: 'Archived',
   hardening: 'Hardening',
   ready: 'Ready',
-  executing: 'Executing',
-  archived: 'Archived',
+  executing: 'In implementation',
+  promoted: 'Promoted',
 };
 
 type PromotedPlansWorkspace = Pick<Workspace, 'id' | 'path' | 'pathType'>;
 
 function planStatusLabel(plan: PromotedPlanFolder): string {
-  if (plan.rollup?.completed) return 'Completed';
-  return plan.lifecycle === 'unknown' ? plan.status : LIFECYCLE_LABELS[plan.lifecycle];
+  return LIFECYCLE_LABELS[plan.lifecycle] ?? plan.lifecycle;
+}
+
+function activityTitle(plan: PromotedPlanFolder): string {
+  if (plan.activityTier === 'active') {
+    const count = plan.activeVerifiedTurnCount;
+    return `${count} ${count === 1 ? 'agent' : 'agents'} active`;
+  }
+  return 'Owner live';
 }
 
 export default function PromotedPlansList(): React.ReactElement {
   const selectedWorkspaceId = useDashboardStore((state) => state.selectedWorkspaceId);
   const workspace = useDashboardStore((state) => state.workspaces.find((item) => item.id === selectedWorkspaceId));
   const openPlanTab = useDashboardStore((state) => state.openPlanTab);
+  const selectAgent = useDashboardStore((state) => state.selectAgent);
   const [plans, setPlans] = useState<PromotedPlanFolder[] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,48 +114,89 @@ export default function PromotedPlansList(): React.ReactElement {
         <div className="p-6 text-center text-[12px] text-gray-500">{workspace ? 'No promoted plans yet.' : 'Select a workspace to view plans.'}</div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-2 scrollbar-thin">
-          {visiblePlans.map((plan) => (
-            <button
-              key={plan.folderName}
-              type="button"
-              onDoubleClick={() => workspace && openPlanTab(plan.planId, plan.title, workspace.id)}
-              className="mb-1 flex w-full items-center gap-3 rounded border border-transparent px-3 py-2 text-left hover:border-white/10 hover:bg-white/5"
-              data-testid="promoted-plan-row"
-              data-archived={plan.archived ? 'true' : 'false'}
-              title="Double-click to open the full planning surface"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <div className="truncate text-[13px] font-medium text-gray-100">{plan.title}</div>
-                  {plan.activeVerifiedTurnCount > 0 && (
-                    <span
-                      className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent-green"
-                      data-testid="promoted-plan-active"
-                      aria-label="Open verified turn stamped to this plan"
-                    />
-                  )}
-                </div>
-                {plan.responsibleSupervisor && (
-                  <div className="truncate text-[11px] text-gray-500" data-testid="promoted-plan-owner">
-                    Responsible: {plan.responsibleSupervisor.display ?? plan.responsibleSupervisor.agentId ?? 'unknown'}
-                  </div>
-                )}
-                {plan.rollup !== null && plan.rollup.archived > 0 && (
-                  <div className="text-[10px] text-gray-600" data-testid="promoted-plan-archived-count">
-                    {plan.rollup.archived} archived
-                  </div>
-                )}
-              </div>
-              <span
-                className="rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-400"
-                data-testid="promoted-plan-status"
-                data-lifecycle={plan.lifecycle}
-                data-completed={plan.rollup?.completed ? 'true' : 'false'}
+          {visiblePlans.map((plan) => {
+            const ownerLive = plan.activityTier === 'active' || plan.activityTier === 'owner-live';
+            const ownerAgentId = plan.responsibleSupervisor?.agentId;
+            const canFocusOwner = ownerLive && Boolean(ownerAgentId);
+            const canComplete = plan.lifecycle !== 'completed' && plan.lifecycle !== 'archived';
+            const canArchive = plan.lifecycle !== 'archived';
+            return (
+              <article
+                key={plan.folderName}
+                onDoubleClick={() => workspace && openPlanTab(plan.planId, plan.title, workspace.id)}
+                className="mb-1 flex w-full items-center gap-3 rounded border border-transparent px-3 py-2 text-left hover:border-white/10 hover:bg-white/5"
+                data-testid="promoted-plan-row"
+                data-archived={plan.archived ? 'true' : 'false'}
+                title="Double-click to open the full planning surface"
               >
-                {planStatusLabel(plan)}
-              </span>
-            </button>
-          ))}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <div className="truncate text-[13px] font-medium text-gray-100">{plan.title}</div>
+                    {plan.activityTier !== 'idle' && plan.activityTier !== undefined && (
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full ${plan.activityTier === 'active' ? 'animate-pulse bg-accent-green' : 'bg-accent-green/40'}`}
+                        data-testid="promoted-plan-activity"
+                        data-activity-tier={plan.activityTier}
+                        aria-label={activityTitle(plan)}
+                        title={activityTitle(plan)}
+                      />
+                    )}
+                  </div>
+                  {plan.responsibleSupervisor && (
+                    <button
+                      type="button"
+                      className="block max-w-full truncate text-[11px] text-gray-500 enabled:hover:text-gray-300 disabled:cursor-not-allowed disabled:text-gray-600"
+                      data-testid="promoted-plan-owner"
+                      disabled={!canFocusOwner}
+                      onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
+                      title={canFocusOwner ? 'Focus responsible agent' : 'Owner offline'}
+                    >
+                      Responsible: {plan.responsibleSupervisor.display ?? ownerAgentId ?? 'unknown'}{canFocusOwner ? '' : ' · owner offline'}
+                    </button>
+                  )}
+                  {plan.rollup?.completed && (
+                    <div className="text-[10px] text-accent-green/80" data-testid="promoted-plan-all-landed">
+                      All {plan.rollup.total} packages landed — ready to complete
+                    </div>
+                  )}
+                  {plan.rollup !== null && plan.rollup.archived > 0 && (
+                    <div className="text-[10px] text-gray-600" data-testid="promoted-plan-archived-count">
+                      {plan.rollup.archived} archived
+                    </div>
+                  )}
+                  <div className="mt-1 flex gap-1" data-testid="promoted-plan-actions">
+                    {canArchive && (
+                      <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled={!canFocusOwner}
+                        aria-label={`Archive ${plan.title}`} onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
+                        title={canFocusOwner ? 'Focus owner to archive this plan' : 'Owner offline'}>
+                        Archive
+                      </button>
+                    )}
+                    {canComplete && (
+                      <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled={!canFocusOwner}
+                        aria-label={`Complete ${plan.title}`} onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
+                        title={canFocusOwner ? 'Focus owner to complete this plan' : 'Owner offline'}>
+                        Complete
+                      </button>
+                    )}
+                    {plan.lifecycle === 'archived' && (
+                      <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled
+                        aria-label={`Delete ${plan.title}`} title="Permanent deletion is not available in this renderer build">
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <span
+                  className="rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-400"
+                  data-testid="promoted-plan-status"
+                  data-lifecycle={plan.lifecycle}
+                >
+                  {planStatusLabel(plan)}
+                </span>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
