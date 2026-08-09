@@ -15,6 +15,16 @@ const LIFECYCLE_LABELS: Readonly<Record<string, string>> = {
 
 type PromotedPlansWorkspace = Pick<Workspace, 'id' | 'path' | 'pathType'>;
 
+const DELETE_REFUSAL_MESSAGES = {
+  'confirmation-required': 'Permanent deletion requires confirmation.',
+  'plan-not-found': 'This plan no longer exists.',
+  'plan-not-archived': 'Only archived plans can be permanently deleted.',
+  'workspace-not-found': 'The plan workspace no longer exists.',
+  'unsafe-path': 'The plan folder could not be safely resolved.',
+  'baseline-release-failed': 'The plan baseline references could not be released.',
+  'delete-failed': 'The plan folder could not be deleted.',
+} as const;
+
 function planStatusLabel(plan: PromotedPlanFolder): string {
   return LIFECYCLE_LABELS[plan.lifecycle] ?? plan.lifecycle;
 }
@@ -35,6 +45,8 @@ export default function PromotedPlansList(): React.ReactElement {
   const [plans, setPlans] = useState<PromotedPlanFolder[] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PromotedPlanFolder | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
   const generationRef = useRef(0);
   const inFlightGenerationRef = useRef<number | null>(null);
 
@@ -93,8 +105,30 @@ export default function PromotedPlansList(): React.ReactElement {
     [plans, showArchived],
   );
 
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete || deletePending) return;
+    setDeletePending(true);
+    try {
+      const result = await window.api.plans.deletePermanent({
+        planId: pendingDelete.planId,
+        confirmed: true,
+      });
+      setPendingDelete(null);
+      if (!result.ok) {
+        setError(DELETE_REFUSAL_MESSAGES[result.reason]);
+        return;
+      }
+      await load(workspace, generationRef.current);
+    } catch {
+      setPendingDelete(null);
+      setError('The plan could not be permanently deleted.');
+    } finally {
+      setDeletePending(false);
+    }
+  }, [deletePending, load, pendingDelete, workspace]);
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-white/10 bg-surface-1" data-testid="plans-promoted-region">
+    <section className="relative flex min-h-0 flex-1 flex-col rounded-lg border border-white/10 bg-surface-1" data-testid="plans-promoted-region">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/10 px-4">
         <Icons.Map className="h-4 w-4 text-accent-green" />
         <h2 className="text-[13px] font-semibold text-gray-200">Promoted plans</h2>
@@ -180,8 +214,9 @@ export default function PromotedPlansList(): React.ReactElement {
                       </button>
                     )}
                     {plan.lifecycle === 'archived' && (
-                      <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled
-                        aria-label={`Delete ${plan.title}`} title="Permanent deletion is not available in this renderer build">
+                      <button type="button" className="ui-btn px-2 py-0.5 text-[10px] text-accent-red"
+                        aria-label={`Delete ${plan.title}`} onClick={() => setPendingDelete(plan)}
+                        title="Permanently delete this archived plan">
                         Delete
                       </button>
                     )}
@@ -197,6 +232,23 @@ export default function PromotedPlansList(): React.ReactElement {
               </article>
             );
           })}
+        </div>
+      )}
+      {pendingDelete && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="promoted-plan-delete-title">
+          <div className="max-w-md rounded-lg border border-white/15 bg-surface-0 p-4 shadow-xl">
+            <p id="promoted-plan-delete-title" className="text-[13px] text-gray-200">
+              Delete <strong>{pendingDelete.title}</strong> permanently? This removes the archived plan folder and cannot be undone.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="ui-btn px-3 py-1.5 text-[12px]" disabled={deletePending} onClick={() => setPendingDelete(null)}>
+                Cancel
+              </button>
+              <button type="button" className="ui-btn px-3 py-1.5 text-[12px] text-accent-red" disabled={deletePending} onClick={() => void confirmDelete()} data-testid="promoted-plan-delete-confirm">
+                {deletePending ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

@@ -779,6 +779,25 @@ export type DeleteProposalResult =
         | 'plan-source-reference' | 'io-error';
     };
 
+export interface PermanentDeletePlanRequest {
+  planId: string;
+  /** Must be literally true. The destructive operation is never inferred from intent. */
+  confirmed: boolean;
+}
+
+export type PermanentDeletePlanFailure =
+  | 'confirmation-required'
+  | 'plan-not-found'
+  | 'plan-not-archived'
+  | 'workspace-not-found'
+  | 'unsafe-path'
+  | 'baseline-release-failed'
+  | 'delete-failed';
+
+export type PermanentDeletePlanResult =
+  | { ok: true; planId: string; releasedBaselineRefs: string[] }
+  | { ok: false; reason: PermanentDeletePlanFailure; runState: string | null };
+
 export interface SupervisorFocus {
   supervisorId: string;
   planId: string;
@@ -3468,6 +3487,8 @@ export interface IpcApi {
     promotionPreflight: (input: PromotionPreflightRequest) => Promise<PromotionPreflightResult>;
     /** Permanently remove one server-rebound, non-promoted proposal file. */
     deleteProposal: (input: DeleteProposalRequest) => Promise<DeleteProposalResult>;
+    /** Permanently remove an archived plan after an explicit confirmation. */
+    deletePermanent: (input: PermanentDeletePlanRequest) => Promise<PermanentDeletePlanResult>;
     /** WP-P4D-proj / WP-P4E — the plan-comment projection that backs the comments
      *  rail: every comment on the plan (across its registered external documents
      *  AND its folder-doc logical targets) rolled up with its reply thread and a

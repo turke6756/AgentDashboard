@@ -240,6 +240,7 @@ const api: IpcApi = {
     // workspace plus an opaque planning-reader handle and optional stale-ID check.
     promotionPreflight: (input) => ipcRenderer.invoke('proposal:promotionPreflight', input),
     deleteProposal: (input) => ipcRenderer.invoke('proposal:delete', input),
+    deletePermanent: (input) => ipcRenderer.invoke('plan:deletePermanent', input),
     // WP-P4E — plan comments rail. `listComments` is an open read (any renderer);
     // `createComment` supplies only planId + an opaque ref + body (server picks the
     // recipient, builds the durable file_path); `replyComment` writes a companion

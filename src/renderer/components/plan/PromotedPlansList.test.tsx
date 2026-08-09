@@ -13,6 +13,7 @@ let root: Root | null;
 const openPlanTab = vi.fn();
 const selectAgent = vi.fn();
 let listPromotedFolders: ReturnType<typeof vi.fn>;
+let deletePermanent: ReturnType<typeof vi.fn>;
 
 function plan(overrides: Partial<PromotedPlanFolder> = {}): PromotedPlanFolder {
   return {
@@ -47,7 +48,8 @@ beforeEach(() => {
     plan({ planArtifactId: 'old-art', planId: 'old-id', folderName: 'old', title: 'Archived plan',
       lifecycle: 'archived', status: 'archived', archived: true, updatedAt: 1, responsibleSupervisor: null }),
   ], warnings: [] }));
-  (window as any).api = { plans: { listPromotedFolders } };
+  deletePermanent = vi.fn(async () => ({ ok: true, planId: 'old-id', releasedBaselineRefs: [] }));
+  (window as any).api = { plans: { listPromotedFolders, deletePermanent } };
   useDashboardStore.setState({ workspaces: [workspace], selectedWorkspaceId: 'ws-1', openPlanTab, selectAgent } as any);
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -149,7 +151,33 @@ describe('PromotedPlansList', () => {
     expect(selectAgent).toHaveBeenCalledWith('s1');
     expect(rows[1].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Archive');
     expect(rows[2].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Delete');
-    expect(rows[2].querySelector<HTMLButtonElement>('[data-testid="promoted-plan-actions"] button')?.disabled).toBe(true);
+    expect(rows[2].querySelector<HTMLButtonElement>('[aria-label="Delete Archived plan"]')?.disabled).toBe(false);
+  });
+
+  it('REACHABILITY:wp5b-delete-wire confirms and invokes permanent deletion for an archived plan', async () => {
+    await render();
+    act(() => host.querySelector<HTMLInputElement>('[data-testid="promoted-history-toggle"] input')!.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete Archived plan"]')!.click());
+    expect(deletePermanent).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="dialog"]')?.textContent).toContain('cannot be undone');
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="promoted-plan-delete-confirm"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(deletePermanent).toHaveBeenCalledWith({ planId: 'old-id', confirmed: true });
+  });
+
+  it('renders a typed permanent-delete refusal to the user', async () => {
+    deletePermanent.mockResolvedValueOnce({ ok: false, reason: 'plan-not-archived', runState: 'executing' });
+    await render();
+    act(() => host.querySelector<HTMLInputElement>('[data-testid="promoted-history-toggle"] input')!.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete Archived plan"]')!.click());
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="promoted-plan-delete-confirm"]')!.click();
+      await Promise.resolve();
+    });
+    expect(host.textContent).toContain('Only archived plans can be permanently deleted.');
   });
 
   it('keeps rows visible while a background refresh is pending', async () => {
