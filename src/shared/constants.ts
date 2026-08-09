@@ -6594,6 +6594,40 @@ responsible supervisor**.
    not perform this playbook's responsibility-gated refresh.
 `;
 
+export const ARC_BOUNDS_CONTRACT = {
+  artifactMaxBytes: 8 * 1024,
+  rowMaxBytes: 200,
+  sectionRowCaps: {
+    decisions: 6,
+    workPackages: 12,
+    deliberations: 12,
+    whoDidWhat: 8,
+  },
+  markdown: `<!-- ARC-BOUNDS-CONTRACT:START -->
+**Hard-bound contract.** Layer-A validation enforces all of these limits without an LLM or
+network access:
+
+- The complete \`ARC.md\` artifact is at most **8 KiB (8,192 bytes) of UTF-8**.
+- Every section item is one line and at most **200 UTF-8 bytes**.
+- **Decisions:** at most the newest 6 source-summary rows, plus one overflow row when older
+  decisions are omitted.
+- **Work packages:** at most 12 source-summary rows (or one metadata rollup line plus the
+  non-\`done\` rows), plus one overflow row when packages are omitted.
+- **Deliberations:** an index of at most 12 intents ordered invalid-then-open, with one intent per
+  line (part, rung, fold status, source link, and at most a one-line gloss). When intents are
+  omitted, one overflow row gives the accurate omitted count. Full writeback remains in
+  \`plan.md\`.
+- **Who did what:** at most 8 source-summary rows, plus one overflow row when older rows are
+  omitted.
+- Every source-summary row and overflow row carries a resolvable in-folder
+  \`relative/path.md#anchor\` link. Absolute paths and traversal outside the plan folder are
+  invalid. Metadata and rollup rows are exempt from the link requirement.
+
+Overflow rows and their accurate omitted counts are the descent pointers; historical or
+complete-intent coverage in \`ARC.md\` is not promised.
+<!-- ARC-BOUNDS-CONTRACT:END -->`,
+} as const;
+
 export const PROPOSAL_TO_PLAN_CONTRACT_ARC_MD = `# Contract reference — §R2: the ARC summary file
 
 > **Canonical, single copy.** This file reproduces **§R2** of
