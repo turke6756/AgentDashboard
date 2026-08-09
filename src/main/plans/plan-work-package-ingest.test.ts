@@ -348,6 +348,66 @@ test('Outcome validation has CRLF and LF parity', () => {
   }
 });
 
+test('Gloss validation attaches one strict prose Gloss to its package', () => {
+  const prose = '## WP-A - Package A\n\n**Gloss:** A plain-language package summary.\n\n**Accept**\n- fixture';
+  const result = ingest.parsePlanWorkPackageDocument(document([spec()], { prose }), 'plan_fixture');
+  assert.equal(result.ok, true, result.ok ? undefined : JSON.stringify(result.diagnostics));
+  if (result.ok) {
+    assert.equal(result.projection.packages[0].gloss, 'A plain-language package summary.',
+      'REACHABILITY:wp6-gloss');
+  }
+});
+
+test('Gloss validation rejects duplicate Gloss labels fail-closed', () => {
+  const prose = '## WP-A - Package A\n\n**Gloss:** First summary.\n\n**Gloss:** Second summary.';
+  const result = ingest.parsePlanWorkPackageDocument(document([spec()], { prose }), 'plan_fixture');
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.diagnostics[0].code, 'prose-mismatch');
+    assert.equal(result.diagnostics[0].packageId, 'WP-A');
+    assert.match(result.diagnostics[0].detail, /duplicate Gloss/);
+  }
+});
+
+test('Gloss validation rejects an orphaned Gloss fail-closed', () => {
+  const prose = '**Gloss:** This is outside every package.\n\n## WP-A - Package A\n\n**Accept**\n- fixture';
+  const result = ingest.parsePlanWorkPackageDocument(document([spec()], { prose }), 'plan_fixture');
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.diagnostics[0].code, 'prose-mismatch');
+    assert.match(result.diagnostics[0].detail, /Gloss label must be inside a prose package section/);
+  }
+});
+
+test('Gloss validation rejects a Gloss line over 200 characters', () => {
+  const gloss = '**Gloss:** ' + 'x'.repeat(201 - '**Gloss:** '.length);
+  assert.equal(gloss.length, 201);
+  const prose = `## WP-A - Package A\n\n${gloss}\n\n**Accept**\n- fixture`;
+  const result = ingest.parsePlanWorkPackageDocument(document([spec()], { prose }), 'plan_fixture');
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.diagnostics[0].code, 'prose-mismatch');
+    assert.match(result.diagnostics[0].detail, /malformed Gloss/);
+  }
+});
+
+test('Gloss-like text in the machine block is ignored', () => {
+  const machineOnly = spec({ acceptance_conditions: ['Machine example: **Gloss:** ignored.'] });
+  const result = ingest.parsePlanWorkPackageDocument(document([machineOnly]), 'plan_fixture');
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.projection.packages[0].gloss, undefined);
+});
+
+test('Gloss remains prose-only and is rejected as a machine package key', () => {
+  const machineGloss = { ...spec(), gloss: 'Machine authority is forbidden.' } as PackageSpec;
+  const result = ingest.parsePlanWorkPackageDocument(document([machineGloss]), 'plan_fixture');
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.diagnostics[0].code, 'package-invalid');
+    assert.match(result.diagnostics[0].detail, /unknown package key gloss/);
+  }
+});
+
 test('prose acceptance-count divergence from the machine block fails loudly', () => {
   const prose = '## WP-A - Package A\n\n**Accept** — the two conditions listed for WP-A in the machine block.';
   const result = ingest.parsePlanWorkPackageDocument(document([spec()], { prose }), 'plan_fixture');

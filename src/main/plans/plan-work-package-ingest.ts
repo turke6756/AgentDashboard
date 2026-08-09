@@ -103,6 +103,10 @@ export type PlanWorkPackageReachabilityValidationResult =
 export interface ParsedPlanWorkPackageInput extends ReconciledPlanWorkPackageInput {
   schemaVersion: 1 | 2;
   reachability?: PlanWorkPackageReachability;
+  /** Optional human-facing prose; never read from or written to the machine block. */
+  gloss?: string;
+  /** `plan_work_package_paths` is progress/reachability evidence, not a dispatch source. */
+  paths: ReconciledPlanWorkPackageInput['paths'];
 }
 
 export interface ParsedPlanWorkPackageProjection {
@@ -342,16 +346,17 @@ function proseAcceptanceCountClaims(body: string): ProseAcceptanceCountClaim[] {
   return claims;
 }
 
-type ProseOutcomeResult =
+type ProseFieldResult =
   | { ok: true; byId: Map<string, string | null> }
   | { ok: false; detail: string; packageId?: string };
 
-function proseOutcomeById(body: string): ProseOutcomeResult {
+function proseFieldById(body: string, label: 'Outcome' | 'Gloss'): ProseFieldResult {
   const visible = visiblePackageProse(body);
   const headings = recognizedProsePackageHeadings(visible);
   const firstHeading = headings[0]?.index ?? visible.length;
-  if (/^\s*\*\*Outcome\b/m.test(visible.slice(0, firstHeading))) {
-    return { ok: false, detail: 'Outcome label must be inside a prose package section' };
+  const fieldPrefix = new RegExp(`^\\s*\\*\\*${label}\\b`, 'm');
+  if (fieldPrefix.test(visible.slice(0, firstHeading))) {
+    return { ok: false, detail: `${label} label must be inside a prose package section` };
   }
 
   const byId = new Map<string, string | null>();
@@ -360,28 +365,36 @@ function proseOutcomeById(body: string): ProseOutcomeResult {
     const sectionStart = (heading.index ?? 0) + heading[0].length;
     const sectionEnd = headings[headingIndex + 1]?.index ?? visible.length;
     const lines = visible.slice(sectionStart, sectionEnd).split('\n');
-    const outcomeIndexes = lines.flatMap((line, index) =>
-      /^\s*\*\*Outcome\b/.test(line) ? [index] : []);
-    if (outcomeIndexes.length > 1) {
-      return { ok: false, detail: `duplicate Outcome labels for ${heading[1]}`, packageId: heading[1] };
+    const fieldIndexes = lines.flatMap((line, index) =>
+      fieldPrefix.test(line) ? [index] : []);
+    if (fieldIndexes.length > 1) {
+      return { ok: false, detail: `duplicate ${label} labels for ${heading[1]}`, packageId: heading[1] };
     }
-    if (outcomeIndexes.length === 0) {
+    if (fieldIndexes.length === 0) {
       byId.set(foldedId(heading[1]), null);
       continue;
     }
 
-    const outcomeIndex = outcomeIndexes[0];
-    const outcomeLine = lines[outcomeIndex];
-    const nextLine = lines[outcomeIndex + 1];
-    const strict = outcomeLine.match(/^\*\*Outcome:\*\* (\S.*)$/);
+    const fieldIndex = fieldIndexes[0];
+    const fieldLine = lines[fieldIndex];
+    const nextLine = lines[fieldIndex + 1];
+    const strict = fieldLine.match(new RegExp(`^\\*\\*${label}:\\*\\* (\\S.*)$`));
     const nextLineAllowed = nextLine === undefined || /^\s*$/.test(nextLine)
       || /^(?:\*\*|## |<!--)/.test(nextLine);
-    if (!strict || outcomeLine.length > 200 || !nextLineAllowed) {
-      return { ok: false, detail: `malformed Outcome for ${heading[1]}`, packageId: heading[1] };
+    if (!strict || fieldLine.length > 200 || !nextLineAllowed) {
+      return { ok: false, detail: `malformed ${label} for ${heading[1]}`, packageId: heading[1] };
     }
     byId.set(foldedId(heading[1]), strict[1]);
   }
   return { ok: true, byId };
+}
+
+function proseOutcomeById(body: string): ProseFieldResult {
+  return proseFieldById(body, 'Outcome');
+}
+
+function proseGlossById(body: string): ProseFieldResult {
+  return proseFieldById(body, 'Gloss');
 }
 
 function invalid(
@@ -469,6 +482,7 @@ export function parsePlanWorkPackageDocument(
       return invalid('package-invalid', `invalid acceptance_conditions for ${localId}`, sourceRelPath, localId);
     }
     if (!Array.isArray(item.paths)) return invalid('package-invalid', `invalid paths for ${localId}`, sourceRelPath, localId);
+    // `plan_work_package_paths` is progress/reachability evidence, not a dispatch source.
     const paths: ReconciledPlanWorkPackageInput['paths'][number][] = [];
     const seenPaths = new Set<string>();
     for (const entry of item.paths) {
@@ -552,6 +566,8 @@ export function parsePlanWorkPackageDocument(
 
   const outcomes = proseOutcomeById(body);
   if (!outcomes.ok) return invalid('prose-mismatch', outcomes.detail, sourceRelPath, outcomes.packageId);
+  const glosses = proseGlossById(body);
+  if (!glosses.ok) return invalid('prose-mismatch', glosses.detail, sourceRelPath, glosses.packageId);
 
   const headings = prosePackageHeadings(body);
   const headingById = new Map<string, { id: string; title: string }>();
@@ -568,6 +584,8 @@ export function parsePlanWorkPackageDocument(
     if (!heading || heading.id !== pkg.sourceLocalId || heading.title !== pkg.title) {
       return invalid('prose-mismatch', `prose heading does not match ${pkg.sourceLocalId}`, sourceRelPath, pkg.sourceLocalId);
     }
+    const gloss = glosses.byId.get(foldedId(pkg.sourceLocalId));
+    if (gloss !== null && gloss !== undefined) pkg.gloss = gloss;
   }
 
   const ordered = [...packages].sort((a, b) => a.sortOrder - b.sortOrder
