@@ -184,8 +184,9 @@ export default function Sidebar({ width }: SidebarProps) {
   // Bumping this remounts every expanded InlineWorkspaceTree, dropping its
   // directory cache so the tree re-lists from disk.
   const [refreshTick, setRefreshTick] = useState(0);
+  const { prompt: promptName, modal: namePromptModal } = useNamePrompt();
   const menuRef = useRef<HTMLDivElement>(null);
-  const menuPosition = useCursorMenuPosition(menuRef, contextMenu, { width: 210, height: 245 }, confirmDelete);
+  const menuPosition = useCursorMenuPosition(menuRef, contextMenu, { width: 210, height: 281 }, confirmDelete);
   const collapsed = panelLayout.sidebarCollapsed;
   // The pane header shows the currently selected workspace's name (the one whose
   // agents fill the center pane), falling back to the section label when nothing
@@ -421,6 +422,26 @@ export default function Sidebar({ width }: SidebarProps) {
     e.stopPropagation();
     setConfirmDelete(null);
     setContextMenu({ x: e.clientX, y: e.clientY, wsId });
+  };
+
+  const handleCreateFolderAtRoot = async (wsId: string) => {
+    setContextMenu(null);
+    const ws = workspaces.find((workspace) => workspace.id === wsId);
+    if (!ws) return;
+
+    const rawName = await promptName({ title: 'New folder name', okLabel: 'Create' });
+    if (rawName === null) return;
+    const name = rawName.trim();
+    if (!name) return;
+
+    const result = await window.api.files.mkdir(ws.path, ws.path, ws.pathType, name);
+    if (!result.ok) {
+      window.alert(result.error);
+      return;
+    }
+
+    setExpandedWorkspaces((prev) => new Set(prev).add(wsId));
+    setRefreshTick((tick) => tick + 1);
   };
 
   const handleDelete = async (wsId: string) => {
@@ -667,6 +688,13 @@ export default function Sidebar({ width }: SidebarProps) {
               ))}
               <div className="ui-menu-divider" />
               <button
+                onClick={() => void handleCreateFolderAtRoot(contextMenu.wsId)}
+                className="ui-menu-item"
+              >
+                New Folder...
+              </button>
+              <div className="ui-menu-divider" />
+              <button
                 onClick={() => setConfirmDelete(contextMenu.wsId)}
                 className="ui-menu-item text-accent-red"
               >
@@ -716,6 +744,7 @@ export default function Sidebar({ width }: SidebarProps) {
       </div>
 
       {showCreate && <WorkspaceCreateDialog onClose={() => setShowCreate(false)} />}
+      {namePromptModal}
     </div>
   );
 }
