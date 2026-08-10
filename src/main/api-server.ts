@@ -105,6 +105,9 @@ import {
 
 export type PlanBindingBoundaryAgent = Pick<Agent, 'workspaceId' | 'planId'>;
 
+/** Hard ceiling for any HTTP request body accepted by the local API. */
+export const API_MAX_PAYLOAD_BYTES = 1_000_000;
+
 export interface PlanBindingBoundaryDeps {
   getPlanById: (planId: string) => Pick<import('../shared/types').Plan, 'workspaceId' | 'deletedAt'> | null;
   /** Authoritative plan_work_packages item lookup (SC-WP-3A). Omit to fail closed
@@ -3975,12 +3978,49 @@ function pickBody<T>(b: any, snake: string, camel: string): T | undefined {
   return undefined;
 }
 
+function payloadTooLarge(): Error & { statusCode: number } {
+  return Object.assign(
+    new Error(`Request body exceeds the ${API_MAX_PAYLOAD_BYTES}-byte limit`),
+    { statusCode: 413 },
+  );
+}
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => { data += chunk; });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
+    const rawContentLength = req.headers['content-length'];
+    if (typeof rawContentLength === 'string') {
+      const contentLength = Number(rawContentLength);
+      if (Number.isFinite(contentLength) && contentLength > API_MAX_PAYLOAD_BYTES) {
+        reject(payloadTooLarge());
+        return;
+      }
+    }
+
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const fail = (err: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    req.on('data', (chunk: Buffer | string) => {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buf.length;
+      if (bytes > API_MAX_PAYLOAD_BYTES) {
+        fail(payloadTooLarge());
+        req.destroy();
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks, bytes).toString('utf8'));
+    });
+    req.on('error', fail);
   });
 }
 

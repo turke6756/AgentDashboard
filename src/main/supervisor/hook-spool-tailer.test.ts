@@ -146,6 +146,28 @@ test('truncate-shrink → offset reset, partial cleared, new content applies', (
   }
 });
 
+test('rotation drains every unread archived event before the replacement spool', () => {
+  const dir = mktmp('rotation');
+  try {
+    const { spool, tailer, received } = makeTailer({ dir });
+    fs.appendFileSync(spool,
+      record('working', Date.now(), { turnId: 'before-1' })
+      + record('idle', Date.now() + 1, { turnId: 'before-2' }));
+    fs.renameSync(spool, spool + '.rotated');
+    fs.appendFileSync(spool, record('working', Date.now() + 2, { turnId: 'after-1' }));
+
+    tailer.drain();
+    assert.deepStrictEqual(
+      received.map((r) => r.turnId),
+      ['before-1', 'before-2', 'after-1'],
+      'unread archived records must be delivered before records in the replacement file',
+    );
+    assert.equal(fs.existsSync(spool + '.rotated'), false, 'consumed archive releases the next rotation');
+  } finally {
+    rmrf(dir);
+  }
+});
+
 test('startup lookback: 64 KB window, partial first line discarded, old/active filtered, fresh idle applied', () => {
   const dir = mktmp('lookback');
   const { warns, restore } = captureWarns();

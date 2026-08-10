@@ -29,7 +29,7 @@ import {
   GUARD_GIT_DISCARD_MJS,
   DASHBOARD_STATUS_SCRIPT_MJS, DASHBOARD_STATUS_SCRIPT_MJS_V3, DASHBOARD_STATUS_SCRIPT_MJS_V4, DASHBOARD_STATUS_SCRIPT_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
-  DASHBOARD_STATUS_SCRIPT_V9_HASH,
+  DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
   DASHBOARD_STATUSLINE_SCRIPT_MJS,
   CODEX_WORKER_PROFILE_NAME, CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS,
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
@@ -1283,6 +1283,9 @@ export const WORKER_CLAUDE_MD_V10_HASH = '89c1675d008f34792c9fe9ca59a4d237f2c3b7
  * reachability report was added. */
 export const WORKER_CLAUDE_MD_V11_HASH = '983d37979966474a0ba886966e80fc6968133927e28a07abf8205333804d572a';
 
+/** WP-E: hash of the frozen worker v12 body before the scratch rule. */
+export const WORKER_CLAUDE_MD_V12_HASH = 'f02e51da13d81600492995da66eafffb2a7f37a74c5ee00d2c868ea72ed3c824';
+
 /** SHA-256 hex of the v1 `.lares/workers/codex/AGENTS.md` — the Codex derivation
  *  of the FROZEN worker v8 body (WORKER_CODEX_AGENTS_MD_V1). v2 is the live
  *  WORKER_CODEX_AGENTS_MD (derived from the v9 worker body). Used in the codex
@@ -1302,6 +1305,9 @@ export const WORKER_CODEX_AGENTS_MD_V3_HASH = '2666fc57e77d1d37eed3ac4a693ca52b2
 
 /** WP-B4: hash of frozen Codex AGENTS.md v4, derived from worker v11. */
 export const WORKER_CODEX_AGENTS_MD_V4_HASH = '18ea93086f25c68096f20e27a9fe773dc7d07e3e84a40fe52d5ddfeac017d65e';
+
+/** WP-E: hash of frozen Codex AGENTS.md v5 before the scratch rule. */
+export const WORKER_CODEX_AGENTS_MD_V5_HASH = 'e85777adc94bd63b1a626ba1ea13c5142d4e9f3165157b67e4769fbad94a8909';
 
 // WP-SKILLFIX — SHA-256 hex of the v1 bundled bodies of the five proposal-to-plan
 // files hardened to v2 (fresh-agent test surfaced four doc defects: orient
@@ -3674,11 +3680,12 @@ export class AgentSupervisor extends EventEmitter {
    *  v9 (plans/idle-vs-waiting-notification-fix.md) bails on non-blocking
    *  Notification types (idle_prompt et al.) so the ~60s idle reminder no longer
    *  flips the card to waiting.
+   *  v10 adds explicit `--event`; v11 adds bounded pending-status rotation.
    *  All previous hashes are recorded for silent upgrade. */
   private static WORKSPACE_SCRIPT_FILES: Record<string, ScaffoldFile> = {
     [`.lares/scripts/dashboard-status.mjs`]: {
       content: DASHBOARD_STATUS_SCRIPT_MJS,
-      version: 10,
+      version: 11,
       executable: true,
       previousHashes: {
         1: DASHBOARD_STATUS_SCRIPT_V1_HASH,
@@ -3690,6 +3697,7 @@ export class AgentSupervisor extends EventEmitter {
         7: DASHBOARD_STATUS_SCRIPT_V7_HASH,
         8: DASHBOARD_STATUS_SCRIPT_V8_HASH,
         9: DASHBOARD_STATUS_SCRIPT_V9_HASH,
+        10: DASHBOARD_STATUS_SCRIPT_V10_HASH,
       },
     },
     // Persona kit (§1.4) — one shared copy of the read-comments helper script.
@@ -3735,8 +3743,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/workers/claude/.claude/skills/prove-the-production-entry-point'),
     [`.lares/workers/claude/CLAUDE.md`]:                       {
       content: WORKER_CLAUDE_MD,
-      version: 12, // v12: requires the structured production-reachability report. v11 removed worker-side memory-retrieval guidance.
-      previousHashes: { 1: sha256Hex(WORKER_CLAUDE_MD_V1), 2: WORKER_CLAUDE_MD_V2_HASH, 3: WORKER_CLAUDE_MD_V3_HASH, 4: WORKER_CLAUDE_MD_V4_HASH, 5: WORKER_CLAUDE_MD_V5_HASH, 6: WORKER_CLAUDE_MD_V6_HASH, 7: WORKER_CLAUDE_MD_V7_HASH, 8: WORKER_CLAUDE_MD_V8_HASH, 9: WORKER_CLAUDE_MD_V9_HASH, 10: WORKER_CLAUDE_MD_V10_HASH, 11: WORKER_CLAUDE_MD_V11_HASH },
+      version: 13, // v13: designated, marked scratch-home rule. v12 required the structured production-reachability report.
+      previousHashes: { 1: sha256Hex(WORKER_CLAUDE_MD_V1), 2: WORKER_CLAUDE_MD_V2_HASH, 3: WORKER_CLAUDE_MD_V3_HASH, 4: WORKER_CLAUDE_MD_V4_HASH, 5: WORKER_CLAUDE_MD_V5_HASH, 6: WORKER_CLAUDE_MD_V6_HASH, 7: WORKER_CLAUDE_MD_V7_HASH, 8: WORKER_CLAUDE_MD_V8_HASH, 9: WORKER_CLAUDE_MD_V9_HASH, 10: WORKER_CLAUDE_MD_V10_HASH, 11: WORKER_CLAUDE_MD_V11_HASH, 12: WORKER_CLAUDE_MD_V12_HASH },
     },
     [`.lares/workers/claude/.claude/settings.json`]:           {
       content: WORKER_CLAUDE_SETTINGS_JSON,
@@ -3943,8 +3951,8 @@ export class AgentSupervisor extends EventEmitter {
         // worker body) so a pristine v1 workspace upgrades silently.
         [`.lares/workers/codex/AGENTS.md`]: {
           content: WORKER_CODEX_AGENTS_MD,
-          version: 5, // v5: inherits the worker v11->v12 structured production-reachability report.
-          previousHashes: { 1: WORKER_CODEX_AGENTS_MD_V1_HASH, 2: WORKER_CODEX_AGENTS_MD_V2_HASH, 3: WORKER_CODEX_AGENTS_MD_V3_HASH, 4: WORKER_CODEX_AGENTS_MD_V4_HASH },
+          version: 6, // v6: inherits the worker v12->v13 designated, marked scratch-home rule.
+          previousHashes: { 1: WORKER_CODEX_AGENTS_MD_V1_HASH, 2: WORKER_CODEX_AGENTS_MD_V2_HASH, 3: WORKER_CODEX_AGENTS_MD_V3_HASH, 4: WORKER_CODEX_AGENTS_MD_V4_HASH, 5: WORKER_CODEX_AGENTS_MD_V5_HASH },
         },
         // Memory & Lessons v2 (WP-F1): the `remember` skill for the Codex WORKER
         // skill root (WP-R proved `.agents/skills/` discovery + invocation from

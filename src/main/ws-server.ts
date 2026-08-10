@@ -6,6 +6,8 @@ import { Agent, AgentStatus } from '../shared/types';
 import { WS_PORT } from './control-ports';
 
 const PING_INTERVAL_MS = 30_000;
+/** Match the HTTP API's bounded local-control payload ceiling. */
+export const WS_MAX_PAYLOAD_BYTES = 1_000_000;
 
 interface ClientInfo {
   workspaceId: string;
@@ -81,7 +83,11 @@ export class WsServer {
   }
 
   start(): void {
-    this.wss = new WebSocketServer({ port: WS_PORT, host: '127.0.0.1' });
+    this.wss = new WebSocketServer({
+      port: WS_PORT,
+      host: '127.0.0.1',
+      maxPayload: WS_MAX_PAYLOAD_BYTES,
+    });
 
     this.wss.on('listening', () => {
       console.log(`[ws-server] Listening on ws://127.0.0.1:${WS_PORT}`);

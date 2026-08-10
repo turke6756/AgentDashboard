@@ -633,6 +633,46 @@ test('dashboard-status.mjs (v7) spools to pending-status.jsonl when fetch fails'
   }
 });
 
+test('dashboard-status.mjs rotates a full pending-status spool before appending', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-status-rotate-'));
+  const scriptsDir = path.join(workspace, '.lares', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { DASHBOARD_STATUS_SCRIPT_MJS, PENDING_STATUS_MAX_BYTES } = require('../../shared/constants') as {
+    DASHBOARD_STATUS_SCRIPT_MJS: string;
+    PENDING_STATUS_MAX_BYTES: number;
+  };
+  const destScript = path.join(scriptsDir, 'dashboard-status.mjs');
+  const pendingLog = path.join(workspace, '.lares', 'pending-status.jsonl');
+  fs.writeFileSync(destScript, DASHBOARD_STATUS_SCRIPT_MJS, 'utf8');
+  fs.writeFileSync(pendingLog, Buffer.alloc(PENDING_STATUS_MAX_BYTES, 0x78));
+
+  const scriptEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    AGENT_ID: 'agent-rotation-test',
+    DASHBOARD_PORT: '1',
+    DASHBOARD_HOST: '127.0.0.1',
+    CLAUDE_HOOK_EVENT_NAME: 'Stop',
+  };
+  delete scriptEnv.DASHBOARD_SPOOL_PATH;
+  const result = spawnSync(process.execPath, [destScript], {
+    env: scriptEnv,
+    encoding: 'utf8',
+    timeout: 10000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    assert.equal(result.status, 0, `script must exit 0; stderr=${result.stderr}`);
+    assert.equal(fs.statSync(pendingLog + '.rotated').size, PENDING_STATUS_MAX_BYTES);
+    const current = fs.readFileSync(pendingLog, 'utf8').trim();
+    const event = JSON.parse(current);
+    assert.equal(event.agentId, 'agent-rotation-test');
+    assert.ok(Buffer.byteLength(current) < PENDING_STATUS_MAX_BYTES);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 // ── Runner ───────────────────────────────────────────────────────────
 (async () => {
   let passed = 0;

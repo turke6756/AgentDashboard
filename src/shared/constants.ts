@@ -1436,9 +1436,23 @@ reachability report with:
 If you cannot reach the production seam within your authorized file scope, stop
 and say so instead of reporting the package complete.
 `;
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V11.replace(
+export const WORKER_CLAUDE_MD_V12 = WORKER_CLAUDE_MD_V11.replace(
   WORKER_CLAUDE_MD_V12_REACHABILITY_ANCHOR,
   `${WORKER_CLAUDE_MD_V12_REACHABILITY_SECTION}\n${WORKER_CLAUDE_MD_V12_REACHABILITY_ANCHOR}`,
+);
+
+// WP-E comfort tiers: freeze v12 above, then add the preventive scratch rule.
+// This rule conveys placement/provenance only; it grants no exclusion by itself.
+const WORKER_CLAUDE_MD_V13_SCRATCH_ANCHOR = '## Production reachability report';
+const WORKER_CLAUDE_MD_V13_SCRATCH_SECTION = `## Scratch output
+
+Put disposable output in the designated scratch home, never in the repository
+root. Mark it with the Lares scratch sentinel and registration supplied for the
+work package; an unmarked directory is ordinary user work and stays visible.
+`;
+export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V12.replace(
+  WORKER_CLAUDE_MD_V13_SCRATCH_ANCHOR,
+  `${WORKER_CLAUDE_MD_V13_SCRATCH_SECTION}\n${WORKER_CLAUDE_MD_V13_SCRATCH_ANCHOR}`,
 );
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
@@ -1608,6 +1622,14 @@ export const WORKER_CODEX_AGENTS_MD_V3 = WORKER_CLAUDE_MD_V10
  *  previousHashes[4] recognizes the exact body shipped before the structured
  *  production-reachability reporting duty. */
 export const WORKER_CODEX_AGENTS_MD_V4 = WORKER_CLAUDE_MD_V11
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** WP-E: frozen v5 Codex AGENTS.md, derived from the frozen worker v12 body.
+ * previousHashes[5] recognizes the exact body shipped before the scratch rule. */
+export const WORKER_CODEX_AGENTS_MD_V5 = WORKER_CLAUDE_MD_V12
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
@@ -2759,6 +2781,8 @@ try {
  *
  *  Deliberately avoids JS template literals so the embedded script needs no
  *  backtick/dollar escaping inside this TS template. */
+export const PENDING_STATUS_MAX_BYTES = 4 * 1024 * 1024;
+
 function buildDashboardStatusScript(): string {
   return `#!/usr/bin/env node
 // Class IV worker hook script v8 — multi-transport delivery + Notification →
@@ -2768,6 +2792,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+
+const SPOOL_MAX_BYTES = ${PENDING_STATUS_MAX_BYTES};
 
 // destroy() below can emit an ASYNC 'error' on some Node versions; an
 // unhandled 'error' event escapes every try/catch and would violate the
@@ -2890,6 +2916,15 @@ async function main() {
       const scriptDir = path.dirname(fileURLToPath(import.meta.url));
       spoolPath = path.resolve(scriptDir, '..', 'pending-status.jsonl');
     }
+    // Rename-before-append keeps each spool file bounded. Never replace an
+    // unread archive: the dashboard tailer drains + removes it first.
+    const rotatedPath = spoolPath + '.rotated';
+    try {
+      const size = fs.statSync(spoolPath).size;
+      if (size + Buffer.byteLength(line) > SPOOL_MAX_BYTES && !fs.existsSync(rotatedPath)) {
+        fs.renameSync(spoolPath, rotatedPath);
+      }
+    } catch { /* missing/racing spool: append below creates or extends it */ }
     fs.appendFileSync(spoolPath, line);
   } catch { /* spool is best-effort; HTTP/tmux may still deliver */ }
 
@@ -3134,6 +3169,9 @@ export const DASHBOARD_STATUS_SCRIPT_V8_HASH = 'd11408d50c8e5e108af247860642edad
 
 /** v9 hash literal — the body before explicit `--event <name>` argv support. */
 export const DASHBOARD_STATUS_SCRIPT_V9_HASH = '3d51ee05cbc11a3f519db503681c0795409b9af84b720ee269a17803818e209f';
+
+/** v10 hash literal â€” the body before bounded pending-status rotation. */
+export const DASHBOARD_STATUS_SCRIPT_V10_HASH = 'f423640feaf69047660c0b248f224111278983dae1dec647795891690d848af9';
 
 /** v6 verbatim (POST self-abort 2500ms + SubagentStop guard) — frozen so a v6
  *  workspace's on-disk dashboard-status.mjs can be hashed and silently
@@ -5683,6 +5721,41 @@ export const RETENTION_CYCLE_INTERVAL_MS = 6 * 60 * 60 * 1000;     // periodic r
 
 export const BUNDLE_CONTRACT_VERSION = 1;
 export const COMMIT_CANDIDATE_TOKEN_CAP_PER_REPOSITORY = 128;
+
+/**
+ * Heuristic labels for bounded onboarding/discovery. A match may power UI copy
+ * and exclusion suggestions only: it never skips inventory, protection, or any
+ * budget without an authoritative policy-store decision.
+ */
+export const COMMIT_CANDIDATE_CLUTTER_RECOGNITION_PATTERNS = [
+  'node_modules/',
+  'dist/',
+  'build/',
+  'out/',
+  '__pycache__/',
+  '.venv/',
+  'venv/',
+  'env/',
+  'target/',
+  'coverage/',
+  'htmlcov/',
+  '.nyc_output/',
+  '.next/',
+  '.nuxt/',
+  '.svelte-kit/',
+  '.parcel-cache/',
+  '.cache/',
+  '.gradle/',
+  'bin/',
+  'obj/',
+  'lib/',
+  'lib64/',
+  'bower_components/',
+  '.ipynb_checkpoints/',
+  '.mypy_cache/',
+  '.pytest_cache/',
+  'docs/_build/',
+] as const;
 export const RETENTION_PIN_QUOTA_BYTES = 536_870_912; // 512 MiB logical pinned-byte budget
 export const RETENTION_PIN_MAX_EXTENSION_MS = 2_592_000_000; // 30 days
 export const SAVE_CARD_COMMIT_COORDINATOR_ENABLED = true; // enabled after the Stage-4 adversarial matrix passed

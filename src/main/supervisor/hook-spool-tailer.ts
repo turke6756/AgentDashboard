@@ -27,6 +27,7 @@ import type { ParsedHookEvent } from './index';
 export const SPOOL_LOOKBACK_BYTES = 64 * 1024;
 /** During the startup lookback, only events younger than this apply. */
 export const SPOOL_LOOKBACK_MAX_AGE_MS = 10 * 60_000;
+export const SPOOL_ROTATED_SUFFIX = '.rotated';
 /** Per-tick read cap — a monster delta finishes over a few ticks instead of
  *  blocking one. */
 const MAX_BYTES_PER_DRAIN = 1024 * 1024;
@@ -97,7 +98,9 @@ export class HookSpoolTailer {
     // drain, which conservatively treats the then-existing content as
     // historical.
     try {
-      this.initFrom(fs.statSync(this.readPath).size);
+      const rotatedPath = this.readPath + SPOOL_ROTATED_SUFFIX;
+      const initialPath = fs.existsSync(rotatedPath) ? rotatedPath : this.readPath;
+      this.initFrom(fs.statSync(initialPath).size);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.initFrom(0);
     }
@@ -130,6 +133,28 @@ export class HookSpoolTailer {
   }
 
   private drainInner(): void {
+    let budget = MAX_BYTES_PER_DRAIN;
+    const rotatedPath = this.readPath + SPOOL_ROTATED_SUFFIX;
+    let rotated: fs.Stats | null = null;
+    try {
+      rotated = fs.statSync(rotatedPath);
+    } catch {
+      rotated = null;
+    }
+
+    if (rotated) {
+      if (!this.initialized) this.initFrom(rotated.size);
+      if (rotated.size < this.offset) this.resetForReplacement();
+      budget = this.drainPath(rotatedPath, rotated.size, budget);
+      if (this.offset < rotated.size) return;
+
+      // A consumed archive is removed only by the reader. Its continued
+      // presence tells concurrent hook writers not to overwrite unread data.
+      try { fs.unlinkSync(rotatedPath); } catch { return; }
+      this.resetForReplacement();
+      if (budget <= 0) return;
+    }
+
     let st: fs.Stats;
     try {
       st = fs.statSync(this.readPath);
@@ -147,18 +172,19 @@ export class HookSpoolTailer {
     if (st.size < this.offset) {
       // Truncate-shrink detection: someone replaced/truncated the file.
       // Reset to the top and drop the partial — it belonged to the old file.
-      this.offset = 0;
-      this.partial = Buffer.alloc(0);
-      this.discardFirstLine = false;
-      this.lookbackEndOffset = 0;
+      this.resetForReplacement();
     }
     if (st.size === this.offset) return;
 
-    let budget = MAX_BYTES_PER_DRAIN;
-    const fd = fs.openSync(this.readPath, 'r');
+    this.drainPath(this.readPath, st.size, budget);
+  }
+
+  private drainPath(readPath: string, size: number, initialBudget: number): number {
+    let budget = initialBudget;
+    const fd = fs.openSync(readPath, 'r');
     try {
-      while (this.offset < st.size && budget > 0) {
-        const want = Math.min(64 * 1024, st.size - this.offset, budget);
+      while (this.offset < size && budget > 0) {
+        const want = Math.min(64 * 1024, size - this.offset, budget);
         const buf = Buffer.alloc(want);
         const got = fs.readSync(fd, buf, 0, want, this.offset);
         if (got <= 0) break;
@@ -169,6 +195,14 @@ export class HookSpoolTailer {
     } finally {
       fs.closeSync(fd);
     }
+    return budget;
+  }
+
+  private resetForReplacement(): void {
+    this.offset = 0;
+    this.partial = Buffer.alloc(0);
+    this.discardFirstLine = false;
+    this.lookbackEndOffset = 0;
   }
 
   /** Split delta into complete newline-terminated lines; the final

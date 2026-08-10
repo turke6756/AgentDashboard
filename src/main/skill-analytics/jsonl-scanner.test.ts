@@ -3,7 +3,8 @@
 //   npm run build:main
 //   node dist/main/main/skill-analytics/jsonl-scanner.test.js
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import fs, { readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   normalizeStreamId,
@@ -147,6 +148,40 @@ test('readNewLines: cursor at EOF yields nothing (idempotent tail)', () => {
   const r = readNewLines(STREAM, OFFSETS.totalBytes);
   assert.equal(r.lines.length, 0);
   assert.equal(r.nextOffset, OFFSETS.totalBytes);
+});
+
+test('readNewLines: full backfill uses byte-budgeted filesystem reads instead of one whole-tail allocation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-cap-'));
+  const file = path.join(dir, 'large.jsonl');
+  try {
+    const rows = Array.from({ length: 12 }, (_, i) => JSON.stringify({ i, pad: 'x'.repeat(20) }) + '\n');
+    fs.writeFileSync(file, rows.join(''), 'utf8');
+    const cap = Buffer.byteLength(rows[0] + rows[1] + rows[2]);
+    const originalReadSync = fs.readSync;
+    const requested: number[] = [];
+    fs.readSync = ((fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) => {
+      requested.push(length);
+      return originalReadSync(fd, buffer, offset, length, position);
+    }) as typeof fs.readSync;
+    try {
+      const result = readNewLines(file, 0, cap);
+      assert.equal(result.lines.length, rows.length, 'chunking must preserve the full-backfill contract');
+      assert.equal(result.nextOffset, result.sizeBytes);
+      const tailReads = requested.slice(1); // first call is readFirstFingerprint's separately-capped 64 KiB probe
+      assert.ok(
+        tailReads.length > 1,
+        'REACHABILITY:jsonl-scanner-byte-cap fixture must require multiple tail filesystem reads',
+      );
+      assert.ok(
+        tailReads.every((n) => n <= cap),
+        `REACHABILITY:jsonl-scanner-byte-cap every tail read must stay within ${cap} bytes; got ${requested}`,
+      );
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

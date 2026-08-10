@@ -211,12 +211,19 @@ export interface TailRead {
   firstFingerprint: string;
 }
 
+/** Maximum bytes retained by one JSONL tail read/backfill slice. */
+export const JSONL_READ_MAX_BYTES = 1_000_000;
+
 /**
  * Read complete new lines from `[byteOffset, size)` of a file. Returns the parsed
  * complete lines, the advanced cursor (`nextOffset`), the current file size, and
  * the current first-line fingerprint. Read-only.
  */
-export function readNewLines(jsonlPath: string, byteOffset: number): TailRead {
+export function readNewLines(
+  jsonlPath: string,
+  byteOffset: number,
+  maxReadBytes = JSONL_READ_MAX_BYTES,
+): TailRead {
   const firstFingerprint = readFirstFingerprint(jsonlPath);
   let sizeBytes = 0;
   try {
@@ -227,13 +234,32 @@ export function readNewLines(jsonlPath: string, byteOffset: number): TailRead {
   if (byteOffset >= sizeBytes) {
     return { lines: [], nextOffset: byteOffset, sizeBytes, firstFingerprint };
   }
-  const length = sizeBytes - byteOffset;
-  const buf = Buffer.alloc(length);
+  const requestedBytes = Number.isFinite(maxReadBytes) ? Math.max(1, Math.floor(maxReadBytes)) : JSONL_READ_MAX_BYTES;
+  const chunkBytes = Math.min(JSONL_READ_MAX_BYTES, requestedBytes);
   let fd: number | null = null;
   try {
     fd = fs.openSync(jsonlPath, 'r');
-    const n = fs.readSync(fd, buf, 0, length, byteOffset);
-    const { lines, nextOffset } = splitCompleteLines(buf.subarray(0, n), byteOffset);
+    const lines: ScannedLine[] = [];
+    let position = byteOffset;
+    let nextOffset = byteOffset;
+    let pending = Buffer.alloc(0);
+    while (position < sizeBytes) {
+      const want = Math.min(chunkBytes, sizeBytes - position);
+      const buf = Buffer.alloc(want);
+      const n = fs.readSync(fd, buf, 0, want, position);
+      if (n <= 0) break;
+      const chunk = buf.subarray(0, n);
+      const combined = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
+      const combinedOffset = position - pending.length;
+      const split = splitCompleteLines(combined, combinedOffset);
+      lines.push(...split.lines);
+      nextOffset = split.nextOffset;
+      const consumed = nextOffset - combinedOffset;
+      pending = consumed < combined.length
+        ? Buffer.from(combined.subarray(consumed))
+        : Buffer.alloc(0);
+      position += n;
+    }
     return { lines, nextOffset, sizeBytes, firstFingerprint };
   } catch {
     return { lines: [], nextOffset: byteOffset, sizeBytes, firstFingerprint };

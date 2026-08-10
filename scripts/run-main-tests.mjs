@@ -573,6 +573,7 @@ const TESTS = [
   'dist/main/main/analytics-export/analytics-snapshot-shim.test.js',
   'dist/main/main/analytics-export/analytics-snapshot-source-integration.test.js',
   'dist/main/main/api-server-overhead-route.test.js',
+  'dist/main/main/api-server-body-cap.test.js',
   'dist/main/main/api-server-checkpoints.test.js',
   'dist/main/main/agent-dto-routes.test.js',
   'dist/main/main/api-server-optimizer-routes.test.js',
