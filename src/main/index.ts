@@ -57,7 +57,7 @@ import { OrchestrationService } from './orchestration/service';
 import { createDashboardClient } from './orchestration/dashboard-client';
 import { wslToWindowsPath } from './path-utils';
 import { registerMediaProtocol } from './media-protocol';
-import { shutdownJupyterServer } from './jupyter-server';
+import { registerJupyterServerExitDisposal, shutdownJupyterServer } from './jupyter-server';
 import { disposeKernelClient } from './jupyter-kernel-client';
 import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
 import { startPlansWatcher, PlansWatcher } from './plans-watcher';
@@ -109,6 +109,8 @@ if (strippedClaudeEnvKeys.length > 0) {
     `sanitized spawn environment (removed: ${strippedClaudeEnvKeys.join(', ')})`
   );
 }
+
+registerJupyterServerExitDisposal(disposeKernelClient);
 
 // Crash visibility (2026-06-12): the main process died abruptly twice with no
 // stack in the launch terminal, no Crashpad dump, and no WER entry — i.e. a

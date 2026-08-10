@@ -13,6 +13,16 @@ const VENV_PATH = '/home/turke/GIS_Analysis/NEON_GIS_CrestedButte_Analysis/.venv
 let proc: ChildProcess | null = null;
 let info: JupyterServerInfo | null = null;
 let pending: Promise<JupyterServerInfo> | null = null;
+const exitListeners = new Set<() => void>();
+
+export function onJupyterServerExit(listener: () => void): () => void {
+  exitListeners.add(listener);
+  return () => { exitListeners.delete(listener); };
+}
+
+export function registerJupyterServerExitDisposal(dispose: () => void): () => void {
+  return onJupyterServerExit(dispose);
+}
 
 // Match only non-zero ports. Jupyter 2.17+ with `--port=0` logs the literal
 // `0` in the startup URL even though the server binds to an OS-assigned port,
@@ -184,8 +194,18 @@ async function spawnServer(): Promise<JupyterServerInfo> {
 
     child.on('exit', (code, signal) => {
       console.log(`[jupyter-server] exited code=${code} signal=${signal}`);
-      proc = null;
-      info = null;
+      const wasCurrent = proc === child;
+      if (wasCurrent) {
+        proc = null;
+        info = null;
+        for (const listener of [...exitListeners]) {
+          try {
+            listener();
+          } catch (err) {
+            console.error('[jupyter-server] exit listener failed:', err);
+          }
+        }
+      }
       if (!resolved) {
         resolved = true;
         reject(new Error(`jupyter-server exited before emitting URL (code=${code}). Output:\n${chunks.join('')}`));
