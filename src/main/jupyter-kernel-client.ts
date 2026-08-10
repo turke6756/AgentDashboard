@@ -15,7 +15,12 @@
 // to ~5KB per output, images replaced by `{ mime, byteLength }` stubs — so
 // the LLM doesn't blow its context on a single matplotlib figure.
 
-import type { ServiceManager as IServiceManager, Session, KernelMessage } from '@jupyterlab/services';
+import type {
+  ServiceManager as IServiceManager,
+  ServerConnection as IServerConnection,
+  Session,
+  KernelMessage,
+} from '@jupyterlab/services';
 import WebSocket from 'ws';
 import { ensureJupyterServer } from './jupyter-server';
 
@@ -41,11 +46,35 @@ const { ServerConnection, ServiceManager } = services;
 
 let manager: IServiceManager.IManager | null = null;
 let initPromise: Promise<IServiceManager.IManager> | null = null;
+let managerGeneration = 0;
+
+type ServiceManagerFactory = (settings: IServerConnection.ISettings) => IServiceManager.IManager;
+const productionServiceManagerFactory: ServiceManagerFactory = (settings) =>
+  new ServiceManager({ serverSettings: settings }) as IServiceManager.IManager;
+let createServiceManager: ServiceManagerFactory = productionServiceManagerFactory;
+
+export function setCreateServiceManagerForTest(factory: ServiceManagerFactory): void {
+  createServiceManager = factory;
+}
+
+export function resetCreateServiceManagerForTest(): void {
+  createServiceManager = productionServiceManagerFactory;
+}
+
+function disposeServiceManager(m: IServiceManager.IManager): void {
+  // ServiceManager.dispose() in installed 7.5.6 omits these poll owners.
+  try { m.kernels.dispose(); } catch { /* ignore */ }
+  try { m.kernelspecs.dispose(); } catch { /* ignore */ }
+  try { m.user.dispose(); } catch { /* ignore */ }
+  try { m.dispose(); } catch { /* ignore */ }
+}
 
 async function ensureManager(): Promise<IServiceManager.IManager> {
   if (manager) return manager;
   if (initPromise) return initPromise;
-  initPromise = (async () => {
+
+  const generation = managerGeneration;
+  const thisInit = (async () => {
     const server = await ensureJupyterServer();
     const baseUrl = server.baseUrl.endsWith('/') ? server.baseUrl : `${server.baseUrl}/`;
     const settings = ServerConnection.makeSettings({
@@ -57,23 +86,35 @@ async function ensureManager(): Promise<IServiceManager.IManager> {
       // pick up `ws` in Node — pass it explicitly. (Same gotcha as the smoke test.)
       WebSocket: SafeWebSocket,
     });
-    const m = new ServiceManager({ serverSettings: settings }) as IServiceManager.IManager;
-    await m.ready;
+    const m = createServiceManager(settings);
+    try {
+      await m.ready;
+    } catch (err) {
+      disposeServiceManager(m);
+      throw err;
+    }
+    if (generation !== managerGeneration) {
+      disposeServiceManager(m);
+      throw new Error('kernel client disposed during initialization');
+    }
     manager = m;
     return m;
   })();
+
+  initPromise = thisInit;
   try {
-    return await initPromise;
+    return await thisInit;
   } finally {
-    initPromise = null;
+    if (initPromise === thisInit) initPromise = null;
   }
 }
 
 export function disposeKernelClient(): void {
-  if (manager) {
-    try { manager.dispose(); } catch { /* ignore */ }
-    manager = null;
-  }
+  managerGeneration += 1;
+  initPromise = null;
+  const current = manager;
+  manager = null;
+  if (current) disposeServiceManager(current);
 }
 
 // Resolve the iframe's session for `path`, or start one if the iframe hasn't

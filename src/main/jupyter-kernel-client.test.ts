@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
-import { SafeWebSocket } from './jupyter-kernel-client';
+import type { ServiceManager as IServiceManager } from '@jupyterlab/services';
+import {
+  SafeWebSocket,
+  disposeKernelClient,
+  executeNotebook,
+  resetCreateServiceManagerForTest,
+  setCreateServiceManagerForTest,
+} from './jupyter-kernel-client';
 
 interface TestCase {
   name: string;
@@ -12,6 +19,74 @@ interface TestCase {
 const tests: TestCase[] = [];
 function test(name: string, run: () => Promise<void> | void): void {
   tests.push({ name, run });
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+  reject(reason?: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve'];
+  let reject!: Deferred<T>['reject'];
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+interface FakeManagerControl {
+  manager: IServiceManager.IManager;
+  contentsCalls: number;
+}
+
+function fakeManager(name: string, ready: Promise<unknown>, disposal: string[]): FakeManagerControl {
+  const control: FakeManagerControl = {
+    contentsCalls: 0,
+    manager: undefined as unknown as IServiceManager.IManager,
+  };
+  control.manager = {
+    ready,
+    kernels: { dispose: () => disposal.push(`${name}:kernels`) },
+    kernelspecs: { dispose: () => disposal.push(`${name}:kernelspecs`) },
+    user: { dispose: () => disposal.push(`${name}:user`) },
+    dispose: () => disposal.push(`${name}:manager`),
+    contents: {
+      get: async () => {
+        control.contentsCalls += 1;
+        return { content: {} };
+      },
+    },
+  } as unknown as IServiceManager.IManager;
+  return control;
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error('timed out waiting for lifecycle test state');
+}
+
+async function withFakeJupyterServer(run: () => Promise<void>): Promise<void> {
+  const server = require('./jupyter-server') as { ensureJupyterServer: unknown };
+  const originalEnsure = server.ensureJupyterServer;
+  disposeKernelClient();
+  resetCreateServiceManagerForTest();
+  server.ensureJupyterServer = async () => ({
+    baseUrl: 'http://127.0.0.1:9999/',
+    token: 'test-token',
+  });
+  try {
+    await run();
+  } finally {
+    disposeKernelClient();
+    resetCreateServiceManagerForTest();
+    server.ensureJupyterServer = originalEnsure;
+  }
 }
 
 async function refusedWebSocketUrl(): Promise<string> {
@@ -100,8 +175,10 @@ if (process.argv.includes('--event-manager-oracle')) {
     const servicesExports = servicesModule.exports as Record<string, unknown>;
     const originalEnsure = serverExports.ensureJupyterServer;
     let received: Record<string, unknown> | undefined;
+    let serviceManagerConstructions = 0;
 
     class FakeServiceManager {
+      constructor() { serviceManagerConstructions += 1; }
       ready = Promise.resolve();
       contents = { get: async () => ({ content: {} }) };
     }
@@ -128,12 +205,107 @@ if (process.argv.includes('--event-manager-oracle')) {
       };
       await assert.rejects(reloaded.executeNotebook('probe.ipynb'), /Not a notebook/);
       assert.equal(received?.WebSocket, reloaded.SafeWebSocket);
+      assert.equal(serviceManagerConstructions, 1, 'the default factory must construct ServiceManager');
     } finally {
       serverExports.ensureJupyterServer = originalEnsure;
       servicesModule.exports = servicesExports;
       delete require.cache[clientPath];
       if (originalClient) require.cache[clientPath] = originalClient;
     }
+  });
+
+  test('failed initialization completely disposes the manager and never publishes it', async () => {
+    await withFakeJupyterServer(async () => {
+      const failedReady = deferred<void>();
+      const disposal: string[] = [];
+      const failed = fakeManager('failed', failedReady.promise, disposal);
+      const replacement = fakeManager('replacement', Promise.resolve(), disposal);
+      const managers = [failed.manager, replacement.manager];
+      let factoryCalls = 0;
+      setCreateServiceManagerForTest(() => managers[factoryCalls++]);
+
+      const first = executeNotebook('failed.ipynb');
+      await waitUntil(() => factoryCalls === 1);
+      failedReady.reject(new Error('ready failed'));
+      await assert.rejects(first, /ready failed/);
+      assert.deepEqual(disposal, [
+        'failed:kernels',
+        'failed:kernelspecs',
+        'failed:user',
+        'failed:manager',
+      ]);
+
+      await assert.rejects(executeNotebook('replacement.ipynb'), /Not a notebook/);
+      assert.equal(factoryCalls, 2, 'a failed manager must not remain published');
+      assert.equal(failed.contentsCalls, 0);
+      assert.equal(replacement.contentsCalls, 1);
+    });
+  });
+
+  test('dispose during deferred initialization prevents stale publication', async () => {
+    await withFakeJupyterServer(async () => {
+      const ready = deferred<void>();
+      const disposal: string[] = [];
+      const stale = fakeManager('stale', ready.promise, disposal);
+      let factoryCalls = 0;
+      setCreateServiceManagerForTest(() => {
+        factoryCalls += 1;
+        return stale.manager;
+      });
+
+      const initialization = executeNotebook('stale.ipynb');
+      await waitUntil(() => factoryCalls === 1);
+      disposeKernelClient();
+      ready.resolve();
+      await assert.rejects(initialization, /kernel client disposed during initialization/);
+      assert.equal(stale.contentsCalls, 0);
+      assert.deepEqual(disposal, [
+        'stale:kernels',
+        'stale:kernelspecs',
+        'stale:user',
+        'stale:manager',
+      ]);
+    });
+  });
+
+  test('overlapping generations publish only the post-disposal replacement', async () => {
+    await withFakeJupyterServer(async () => {
+      const oldReady = deferred<void>();
+      const replacementReady = deferred<void>();
+      const disposal: string[] = [];
+      const old = fakeManager('old', oldReady.promise, disposal);
+      const replacement = fakeManager('replacement', replacementReady.promise, disposal);
+      const managers = [old.manager, replacement.manager];
+      let factoryCalls = 0;
+      setCreateServiceManagerForTest(() => managers[factoryCalls++]);
+
+      const oldInitialization = executeNotebook('old.ipynb');
+      await waitUntil(() => factoryCalls === 1);
+      disposeKernelClient();
+      const replacementInitialization = executeNotebook('replacement.ipynb');
+      await waitUntil(() => factoryCalls === 2);
+
+      oldReady.resolve();
+      await assert.rejects(
+        oldInitialization,
+        /kernel client disposed during initialization/,
+        'REACHABILITY:wp2-generation-guard',
+      );
+      assert.equal(old.contentsCalls, 0, 'REACHABILITY:wp2-generation-guard');
+
+      replacementReady.resolve();
+      await assert.rejects(replacementInitialization, /Not a notebook/);
+      assert.equal(replacement.contentsCalls, 1);
+      await assert.rejects(executeNotebook('published.ipynb'), /Not a notebook/);
+      assert.equal(factoryCalls, 2, 'the replacement must remain the published manager');
+      assert.equal(replacement.contentsCalls, 2);
+      assert.deepEqual(disposal, [
+        'old:kernels',
+        'old:kernelspecs',
+        'old:user',
+        'old:manager',
+      ]);
+    });
   });
 
   (async () => {
