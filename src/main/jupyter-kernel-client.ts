@@ -19,6 +19,16 @@ import type { ServiceManager as IServiceManager, Session, KernelMessage } from '
 import WebSocket from 'ws';
 import { ensureJupyterServer } from './jupyter-server';
 
+export class SafeWebSocket extends WebSocket {
+  constructor(address: string | URL, protocols?: string | string[]) {
+    super(address, protocols);
+    // @jupyterlab/services' events subscriber attaches no active error listener;
+    // an unhandled EventEmitter 'error' becomes uncaughtException -> process.exit(1).
+    // Use .on() so this guard stays additive to the library's onerror handler.
+    this.on('error', () => { /* ownership guard; close/onerror drives recovery */ });
+  }
+}
+
 const TEXT_TRUNCATE = 5_000;
 
 // `@jupyterlab/services` is plain CJS in v7.x, so a normal import works under
@@ -45,7 +55,7 @@ async function ensureManager(): Promise<IServiceManager.IManager> {
       appendToken: true,
       // @jupyterlab/services claims to auto-detect WebSocket but doesn't reliably
       // pick up `ws` in Node — pass it explicitly. (Same gotcha as the smoke test.)
-      WebSocket,
+      WebSocket: SafeWebSocket,
     });
     const m = new ServiceManager({ serverSettings: settings }) as IServiceManager.IManager;
     await m.ready;

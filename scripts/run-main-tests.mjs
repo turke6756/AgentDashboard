@@ -17,6 +17,7 @@ const TESTS = [
   // conditional-write (CAS) contract of writeFileContents.
   'dist/main/shared/content-hash.test.js',
   'dist/main/main/file-writer.test.js',
+  'dist/main/main/jupyter-kernel-client.test.js',
   'dist/main/main/usage-limits-watcher.test.js',
   'dist/main/main/node-runtime.test.js',
   'dist/main/main/supervisor/codex-shell-parser.test.js',
