@@ -255,11 +255,27 @@ test('assembleInventory carries intent evidence, capture health, and unattribute
 });
 
 test('facade issues only the expected read-only Git command family', async () => {
-  await service.assembleInventory({
-    targetWorkspaceId: 'workspace-a',
-    workspaces,
+  const childProcessModule = require('child_process') as typeof import('node:child_process');
+  const originalSpawn = childProcessModule.spawn;
+  const originalSpawnDescriptor = Object.getOwnPropertyDescriptor(childProcessModule, 'spawn');
+  const streamedCommands: string[][] = [];
+  Object.defineProperty(childProcessModule, 'spawn', {
+    ...originalSpawnDescriptor,
+    value: ((command: string, args?: readonly string[], options?: object) => {
+      if (Array.isArray(args)) streamedCommands.push([...args]);
+      return originalSpawn(command, args, options);
+    }) as typeof originalSpawn,
   });
-  const commandNames = new Set(observedCommands.map((args) =>
+  try {
+    await service.assembleInventory({
+      targetWorkspaceId: 'workspace-a',
+      workspaces,
+    });
+  } finally {
+    Object.defineProperty(childProcessModule, 'spawn', originalSpawnDescriptor!);
+  }
+  const allObservedCommands = [...observedCommands, ...streamedCommands];
+  const commandNames = new Set(allObservedCommands.map((args) =>
     args[0] === '--no-optional-locks' ? args[1] : args[0],
   ));
   // No member is checkpoint-protected in this fixture (the worktree diverged from
@@ -268,10 +284,37 @@ test('facade issues only the expected read-only Git command family', async () =>
   assert.deepEqual([...commandNames].sort(), [
     'cat-file',
     'hash-object',
+    'ls-files',
     'rev-parse',
     'status',
   ]);
-  for (const args of observedCommands) {
+  const inventoryStreams = streamedCommands.filter((args) =>
+    args[1] === 'status' || args[1] === 'ls-files',
+  );
+  assert.deepEqual(
+    inventoryStreams.map((args) => args[1]).sort(),
+    ['ls-files', 'ls-files', 'status', 'status'],
+    'each workspace prefix gets one tracked-only status phase and one untracked-only ls-files phase',
+  );
+  const trackedPathspecs = inventoryStreams
+    .filter((args) => args[1] === 'status')
+    .map((args) => {
+      assert.ok(args.includes('--untracked-files=no'));
+      assert.ok(args.includes('--'));
+      return args.at(-1);
+    })
+    .sort();
+  const untrackedPathspecs = inventoryStreams
+    .filter((args) => args[1] === 'ls-files')
+    .map((args) => {
+      assert.ok(args.includes('--others'));
+      assert.ok(args.includes('--exclude-standard'));
+      assert.ok(args.includes('--'));
+      return args.at(-1);
+    })
+    .sort();
+  assert.deepEqual(untrackedPathspecs, trackedPathspecs, 'both inventory phases use the same workspace pathspecs');
+  for (const args of allObservedCommands) {
     assert.equal(args.includes('-w'), false, `hash-object must not write: ${args.join(' ')}`);
     assert.equal(args.includes('commit'), false);
     assert.equal(args.includes('add'), false);

@@ -25,7 +25,9 @@ import {
   encodeGitPath,
   encodeHashObjectStdinPathLine,
   type DirtyInventoryDraft,
+  type DirtyInventoryResult,
   type RunGitBytesLike,
+  type RunGitStreamLike,
   type RunGitTextLike,
 } from './dirty-inventory';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
@@ -79,7 +81,7 @@ function commitAll(dir: string, msg: string): void {
 }
 
 /** Run the producer against a REAL repo, binding the real byte + text seams. */
-function runReal(repoRoot: string, workspacePrefix = ''): Promise<DirtyInventoryDraft> {
+function runReal(repoRoot: string, workspacePrefix = ''): Promise<DirtyInventoryResult> {
   return produceDirtyInventory({
     repoRoot,
     workspacePrefix,
@@ -95,18 +97,51 @@ const byPath = (draft: DirtyInventoryDraft, p: string) =>
 
 // ── synthetic fixture helpers ─────────────────────────────────────────────────
 
-/** Build a fake `runGitBytes` returning exactly `stdout` (a crafted porcelain
- *  stream). Asserts the producer issues the normative status command + scope. */
-function fakeBytes(stdout: Buffer, capture?: { args?: string[] }): RunGitBytesLike {
+/** Build a fake buffered Git seam for hash-object results. */
+function fakeBytes(stdout: Buffer): RunGitBytesLike {
   return async (_cwd, args, _opts) => {
-    if (capture && args[1] === 'status') capture.args = args;
     return { code: 0, stdout, stderr: '' };
+  };
+}
+function fakeStream(
+  tracked: Buffer,
+  untracked = Buffer.alloc(0),
+  capture?: { commands: string[][] },
+): RunGitStreamLike {
+  return async (_cwd, args, _opts, onStdout) => {
+    capture?.commands.push(args);
+    const stdout = args.includes('status') ? tracked : untracked;
+    const accepted = stdout.length === 0 || onStdout(stdout);
+    return { code: 0, stderr: '', stoppedEarly: !accepted };
+  };
+}
+
+function boundedStream(
+  trackedChunks: Buffer[],
+  untrackedChunks: Buffer[],
+  state: { trackedPulls: number; untrackedPulls: number },
+): RunGitStreamLike {
+  return async (_cwd, args, _opts, onStdout) => {
+    const tracked = args.includes('status');
+    const chunks = tracked ? trackedChunks : untrackedChunks;
+    for (let i = 0; i < chunks.length; i++) {
+      if (tracked) state.trackedPulls++;
+      else state.untrackedPulls++;
+      if (!onStdout(chunks[i])) {
+        assert.ok(
+          i + 1 < chunks.length,
+          'REACHABILITY:dirty-inventory-streaming-reader admission stopped the source while unread chunks remained',
+        );
+        return { code: 0, stderr: '', stoppedEarly: true };
+      }
+    }
+    return { code: 0, stderr: '', stoppedEarly: false };
   };
 }
 /** A text seam that returns a fixed OID for any hash-object probe. */
 const fakeHash: RunGitTextLike = async (_cwd, _args, _opts) => ({ code: 0, stdout: 'deadbeefcafe0000000000000000000000000000\n', stderr: '' });
 
-function syntheticDraft(records: string[], opts?: { capture?: { args?: string[] }; hash?: RunGitTextLike }): Promise<DirtyInventoryDraft> {
+function syntheticDraft(records: string[], opts?: { capture?: { commands: string[][] }; hash?: RunGitTextLike }): Promise<DirtyInventoryResult> {
   // Each record is a latin1 string possibly containing an embedded NUL for rename
   // origPaths; join with NUL terminators to mimic `-z`.
   const stdout = Buffer.concat(records.map((r) => Buffer.concat([Buffer.from(r, 'latin1'), Buffer.from([0])])));
@@ -114,7 +149,8 @@ function syntheticDraft(records: string[], opts?: { capture?: { args?: string[] 
     repoRoot: 'C:/fake',
     workspacePrefix: '',
     repository: IDENTITY,
-    runGitBytes: fakeBytes(stdout, opts?.capture),
+    runGitBytes: fakeBytes(Buffer.alloc(0)),
+    runGitStream: fakeStream(stdout, Buffer.alloc(0), opts?.capture),
     runGit: opts?.hash ?? fakeHash,
     gitExe: 'git',
   });
@@ -202,6 +238,91 @@ test('hash-object stdin path encoder emits raw and Git C-quoted lines byte-exact
   }
 });
 
+test('two-phase tracked + untracked streams concatenate without dedup and report exact completeness', async () => {
+  const commands: string[][] = [];
+  const tracked = ordinaryRecord(Buffer.from('tracked.txt'));
+  const untracked = Buffer.from('fresh.txt\0', 'utf8');
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: fakeStream(tracked, untracked, { commands }),
+    runGitBytes: fakeBytes(Buffer.alloc(0)), runGit: fakeHash, gitExe: 'git',
+  });
+  assert.deepEqual(draft.entries.map((entry) => [entry.path.displayPath, entry.entryKind]), [
+    ['fresh.txt', 'untracked'],
+    ['tracked.txt', 'ordinary'],
+  ]);
+  assert.equal(draft.completeness, 'complete');
+  assert.deepEqual(draft.observedStopReasons, []);
+  assert.equal(draft.observedEntries, 2);
+  assert.equal(draft.observedPathBytes, Buffer.byteLength('tracked.txtfresh.txt'));
+  assert.equal(draft.totalsExact, true);
+  assert.equal(commands.length, 2);
+});
+
+test('entry cap stops pulling tracked chunks during streaming and skips phase 2 + hashing', async () => {
+  const chunks = ['a', 'b', 'c', 'd'].map((name) => ordinaryRecord(Buffer.from(`${name}.txt`)));
+  const state = { trackedPulls: 0, untrackedPulls: 0 };
+  let hashCalls = 0;
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: boundedStream(chunks, [Buffer.from('never.txt\0')], state),
+    runGitBytes: async () => { hashCalls++; return { code: 0, stdout: Buffer.alloc(0), stderr: '' }; },
+    runGit: async () => { hashCalls++; return { code: 1, stdout: '', stderr: '' }; },
+    gitExe: 'git', maxEntries: 2,
+  });
+  assert.equal(
+    state.trackedPulls,
+    3,
+    'REACHABILITY:dirty-inventory-streaming-reader the 3rd observed entry trips the cap; the 4th chunk is never pulled',
+  );
+  assert.equal(state.untrackedPulls, 0, 'phase 1 partial prevents phase 2 from starting');
+  assert.equal(hashCalls, 0, 'partial admission stops hashing');
+  assert.equal(draft.entries.length, 2);
+  assert.equal(draft.observedEntries, 3);
+  assert.deepEqual(draft.observedStopReasons, ['entries']);
+  assert.equal(draft.completeness, 'partial');
+  assert.equal(draft.totalsExact, false);
+});
+
+test('status-byte cap stops pulling chunks during streaming and returns typed partial', async () => {
+  const state = { trackedPulls: 0, untrackedPulls: 0 };
+  let hashCalls = 0;
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: boundedStream([Buffer.from('abc'), Buffer.from('def'), Buffer.from('never')], [], state),
+    runGitBytes: async () => { hashCalls++; return { code: 0, stdout: Buffer.alloc(0), stderr: '' }; },
+    runGit: async () => { hashCalls++; return { code: 1, stdout: '', stderr: '' }; },
+    gitExe: 'git', maxBytes: 4,
+  });
+  assert.equal(state.trackedPulls, 2, 'the source is stopped in the crossing chunk');
+  assert.equal(hashCalls, 0);
+  assert.equal(draft.observedStatusBytes, 5, 'the first over-cap byte is observed without buffering the remainder');
+  assert.deepEqual(draft.observedStopReasons, ['status-bytes']);
+  assert.equal(draft.completeness, 'partial');
+  assert.equal(draft.totalsExact, false);
+});
+
+test('path-byte cap stops pulling chunks during streaming and retains only admitted raw paths', async () => {
+  const chunks = ['a', 'oversized', 'never'].map((name) => ordinaryRecord(Buffer.from(name)));
+  const state = { trackedPulls: 0, untrackedPulls: 0 };
+  let hashCalls = 0;
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: boundedStream(chunks, [], state),
+    runGitBytes: async () => { hashCalls++; return { code: 0, stdout: Buffer.alloc(0), stderr: '' }; },
+    runGit: async () => { hashCalls++; return { code: 1, stdout: '', stderr: '' }; },
+    gitExe: 'git', maxPathBytes: 1,
+  });
+  assert.equal(state.trackedPulls, 2, 'the path cap stops before the final source chunk is read');
+  assert.equal(hashCalls, 0);
+  assert.deepEqual(draft.entries.map((entry) => entry.path.displayPath), ['a']);
+  assert.equal(draft.observedEntries, 2);
+  assert.equal(draft.observedPathBytes, Buffer.byteLength('aoversized'));
+  assert.deepEqual(draft.observedStopReasons, ['path-bytes']);
+  assert.equal(draft.completeness, 'partial');
+  assert.equal(draft.totalsExact, false);
+});
+
 test('mixed raw/C-quoted batch oids equal per-entry seam oids in input order', async () => {
   const paths = [
     Buffer.from('plain.txt'),
@@ -230,8 +351,8 @@ test('mixed raw/C-quoted batch oids equal per-entry seam oids in input order', a
     repoRoot: 'C:/fake',
     workspacePrefix: '',
     repository: IDENTITY,
+    runGitStream: fakeStream(statusStdout),
     runGitBytes: async (_cwd, args, opts) => {
-      if (args[1] === 'status') return { code: 0, stdout: statusStdout, stderr: '' };
       hashCalls++;
       assert.deepEqual(args, ['hash-object', '--no-filters', '--stdin-paths']);
       assert.deepEqual(opts.stdin, expectedStdin);
@@ -256,16 +377,23 @@ test('mixed raw/C-quoted batch oids equal per-entry seam oids in input order', a
 });
 
 test('normative status command + scope pathspec are issued', async () => {
-  const cap: { args?: string[] } = {};
+  const cap: { commands: string[][] } = { commands: [] };
   await syntheticDraft(['1 M. N... 100644 100644 100644 aaaa bbbb file.txt'], { capture: cap });
-  assert.deepEqual(cap.args, ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=all']);
+  assert.deepEqual(cap.commands, [
+    ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=no', '--'],
+    ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--'],
+  ]);
 
-  const cap2: { args?: string[] } = {};
+  const cap2: { commands: string[][] } = { commands: [] };
   await produceDirtyInventory({
     repoRoot: 'C:/fake', workspacePrefix: 'sub/dir', repository: IDENTITY,
-    runGitBytes: fakeBytes(Buffer.alloc(0), cap2), runGit: fakeHash, gitExe: 'git',
+    runGitBytes: fakeBytes(Buffer.alloc(0)), runGitStream: fakeStream(Buffer.alloc(0), Buffer.alloc(0), cap2),
+    runGit: fakeHash, gitExe: 'git',
   });
-  assert.deepEqual(cap2.args, ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=all', '--', ':(top,literal)sub/dir']);
+  assert.deepEqual(cap2.commands, [
+    ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=no', '--', ':(top,literal)sub/dir'],
+    ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ':(top,literal)sub/dir'],
+  ]);
 });
 
 test('plain mixed real-git inventory uses one batch with per-entry-identical oids', async () => {
@@ -381,8 +509,8 @@ test('failed batch retries present entries individually; absent/unhashable remai
     repoRoot: 'C:/fake',
     workspacePrefix: '',
     repository: IDENTITY,
+    runGitStream: fakeStream(stdout),
     runGitBytes: async (_cwd, args, opts) => {
-      if (args[1] === 'status') return { code: 0, stdout, stderr: '' };
       batchCalls++;
       assert.deepEqual(
         decodeHashObjectStdinLines(opts.stdin as Buffer),
@@ -525,6 +653,7 @@ test('non-UTF-8 path: bytes preserved in base64, utf8Clean false, unsupported', 
   const stdout = Buffer.concat([header, badPath, Buffer.from([0])]);
   const draft = await produceDirtyInventory({
     repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: fakeStream(stdout),
     runGitBytes: async () => ({ code: 0, stdout, stderr: '' }),
     runGit: async () => ({ code: 1, stdout: '', stderr: 'synthetic path unavailable' }), gitExe: 'git',
   });
@@ -542,6 +671,7 @@ test('control-char path: bytes preserved, displayPath escaped, still supported/h
   const stdout = Buffer.concat([header, p, Buffer.from([0])]);
   const draft = await produceDirtyInventory({
     repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: fakeStream(stdout),
     runGitBytes: async () => ({ code: 0, stdout, stderr: '' }),
     runGit: fakeHash, gitExe: 'git',
   });

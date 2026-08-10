@@ -8,9 +8,10 @@
 // PARTIAL — `{ repository, entries }` — never a faked `DirtyInventory`.
 //
 // Source of truth (normative §2):
-//   git --no-optional-locks status --porcelain=v2 -z --untracked-files=all
-// run via `runGitBytes` (NEVER the string-decoding `runGit`) so authoritative Git
-// path bytes survive. Records are split on NUL BYTES; `pathBytesBase64` is the
+//   git status --porcelain=v2 -z --untracked-files=no, then
+//   git ls-files --others --exclude-standard -z
+// Both are streamed so authoritative Git path bytes survive without buffering
+// the full output. Records are split on NUL BYTES; `pathBytesBase64` is the
 // authoritative transport form; `displayPath`/`utf8Clean` are derived AFTER and
 // are DISPLAY-ONLY (control chars escaped; a lossy UTF-8 decode ⇒ utf8Clean:false).
 //
@@ -28,15 +29,33 @@
 // non-UTF-8 paths on Windows).
 
 import { createHash } from 'crypto';
+import { spawn } from 'child_process';
 
 import { enumerationPathspec } from '../git-checkpoints/checkpoint-gating';
+import { GitCommandError } from '../git-checkpoints/git-command';
 import type { GitRunBytesResult, GitRunResult, RunGitOptions } from '../git-checkpoints/git-command';
+import { buildGitEnv, resolveInternalGit } from '../git/git-runtime';
 import type { DirtyEntry, EncodedGitPath, RepositoryIdentity } from '../../shared/commit-candidates';
 
 /** Injectable binary git seam — structurally `git-command.runGitBytes`. */
 export type RunGitBytesLike = (cwd: string, args: string[], opts: RunGitOptions) => Promise<GitRunBytesResult>;
 /** Injectable text git seam — structurally `git-command.runGit` (ascii output only). */
 export type RunGitTextLike = (cwd: string, args: string[], opts: RunGitOptions) => Promise<GitRunResult>;
+
+export interface GitStreamResult {
+  code: number;
+  stderr: string;
+  stoppedEarly: boolean;
+}
+
+/** Injectable streaming Git seam. Returning false from `onStdout` stops the
+ * child and, critically, prevents any later stdout chunk from being pulled. */
+export type RunGitStreamLike = (
+  cwd: string,
+  args: string[],
+  opts: RunGitOptions,
+  onStdout: (chunk: Buffer) => boolean,
+) => Promise<GitStreamResult>;
 
 export interface ProduceDirtyInventoryOptions {
   /** Repo-root cwd for git; status paths come back repo-root-relative. */
@@ -47,11 +66,18 @@ export interface ProduceDirtyInventoryOptions {
   repository: RepositoryIdentity;
   runGitBytes: RunGitBytesLike;
   runGit: RunGitTextLike;
+  runGitStream?: RunGitStreamLike;
   gitExe?: string;
   deadlineAt?: number;
-  /** Byte cap for buffered status output. */
+  /** Status-byte hard cap. Retained for compatibility; status is not buffered. */
   maxBytes?: number;
+  /** WP-A test seam; WP-B replaces this with its named entry budget. */
+  maxEntries?: number;
+  /** WP-A test seam; WP-B replaces this with its named path-byte budget. */
+  maxPathBytes?: number;
 }
+
+export type DirtyBudgetReason = 'entries' | 'status-bytes' | 'path-bytes' | 'deadline';
 
 /** The producer's honest partial of `DirtyInventory`. `unattributedEntryIds` and
  *  `topologyDigest` are deliberately ABSENT — the WP-1D assembler owns them; we
@@ -61,7 +87,24 @@ export interface DirtyInventoryDraft {
   entries: DirtyEntry[];
 }
 
+/** The bounded producer's typed result. `DirtyInventoryDraft` remains the
+ * assembler input shape so existing non-producing fixtures need not fabricate
+ * completeness evidence. */
+export interface DirtyInventoryResult extends DirtyInventoryDraft {
+  completeness: 'complete' | 'partial';
+  observedStopReasons: DirtyBudgetReason[];
+  observedEntries: number;
+  observedStatusBytes: number;
+  observedPathBytes: number;
+  totalsExact: boolean;
+}
+
+// WP-A LOCAL PLACEHOLDERS. WP-B owns and will replace these with the named
+// shared budget constants from the approved deliberation.
 const DEFAULT_MAX_BYTES = 64 << 20;
+const WP_A_PLACEHOLDER_MAX_ENTRIES = 10_000;
+const WP_A_PLACEHOLDER_MAX_PATH_BYTES = 16 << 20;
+const WP_A_PLACEHOLDER_DEADLINE_MS = 5_000;
 const STATUS_TIMEOUT_MS = 30_000;
 
 // ── Path encoding (§2: bytes authoritative; display derived after) ─────────────
@@ -186,6 +229,74 @@ function sha256Hex(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
 }
 
+/** Production streaming implementation kept local to WP-A so the existing
+ * buffered `runGitBytes` contract does not need to change. */
+async function runGitStreaming(
+  cwd: string,
+  args: string[],
+  opts: RunGitOptions,
+  onStdout: (chunk: Buffer) => boolean,
+): Promise<GitStreamResult> {
+  const resolved = opts.gitExe ? { execPath: opts.gitExe } : await resolveInternalGit();
+  if (!resolved) throw new GitCommandError('spawn', 'No compatible git is available.', null, '');
+  const now = Date.now();
+  if (opts.deadlineAt !== undefined && opts.deadlineAt <= now) {
+    throw new GitCommandError('deadline', 'Deadline already elapsed before spawn.', null, '');
+  }
+  const timeoutMs = Math.min(
+    opts.timeoutMs ?? Number.POSITIVE_INFINITY,
+    opts.deadlineAt === undefined ? Number.POSITIVE_INFINITY : opts.deadlineAt - now,
+  );
+
+  return new Promise<GitStreamResult>((resolve, reject) => {
+    let stderr = '';
+    let stoppedEarly = false;
+    let timedOut = false;
+    let settled = false;
+    const child = spawn(resolved.execPath, args, {
+      cwd,
+      env: buildGitEnv(opts.env ?? process.env, { mode: opts.mode ?? 'read' }),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const timer = Number.isFinite(timeoutMs)
+      ? setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, Math.max(0, timeoutMs))
+      : null;
+    timer?.unref?.();
+    child.stdout.on('data', (raw: Buffer | string) => {
+      if (stoppedEarly) return;
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      if (!onStdout(chunk)) {
+        stoppedEarly = true;
+        child.stdout.pause();
+        child.kill('SIGKILL');
+      }
+    });
+    child.stderr.on('data', (raw: Buffer | string) => {
+      stderr = (stderr + (Buffer.isBuffer(raw) ? raw.toString('utf8') : raw)).slice(-4096);
+    });
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(new GitCommandError('spawn', `git failed to run: ${error.message}`, null, stderr));
+    });
+    child.once('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (stoppedEarly) resolve({ code: code ?? 0, stderr, stoppedEarly: true });
+      else if (timedOut) {
+        const deadlineWon = opts.deadlineAt !== undefined
+          && opts.deadlineAt - now <= (opts.timeoutMs ?? Number.POSITIVE_INFINITY);
+        const kind = deadlineWon ? 'deadline' : 'timeout';
+        reject(new GitCommandError(kind, `git ${args[0] ?? ''} exceeded its ${kind}.`, null, stderr));
+      } else if (code === 0 || opts.allowNonzero) resolve({ code: code ?? 0, stderr, stoppedEarly: false });
+      else reject(new GitCommandError('nonzero', `git ${args[0] ?? ''} exited ${code}.`, code, stderr));
+    });
+  });
+}
+
 /** GIT-LEVEL eligibility ONLY (no package/byte verdicts here): unmerged, gitlink
  *  (`160000`) / submodule (`S...`), and non-UTF-8 paths are visible but never
  *  eligible. Symlinks (`120000`) ARE supported. */
@@ -272,8 +383,8 @@ function buildEntry(args: {
   return { entry, hashPathBytes };
 }
 
-/** Parse the full NUL-byte status stream into entries (sync; no hashing yet). */
-function parseStatus(stdout: Buffer, repositoryKey: string): ParsedEntry[] {
+/** Parse the tokens for one already-bounded tracked record (sync; no hashing). */
+function parseBoundedTrackedRecordTokens(stdout: Buffer, repositoryKey: string): ParsedEntry[] {
   const tokens = splitNulBytes(stdout);
   const parsed: ParsedEntry[] = [];
 
@@ -368,30 +479,138 @@ function parseStatus(stdout: Buffer, repositoryKey: string): ParsedEntry[] {
   return parsed;
 }
 
+/** Parse a single tracked porcelain-v2 record. Rename/copy records receive their
+ * second NUL token separately. */
+function parseTrackedRecord(token: Buffer, repositoryKey: string, originalPathBytes?: Buffer): ParsedEntry | null {
+  const combined = originalPathBytes === undefined
+    ? Buffer.concat([token, Buffer.from([0])])
+    : Buffer.concat([token, Buffer.from([0]), originalPathBytes, Buffer.from([0])]);
+  return parseBoundedTrackedRecordTokens(combined, repositoryKey)[0] ?? null;
+}
+
+function parseUntrackedRecord(pathBytes: Buffer, repositoryKey: string): ParsedEntry | null {
+  if (pathBytes.length === 0) return null;
+  return buildEntry({
+    repositoryKey,
+    entryKind: 'untracked',
+    indexStatus: '?',
+    worktreeStatus: '?',
+    headModeRaw: undefined,
+    indexModeRaw: undefined,
+    worktreeModeRaw: undefined,
+    submoduleState: null,
+    renameOrCopyScore: null,
+    pathBytes,
+    originalPathBytes: null,
+  });
+}
+
 /**
  * Produce the raw-half `DirtyInventory` for one repository, scoped to one
  * workspace prefix. Returns `{ repository, entries }` — the WP-1D assembler adds
  * `unattributedEntryIds` + `topologyDigest`.
  */
-export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions): Promise<DirtyInventoryDraft> {
-  const { repoRoot, workspacePrefix, repository, runGitBytes, runGit, gitExe, deadlineAt } = opts;
+export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions): Promise<DirtyInventoryResult> {
+  const { repoRoot, workspacePrefix, repository, runGitBytes, runGit, gitExe } = opts;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+  const maxEntries = opts.maxEntries ?? WP_A_PLACEHOLDER_MAX_ENTRIES;
+  const maxPathBytes = opts.maxPathBytes ?? WP_A_PLACEHOLDER_MAX_PATH_BYTES;
+  const deadlineAt = opts.deadlineAt ?? Date.now() + WP_A_PLACEHOLDER_DEADLINE_MS;
+  const runStream = opts.runGitStream ?? runGitStreaming;
 
   // §2 source command. `--no-optional-locks` avoids touching index.lock on a
   // read; NOT passing `--ignored` gives `--exclude-standard` semantics (ignored
   // files never appear). Scope via the workspace pathspec ONLY.
-  const args = ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=all'];
   const pathspec = enumerationPathspec(workspacePrefix);
-  if (pathspec !== null) args.push('--', pathspec);
+  const scopedArgs = (args: string[]): string[] => pathspec === null ? [...args, '--'] : [...args, '--', pathspec];
+  const parsed: ParsedEntry[] = [];
+  const observedStopReasons: DirtyBudgetReason[] = [];
+  let observedEntries = 0;
+  let observedStatusBytes = 0;
+  let observedPathBytes = 0;
 
-  const status = await runGitBytes(repoRoot, args, {
-    maxBytes,
-    gitExe,
-    deadlineAt,
-    timeoutMs: STATUS_TIMEOUT_MS,
-  });
+  const stop = (reason: DirtyBudgetReason): false => {
+    if (!observedStopReasons.includes(reason)) observedStopReasons.push(reason);
+    return false;
+  };
+  const admit = (candidate: ParsedEntry | null): boolean => {
+    if (!candidate) return true;
+    observedEntries++;
+    if (observedEntries > maxEntries) return stop('entries');
+    const candidatePathBytes = Buffer.from(candidate.entry.path.pathBytesBase64, 'base64').length
+      + (candidate.entry.originalPath ? Buffer.from(candidate.entry.originalPath.pathBytesBase64, 'base64').length : 0);
+    observedPathBytes += candidatePathBytes;
+    if (observedPathBytes > maxPathBytes) return stop('path-bytes');
+    parsed.push(candidate);
+    return true;
+  };
 
-  const parsed = parseStatus(status.stdout, repository.repositoryKey);
+  const readPhase = async (phase: 'tracked' | 'untracked', args: string[]): Promise<void> => {
+    let tokenParts: Buffer[] = [];
+    let tokenLength = 0;
+    let pendingRename: Buffer | null = null;
+    const consume = (data: Buffer): boolean => {
+      let offset = 0;
+      while (offset < data.length) {
+        if (Date.now() >= deadlineAt) return stop('deadline');
+        const nul = data.indexOf(0, offset);
+        if (nul < 0) {
+          tokenParts.push(data.subarray(offset));
+          tokenLength += data.length - offset;
+          return true;
+        }
+        tokenParts.push(data.subarray(offset, nul));
+        tokenLength += nul - offset;
+        const token = Buffer.concat(tokenParts, tokenLength);
+        tokenParts = [];
+        tokenLength = 0;
+        offset = nul + 1;
+        let candidate: ParsedEntry | null = null;
+        if (phase === 'untracked') candidate = parseUntrackedRecord(token, repository.repositoryKey);
+        else if (pendingRename) {
+          candidate = parseTrackedRecord(pendingRename, repository.repositoryKey, token);
+          pendingRename = null;
+        } else if (token[0] === 0x32) {
+          pendingRename = Buffer.from(token);
+          continue;
+        } else candidate = parseTrackedRecord(token, repository.repositoryKey);
+        if (!admit(candidate)) return false;
+      }
+      return true;
+    };
+
+    try {
+      await runStream(repoRoot, scopedArgs(args), {
+        maxBytes,
+        gitExe,
+        deadlineAt,
+        timeoutMs: STATUS_TIMEOUT_MS,
+      }, (chunk) => {
+        if (observedStopReasons.length > 0) return false;
+        if (Date.now() >= deadlineAt) return stop('deadline');
+        const remaining = maxBytes - observedStatusBytes;
+        if (chunk.length > remaining) {
+          const withinBudget = remaining > 0 ? chunk.subarray(0, remaining) : Buffer.alloc(0);
+          observedStatusBytes = maxBytes + 1;
+          if (withinBudget.length > 0 && !consume(withinBudget)) return false;
+          return stop('status-bytes');
+        }
+        observedStatusBytes += chunk.length;
+        return consume(chunk);
+      });
+    } catch (error) {
+      if (error instanceof GitCommandError && error.kind === 'deadline') {
+        stop('deadline');
+        return;
+      }
+      throw error;
+    }
+  };
+
+  await readPhase('tracked', ['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=no']);
+  if (observedStopReasons.length === 0) {
+    await readPhase('untracked', ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z']);
+  }
 
   const hashable = parsed.filter((p) => p.hashPathBytes !== null);
   const hashArgs = ['hash-object', '--no-filters', '--stdin-paths'];
@@ -411,7 +630,9 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
   // That slower fallback preserves the exact per-entry contract: absent entries
   // were never sent, while only the individual unhashable entries remain null.
   let batchOids: string[] | null = null;
-  if (hashable.length > 0) {
+  let batchFailedNormally = false;
+  if (hashable.length > 0 && observedStopReasons.length === 0 && Date.now() >= deadlineAt) stop('deadline');
+  if (hashable.length > 0 && observedStopReasons.length === 0) {
     try {
       const res = await runGitBytes(repoRoot, hashArgs, {
         maxBytes: hashMaxBytes,
@@ -422,8 +643,10 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
         stdin: Buffer.concat(hashable.map((p) => encodeHashObjectStdinPathLine(p.hashPathBytes!))),
       });
       if (res.code === 0) batchOids = parseOids(res.stdout, hashable.length);
-    } catch {
-      /* retry individually below */
+      if (!batchOids) batchFailedNormally = true;
+    } catch (error) {
+      if (error instanceof GitCommandError && error.kind === 'deadline') stop('deadline');
+      else batchFailedNormally = true;
     }
   }
 
@@ -431,8 +654,12 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
     hashable.forEach((p, index) => {
       p.entry.rawWorktreeBlobOid = batchOids![index];
     });
-  } else {
+  } else if (batchFailedNormally && observedStopReasons.length === 0) {
     for (const p of hashable) {
+      if (Date.now() >= deadlineAt) {
+        stop('deadline');
+        break;
+      }
       try {
         const res = await runGit(repoRoot, hashArgs, {
           maxBytes: 4096,
@@ -444,7 +671,11 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
         });
         const oid = res.code === 0 ? parseOids(res.stdout, 1)?.[0] : undefined;
         if (oid) p.entry.rawWorktreeBlobOid = oid;
-      } catch {
+      } catch (error) {
+        if (error instanceof GitCommandError && error.kind === 'deadline') {
+          stop('deadline');
+          break;
+        }
         /* unhashable → leave null */
       }
     }
@@ -455,5 +686,15 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
     a.path.pathBytesBase64 < b.path.pathBytesBase64 ? -1 : a.path.pathBytesBase64 > b.path.pathBytesBase64 ? 1 : 0,
   );
 
-  return { repository, entries };
+  const completeness = observedStopReasons.length === 0 ? 'complete' : 'partial';
+  return {
+    repository,
+    entries,
+    completeness,
+    observedStopReasons,
+    observedEntries,
+    observedStatusBytes,
+    observedPathBytes,
+    totalsExact: completeness === 'complete',
+  };
 }
