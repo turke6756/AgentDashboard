@@ -14,9 +14,11 @@ import {
   type EncodedGitPath,
   type ProtectionRung,
 } from '../../shared/commit-candidates';
-import type {
-  GitRunBytesResult,
-  RunGitOptions,
+import {
+  GitCommandError,
+  type GitRunBytesResult,
+  type GitRunResult,
+  type RunGitOptions,
 } from '../git-checkpoints/git-command';
 import {
   liveEdgeKey,
@@ -31,6 +33,7 @@ import {
   type ReadCurrentCommitRepresentationOptions,
 } from './commit-representation';
 import { parseFinalizationManifest } from './pinned-selection-drift';
+import { SNAPSHOT_TIME_BUDGET } from './dirty-inventory';
 
 export type ProtectionMember = Pick<
   DirtyEntry,
@@ -62,6 +65,7 @@ export interface ReadCheckpointTreeOptions {
   paths: readonly EncodedGitPath[];
   runGitBytes: RunProtectionGitBytes;
   gitExe?: string;
+  deadlineAt?: number;
 }
 
 /**
@@ -75,10 +79,56 @@ export type CheckpointTreeReader = (
   options: ReadCheckpointTreeOptions,
 ) => Promise<Map<string, CheckpointTreePresence> | null>;
 
+/**
+ * Approved ceiling on the Phase-1 membership probe's cross-product. The
+ * synthetic incident oracle is 4,908 × 4,044 = 19,847,952 pairs, 79.4 times
+ * this hard limit. The independent stdin-byte guard covers long-path inputs.
+ */
+export const PROBE_PAIR_BUDGET = Object.freeze({ soft: 100_000, hard: 250_000 });
+export const PROBE_ESTIMATED_STDIN_BUDGET = Object.freeze({ soft: 32 << 20, hard: 64 << 20 });
+
+/** Backward-compatible name for the shipped emergency guard. */
+export const CHECKPOINT_PROTECTION_MAX_PROBE_PAIRS = PROBE_PAIR_BUDGET.hard;
+
+export type CheckpointProtectionBudgetReason = 'pairs' | 'estimated-stdin' | 'deadline';
+
+/** Thrown BEFORE any cross-product Buffer or `cat-file` spawn exists when the
+ *  membership probe would exceed its pair budget. Carries counts only — never
+ *  paths or workspace content. `code` is a stable contract for boundaries that
+ *  surface the refusal. */
+export class CheckpointProtectionBudgetExceededError extends Error {
+  readonly code = 'checkpoint-protection-budget-exceeded';
+  constructor(
+    readonly cardinality: {
+      repositoryKey: string | null;
+      liveOids: number;
+      members: number;
+      batchable: number;
+      maxPairs: number;
+      maxEstimatedStdinBytes: number;
+      estimatedStdinBytes: number;
+    },
+    readonly reasonCodes: readonly CheckpointProtectionBudgetReason[],
+  ) {
+    super(
+      `checkpoint-protection-budget-exceeded: ${reasonCodes.join(',')} for `
+      + `${cardinality.liveOids} live checkpoint commits × ${cardinality.batchable} batchable members`,
+    );
+    this.name = 'CheckpointProtectionBudgetExceededError';
+  }
+}
+
 export interface EvaluateCheckpointProtectionOptions {
   repoRoot: string;
   members: readonly ProtectionMember[];
   checkpointEdges: readonly ProtectionCheckpointEdge[];
+  /** Override for the emergency membership-probe pair ceiling (tests/tuning).
+   *  Defaults to CHECKPOINT_PROTECTION_MAX_PROBE_PAIRS. */
+  maxMembershipProbePairs?: number;
+  /** Test/tuning override for eager-probe stdin admission. */
+  maxEstimatedMembershipProbeStdinBytes?: number;
+  /** Shared absolute deadline. Defaults once, at evaluator entry, to 5 seconds. */
+  deadlineAt?: number;
   finalizations?: readonly PackageFinalization[];
   readRawGitMode?: RawGitModeReader;
   platform?: NodeJS.Platform;
@@ -218,6 +268,7 @@ export async function readCheckpointTree(
     ['ls-tree', '-z', '--full-tree', options.checkpointOid, '--', ...pathspecs],
     {
       gitExe: options.gitExe,
+      deadlineAt: options.deadlineAt,
       allowNonzero: true,
       timeoutMs: GIT_TIMEOUT_MS,
       maxBytes: Math.max(LS_TREE_MAX_BYTES, pathspecs.length * 4096),
@@ -446,27 +497,38 @@ async function probeCheckpointMembership(options: {
   members: readonly ProtectionMember[];
   runGitBytes: RunProtectionGitBytes;
   gitExe?: string;
+  deadlineAt?: number;
 }): Promise<Map<string, { blobHitOids: string[]; sawAbsent: boolean }> | null> {
   const { repoRoot, liveOids, members } = options;
   const result = new Map<string, { blobHitOids: string[]; sawAbsent: boolean }>(
     members.map((member) => [member.entryId, { blobHitOids: [], sawAbsent: false }]),
   );
   if (liveOids.length === 0 || members.length === 0) return result;
+  const checkDeadline = (): void => {
+    if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
+      throw new GitCommandError('deadline', 'Checkpoint membership probe deadline elapsed.', null, '');
+    }
+  };
 
   // Stdin: one NUL-terminated `<commit>:<pathBytes>` per (commit × member).
   const stdinParts: Buffer[] = [];
+  let pairsBuilt = 0;
   for (const oid of liveOids) {
+    checkDeadline();
     const prefix = Buffer.from(`${oid}:`, 'ascii');
     for (const member of members) {
       stdinParts.push(prefix, Buffer.from(member.path.pathBytesBase64, 'base64'), Buffer.from([NUL]));
+      if (++pairsBuilt % 1_024 === 0) checkDeadline();
     }
   }
 
+  checkDeadline();
   const probe = await options.runGitBytes(
     repoRoot,
     ['cat-file', '--batch-check', '-z'],
     {
       gitExe: options.gitExe,
+      deadlineAt: options.deadlineAt,
       allowNonzero: true,
       timeoutMs: GIT_TIMEOUT_MS,
       maxBytes: CAT_FILE_MAX_BYTES,
@@ -479,6 +541,7 @@ async function probeCheckpointMembership(options: {
   if (lines.length !== liveOids.length * members.length) return null; // desync ⇒ no proof
 
   for (let o = 0; o < liveOids.length; o++) {
+    checkDeadline();
     for (let m = 0; m < members.length; m++) {
       const member = members[m];
       const entry = result.get(member.entryId)!;
@@ -488,6 +551,7 @@ async function probeCheckpointMembership(options: {
       } else if (classified.kind === 'absent') {
         entry.sawAbsent = true;
       }
+      if ((o * members.length + m + 1) % 1_024 === 0) checkDeadline();
     }
   }
   return result;
@@ -518,6 +582,41 @@ export async function evaluateCheckpointProtection(
     throw new Error('cannot evaluate protection for an empty bundle');
   }
 
+  // Derive this once. Every subprocess and every between-chunk check below uses
+  // the same absolute instant; no phase receives a fresh five-second allowance.
+  const deadlineAt = options.deadlineAt ?? Date.now() + SNAPSHOT_TIME_BUDGET.hardMs;
+  const observedReasonCodes: CheckpointProtectionBudgetReason[] = [];
+  const observe = (reason: CheckpointProtectionBudgetReason): void => {
+    if (!observedReasonCodes.includes(reason)) observedReasonCodes.push(reason);
+  };
+  const observeDeadlineError = (error: unknown): void => {
+    if (error instanceof GitCommandError && error.kind === 'deadline') observe('deadline');
+  };
+  const deadlineRunGit: LiveEdgeRunGit = async (cwd, args, runOptions): Promise<GitRunResult> => {
+    if (Date.now() >= deadlineAt) observe('deadline');
+    try {
+      return await options.runGit(cwd, args, { ...runOptions, deadlineAt });
+    } catch (error) {
+      observeDeadlineError(error);
+      throw error;
+    }
+  };
+  const deadlineRunGitBytes: RunProtectionGitBytes = async (cwd, args, runOptions) => {
+    if (Date.now() >= deadlineAt) observe('deadline');
+    try {
+      return await options.runGitBytes(cwd, args, { ...runOptions, deadlineAt });
+    } catch (error) {
+      observeDeadlineError(error);
+      throw error;
+    }
+  };
+  const budgetedOptions: EvaluateCheckpointProtectionOptions = {
+    ...options,
+    deadlineAt,
+    runGit: deadlineRunGit,
+    runGitBytes: deadlineRunGitBytes,
+  };
+
   const finalizationEdges = (options.finalizations ?? [])
     .filter((row) => row.lifecycleStatus === 'active' && row.boundaryStatus === 'ready')
     .map((row) => ({ ref: row.boundaryRef, oid: row.checkpointOid }));
@@ -526,9 +625,10 @@ export async function evaluateCheckpointProtection(
   const liveKeys = await verifyLiveEdgesBatch({
     repoRoot: options.repoRoot,
     edges: [...options.checkpointEdges, ...finalizationEdges],
-    runGit: options.runGit,
+    runGit: deadlineRunGit,
     gitExe: options.gitExe,
   });
+  if (Date.now() >= deadlineAt) observe('deadline');
 
   // Live edges → unique commit OIDs, so an OID shared by many turns' before/after
   // edges is inspected exactly once.
@@ -543,16 +643,73 @@ export async function evaluateCheckpointProtection(
       .map((edge) => edge.oid),
   )];
 
+  // Admission is intentionally before raw-mode reads or any binary Git call.
+  // Compute every currently observable reason before refusing so diagnostics do
+  // not hide a simultaneous pair, stdin, or deadline trip.
+  const batchableBeforeModeRead = options.members.filter((member) => isCatFileSafePath(member.path));
+  const maxPairs = options.maxMembershipProbePairs ?? PROBE_PAIR_BUDGET.hard;
+  const maxEstimatedStdinBytes = options.maxEstimatedMembershipProbeStdinBytes
+    ?? PROBE_ESTIMATED_STDIN_BUDGET.hard;
+  const totalPathBytes = batchableBeforeModeRead.reduce(
+    (sum, item) => sum + Math.floor((item.path.pathBytesBase64.length * 3) / 4),
+    0,
+  );
+  const estimatedStdinBytes = liveOids.length
+    * (totalPathBytes + batchableBeforeModeRead.length * 42);
+  const cardinality = {
+    repositoryKey: options.repositoryKey ?? null,
+    liveOids: liveOids.length,
+    members: options.members.length,
+    batchable: batchableBeforeModeRead.length,
+    maxPairs,
+    maxEstimatedStdinBytes,
+    estimatedStdinBytes,
+  };
+  if (
+    batchableBeforeModeRead.length > 0
+    && liveOids.length > Math.floor(maxPairs / batchableBeforeModeRead.length)
+  ) observe('pairs');
+  if (estimatedStdinBytes > maxEstimatedStdinBytes) observe('estimated-stdin');
+  if (Date.now() >= deadlineAt) observe('deadline');
+  const throwObservedBudget = (): never => {
+    const label = observedReasonCodes.includes('pairs')
+      ? 'membership-probe pair budget exceeded — refusing'
+      : 'membership-probe budget exceeded — refusing';
+    console.warn(`[checkpoint-protection] ${label}`, {
+      ...cardinality,
+      reasonCodes: observedReasonCodes,
+    });
+    throw new CheckpointProtectionBudgetExceededError(cardinality, [...observedReasonCodes]);
+  };
+  const checkDeadline = (): void => {
+    if (Date.now() >= deadlineAt) {
+      observe('deadline');
+      throwObservedBudget();
+    }
+  };
+  if (observedReasonCodes.length > 0) throwObservedBudget();
+
   const reader = options.readCheckpointTree ?? readCheckpointTree;
   const protectedIds = new Set<string>();
   const finalizationCoveredPathBytes = new Set<string>();
   const rawModeReader = options.readRawGitMode ?? readRawGitModeFromWorktree;
-  const resolvedMembers: ProtectionMember[] = await Promise.all(options.members.map(async (member) => ({
-    ...member,
-    worktreeMode: member.expectedWorktreeState === 'present'
-      ? await rawModeReader(options.repoRoot, member, options.platform ?? process.platform)
-      : null,
-  })));
+  const resolvedMembers: ProtectionMember[] = [];
+  for (const member of options.members) {
+    checkDeadline();
+    try {
+      resolvedMembers.push({
+        ...member,
+        worktreeMode: member.expectedWorktreeState === 'present'
+          ? await rawModeReader(options.repoRoot, member, options.platform ?? process.platform)
+          : null,
+      });
+    } catch (error) {
+      observeDeadlineError(error);
+      if (observedReasonCodes.includes('deadline')) throwObservedBudget();
+      throw error;
+    }
+  }
+  checkDeadline();
 
   // A boundary tree covers the whole repository, but a finalization protects only
   // paths named in its frozen manifest. Require active+ready lifecycle, a live ref
@@ -594,9 +751,15 @@ export async function evaluateCheckpointProtection(
       repoRoot: options.repoRoot,
       liveOids,
       members: batchable,
-      runGitBytes: options.runGitBytes,
+      runGitBytes: deadlineRunGitBytes,
       gitExe: options.gitExe,
-    }).catch(() => null); // a failed batch probe is not protection proof
+      deadlineAt,
+    }).catch((error) => {
+      observeDeadlineError(error);
+      return null;
+    }); // a failed batch probe is not protection proof
+    if (observedReasonCodes.includes('deadline')) throwObservedBudget();
+    checkDeadline();
     if (membership) {
       // Absences are fully resolved by the batch — a deletion is protected the
       // moment any live commit records its path as absent.
@@ -631,6 +794,7 @@ export async function evaluateCheckpointProtection(
       );
       const byEntryId = new Map(modeCandidates.map((member) => [member.entryId, member]));
       while (pendingOids.size > 0) {
+        checkDeadline();
         const coverage = new Map<string, number>();
         for (const oids of pendingOids.values()) {
           for (const oid of oids) coverage.set(oid, (coverage.get(oid) ?? 0) + 1);
@@ -646,9 +810,14 @@ export async function evaluateCheckpointProtection(
           repoRoot: options.repoRoot,
           checkpointOid: bestOid,
           paths: here.map((id) => byEntryId.get(id)!.path),
-          runGitBytes: options.runGitBytes,
+          runGitBytes: deadlineRunGitBytes,
           gitExe: options.gitExe,
-        }).catch(() => null);
+          deadlineAt,
+        }).catch((error) => {
+          observeDeadlineError(error);
+          return null;
+        });
+        if (observedReasonCodes.includes('deadline')) throwObservedBudget();
         for (const id of here) {
           if (tree && memberMatchesTree(byEntryId.get(id)!, tree)) {
             protectedIds.add(id);
@@ -672,13 +841,19 @@ export async function evaluateCheckpointProtection(
     const pending = new Set(lsTreeOnly.map((member) => member.entryId));
     for (const checkpointOid of liveOids) {
       if (pending.size === 0) break;
+      checkDeadline();
       const tree = await reader({
         repoRoot: options.repoRoot,
         checkpointOid,
         paths: lsTreeOnly.map((member) => member.path),
-        runGitBytes: options.runGitBytes,
+        runGitBytes: deadlineRunGitBytes,
         gitExe: options.gitExe,
-      }).catch(() => null);
+        deadlineAt,
+      }).catch((error) => {
+        observeDeadlineError(error);
+        return null;
+      });
+      if (observedReasonCodes.includes('deadline')) throwObservedBudget();
       if (!tree) continue;
       for (const member of lsTreeOnly) {
         if (pending.has(member.entryId) && memberMatchesTree(member, tree)) {
@@ -691,9 +866,15 @@ export async function evaluateCheckpointProtection(
 
   // Ledger/database and temporary-index failures degrade to checkpoint evidence;
   // they never erase a proven live checkpoint rung or invent local protection.
-  const ledgerProtection = await evaluateCommitLedgerProtection(options).catch(
-    () => new Map<string, ProtectionRung>(),
+  checkDeadline();
+  const ledgerProtection = await evaluateCommitLedgerProtection(budgetedOptions).catch(
+    (error) => {
+      observeDeadlineError(error);
+      return new Map<string, ProtectionRung>();
+    },
   );
+  if (observedReasonCodes.includes('deadline')) throwObservedBudget();
+  checkDeadline();
   const members: MemberProtectionResult[] = resolvedMembers.map((member) => ({
     entryId: member.entryId,
     protection: ledgerProtection.get(member.entryId)

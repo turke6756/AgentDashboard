@@ -21,6 +21,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  DIRTY_ENTRY_BUDGET,
+  PATH_BYTES_BUDGET,
+  SNAPSHOT_TIME_BUDGET,
+  STATUS_OUTPUT_BYTE_BUDGET,
   produceDirtyInventory,
   encodeGitPath,
   encodeHashObjectStdinPathLine,
@@ -30,7 +34,7 @@ import {
   type RunGitStreamLike,
   type RunGitTextLike,
 } from './dirty-inventory';
-import { runGit, runGitBytes } from '../git-checkpoints/git-command';
+import { GitCommandError, runGit, runGitBytes } from '../git-checkpoints/git-command';
 import { resolveInternalGit } from '../git/git-runtime';
 import type { RepositoryIdentity } from '../../shared/commit-candidates';
 
@@ -207,6 +211,13 @@ function syntheticOid(pathBytes: Buffer): string {
 // REAL-GIT temp-repo cases
 // ════════════════════════════════════════════════════════════════════════════
 
+test('named dirty-inventory budgets match the approved hard and soft values', () => {
+  assert.deepEqual(DIRTY_ENTRY_BUDGET, { soft: 5_000, hard: 10_000 });
+  assert.deepEqual(STATUS_OUTPUT_BYTE_BUDGET, { hard: 64 << 20 });
+  assert.deepEqual(PATH_BYTES_BUDGET, { hard: 16 << 20 });
+  assert.deepEqual(SNAPSHOT_TIME_BUDGET, { softMs: 2_000, hardMs: 5_000 });
+});
+
 test('hash-object stdin path encoder emits raw and Git C-quoted lines byte-exactly', () => {
   const plain = Buffer.from('plain.txt');
   assert.deepEqual(encodeHashObjectStdinPathLine(plain), Buffer.from('plain.txt\n'));
@@ -321,6 +332,64 @@ test('path-byte cap stops pulling chunks during streaming and retains only admit
   assert.deepEqual(draft.observedStopReasons, ['path-bytes']);
   assert.equal(draft.completeness, 'partial');
   assert.equal(draft.totalsExact, false);
+});
+
+test('one observed chunk records every simultaneous hard-budget reason', async () => {
+  const first = ordinaryRecord(Buffer.from('a'));
+  const second = ordinaryRecord(Buffer.from('bb'));
+  const observed = Buffer.concat([first, second, ordinaryRecord(Buffer.from('never'))]);
+  const state = { trackedPulls: 0, untrackedPulls: 0 };
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY,
+    runGitStream: boundedStream([observed, Buffer.from('unread')], [], state),
+    runGitBytes: fakeBytes(Buffer.alloc(0)), runGit: fakeHash, gitExe: 'git',
+    maxEntries: 1,
+    maxPathBytes: 1,
+    maxBytes: first.length + second.length,
+    deadlineAt: 0,
+  });
+  assert.deepEqual(
+    new Set(draft.observedStopReasons),
+    new Set(['deadline', 'entries', 'path-bytes', 'status-bytes']),
+  );
+  assert.equal(draft.completeness, 'partial');
+  assert.equal(state.trackedPulls, 1, 'all reasons come from the crossing chunk; unread chunks stay unread');
+});
+
+test('status phases and hashing receive one caller-supplied absolute deadline', async () => {
+  const deadlineAt = Date.now() + 60_000;
+  const observedDeadlines: Array<number | undefined> = [];
+  const tracked = ordinaryRecord(Buffer.from('a.txt'));
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY, gitExe: 'git', deadlineAt,
+    runGitStream: async (_cwd, args, opts, onStdout) => {
+      observedDeadlines.push(opts.deadlineAt);
+      if (args.includes('status')) onStdout(tracked);
+      return { code: 0, stderr: '', stoppedEarly: false };
+    },
+    runGitBytes: async (_cwd, _args, opts) => {
+      observedDeadlines.push(opts.deadlineAt);
+      return { code: 0, stdout: Buffer.from('deadbeefcafe0000000000000000000000000000\n'), stderr: '' };
+    },
+    runGit: fakeHash,
+  });
+  assert.equal(draft.completeness, 'complete');
+  assert.ok(observedDeadlines.length >= 3, 'tracked, untracked, and hashing all run');
+  assert.ok(observedDeadlines.every((value) => value === deadlineAt));
+});
+
+test('a hashing deadline returns typed partial instead of surfacing the Git throw', async () => {
+  const draft = await produceDirtyInventory({
+    repoRoot: 'C:/fake', workspacePrefix: '', repository: IDENTITY, gitExe: 'git',
+    runGitStream: fakeStream(ordinaryRecord(Buffer.from('a.txt'))),
+    runGitBytes: async () => {
+      throw new GitCommandError('deadline', 'synthetic hard deadline', null, '');
+    },
+    runGit: fakeHash,
+    deadlineAt: Date.now() + 60_000,
+  });
+  assert.equal(draft.completeness, 'partial');
+  assert.deepEqual(draft.observedStopReasons, ['deadline']);
 });
 
 test('mixed raw/C-quoted batch oids equal per-entry seam oids in input order', async () => {

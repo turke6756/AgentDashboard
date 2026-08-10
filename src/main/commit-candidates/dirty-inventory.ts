@@ -99,12 +99,12 @@ export interface DirtyInventoryResult extends DirtyInventoryDraft {
   totalsExact: boolean;
 }
 
-// WP-A LOCAL PLACEHOLDERS. WP-B owns and will replace these with the named
-// shared budget constants from the approved deliberation.
-const DEFAULT_MAX_BYTES = 64 << 20;
-const WP_A_PLACEHOLDER_MAX_ENTRIES = 10_000;
-const WP_A_PLACEHOLDER_MAX_PATH_BYTES = 16 << 20;
-const WP_A_PLACEHOLDER_DEADLINE_MS = 5_000;
+/** Approved dirty-corpus budgets. Soft limits are presentation/telemetry signals
+ * only; this producer enforces only the hard limits. */
+export const DIRTY_ENTRY_BUDGET = Object.freeze({ soft: 5_000, hard: 10_000 });
+export const STATUS_OUTPUT_BYTE_BUDGET = Object.freeze({ hard: 64 << 20 });
+export const PATH_BYTES_BUDGET = Object.freeze({ hard: 16 << 20 });
+export const SNAPSHOT_TIME_BUDGET = Object.freeze({ softMs: 2_000, hardMs: 5_000 });
 const STATUS_TIMEOUT_MS = 30_000;
 
 // ── Path encoding (§2: bytes authoritative; display derived after) ─────────────
@@ -512,10 +512,10 @@ function parseUntrackedRecord(pathBytes: Buffer, repositoryKey: string): ParsedE
  */
 export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions): Promise<DirtyInventoryResult> {
   const { repoRoot, workspacePrefix, repository, runGitBytes, runGit, gitExe } = opts;
-  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const maxEntries = opts.maxEntries ?? WP_A_PLACEHOLDER_MAX_ENTRIES;
-  const maxPathBytes = opts.maxPathBytes ?? WP_A_PLACEHOLDER_MAX_PATH_BYTES;
-  const deadlineAt = opts.deadlineAt ?? Date.now() + WP_A_PLACEHOLDER_DEADLINE_MS;
+  const maxBytes = opts.maxBytes ?? STATUS_OUTPUT_BYTE_BUDGET.hard;
+  const maxEntries = opts.maxEntries ?? DIRTY_ENTRY_BUDGET.hard;
+  const maxPathBytes = opts.maxPathBytes ?? PATH_BYTES_BUDGET.hard;
+  const deadlineAt = opts.deadlineAt ?? Date.now() + SNAPSHOT_TIME_BUDGET.hardMs;
   const runStream = opts.runGitStream ?? runGitStreaming;
 
   // §2 source command. `--no-optional-locks` avoids touching index.lock on a
@@ -536,13 +536,15 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
   const admit = (candidate: ParsedEntry | null): boolean => {
     if (!candidate) return true;
     observedEntries++;
-    if (observedEntries > maxEntries) return stop('entries');
     const candidatePathBytes = Buffer.from(candidate.entry.path.pathBytesBase64, 'base64').length
       + (candidate.entry.originalPath ? Buffer.from(candidate.entry.originalPath.pathBytesBase64, 'base64').length : 0);
     observedPathBytes += candidatePathBytes;
-    if (observedPathBytes > maxPathBytes) return stop('path-bytes');
-    parsed.push(candidate);
-    return true;
+    const withinEntryBudget = observedEntries <= maxEntries;
+    const withinPathBudget = observedPathBytes <= maxPathBytes;
+    if (!withinEntryBudget) stop('entries');
+    if (!withinPathBudget) stop('path-bytes');
+    if (withinEntryBudget && withinPathBudget && observedStopReasons.length === 0) parsed.push(candidate);
+    return withinEntryBudget && withinPathBudget;
   };
 
   const readPhase = async (phase: 'tracked' | 'untracked', args: string[]): Promise<void> => {
@@ -551,13 +553,17 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
     let pendingRename: Buffer | null = null;
     const consume = (data: Buffer): boolean => {
       let offset = 0;
+      let withinBudgets = true;
       while (offset < data.length) {
-        if (Date.now() >= deadlineAt) return stop('deadline');
+        if (Date.now() >= deadlineAt) {
+          stop('deadline');
+          withinBudgets = false;
+        }
         const nul = data.indexOf(0, offset);
         if (nul < 0) {
           tokenParts.push(data.subarray(offset));
           tokenLength += data.length - offset;
-          return true;
+          return withinBudgets;
         }
         tokenParts.push(data.subarray(offset, nul));
         tokenLength += nul - offset;
@@ -574,9 +580,9 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
           pendingRename = Buffer.from(token);
           continue;
         } else candidate = parseTrackedRecord(token, repository.repositoryKey);
-        if (!admit(candidate)) return false;
+        if (!admit(candidate)) withinBudgets = false;
       }
-      return true;
+      return withinBudgets;
     };
 
     try {
@@ -586,17 +592,22 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
         deadlineAt,
         timeoutMs: STATUS_TIMEOUT_MS,
       }, (chunk) => {
-        if (observedStopReasons.length > 0) return false;
-        if (Date.now() >= deadlineAt) return stop('deadline');
+        let withinBudgets = true;
+        if (Date.now() >= deadlineAt) {
+          stop('deadline');
+          withinBudgets = false;
+        }
         const remaining = maxBytes - observedStatusBytes;
         if (chunk.length > remaining) {
           const withinBudget = remaining > 0 ? chunk.subarray(0, remaining) : Buffer.alloc(0);
           observedStatusBytes = maxBytes + 1;
-          if (withinBudget.length > 0 && !consume(withinBudget)) return false;
-          return stop('status-bytes');
+          if (withinBudget.length > 0 && !consume(withinBudget)) withinBudgets = false;
+          stop('status-bytes');
+          return false;
         }
         observedStatusBytes += chunk.length;
-        return consume(chunk);
+        if (!consume(chunk)) withinBudgets = false;
+        return withinBudgets && observedStopReasons.length === 0;
       });
     } catch (error) {
       if (error instanceof GitCommandError && error.kind === 'deadline') {

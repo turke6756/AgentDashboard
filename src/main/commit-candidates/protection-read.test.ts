@@ -14,6 +14,9 @@ import type { PackageFinalization } from '../database';
 import { resolveInternalGit } from '../git/git-runtime';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
 import {
+  CheckpointProtectionBudgetExceededError,
+  PROBE_ESTIMATED_STDIN_BUDGET,
+  PROBE_PAIR_BUDGET,
   evaluateCheckpointProtection,
   weakestProtectionRung,
   type CheckpointTreePresence,
@@ -316,6 +319,167 @@ test('remote rung is decided from live remote refs, not a cached database hint',
     runGit, runGitBytes, gitExe,
   });
   assert.equal(result.members[0].protection, 'remote-reachable');
+});
+
+test('named probe budgets match the approved values and incident cardinality oracle', () => {
+  assert.deepEqual(PROBE_PAIR_BUDGET, { soft: 100_000, hard: 250_000 });
+  assert.deepEqual(PROBE_ESTIMATED_STDIN_BUDGET, { soft: 32 << 20, hard: 64 << 20 });
+  const incidentPairs = 4_908 * 4_044;
+  assert.equal(incidentPairs, 19_847_952);
+  assert.ok(incidentPairs > PROBE_PAIR_BUDGET.hard * 79);
+});
+
+test('liveness, membership, and tree reads receive one caller-supplied absolute deadline', async () => {
+  const deadlineAt = Date.now() + 60_000;
+  const observedDeadlines: Array<number | undefined> = [];
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    deadlineAt,
+    runGit: (cwd, args, opts) => {
+      observedDeadlines.push(opts.deadlineAt);
+      return runGit(cwd, args, opts);
+    },
+    runGitBytes: (cwd, args, opts) => {
+      observedDeadlines.push(opts.deadlineAt);
+      return runGitBytes(cwd, args, opts);
+    },
+    gitExe,
+  });
+  assert.equal(result.members[0].protection, 'checkpoint-protected');
+  assert.ok(observedDeadlines.length >= 3, 'liveness, membership, and tree-mode confirmation all run');
+  assert.ok(observedDeadlines.every((value) => value === deadlineAt));
+});
+
+test('membership-probe pair budget: below and exactly-at proceed, one pair above refuses pre-spawn', async () => {
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
+  // 1 live commit × 2 batchable members = 2 pairs.
+  const edges = [{ ref: CHECKPOINT_REF, oid: checkpointOid }];
+
+  // Below budget (2 pairs < 3) and exactly at budget (2 pairs = 2): full evaluation runs.
+  for (const maxMembershipProbePairs of [3, 2]) {
+    const result = await evaluateCheckpointProtection({
+      repoRoot: repo, members: [exact, ghost], checkpointEdges: edges,
+      maxMembershipProbePairs, runGit, runGitBytes, gitExe,
+    });
+    assert.equal(result.members.find((m) => m.entryId === 'exact')!.protection, 'checkpoint-protected');
+  }
+
+  // One pair above budget (2 pairs > 1): typed refusal, and it must fire BEFORE
+  // any binary Git call (i.e. before the cross-product Buffers / cat-file spawn).
+  let bytesCalls = 0;
+  const countingBytes: RunProtectionGitBytes = async (...args) => {
+    bytesCalls++;
+    return runGitBytes(...args);
+  };
+  const warned: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args.map(String).join(' ')); };
+  try {
+    await assert.rejects(
+      evaluateCheckpointProtection({
+        repoRoot: repo, members: [exact, ghost], checkpointEdges: edges,
+        maxMembershipProbePairs: 1, runGit, runGitBytes: countingBytes, gitExe,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
+        assert.equal(error.code, 'checkpoint-protection-budget-exceeded');
+        assert.deepEqual(
+          { liveOids: error.cardinality.liveOids, batchable: error.cardinality.batchable, maxPairs: error.cardinality.maxPairs },
+          { liveOids: 1, batchable: 2, maxPairs: 1 },
+        );
+        // Counts only — the error (and therefore the log payload) carries no
+        // paths or workspace content.
+        const serialized = error.message + JSON.stringify(error.cardinality);
+        assert.ok(!serialized.includes('protected.txt') && !serialized.includes('ghost.txt'));
+        return true;
+      },
+    );
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(bytesCalls, 0, 'refusal must precede every runGitBytes spawn');
+  assert.ok(warned.some((line) => line.includes('pair budget exceeded')));
+  assert.ok(!warned.some((line) => line.includes('protected.txt') || line.includes('ghost.txt')));
+});
+
+test('zero live checkpoint edges never trip the pair budget (retention-style call)', async () => {
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo, members: [exact], checkpointEdges: [],
+    maxMembershipProbePairs: 0, runGit, runGitBytes, gitExe,
+  });
+  assert.equal(result.members[0].protection, 'unprotected');
+});
+
+test('estimated-stdin guard proceeds at budget and refuses pre-spawn one pair above', async () => {
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
+  const onePairBudget = Math.floor((exact.path.pathBytesBase64.length * 3) / 4) + 42;
+  const atBudget = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    maxMembershipProbePairs: 1,
+    maxEstimatedMembershipProbeStdinBytes: onePairBudget,
+    runGit,
+    runGitBytes,
+    gitExe,
+  });
+  assert.equal(atBudget.members[0].protection, 'checkpoint-protected');
+
+  const members = [exact, ghost];
+  let bytesCalls = 0;
+  await assert.rejects(
+    evaluateCheckpointProtection({
+      repoRoot: repo,
+      members,
+      checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+      maxMembershipProbePairs: members.length,
+      maxEstimatedMembershipProbeStdinBytes: onePairBudget,
+      runGit,
+      runGitBytes: async (...args) => { bytesCalls++; return runGitBytes(...args); },
+      gitExe,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
+      assert.deepEqual(error.reasonCodes, ['estimated-stdin']);
+      assert.ok(error.cardinality.estimatedStdinBytes > error.cardinality.maxEstimatedStdinBytes);
+      return true;
+    },
+    'REACHABILITY:protection-budget-admission estimated stdin above the hard limit must refuse before spawn',
+  );
+  assert.equal(bytesCalls, 0, 'stdin admission happens before every binary Git spawn');
+});
+
+test('simultaneous admission and deadline trips collect every observed reason code', async () => {
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
+  let bytesCalls = 0;
+  const deadlineIgnoringLiveness = (cwd: string, args: string[], opts: Parameters<typeof runGit>[2]) =>
+    runGit(cwd, args, { ...opts, deadlineAt: undefined });
+  await assert.rejects(
+    evaluateCheckpointProtection({
+      repoRoot: repo,
+      members: [exact, ghost],
+      checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+      maxMembershipProbePairs: 1,
+      maxEstimatedMembershipProbeStdinBytes: 1,
+      deadlineAt: 0,
+      runGit: deadlineIgnoringLiveness,
+      runGitBytes: async (...args) => { bytesCalls++; return runGitBytes(...args); },
+      gitExe,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
+      assert.deepEqual(new Set(error.reasonCodes), new Set(['pairs', 'estimated-stdin', 'deadline']));
+      return true;
+    },
+  );
+  assert.equal(bytesCalls, 0);
 });
 
 test('bundle weakest rung is the minimum by PROTECTION_RUNG_ORDER', () => {
