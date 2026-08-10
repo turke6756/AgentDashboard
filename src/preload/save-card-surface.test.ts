@@ -28,6 +28,7 @@ const candidateSubmit = fs.readFileSync(
 
 for (const binding of [
   'getInventory: (req) => ipcRenderer.invoke(SAVECARD_CHANNELS.getInventory, req)',
+  'completeOnboarding: (req) => ipcRenderer.invoke(SAVECARD_ONBOARDING_DECISION_CHANNEL, req)',
   'preview: (req) => ipcRenderer.invoke(SAVECARD_PREVIEW_CHANNEL, req)',
   'markDone: (req) => ipcRenderer.invoke(SAVECARD_FINALIZE_CHANNEL, req)',
   'sweep: (req) => ipcRenderer.invoke(SAVE_SWEEP_CHANNEL, req)',

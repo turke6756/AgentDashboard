@@ -17,6 +17,7 @@ import type {
   SaveCardFleetAdhocMarkDoneResponse,
   SaveCardFleetAdhocMarkDoneSuccess,
   SaveCardInventoryResponse,
+  SaveCardOnboardingPrompt,
   SaveIntentUnitDto,
   SaveSweepIntent,
   SaveSweepResponse,
@@ -40,16 +41,7 @@ import { createCandidateSubmitter } from './candidate-submit';
 import { initialSaveGestureState, saveGestureReducer } from './save-gesture-state';
 import './save-card.css';
 
-export interface SaveTrackingRecommendation {
-  pathBytesBase64: string;
-  displayPath: string;
-  countLabel: string;
-}
-
-export interface SaveTrackingOnboarding {
-  presentation: 'first-contact' | 'established';
-  recommendations: SaveTrackingRecommendation[];
-}
+export type SaveTrackingOnboarding = SaveCardOnboardingPrompt;
 
 export interface SaveCardProps {
   onboarding?: SaveTrackingOnboarding | null;
@@ -618,6 +610,7 @@ type LoadState =
       legacyFinalizations: SaveCardInventoryResponse['legacyFinalizations'];
       planningActivities: SaveCardInventoryResponse['planningActivities'];
       quotaWeakening: SaveCardQuotaWeakening | null;
+      onboarding: SaveCardOnboardingPrompt | null;
     };
 
 type SaveAllState =
@@ -671,6 +664,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
           legacyFinalizations: cached.inventory.legacyFinalizations,
           planningActivities: cached.inventory.planningActivities,
           quotaWeakening: cached.inventory.quotaWeakening,
+          onboarding: cached.inventory.onboarding ?? null,
         }
       : { status: 'loading' },
   );
@@ -739,6 +733,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
             legacyFinalizations: response.legacyFinalizations,
             planningActivities: response.planningActivities,
             quotaWeakening: response.quotaWeakening,
+            onboarding: response.onboarding ?? null,
           });
         }
       } catch (err) {
@@ -767,6 +762,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
         legacyFinalizations: cached.inventory.legacyFinalizations,
         planningActivities: cached.inventory.planningActivities,
         quotaWeakening: cached.inventory.quotaWeakening,
+        onboarding: cached.inventory.onboarding ?? null,
       });
       if (isSaveCardInventoryFresh(cached)) return;
     }
@@ -782,6 +778,18 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     let active = true;
     void load(workspaceId, () => active, state.status === 'ready');
   }, [workspaceId, load, state.status]);
+
+  const suppliedOnboarding = onboarding ?? (state.status === 'ready' ? state.onboarding : null);
+  const decideOnboarding = onOnboardingDecision ?? (workspaceId
+    ? async (decision: 'exclude-selected' | 'keep-everything' | 'decide-later', selected: string[]) => {
+        await window.api.saveCard.completeOnboarding({
+          workspaceId,
+          decision,
+          selectedPathBytesBase64: selected,
+        });
+        useSaveCardStore.getState().invalidateInventory(workspaceId);
+      }
+    : undefined);
 
   const header = (
     <>
@@ -847,8 +855,8 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   const firstContactPrompt = (
     <FirstContactPrompt
       workspaceTitle={workspace?.title ?? 'this workspace'}
-      onboarding={onboarding}
-      onDecision={onOnboardingDecision}
+      onboarding={suppliedOnboarding}
+      onDecision={decideOnboarding}
     />
   );
 

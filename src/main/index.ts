@@ -38,6 +38,7 @@ import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSa
 import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
 import { createPreviewRoutes } from './commit-candidates/preview-routes';
 import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
+import { ScratchPolicyStore } from './commit-candidates/scratch-policy-store';
 import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
 import { CommitCoordinator } from './git-checkpoints/commit-coordinator';
 import { ActivityMergeService } from './git-checkpoints/activity-merge-service';
@@ -850,10 +851,31 @@ app.whenReady().then(async () => {
           // per-service coalescing is provably insufficient. Sharing this instance
           // is what makes a concurrent save-card + preview compute one snapshot.
           const snapshotRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+          const scratchPolicyStore = new ScratchPolicyStore(
+            path.join(app.getPath('userData'), 'scratch-policies'),
+          );
+          const repositoryByWorkspaceId = new Map<string, string>();
+          const resolvePolicyGeneration = (repositoryKey: string) =>
+            scratchPolicyStore.read(repositoryKey).policyGeneration;
+          const rememberRepository = (workspaceId: string, repositoryKey: string) => {
+            repositoryByWorkspaceId.set(workspaceId, repositoryKey);
+          };
+          // Automatic turn checkpoints change protection evidence. Only a repo
+          // that has entered a Save route can have a cache entry, so the route-fed
+          // workspace map is both sufficient and avoids another Git probe here.
+          engine.coordinator.onTurnClosed((event) => {
+            const workspaceId = getAgent(event.agentId)?.workspaceId;
+            const repositoryKey = workspaceId ? repositoryByWorkspaceId.get(workspaceId) : undefined;
+            if (repositoryKey) snapshotRegistry.invalidate(repositoryKey);
+          });
           setSaveCardRoutes(createSaveCardRoutes({
             gitExe: engine.gitExe,
             readQuotaWeakening: (repositoryKey) => quotaWeakeningByRepo.get(repositoryKey) ?? null,
             snapshotRegistry,
+            scratchPolicyStore,
+            resolvePolicyGeneration,
+            onRepositoryResolved: rememberRepository,
+            onPolicyWrite: (repositoryKey) => snapshotRegistry.invalidate(repositoryKey),
           }));
           // SC-WP-W1: hand the Stage ③ candidate-preview routes (both lenses) to the
           // renderer IPC layer, reusing the engine's already-resolved internal Git.
@@ -868,6 +890,9 @@ app.whenReady().then(async () => {
             queue: engine.queue,
             captureFinalizationBoundary: engine.captureFinalizationBoundary,
             snapshotRegistry,
+            resolvePolicyGeneration,
+            onRepositoryFinalized: (repositoryKey) => snapshotRegistry.invalidate(repositoryKey),
+            onRepositoryResolved: rememberRepository,
           });
           setSaveCardPreviewRoutes(previewRoutes.saveCardPreviewRoutes);
           setSaveCardMintRoutes(previewRoutes.saveCardMintRoutes);

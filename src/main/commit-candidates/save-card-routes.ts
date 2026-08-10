@@ -59,6 +59,8 @@ import { projectIntentUnits } from './intent-assembler';
 import { deriveRepositoryIdentity } from './repository-identity';
 import type { RunGit } from '../git/git-runtime';
 import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
+import { discoverFirstContactRoots, recordOnboardingDecision, type FirstContactDiscovery } from './onboarding-discovery';
+import type { ScratchPolicyStore } from './scratch-policy-store';
 
 type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'startedAt' | 'endedAt'>;
 
@@ -106,6 +108,11 @@ export interface SaveCardRoutesDeps {
   snapshotRegistry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>;
   /** Flight generation for a repository (WP-E policy store). Default 0. */
   resolvePolicyGeneration?: (repositoryKey: string) => number;
+  scratchPolicyStore?: ScratchPolicyStore;
+  /** Records the main-resolved workspace→repository relation for cache invalidation. */
+  onRepositoryResolved?: (workspaceId: string, repositoryKey: string) => void;
+  /** Called after an authoritative policy write. */
+  onPolicyWrite?: (repositoryKey: string) => void;
 }
 
 function minTime(values: Array<number | null | undefined>): number | null {
@@ -205,6 +212,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     getPlanItem: deps.getPlanItem ?? dbGetPlanWorkPackage,
   });
   const latestReadByWorkspace = new Map<string, CandidateInventoryRead>();
+  const latestDiscoveryByWorkspace = new Map<string, FirstContactDiscovery>();
 
   async function getInventory(
     req: SaveCardInventoryRequest,
@@ -244,6 +252,37 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         )
       : await service.assembleInventory(request);
     latestReadByWorkspace.set(req.workspaceId, read);
+    deps.onRepositoryResolved?.(req.workspaceId, read.inventory.repository.repositoryKey);
+    let onboarding: import('../../shared/types').SaveCardOnboardingPrompt | null = null;
+    if (deps.scratchPolicyStore && target?.capability.repoRoot) {
+      try {
+        const discovery = await discoverFirstContactRoots({
+          repoRoot: target.capability.repoRoot,
+          pathspec: target.capability.workspacePrefix ?? undefined,
+          repositoryKey: read.inventory.repository.repositoryKey,
+          workspaceKey: req.workspaceId,
+          policyStore: deps.scratchPolicyStore,
+          runGitBytes,
+          gitExe,
+        });
+        latestDiscoveryByWorkspace.set(req.workspaceId, discovery);
+        if (discovery.presentation) {
+          onboarding = {
+            presentation: discovery.presentation,
+            recommendations: discovery.recommendations.map((item) => ({
+              pathBytesBase64: item.pathBytesBase64,
+              displayPath: item.displayPath,
+              countLabel: item.countLabel,
+            })),
+          };
+        }
+      } catch (error) {
+        // Setup guidance is advisory. A discovery failure must never hide the
+        // already-computed save inventory or persist completion.
+        console.warn('[save-card-onboarding] bounded discovery unavailable:', error);
+        latestDiscoveryByWorkspace.delete(req.workspaceId);
+      }
+    }
     const quotaWeakening = read.quotaWeakening;
 
     const includedWorkspaceIds = new Set(read.inventory.repository.workspaces.map(
@@ -409,7 +448,25 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       legacyFinalizations,
       planningActivities,
       quotaWeakening,
+      onboarding,
     };
+  }
+
+  async function completeOnboarding(
+    req: import('../../shared/types').SaveCardOnboardingDecisionRequest,
+  ): Promise<import('../../shared/types').SaveCardOnboardingDecisionResponse> {
+    if (!deps.scratchPolicyStore) throw new Error('save tracking setup is unavailable');
+    const discovery = latestDiscoveryByWorkspace.get(req.workspaceId);
+    if (!discovery) throw new Error('save tracking setup is stale; refresh before deciding');
+    const record = recordOnboardingDecision(
+      deps.scratchPolicyStore,
+      discovery,
+      req.decision,
+      req.selectedPathBytesBase64,
+    );
+    latestDiscoveryByWorkspace.delete(req.workspaceId);
+    deps.onPolicyWrite?.(discovery.repositoryKey);
+    return { policyGeneration: record.policyGeneration };
   }
 
   async function adoptAllAsBaseline(
@@ -436,5 +493,5 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     return { intentId: intent.id, title: intent.title, memberCount: members.length };
   }
 
-  return { getInventory, adoptAllAsBaseline };
+  return { getInventory, adoptAllAsBaseline, completeOnboarding };
 }

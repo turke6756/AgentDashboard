@@ -16,6 +16,7 @@
 import {
   SAVECARD_CHANNELS,
   SAVECARD_ADOPT_BASELINE_CHANNEL,
+  SAVECARD_ONBOARDING_DECISION_CHANNEL,
   SAVECARD_PREVIEW_CHANNEL,
   COMMIT_CANDIDATE_MINT_CHANNEL,
   SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL,
@@ -26,6 +27,8 @@ import {
   type SaveCardInventoryResponse,
   type SaveCardAdoptBaselineRequest,
   type SaveCardAdoptBaselineResponse,
+  type SaveCardOnboardingDecisionRequest,
+  type SaveCardOnboardingDecisionResponse,
   type SaveCardPreviewRequest,
   type SaveCardPreviewResponse,
   type SaveCardMintRequest,
@@ -111,6 +114,9 @@ export interface SaveCardRoutes {
   adoptAllAsBaseline?(
     req: SaveCardAdoptBaselineRequest,
   ): Promise<SaveCardAdoptBaselineResponse>;
+  completeOnboarding?(
+    req: SaveCardOnboardingDecisionRequest,
+  ): Promise<SaveCardOnboardingDecisionResponse>;
 }
 
 /** Minimal `ipcMain.handle` shape for testing without a live Electron main. */
@@ -160,6 +166,24 @@ function requireRequest(raw: unknown): SaveCardInventoryRequest {
   return { workspaceId };
 }
 
+function requireOnboardingDecision(raw: unknown): SaveCardOnboardingDecisionRequest {
+  const request = requireRequest(raw);
+  const candidate = raw as Partial<SaveCardOnboardingDecisionRequest>;
+  if (candidate.decision !== 'exclude-selected' && candidate.decision !== 'keep-everything'
+      && candidate.decision !== 'decide-later') {
+    throw new SaveCardIpcError('a valid onboarding decision is required', 'save-card-bad-request');
+  }
+  if (!Array.isArray(candidate.selectedPathBytesBase64)
+      || !candidate.selectedPathBytesBase64.every((item) => typeof item === 'string')) {
+    throw new SaveCardIpcError('selectedPathBytesBase64 must be a string array', 'save-card-bad-request');
+  }
+  return {
+    workspaceId: request.workspaceId,
+    decision: candidate.decision,
+    selectedPathBytesBase64: candidate.selectedPathBytesBase64,
+  };
+}
+
 /**
  * Register the single Stage 1 Save-card read channel.
  *
@@ -188,6 +212,13 @@ export function registerSaveCardIntentIpc(
       throw new SaveCardIpcError('intent packaging is unavailable', 'save-card-engine-unavailable');
     }
     return routes.adoptAllAsBaseline(requireRequest(raw));
+  });
+  ipc.handle(SAVECARD_ONBOARDING_DECISION_CHANNEL, async (_event, raw: unknown) => {
+    const routes = requireRoutes(getRoutes());
+    if (!routes.completeOnboarding) {
+      throw new SaveCardIpcError('save tracking setup is unavailable', 'save-card-engine-unavailable');
+    }
+    return routes.completeOnboarding(requireOnboardingDecision(raw));
   });
 }
 
@@ -274,6 +305,7 @@ export interface SaveCardFinalizeRoutes {
   resolveBoundary(req: SaveCardFleetAdhocMarkDoneRequest): Promise<FleetAdhocBoundaryContext>;
   finalizeDeps?: FinalizePackageDeps;
   finalizeIntentDeps?: FinalizeSaveUnitDeps;
+  onFinalized?: (repositoryKey: string) => void;
 }
 
 /** A known, renderer-actionable boundary refusal. Preview-route implementations
@@ -385,6 +417,7 @@ export function registerSaveCardFinalizeIpc(
       saveUnitId: context.packageId,
       saveUnitKind: 'named-save-set',
     }, routes.finalizeIntentDeps);
+    routes.onFinalized?.(context.repositoryKey);
     const outcome: FinalizeOutcome = result.outcome;
     const response: Exclude<SaveCardFleetAdhocMarkDoneResponse, { ok: false }> = {
       finalizationId: result.finalization.id,

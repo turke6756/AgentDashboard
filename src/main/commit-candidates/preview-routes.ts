@@ -183,6 +183,9 @@ export interface PreviewRoutesDeps {
   snapshotRegistry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>;
   /** Flight generation for a repository (WP-E policy store). Default 0. */
   resolvePolicyGeneration?: (repositoryKey: string) => number;
+  /** Authoritative finalization write completed; invalidate presentation cache. */
+  onRepositoryFinalized?: (repositoryKey: string) => void;
+  onRepositoryResolved?: (workspaceId: string, repositoryKey: string) => void;
 }
 
 /** The selection-independent portion of a preview assembly plus the resolved
@@ -386,6 +389,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     const repositoryKey = coalesce && snapshotRegistry
       ? await resolveRepositoryKey(target.workspaceDir, target.capability)
       : null;
+    if (repositoryKey) deps.onRepositoryResolved?.(workspaceId, repositoryKey);
     const read = snapshotRegistry && repositoryKey
       ? await snapshotRegistry.acquire(
           { repositoryKey, policyGeneration: resolvePolicyGeneration(repositoryKey) },
@@ -1076,6 +1080,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
 
   const saveCardFinalizeRoutes: SaveCardFinalizeRoutes = {
     resolveBoundary: (request) => resolveFleetBoundary(request.packageId, request.targetWorkspaceId),
+    onFinalized: deps.onRepositoryFinalized,
   };
   const saveCardAttributionResolutionRoutes: SaveCardAttributionResolutionRoutes = {
     async persistAttributionResolution(

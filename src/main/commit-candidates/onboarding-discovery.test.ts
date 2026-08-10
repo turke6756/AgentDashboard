@@ -161,3 +161,12 @@ test('materially changed recommendations re-offer after keep-everything without 
     f.cleanup();
   }
 });
+
+test('production composition shares policy generation and invalidates checkpoint, finalization, and policy writes', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'index.ts'), 'utf8');
+  assert.match(source, /new ScratchPolicyStore\(/, 'production must construct the app-owned policy store');
+  assert.match(source, /resolvePolicyGeneration,/, 'both route constructors must receive live policy generation');
+  assert.match(source, /engine\.coordinator\.onTurnClosed/, 'checkpoint closure must enter invalidation wiring');
+  assert.match(source, /onPolicyWrite: \(repositoryKey\) => snapshotRegistry\.invalidate\(repositoryKey\)/);
+  assert.match(source, /onRepositoryFinalized: \(repositoryKey\) => snapshotRegistry\.invalidate\(repositoryKey\)/);
+});

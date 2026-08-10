@@ -7,12 +7,13 @@ import * as path from 'node:path';
 import type { PackageFinalization, SaveIntent, TurnWitnessRead } from '../database';
 import { resolveInternalGit } from '../git/git-runtime';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
-import { SAVECARD_CHANNELS, type SaveCardInventoryResponse } from '../../shared/types';
-import { registerSaveCardIpc, type IpcLike } from './save-card-ipc';
-import { createSaveCardRoutes } from './save-card-routes';
+import { SAVECARD_CHANNELS, SAVECARD_ONBOARDING_DECISION_CHANNEL, type SaveCardInventoryResponse } from '../../shared/types';
+import { registerSaveCardIpc, registerSaveCardIntentIpc, type IpcLike } from './save-card-ipc';
+import { createSaveCardRoutes, type SaveCardRoutesDeps } from './save-card-routes';
 import { createPreviewRoutes } from './preview-routes';
 import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import type { CandidateInventoryRead } from './candidate-service';
+import { ScratchPolicyStore } from './scratch-policy-store';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 class FakeIpc implements IpcLike {
@@ -80,7 +81,10 @@ async function setup(): Promise<void> {
   fs.writeFileSync(path.join(repo, 'human.txt'), 'human\n');
 }
 
-function routes(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>) {
+function routes(
+  registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>,
+  overrides: Partial<SaveCardRoutesDeps> = {},
+) {
   const witnesses = [
     witness('turn-task', 'task.txt', intent.id),
     witness('turn-legacy', 'legacy.txt', null),
@@ -117,6 +121,7 @@ function routes(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRea
       commands.push([...args]);
       return runGitBytes(cwd, args, { ...options, gitExe });
     },
+    ...overrides,
   });
 }
 
@@ -223,6 +228,24 @@ test('WP-G: distinct registries do NOT coalesce — the shared instance is what 
   assert.equal(counters.computeRuns, 2, 'two separate registries each run their own computation');
 });
 
+test('production route threads policy generation into the registry flight key', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  let generation: number | null = null;
+  let resolved: [string, string] | null = null;
+  const acquire = registry.acquire.bind(registry);
+  registry.acquire = ((key, compute, options) => {
+    generation = key.policyGeneration;
+    return acquire(key, compute, options);
+  }) as typeof registry.acquire;
+  await routes(registry, {
+    resolvePolicyGeneration: () => 7,
+    onRepositoryResolved: (workspaceId, repositoryKey) => { resolved = [workspaceId, repositoryKey]; },
+  }).getInventory({ workspaceId: 'workspace-1' });
+  assert.equal(generation, 7);
+  assert.equal(resolved?.[0], 'workspace-1');
+  assert.ok(resolved?.[1]);
+});
+
 test('production route projects intent units and keeps unstamped work read-only', async () => {
   const inventory = await routes().getInventory({ workspaceId: 'workspace-1' });
   assert.equal(inventory.intentUnits.length, 1);
@@ -244,6 +267,39 @@ test('production IPC registration reaches the intent route', async () => {
   );
   assert.equal(inventory.intentUnits[0].intentId, intent.id);
   assert.equal(inventory.legacyTaskIdentityUnavailable.length, 1);
+});
+
+test('production inventory supplies first-contact discovery and policy completion persists through the repository store', async () => {
+  const clutter = path.join(repo, 'node_modules');
+  fs.mkdirSync(clutter, { recursive: true });
+  fs.writeFileSync(path.join(clutter, 'dependency.js'), 'generated\n');
+  const store = new ScratchPolicyStore(path.join(repo, '.app-policy'));
+  const invalidated: string[] = [];
+  const productionRoutes = routes(undefined, {
+    scratchPolicyStore: store,
+    onPolicyWrite: (repositoryKey) => invalidated.push(repositoryKey),
+  });
+  const ipc = new FakeIpc();
+  registerSaveCardIpc(ipc, () => productionRoutes);
+  registerSaveCardIntentIpc(ipc, () => productionRoutes);
+  const first = await ipc.invoke<SaveCardInventoryResponse>(
+    SAVECARD_CHANNELS.getInventory,
+    { workspaceId: 'workspace-1' },
+  );
+  assert.equal(first.onboarding?.presentation, 'first-contact', 'REACHABILITY:onboarding-production-supplier');
+  assert.deepEqual(first.onboarding?.recommendations.map((item) => item.displayPath), ['node_modules/']);
+  const selected = first.onboarding!.recommendations[0].pathBytesBase64;
+  const completed = await ipc.invoke<{ policyGeneration: number }>(SAVECARD_ONBOARDING_DECISION_CHANNEL, {
+    workspaceId: 'workspace-1', decision: 'exclude-selected', selectedPathBytesBase64: [selected],
+  });
+  assert.equal(completed.policyGeneration, 1);
+  assert.equal(invalidated.length, 1);
+  assert.deepEqual(
+    store.read(invalidated[0]).exclusions.map((item) => Buffer.from(item.value, 'base64').toString()),
+    ['node_modules/'],
+  );
+  const repeated = await productionRoutes.getInventory({ workspaceId: 'workspace-1' });
+  assert.equal(repeated.onboarding?.presentation, 'established');
 });
 
 test('inventory projection invokes only read-only Git commands', async () => {

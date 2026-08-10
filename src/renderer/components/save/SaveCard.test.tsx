@@ -69,6 +69,7 @@ beforeEach(() => {
   (window as unknown as { api: unknown }).api = {
     saveCard: {
       getInventory,
+      completeOnboarding: vi.fn(async () => ({ policyGeneration: 1 })),
       markDone: vi.fn(), preview: vi.fn(), sweep: vi.fn(),
       resolveAttribution: vi.fn(), adoptAllAsBaseline: vi.fn(),
     },
@@ -85,6 +86,23 @@ afterEach(() => {
 });
 
 describe('SaveCard intent-first rendering', () => {
+  it('enters the production onboarding bridge from a main-issued inventory prompt', async () => {
+    await renderCard(inventory({
+      onboarding: {
+        presentation: 'first-contact',
+        recommendations: [
+          { pathBytesBase64: btoa('node_modules/'), displayPath: 'node_modules/', countLabel: '>=5,000' },
+        ],
+      },
+    }));
+    const button = [...container.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent === 'Keep everything')!;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(window.api.saveCard.completeOnboarding).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', decision: 'keep-everything', selectedPathBytesBase64: [btoa('node_modules/')],
+    });
+  });
+
   it('offers the approved first-contact save-tracking prompt and sends selected exclusions', async () => {
     const onDecision = vi.fn(async () => undefined);
     await renderCard(inventory(), {

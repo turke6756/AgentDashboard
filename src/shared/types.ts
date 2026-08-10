@@ -2156,6 +2156,7 @@ export const SAVECARD_CHANNELS = {
 } as const;
 
 export const SAVECARD_ADOPT_BASELINE_CHANNEL = 'savecard:adoptAllAsBaseline';
+export const SAVECARD_ONBOARDING_DECISION_CHANNEL = 'savecard:completeOnboarding' as const;
 
 /** Renderer request for the repository inventory containing this workspace. */
 export interface SaveCardInventoryRequest {
@@ -2164,6 +2165,21 @@ export interface SaveCardInventoryRequest {
 
 export interface SaveCardAdoptBaselineRequest { workspaceId: string; }
 export interface SaveCardAdoptBaselineResponse { intentId: string; title: string; memberCount: number; }
+export type SaveCardOnboardingDecision = 'exclude-selected' | 'keep-everything' | 'decide-later';
+export interface SaveCardOnboardingPrompt {
+  presentation: 'first-contact' | 'established';
+  recommendations: Array<{
+    pathBytesBase64: string;
+    displayPath: string;
+    countLabel: string;
+  }>;
+}
+export interface SaveCardOnboardingDecisionRequest {
+  workspaceId: string;
+  decision: SaveCardOnboardingDecision;
+  selectedPathBytesBase64: string[];
+}
+export interface SaveCardOnboardingDecisionResponse { policyGeneration: number; }
 
 /** A contributing agent shown inside its supervisor-unit package. */
 export interface SaveCardWorkerUnit {
@@ -2268,6 +2284,8 @@ export interface SaveCardInventoryResponse {
   legacyFinalizations: SaveCardLegacyFinalizationDto[];
   planningActivities: SaveCardPlanningActivityDto[];
   quotaWeakening: import('./commit-candidates').SaveCardQuotaWeakening | null;
+  /** Main-issued first-contact projection. Absent only for legacy/test providers. */
+  onboarding?: SaveCardOnboardingPrompt | null;
 }
 
 export const SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL = 'savecard:resolveActivityMerge' as const;
@@ -3612,6 +3630,9 @@ export interface IpcApi {
     adoptAllAsBaseline: (
       req: SaveCardAdoptBaselineRequest,
     ) => Promise<SaveCardAdoptBaselineResponse>;
+    completeOnboarding: (
+      req: SaveCardOnboardingDecisionRequest,
+    ) => Promise<SaveCardOnboardingDecisionResponse>;
     preview: (req: SaveCardPreviewRequest) => Promise<SaveCardPreviewResponse>;
     resolveAttribution: (
       req: SaveCardAttributionResolutionRequest,

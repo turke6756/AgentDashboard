@@ -171,7 +171,10 @@ function makeRoutes(store: FakeIntentStore, opts: { fail?: boolean } = {}, over:
 test('fleet-adhoc mark-done creates a named-save-set finalization that captures boundary_ref', async () => {
   const ipc = new FakeIpc();
   const store = new FakeIntentStore();
-  registerSaveCardFinalizeIpc(ipc, () => makeRoutes(store));
+  const invalidated: string[] = [];
+  const routes = makeRoutes(store);
+  routes.onFinalized = (repositoryKey) => invalidated.push(repositoryKey);
+  registerSaveCardFinalizeIpc(ipc, () => routes);
 
   const res = (await ipc.invoke(
     SAVECARD_FINALIZE_CHANNEL,
@@ -191,6 +194,8 @@ test('fleet-adhoc mark-done creates a named-save-set finalization that captures 
   assert.ok(row, 'the mark-done minted a finalization row');
   assert.equal(row!.saveUnitKind, 'named-save-set');
   assert.equal(row!.boundaryRef, finalizationRef('pkg-fleet', 1));
+  assert.deepEqual(invalidated, [row!.repositoryKey],
+    'a completed finalization must invalidate the repository snapshot');
 });
 
 test('production handler writes a v2 named-save-set finalization', async () => {

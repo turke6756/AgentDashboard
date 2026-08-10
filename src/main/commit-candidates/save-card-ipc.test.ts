@@ -14,6 +14,7 @@ import {
 import {
   SAVECARD_CHANNELS,
   SAVECARD_ADOPT_BASELINE_CHANNEL,
+  SAVECARD_ONBOARDING_DECISION_CHANNEL,
   type SaveCardInventoryRequest,
   type SaveCardInventoryResponse,
 } from '../../shared/types';
@@ -105,6 +106,31 @@ test('production intent registration invokes the main-owned baseline route', asy
   assert.deepEqual(response, {
     intentId: 'intent-baseline', title: 'Baseline 2026-08-09', memberCount: 3,
   });
+});
+
+test('production intent registration reaches the main-owned onboarding policy route', async () => {
+  const ipc = new FakeIpc();
+  const calls: unknown[] = [];
+  registerSaveCardIntentIpc(ipc, () => ({
+    getInventory: async () => inventoryFixture(),
+    completeOnboarding: async (req) => {
+      calls.push(req);
+      return { policyGeneration: 4 };
+    },
+  }));
+  assert.ok(ipc.handlers.get(SAVECARD_ONBOARDING_DECISION_CHANNEL),
+    'production registerSaveCardIntentIpc must register onboarding completion');
+  const response = await ipc.invoke(SAVECARD_ONBOARDING_DECISION_CHANNEL, {
+    workspaceId: 'ws-1', decision: 'exclude-selected', selectedPathBytesBase64: ['bm9kZV9tb2R1bGVzLw=='],
+    repositoryKey: 'renderer-must-not-control-this',
+  });
+  assert.deepEqual(calls, [{
+    workspaceId: 'ws-1', decision: 'exclude-selected', selectedPathBytesBase64: ['bm9kZV9tb2R1bGVzLw=='],
+  }]);
+  assert.deepEqual(response, { policyGeneration: 4 });
+  await assert.rejects(() => ipc.invoke(SAVECARD_ONBOARDING_DECISION_CHANNEL, {
+    workspaceId: 'ws-1', decision: 'exclude-selected', selectedPathBytesBase64: 'node_modules/',
+  }), /string array/);
 });
 
 test('rejects malformed inventory requests before calling the route', async () => {
