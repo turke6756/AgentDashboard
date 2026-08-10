@@ -10,6 +10,9 @@ import { runGit, runGitBytes } from '../git-checkpoints/git-command';
 import { SAVECARD_CHANNELS, type SaveCardInventoryResponse } from '../../shared/types';
 import { registerSaveCardIpc, type IpcLike } from './save-card-ipc';
 import { createSaveCardRoutes } from './save-card-routes';
+import { createPreviewRoutes } from './preview-routes';
+import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
+import type { CandidateInventoryRead } from './candidate-service';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 class FakeIpc implements IpcLike {
@@ -77,7 +80,7 @@ async function setup(): Promise<void> {
   fs.writeFileSync(path.join(repo, 'human.txt'), 'human\n');
 }
 
-function routes() {
+function routes(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>) {
   const witnesses = [
     witness('turn-task', 'task.txt', intent.id),
     witness('turn-legacy', 'legacy.txt', null),
@@ -85,6 +88,7 @@ function routes() {
   let repositoryKey = '';
   return createSaveCardRoutes({
     gitExe,
+    ...(registry ? { snapshotRegistry: registry } : {}),
     getWorkspaces: () => [{ id: 'workspace-1', path: repo, title: 'Repository' }],
     readTurnWitnesses: () => witnesses,
     readTurnRecord: (turnId) => ({
@@ -115,6 +119,109 @@ function routes() {
     },
   });
 }
+
+/** A preview-route set over the SAME real temp repo, with every DB seam faked to
+ *  empty so the real `CommitCandidateService.assembleInventory` pipeline runs
+ *  without a live SQLite database. Used only by the cross-constructor WP-G tests. */
+function preview(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>) {
+  return createPreviewRoutes({
+    gitExe,
+    ...(registry ? { snapshotRegistry: registry } : {}),
+    getWorkspaces: () => [{ id: 'workspace-1', path: repo, title: 'Repository' }],
+    readTurnWitnesses: () => [],
+    readTurnRecord: () => null,
+    readCaptureTurns: () => [],
+    readWitnessedProvenance: () => null,
+    readCommitPathLinks: () => [],
+    listRepoCommitPathLinks: () => [],
+    readActiveFinalizations: () => [],
+    getPackageFinalization: () => null,
+    getPlanWorkPackage: () => null,
+    listPlanWorkPackagePaths: () => [],
+    listSaveIntents: () => [],
+    listNamedSaveSetMembers: () => [],
+    getPlan: () => null,
+    readActivePlanningWorktrees: () => [],
+    runGit: async (cwd, args, options) => runGit(cwd, args, { ...options, gitExe }),
+    runGitBytes: async (cwd, args, options) => runGitBytes(cwd, args, { ...options, gitExe }),
+  });
+}
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+/** Wrap a registry's `acquire` so its FIRST canonical computation is held until
+ *  `expected` distinct acquire calls have arrived — making the coalescing race
+ *  deterministic. Records each acquire's repositoryKey and counts real compute
+ *  executions (a joiner never re-runs the thunk). */
+function instrument(
+  registry: CommitCandidateSnapshotRegistry<CandidateInventoryRead>,
+  gate: { promise: Promise<void>; resolve(): void },
+  counters: { acquireCalls: number; computeRuns: number; keys: string[] },
+  arrivals: () => number,
+  expected: number,
+): void {
+  const real = registry.acquire.bind(registry);
+  registry.acquire = ((key, compute, options) => {
+    counters.acquireCalls += 1;
+    counters.keys.push(key.repositoryKey);
+    if (arrivals() >= expected) gate.resolve();
+    return real(key, async (signal) => {
+      counters.computeRuns += 1;
+      await gate.promise;
+      return compute(signal);
+    }, options);
+  }) as typeof registry.acquire;
+}
+
+test('WP-G: both route constructors sharing one registry compute exactly one snapshot', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  const gate = deferred();
+  const counters = { acquireCalls: 0, computeRuns: 0, keys: [] as string[] };
+  instrument(registry, gate, counters, () => counters.acquireCalls, 2);
+
+  const saveCard = routes(registry);
+  const previewRoutes = preview(registry);
+  await Promise.all([
+    saveCard.getInventory({ workspaceId: 'workspace-1' }),
+    previewRoutes.saveCardPreviewRoutes.resolvePreviewContext({
+      workspaceId: 'workspace-1',
+      selectedComponentIds: [],
+      selectedUnattributedEntryIds: [],
+      finalizationIds: [],
+    }),
+  ]);
+
+  assert.equal(counters.acquireCalls, 2, 'both constructors routed through the one shared registry');
+  assert.equal(counters.computeRuns, 1, 'a concurrent save-card + preview computes exactly one snapshot');
+  assert.equal(counters.keys[0], counters.keys[1], 'both surfaces resolved the same canonical repositoryKey');
+});
+
+test('WP-G: distinct registries do NOT coalesce — the shared instance is what dedupes', async () => {
+  const gate = deferred();
+  const counters = { acquireCalls: 0, computeRuns: 0, keys: [] as string[] };
+  const saveRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  const previewRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  instrument(saveRegistry, gate, counters, () => counters.acquireCalls, 2);
+  instrument(previewRegistry, gate, counters, () => counters.acquireCalls, 2);
+
+  const saveCard = routes(saveRegistry);
+  const previewRoutes = preview(previewRegistry);
+  await Promise.all([
+    saveCard.getInventory({ workspaceId: 'workspace-1' }),
+    previewRoutes.saveCardPreviewRoutes.resolvePreviewContext({
+      workspaceId: 'workspace-1',
+      selectedComponentIds: [],
+      selectedUnattributedEntryIds: [],
+      finalizationIds: [],
+    }),
+  ]);
+
+  assert.equal(counters.computeRuns, 2, 'two separate registries each run their own computation');
+});
 
 test('production route projects intent units and keeps unstamped work read-only', async () => {
   const inventory = await routes().getInventory({ workspaceId: 'workspace-1' });

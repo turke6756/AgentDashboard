@@ -56,6 +56,9 @@ import { createTurnStampSource, type TurnStampRecordReader } from './stamp-proje
 import type { SaveCardRoutes } from './save-card-ipc';
 import { projectWitnesses } from './witness-projection';
 import { projectIntentUnits } from './intent-assembler';
+import { deriveRepositoryIdentity } from './repository-identity';
+import type { RunGit } from '../git/git-runtime';
+import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 
 type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'startedAt' | 'endedAt'>;
 
@@ -92,6 +95,17 @@ export interface SaveCardRoutesDeps {
   listPlanningActivities?: typeof dbListPlanningActivityWorktrees;
   listActivityMergeAttempts?: typeof dbListActivityMergeAttempts;
   listActivityMergeConflicts?: typeof dbListActivityMergeConflicts;
+  /**
+   * WP-G — the ONE canonical per-repository snapshot single-flight registry,
+   * composed once in `src/main/index.ts` and shared with the preview routes (which
+   * run behind a SEPARATE `CommitCandidateService`). When present, the read-only
+   * inventory surface routes its inventory+protection assembly through it so a
+   * concurrent save-card + preview computes exactly one canonical snapshot. Absent
+   * ⇒ the surface computes directly, byte-for-byte as before.
+   */
+  snapshotRegistry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>;
+  /** Flight generation for a repository (WP-E policy store). Default 0. */
+  resolvePolicyGeneration?: (repositoryKey: string) => number;
 }
 
 function minTime(values: Array<number | null | undefined>): number | null {
@@ -148,6 +162,32 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
   const getAgent = deps.getAgent ?? dbGetAgent;
   const readBundleTurns = deps.readBundleTurns
     ?? ((workspaceId: string) => dbListTurnRecords(workspaceId, { limit: Number.MAX_SAFE_INTEGER }));
+  const snapshotRegistry = deps.snapshotRegistry;
+  const resolvePolicyGeneration = deps.resolvePolicyGeneration ?? (() => 0);
+
+  // WP-G — resolve the canonical `repositoryKey` for the flight identity from the
+  // target's ALREADY-probed capability (no new heavy scan), so a concurrent
+  // save-card + preview on the same repository coalesce onto one snapshot. Best
+  // effort: a repo-less / unresolvable target yields null and the caller computes
+  // directly (uncoalesced), exactly as before the registry existed.
+  async function resolveRepositoryKey(
+    workspaceDir: string,
+    capability: Pick<GitCapability, 'commonDirQueueKey'>,
+  ): Promise<string | null> {
+    const boundRunGit: RunGit = async (args) => {
+      const result = await runGit(workspaceDir, args, {
+        gitExe, allowNonzero: true, timeoutMs: 10_000, maxBytes: 1 << 20,
+      });
+      return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    };
+    const outcome = await deriveRepositoryIdentity(workspaceDir, capability, {
+      runGit: boundRunGit,
+      platform: process.platform,
+      realpath,
+      fileExists: (candidate) => fs.existsSync(candidate),
+    });
+    return outcome.ok ? outcome.repositoryKey : null;
+  }
 
   const service = new CommitCandidateService({
     runGit,
@@ -192,10 +232,17 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       }),
     );
 
-    const read = await service.assembleInventory({
-      targetWorkspaceId: req.workspaceId,
-      workspaces,
-    });
+    const request = { targetWorkspaceId: req.workspaceId, workspaces };
+    const target = workspaces.find((ws) => ws.workspaceId === req.workspaceId);
+    const repositoryKey = snapshotRegistry && target
+      ? await resolveRepositoryKey(target.workspaceDir, target.capability)
+      : null;
+    const read = snapshotRegistry && repositoryKey
+      ? await snapshotRegistry.acquire(
+          { repositoryKey, policyGeneration: resolvePolicyGeneration(repositoryKey) },
+          () => service.assembleInventory(request),
+        )
+      : await service.assembleInventory(request);
     latestReadByWorkspace.set(req.workspaceId, read);
     const quotaWeakening = read.quotaWeakening;
 

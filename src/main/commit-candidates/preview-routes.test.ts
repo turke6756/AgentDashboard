@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { createPreviewRoutes, type PreviewRoutesDeps } from './preview-routes';
 import { buildCandidate, computeCandidateTopologyDigest } from './candidate-service';
 import type { CandidateInventoryRead } from './candidate-service';
+import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import type {
   CommitCandidate,
   ConflictComponent,
@@ -187,7 +188,56 @@ function baseDeps(over: Partial<PreviewRoutesDeps> = {}, lsFiles: string[] = [])
   };
 }
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
+
+test('WP-G: an injected registry coalesces concurrent preview assemblies into one', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  let assemblies = 0;
+  let acquireCalls = 0;
+  const gate = deferred();
+  // Hold the first canonical computation until both requests have reached the
+  // registry, making the coalescing race deterministic.
+  const real = registry.acquire.bind(registry);
+  registry.acquire = ((key, compute, options) => {
+    acquireCalls += 1;
+    if (acquireCalls >= 2) gate.resolve();
+    return real(key, async (signal) => { await gate.promise; return compute(signal); }, options);
+  }) as typeof registry.acquire;
+
+  const { saveCardPreviewRoutes } = createPreviewRoutes(baseDeps({
+    snapshotRegistry: registry,
+    assembleInventory: async () => { assemblies += 1; return read(); },
+  }));
+  const req = {
+    workspaceId: 'ws-1', selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: [],
+  };
+  await Promise.all([
+    saveCardPreviewRoutes.resolvePreviewContext(req),
+    saveCardPreviewRoutes.resolvePreviewContext(req),
+  ]);
+
+  assert.equal(acquireCalls, 2, 'both preview requests routed through the injected registry');
+  assert.equal(assemblies, 1, 'the shared registry computed the canonical snapshot exactly once');
+});
+
+test('WP-G: without a registry each preview assembles independently (no global leakage)', async () => {
+  let assemblies = 0;
+  const { saveCardPreviewRoutes } = createPreviewRoutes(baseDeps({
+    assembleInventory: async () => { assemblies += 1; return read(); },
+  }));
+  const req = {
+    workspaceId: 'ws-1', selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: [],
+  };
+  await saveCardPreviewRoutes.resolvePreviewContext(req);
+  await saveCardPreviewRoutes.resolvePreviewContext(req);
+  assert.equal(assemblies, 2, 'no coalescing occurs unless a registry is injected');
+});
 
 test('unfinalized save-lens selection → real SelectionPreview, NO temp-index reps', async () => {
   const lsFiles: string[] = [];

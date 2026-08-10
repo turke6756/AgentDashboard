@@ -99,6 +99,9 @@ import type {
 } from './save-card-ipc';
 import { parseFinalizationManifest, resolvePinnedSelectionDrift } from './pinned-selection-drift';
 import { readCheckpointTree } from './protection-read';
+import { deriveRepositoryIdentity } from './repository-identity';
+import type { RunGit } from '../git/git-runtime';
+import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { canonicalize } from './jcs';
 import type { FreshSaveSweepResolution } from './save-sweep-service';
 import type {
@@ -168,6 +171,18 @@ export interface PreviewRoutesDeps {
   ) => Promise<{ oid: string; treeOid: string }>;
   /** Shared with the CommitCoordinator and token store. */
   composeLocks?: ComposeLockRegistry;
+  /**
+   * WP-G — the ONE canonical per-repository snapshot single-flight registry,
+   * composed once in `src/main/index.ts` and shared with the save-card routes
+   * (which run behind a SEPARATE `CommitCandidateService`). When present, the
+   * READ-ONLY preview surfaces route their inventory+protection assembly through
+   * it so a concurrent save-card + preview computes exactly one canonical snapshot.
+   * Mint / finalize / sweep deliberately BYPASS it — they keep their existing
+   * freshness verification and never trust cached presentation state.
+   */
+  snapshotRegistry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>;
+  /** Flight generation for a repository (WP-E policy store). Default 0. */
+  resolvePolicyGeneration?: (repositoryKey: string) => number;
 }
 
 /** The selection-independent portion of a preview assembly plus the resolved
@@ -254,7 +269,31 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   const realpath = deps.realpath ?? ((p) => fs.realpathSync.native(p));
   const contractVersion = deps.contractVersion ?? BUNDLE_CONTRACT_VERSION;
   const composeLocks = deps.composeLocks ?? new ComposeLockRegistry();
+  const snapshotRegistry = deps.snapshotRegistry;
+  const resolvePolicyGeneration = deps.resolvePolicyGeneration ?? (() => 0);
   const repositoryLocations = new Map<string, { repoRoot: string; gitExe?: string }>();
+
+  // WP-G — resolve the canonical `repositoryKey` for the flight identity from the
+  // target's ALREADY-probed capability (no new heavy scan). Best effort: a repo-less
+  // / unresolvable target yields null and the caller assembles directly (uncoalesced).
+  async function resolveRepositoryKey(
+    workspaceDir: string,
+    capability: Pick<GitCapability, 'commonDirQueueKey'>,
+  ): Promise<string | null> {
+    const boundRunGit: RunGit = async (args) => {
+      const result = await runGit(workspaceDir, args, {
+        gitExe, allowNonzero: true, timeoutMs: 10_000, maxBytes: 1 << 20,
+      });
+      return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    };
+    const outcome = await deriveRepositoryIdentity(workspaceDir, capability, {
+      runGit: boundRunGit,
+      platform: process.platform,
+      realpath,
+      fileExists: (candidate) => fs.existsSync(candidate),
+    });
+    return outcome.ok ? outcome.repositoryKey : null;
+  }
 
   const service = new CommitCandidateService({
     runGit,
@@ -290,7 +329,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   /** Assemble everything a context needs EXCEPT the selection-dependent temp-index
    *  reps and the requested finalizations. Probes every workspace (sibling union),
    *  runs the 1G facade, then reads the ledger / fingerprint / pinned HEAD. */
-  async function assembleScope(workspaceId: string): Promise<PreviewScope> {
+  async function assembleScope(workspaceId: string, coalesce = false): Promise<PreviewScope> {
     const registeredWorkspaces = getWorkspaces();
     const workspaceRow = registeredWorkspaces.find((workspace) => workspace.id === workspaceId);
     if (!workspaceRow) {
@@ -341,10 +380,18 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
       );
     }
 
-    const read = await assembleInventory({
-      targetWorkspaceId: workspaceId,
-      workspaces,
-    });
+    const request: CandidateReadRequest = { targetWorkspaceId: workspaceId, workspaces };
+    // WP-G — read/preview surfaces coalesce inventory+protection through the shared
+    // registry; mint/finalize/sweep pass coalesce=false and compute fresh.
+    const repositoryKey = coalesce && snapshotRegistry
+      ? await resolveRepositoryKey(target.workspaceDir, target.capability)
+      : null;
+    const read = snapshotRegistry && repositoryKey
+      ? await snapshotRegistry.acquire(
+          { repositoryKey, policyGeneration: resolvePolicyGeneration(repositoryKey) },
+          () => assembleInventory(request),
+        )
+      : await assembleInventory(request);
 
     const repository = read.inventory.repository;
     repositoryLocations.set(repository.repositoryKey, { repoRoot, gitExe });
@@ -478,7 +525,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
 
   const saveCardPreviewRoutes: SaveCardPreviewRoutes = {
     async resolvePreviewContext(req: SaveCardPreviewRequest): Promise<CandidateBuildContext> {
-      const scope = await assembleScope(req.workspaceId);
+      const scope = await assembleScope(req.workspaceId, true);
       const selectedIds = new Set([
         ...(req.selectedIntentIds ?? []),
         ...(req.selectedNamedSaveSetIds ?? []),
@@ -637,7 +684,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
 
   const planPreviewRoutes: PlanCandidatePreviewRoutes = {
     async resolvePreviewContext(req: PlanCandidatePreviewRequest): Promise<CandidateBuildContext> {
-      const scope = await assembleScope(req.workspaceId);
+      const scope = await assembleScope(req.workspaceId, true);
       // Mirror `buildPlanCandidatePreview`'s D-1 default: when the request omits
       // components, the plan's OWN components (every component with an association
       // to this plan) are selected whole — so the reps we resolve here match the

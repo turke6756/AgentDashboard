@@ -37,6 +37,8 @@ import { RETENTION_CYCLE_INTERVAL_MS } from '../shared/constants';
 import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSaveCardPreviewRoutes, setSaveCardMintRoutes, setSaveCardFinalizeRoutes, setCommitCoordinatorRoutes, setSaveSweepService, setSaveCardAttentionProvider, setActivityMergeService } from './ipc-handlers';
 import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
 import { createPreviewRoutes } from './commit-candidates/preview-routes';
+import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
+import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
 import { CommitCoordinator } from './git-checkpoints/commit-coordinator';
 import { ActivityMergeService } from './git-checkpoints/activity-merge-service';
 import { runGit, runGitBytes } from './git-checkpoints/git-command';
@@ -842,9 +844,16 @@ app.whenReady().then(async () => {
           // SC-WP-1J: hand the read-only Save-card inventory surface to the renderer
           // IPC layer, reusing the engine's already-resolved internal Git. Until this
           // runs the channel answers "save-card-engine-unavailable" honestly.
+          // WP-G: the ONE canonical per-repository snapshot single-flight registry.
+          // Composed here exactly once and injected into BOTH route constructors —
+          // which run behind two SEPARATE `CommitCandidateService` instances, so
+          // per-service coalescing is provably insufficient. Sharing this instance
+          // is what makes a concurrent save-card + preview compute one snapshot.
+          const snapshotRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
           setSaveCardRoutes(createSaveCardRoutes({
             gitExe: engine.gitExe,
             readQuotaWeakening: (repositoryKey) => quotaWeakeningByRepo.get(repositoryKey) ?? null,
+            snapshotRegistry,
           }));
           // SC-WP-W1: hand the Stage ③ candidate-preview routes (both lenses) to the
           // renderer IPC layer, reusing the engine's already-resolved internal Git.
@@ -858,6 +867,7 @@ app.whenReady().then(async () => {
             gitExe: engine.gitExe,
             queue: engine.queue,
             captureFinalizationBoundary: engine.captureFinalizationBoundary,
+            snapshotRegistry,
           });
           setSaveCardPreviewRoutes(previewRoutes.saveCardPreviewRoutes);
           setSaveCardMintRoutes(previewRoutes.saveCardMintRoutes);
