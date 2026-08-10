@@ -17,6 +17,7 @@ import {
   CheckpointProtectionBudgetExceededError,
   PROBE_ESTIMATED_STDIN_BUDGET,
   PROBE_PAIR_BUDGET,
+  PROBE_STDIN_CHUNK_BYTES,
   evaluateCheckpointProtection,
   weakestProtectionRung,
   type CheckpointTreePresence,
@@ -453,6 +454,88 @@ test('estimated-stdin guard proceeds at budget and refuses pre-spawn one pair ab
     'REACHABILITY:protection-budget-admission estimated stdin above the hard limit must refuse before spawn',
   );
   assert.equal(bytesCalls, 0, 'stdin admission happens before every binary Git spawn');
+});
+
+test('the named probe chunk constant bounds peak memory below the estimated-stdin budget', () => {
+  assert.equal(PROBE_STDIN_CHUNK_BYTES, 1 << 20);
+  // A streamed chunk is the peak retained probe buffer; it must never exceed the
+  // pre-spawn estimated-stdin admission ceiling, or streaming could still OOM.
+  assert.ok(PROBE_STDIN_CHUNK_BYTES <= PROBE_ESTIMATED_STDIN_BUDGET.hard);
+});
+
+test('membership probe streams the cross-product in bounded chunks — no whole-corpus buffer', async () => {
+  // REACHABILITY:protection-streaming-probe — the verified OOM allocator was the
+  // per-pair Buffer[] + single Buffer.concat over the ENTIRE (commits × members)
+  // cross-product. Structurally prove no runGitBytes call ever receives that whole
+  // corpus: a 1-byte chunk budget flushes each pair as its own bounded batch-check.
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
+  const batchStdinSizes: number[] = [];
+  const countingBytes: RunProtectionGitBytes = async (cwd, args, opts) => {
+    if (args[0] === 'cat-file' && args.includes('--batch-check')) {
+      const stdin = opts.stdin;
+      batchStdinSizes.push(
+        stdin === undefined ? 0 : Buffer.isBuffer(stdin) ? stdin.length : Buffer.byteLength(stdin),
+      );
+    }
+    return runGitBytes(cwd, args, opts);
+  };
+
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact, ghost],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    maxProbeStdinChunkBytes: 1, // one pair per chunk
+    runGit,
+    runGitBytes: countingBytes,
+    gitExe,
+  });
+
+  // Correctness is preserved across chunk boundaries.
+  assert.equal(result.members.find((m) => m.entryId === 'exact')!.protection, 'checkpoint-protected');
+  assert.equal(result.members.find((m) => m.entryId === 'ghost')!.protection, 'unprotected');
+
+  // 1 live commit × 2 batchable members = 2 pairs → 2 bounded batch-check chunks,
+  // never one spawn carrying the whole cross-product.
+  assert.equal(batchStdinSizes.length, 2, 'the cross-product is streamed as bounded chunks');
+  const wholeCorpusBytes = batchStdinSizes.reduce((sum, size) => sum + size, 0);
+  for (const size of batchStdinSizes) {
+    assert.ok(size < wholeCorpusBytes, 'no single chunk carries the whole pair corpus');
+  }
+});
+
+test('a deadline elapsing between probe chunks surfaces incomplete evaluation as a typed refusal', async () => {
+  const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
+  const deadlineAt = Date.now() + 250;
+  let batchChunks = 0;
+  const stallingBytes: RunProtectionGitBytes = async (cwd, args, opts) => {
+    const isBatch = args[0] === 'cat-file' && args.includes('--batch-check');
+    const out = await runGitBytes(cwd, args, opts);
+    // After the first chunk completes, push wall-clock past the shared deadline so
+    // the between-chunk check trips before the next chunk is ever spawned.
+    if (isBatch && ++batchChunks === 1) await new Promise((r) => setTimeout(r, 400));
+    return out;
+  };
+
+  await assert.rejects(
+    evaluateCheckpointProtection({
+      repoRoot: repo,
+      members: [exact, ghost],
+      checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+      deadlineAt,
+      maxProbeStdinChunkBytes: 1, // one pair per chunk → a between-chunk deadline check
+      runGit,
+      runGitBytes: stallingBytes,
+      gitExe,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
+      assert.ok(error.reasonCodes.includes('deadline'));
+      return true;
+    },
+  );
+  assert.equal(batchChunks, 1, 'the probe stops at the chunk boundary, never spawning the next chunk');
 });
 
 test('simultaneous admission and deadline trips collect every observed reason code', async () => {

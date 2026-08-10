@@ -87,6 +87,19 @@ export type CheckpointTreeReader = (
 export const PROBE_PAIR_BUDGET = Object.freeze({ soft: 100_000, hard: 250_000 });
 export const PROBE_ESTIMATED_STDIN_BUDGET = Object.freeze({ soft: 32 << 20, hard: 64 << 20 });
 
+/**
+ * Peak query-stdin bytes materialized for ONE `cat-file --batch-check` chunk of
+ * the membership probe. This is the WP-M peak-memory bound: the former probe
+ * built the ENTIRE (live-checkpoints × members) cross-product as a per-pair
+ * `Buffer[]` and collapsed it with a single `Buffer.concat` — the verified OOM
+ * allocator that crashed the app twice. The probe now streams the cross-product
+ * to git in bounded chunks; at most this many bytes of query stdin (plus its
+ * bounded response) are retained at once, and each chunk is parsed and discarded
+ * before the next is built. Sized well under `PROBE_ESTIMATED_STDIN_BUDGET` so a
+ * streamed probe never trips the estimated-stdin admission guard in production.
+ */
+export const PROBE_STDIN_CHUNK_BYTES = 1 << 20;
+
 /** Backward-compatible name for the shipped emergency guard. */
 export const CHECKPOINT_PROTECTION_MAX_PROBE_PAIRS = PROBE_PAIR_BUDGET.hard;
 
@@ -107,6 +120,11 @@ export class CheckpointProtectionBudgetExceededError extends Error {
       maxPairs: number;
       maxEstimatedStdinBytes: number;
       estimatedStdinBytes: number;
+      /** Estimated PEAK retained query-stdin bytes for one streamed probe chunk —
+       *  `min(chunk size, whole-corpus estimate)`. This is what the estimated-stdin
+       *  admission now gates on (WP-M): streaming bounds peak memory to one chunk,
+       *  so `estimatedStdinBytes` (the whole cross-product) is diagnostic only. */
+      estimatedPeakChunkBytes: number;
     },
     readonly reasonCodes: readonly CheckpointProtectionBudgetReason[],
   ) {
@@ -125,8 +143,12 @@ export interface EvaluateCheckpointProtectionOptions {
   /** Override for the emergency membership-probe pair ceiling (tests/tuning).
    *  Defaults to CHECKPOINT_PROTECTION_MAX_PROBE_PAIRS. */
   maxMembershipProbePairs?: number;
-  /** Test/tuning override for eager-probe stdin admission. */
+  /** Test/tuning override for the estimated peak-chunk stdin admission guard. */
   maxEstimatedMembershipProbeStdinBytes?: number;
+  /** Test/tuning override for the streamed membership-probe chunk size (peak
+   *  retained query-stdin bytes per `cat-file` chunk). Defaults to
+   *  PROBE_STDIN_CHUNK_BYTES. */
+  maxProbeStdinChunkBytes?: number;
   /** Shared absolute deadline. Defaults once, at evaluator entry, to 5 seconds. */
   deadlineAt?: number;
   finalizations?: readonly PackageFinalization[];
@@ -177,6 +199,9 @@ const LS_TREE_MAX_BYTES = 1 << 20;
 const CAT_FILE_MAX_BYTES = 256 << 20;
 const NUL = 0x00;
 const LF = 0x0a;
+/** Shared single-byte NUL delimiter for `-z` query stdin, reused across every
+ *  chunked pair so the hot loop allocates no per-pair terminator. */
+const NUL_DELIMITER = Buffer.from([NUL]);
 
 function seededMode(member: ProtectionMember): string | null {
   if (member.headMode) return member.headMode;
@@ -481,15 +506,26 @@ function classifyBatchLine(line: Buffer): MembershipLine {
 }
 
 /**
- * Phase 1 — resolve, in ONE `cat-file --batch-check -z`, whether each live
- * checkpoint commit records a blob at each member path (and, if so, which blob).
- * Collapses the per-(commit × member) `ls-tree` fan-out — thousands of spawns on a
- * real workspace — into a single streaming process.
+ * Phase 1 — resolve, over a STREAM of bounded `cat-file --batch-check -z` chunks,
+ * whether each live checkpoint commit records a blob at each member path (and, if
+ * so, which blob). Collapses the per-(commit × member) `ls-tree` fan-out —
+ * thousands of spawns on a real workspace — while keeping peak memory bounded.
+ *
+ * WP-M peak-memory fix: the former probe built the ENTIRE (commit × member)
+ * cross-product as a per-pair `Buffer[]` and one giant `Buffer.concat` (the
+ * verified OOM allocator), then buffered the whole response. It now walks the
+ * cross-product lazily, emitting at most `chunkBytes` of query stdin per
+ * `cat-file` chunk; each chunk's bounded response is parsed and its buffers
+ * discarded before the next chunk is built, so no path ever materializes the full
+ * pair corpus. The deadline is honored (and control yielded to the event loop)
+ * between chunks. Total work stays O(checkpoints × files); this is the
+ * peak-memory fix, not the algorithmic one (§6.3, deferred).
  *
  * Returns, per member entryId: the set of commit OIDs whose tree holds a blob with
  * the member's exact worktree OID at its path (`blobHitOids`, still needing a mode
  * check), and whether ANY live commit records the path as absent (`sawAbsent`).
- * Returns `null` on Git failure or a record-count mismatch — never absence proof.
+ * Returns `null` on Git failure or a record-count mismatch in ANY chunk — never
+ * absence proof.
  */
 async function probeCheckpointMembership(options: {
   repoRoot: string;
@@ -498,62 +534,85 @@ async function probeCheckpointMembership(options: {
   runGitBytes: RunProtectionGitBytes;
   gitExe?: string;
   deadlineAt?: number;
+  chunkBytes?: number;
 }): Promise<Map<string, { blobHitOids: string[]; sawAbsent: boolean }> | null> {
   const { repoRoot, liveOids, members } = options;
   const result = new Map<string, { blobHitOids: string[]; sawAbsent: boolean }>(
     members.map((member) => [member.entryId, { blobHitOids: [], sawAbsent: false }]),
   );
   if (liveOids.length === 0 || members.length === 0) return result;
+  const chunkByteLimit = Math.max(1, options.chunkBytes ?? PROBE_STDIN_CHUNK_BYTES);
   const checkDeadline = (): void => {
     if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
       throw new GitCommandError('deadline', 'Checkpoint membership probe deadline elapsed.', null, '');
     }
   };
 
-  // Stdin: one NUL-terminated `<commit>:<pathBytes>` per (commit × member).
-  const stdinParts: Buffer[] = [];
-  let pairsBuilt = 0;
-  for (const oid of liveOids) {
+  // Each member's path bytes are encoded ONCE and reused across every live commit;
+  // a chunk references (never re-copies) them, so only the bounded chunk stdin is
+  // materialized at a time.
+  const memberPathBytes = members.map((member) => Buffer.from(member.path.pathBytesBase64, 'base64'));
+
+  // A chunk accumulates bounded query stdin plus the ordered (oid, member) each
+  // NUL-terminated query maps to (cat-file emits one LF response line per query,
+  // in order). Peak retained bytes are one chunk's stdin + its bounded response.
+  let chunkParts: Buffer[] = [];
+  let chunkQueries: Array<{ oid: string; member: ProtectionMember }> = [];
+  let chunkBytes = 0;
+
+  /** Run one bounded chunk. Returns false on a Git failure or a per-chunk
+   *  record-count desync — either sinks the whole probe to `null` (no proof). */
+  const flushChunk = async (): Promise<boolean> => {
+    if (chunkQueries.length === 0) return true;
     checkDeadline();
-    const prefix = Buffer.from(`${oid}:`, 'ascii');
-    for (const member of members) {
-      stdinParts.push(prefix, Buffer.from(member.path.pathBytesBase64, 'base64'), Buffer.from([NUL]));
-      if (++pairsBuilt % 1_024 === 0) checkDeadline();
-    }
-  }
-
-  checkDeadline();
-  const probe = await options.runGitBytes(
-    repoRoot,
-    ['cat-file', '--batch-check', '-z'],
-    {
-      gitExe: options.gitExe,
-      deadlineAt: options.deadlineAt,
-      allowNonzero: true,
-      timeoutMs: GIT_TIMEOUT_MS,
-      maxBytes: CAT_FILE_MAX_BYTES,
-      stdin: Buffer.concat(stdinParts),
-    },
-  );
-  if (probe.code !== 0) return null;
-
-  const lines = splitBatchCheckLines(probe.stdout);
-  if (lines.length !== liveOids.length * members.length) return null; // desync ⇒ no proof
-
-  for (let o = 0; o < liveOids.length; o++) {
-    checkDeadline();
-    for (let m = 0; m < members.length; m++) {
-      const member = members[m];
+    const probe = await options.runGitBytes(
+      repoRoot,
+      ['cat-file', '--batch-check', '-z'],
+      {
+        gitExe: options.gitExe,
+        deadlineAt: options.deadlineAt,
+        allowNonzero: true,
+        timeoutMs: GIT_TIMEOUT_MS,
+        // A response is the OID+type+size (shorter than the query) or the query
+        // echoed + " missing"; bound the chunk output to a small multiple of its
+        // stdin so a single chunk can never buffer unboundedly either.
+        maxBytes: chunkBytes * 2 + (1 << 16),
+        stdin: Buffer.concat(chunkParts),
+      },
+    );
+    if (probe.code !== 0) return false;
+    const lines = splitBatchCheckLines(probe.stdout);
+    if (lines.length !== chunkQueries.length) return false; // desync ⇒ no proof
+    for (let i = 0; i < chunkQueries.length; i++) {
+      const { oid, member } = chunkQueries[i];
       const entry = result.get(member.entryId)!;
-      const classified = classifyBatchLine(lines[o * members.length + m]);
+      const classified = classifyBatchLine(lines[i]);
       if (classified.kind === 'present' && classified.blobOid === member.rawWorktreeBlobOid) {
-        entry.blobHitOids.push(liveOids[o]);
+        entry.blobHitOids.push(oid);
       } else if (classified.kind === 'absent') {
         entry.sawAbsent = true;
       }
-      if ((o * members.length + m + 1) % 1_024 === 0) checkDeadline();
+    }
+    // Release this chunk's buffers before building the next: peak stays bounded.
+    chunkParts = [];
+    chunkQueries = [];
+    chunkBytes = 0;
+    return true;
+  };
+
+  for (const oid of liveOids) {
+    checkDeadline();
+    const prefix = Buffer.from(`${oid}:`, 'ascii');
+    for (let m = 0; m < members.length; m++) {
+      chunkParts.push(prefix, memberPathBytes[m], NUL_DELIMITER);
+      chunkBytes += prefix.length + memberPathBytes[m].length + 1;
+      chunkQueries.push({ oid, member: members[m] });
+      if (chunkBytes >= chunkByteLimit) {
+        if (!(await flushChunk())) return null;
+      }
     }
   }
+  if (!(await flushChunk())) return null;
   return result;
 }
 
@@ -566,9 +625,11 @@ async function probeCheckpointMembership(options: {
  *
  *  1. Every DISTINCT edge ref is live-verified in ONE `cat-file --batch-check`
  *     (not one `rev-parse` per edge). Repeated / shared refs collapse to one probe.
- *  2. Path membership across ALL unique live commit OIDs is resolved in ONE
- *     `cat-file --batch-check -z` over the `<commit>:<path>` cross-product — an
- *     absent record protects a deletion outright; a blob-OID hit is a candidate.
+ *  2. Path membership across ALL unique live commit OIDs is resolved over a STREAM
+ *     of bounded `cat-file --batch-check -z` chunks of the `<commit>:<path>`
+ *     cross-product — peak memory is one chunk (PROBE_STDIN_CHUNK_BYTES), never
+ *     the whole corpus. An absent record protects a deletion outright; a blob-OID
+ *     hit is a candidate.
  *  3. Only candidate hits need their tree entry MODE confirmed, via a small
  *     `ls-tree` pass (grouped by commit, early-exiting once every member resolves).
  *
@@ -650,12 +711,20 @@ export async function evaluateCheckpointProtection(
   const maxPairs = options.maxMembershipProbePairs ?? PROBE_PAIR_BUDGET.hard;
   const maxEstimatedStdinBytes = options.maxEstimatedMembershipProbeStdinBytes
     ?? PROBE_ESTIMATED_STDIN_BUDGET.hard;
+  const probeStdinChunkBytes = Math.max(1, options.maxProbeStdinChunkBytes ?? PROBE_STDIN_CHUNK_BYTES);
   const totalPathBytes = batchableBeforeModeRead.reduce(
     (sum, item) => sum + Math.floor((item.path.pathBytesBase64.length * 3) / 4),
     0,
   );
   const estimatedStdinBytes = liveOids.length
     * (totalPathBytes + batchableBeforeModeRead.length * 42);
+  // WP-M: the probe now streams the cross-product to git in bounded chunks, so
+  // peak retained query-stdin is one chunk, not the whole corpus. The estimated-
+  // stdin admission is redefined (deliberation §2 post-WP-M note) to gate on that
+  // peak CHUNK memory. For a corpus smaller than a chunk the two coincide — which
+  // preserves the shipped estimated-stdin guard exactly; a larger corpus streams,
+  // capping its peak at the chunk size.
+  const estimatedPeakChunkBytes = Math.min(probeStdinChunkBytes, estimatedStdinBytes);
   const cardinality = {
     repositoryKey: options.repositoryKey ?? null,
     liveOids: liveOids.length,
@@ -664,12 +733,13 @@ export async function evaluateCheckpointProtection(
     maxPairs,
     maxEstimatedStdinBytes,
     estimatedStdinBytes,
+    estimatedPeakChunkBytes,
   };
   if (
     batchableBeforeModeRead.length > 0
     && liveOids.length > Math.floor(maxPairs / batchableBeforeModeRead.length)
   ) observe('pairs');
-  if (estimatedStdinBytes > maxEstimatedStdinBytes) observe('estimated-stdin');
+  if (estimatedPeakChunkBytes > maxEstimatedStdinBytes) observe('estimated-stdin');
   if (Date.now() >= deadlineAt) observe('deadline');
   const throwObservedBudget = (): never => {
     const label = observedReasonCodes.includes('pairs')
@@ -754,6 +824,7 @@ export async function evaluateCheckpointProtection(
       runGitBytes: deadlineRunGitBytes,
       gitExe: options.gitExe,
       deadlineAt,
+      chunkBytes: probeStdinChunkBytes,
     }).catch((error) => {
       observeDeadlineError(error);
       return null;
