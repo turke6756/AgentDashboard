@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { DirtyEntry } from '../../../shared/commit-candidates';
 import type { SaveCardInventoryResponse, SaveIntentUnitDto } from '../../../shared/types';
 import { useSaveCardStore } from '../../stores/save-card-store';
-import SaveCard from './SaveCard';
+import SaveCard, { type SaveCardProps } from './SaveCard';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,10 +54,10 @@ let container: HTMLDivElement;
 let root: Root;
 let getInventory: ReturnType<typeof vi.fn>;
 
-async function renderCard(value: SaveCardInventoryResponse): Promise<void> {
+async function renderCard(value: SaveCardInventoryResponse, props: SaveCardProps = {}): Promise<void> {
   getInventory.mockResolvedValue(value);
   await act(async () => {
-    root.render(React.createElement(SaveCard));
+    root.render(<SaveCard {...props} />);
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -85,6 +85,45 @@ afterEach(() => {
 });
 
 describe('SaveCard intent-first rendering', () => {
+  it('offers the approved first-contact save-tracking prompt and sends selected exclusions', async () => {
+    const onDecision = vi.fn(async () => undefined);
+    await renderCard(inventory(), {
+      onboarding: {
+        presentation: 'first-contact',
+        recommendations: [
+          { pathBytesBase64: btoa('node_modules/'), displayPath: 'node_modules/', countLabel: '>=5,000' },
+          { pathBytesBase64: btoa('.venv/'), displayPath: '.venv/', countLabel: '>=5,000' },
+        ],
+      },
+      onOnboardingDecision: onDecision,
+    });
+
+    const prompt = container.querySelector('[data-testid="save-card-first-contact"]') as HTMLElement;
+    expect(prompt.textContent).toContain('Setting up save tracking for Workspace.');
+    expect(prompt.textContent).toContain('These look like build output or dependencies and are usually excluded:');
+    expect(prompt.textContent).toContain('node_modules/ (>=5,000 files)');
+    expect(prompt.textContent).toContain('Exclude selected');
+    const boxes = prompt.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    await act(async () => { boxes[1].click(); });
+    const exclude = [...prompt.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Exclude selected')!;
+    await act(async () => { exclude.click(); await Promise.resolve(); });
+    expect(onDecision).toHaveBeenCalledWith('exclude-selected', [btoa('node_modules/')]);
+  });
+
+  it('does not show first-contact copy for an established presentation', async () => {
+    await renderCard(inventory(), {
+      onboarding: {
+        presentation: 'established',
+        recommendations: [
+          { pathBytesBase64: btoa('node_modules/'), displayPath: 'node_modules/', countLabel: '>=5000' },
+        ],
+      },
+      onOnboardingDecision: vi.fn(),
+    });
+    expect(container.querySelector('[data-testid="save-card-first-contact"]')).toBeNull();
+  });
+
   it('renders plan -> item -> intent hierarchy with one card per task intent', async () => {
     await renderCard(inventory({ intentUnits: [unit(), unit({ intentId: 'intent-2', title: 'Verify cutover' })] }));
 

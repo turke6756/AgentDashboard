@@ -40,6 +40,106 @@ import { createCandidateSubmitter } from './candidate-submit';
 import { initialSaveGestureState, saveGestureReducer } from './save-gesture-state';
 import './save-card.css';
 
+export interface SaveTrackingRecommendation {
+  pathBytesBase64: string;
+  displayPath: string;
+  countLabel: string;
+}
+
+export interface SaveTrackingOnboarding {
+  presentation: 'first-contact' | 'established';
+  recommendations: SaveTrackingRecommendation[];
+}
+
+export interface SaveCardProps {
+  onboarding?: SaveTrackingOnboarding | null;
+  onOnboardingDecision?: (
+    decision: 'exclude-selected' | 'keep-everything' | 'decide-later',
+    selectedPathBytesBase64: string[],
+  ) => Promise<void> | void;
+}
+
+function FirstContactPrompt({
+  workspaceTitle,
+  onboarding,
+  onDecision,
+}: {
+  workspaceTitle: string;
+  onboarding: SaveTrackingOnboarding | null | undefined;
+  onDecision: NonNullable<SaveCardProps['onOnboardingDecision']> | undefined;
+}) {
+  const promptKey = `${onboarding?.presentation ?? 'none'}\0${
+    onboarding?.recommendations.map((item) => item.pathBytesBase64).join('\0') ?? ''
+  }`;
+  const [selected, setSelected] = useState(() =>
+    new Set(onboarding?.recommendations.map((item) => item.pathBytesBase64) ?? []),
+  );
+  const [busy, setBusy] = useState(false);
+  const [resolved, setResolved] = useState(false);
+  useEffect(() => {
+    setSelected(new Set(onboarding?.recommendations.map((item) => item.pathBytesBase64) ?? []));
+    setResolved(false);
+  }, [promptKey]);
+  if (onboarding?.presentation !== 'first-contact' || onboarding.recommendations.length === 0
+      || resolved) return null;
+
+  const decide = async (decision: 'exclude-selected' | 'keep-everything' | 'decide-later') => {
+    if (!onDecision || busy) return;
+    setBusy(true);
+    try {
+      await onDecision(decision, [...selected]);
+      setResolved(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="sc-state" data-testid="save-card-first-contact" aria-label="Save tracking setup">
+      <div className="sc-state-title">Setting up save tracking for {workspaceTitle}.</div>
+      <div className="sc-state-body">
+        These look like build output or dependencies and are usually excluded:
+      </div>
+      <ul>
+        {onboarding.recommendations.map((recommendation) => (
+          <li key={recommendation.pathBytesBase64}>
+            <label>
+              <input
+                type="checkbox"
+                checked={selected.has(recommendation.pathBytesBase64)}
+                disabled={busy}
+                onChange={(event) => setSelected((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(recommendation.pathBytesBase64);
+                  else next.delete(recommendation.pathBytesBase64);
+                  return next;
+                })}
+              />
+              {' '}{recommendation.displayPath} ({recommendation.countLabel} files)
+            </label>
+          </li>
+        ))}
+      </ul>
+      <div className="sc-state-body">Exclude from save tracking?</div>
+      <div className="sc-actions">
+        <button type="button" className="ui-btn ui-btn-primary px-3 py-1 text-[12.5px]"
+          disabled={busy || selected.size === 0 || !onDecision}
+          onClick={() => { void decide('exclude-selected'); }}>
+          Exclude selected
+        </button>
+        <button type="button" className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+          disabled={busy || !onDecision} onClick={() => { void decide('keep-everything'); }}>
+          Keep everything
+        </button>
+        <button type="button" className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+          disabled={busy || !onDecision} onClick={() => { void decide('decide-later'); }}>
+          Decide later
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // SC-WP-3H — derive the explicit WP-3G selection for a displayed group of
 // bundles. Component bundles contribute their whole component (atomic);
 // unattributed bundles contribute their member entries as independent atoms. The
@@ -552,7 +652,7 @@ function errorMessage(err: unknown): string {
  * all render honestly. There is NO commit/write affordance anywhere on this
  * surface — Stage ① reveals state only (no writer exists).
  */
-export default function SaveCard() {
+export default function SaveCard({ onboarding = null, onOnboardingDecision }: SaveCardProps = {}) {
   const workspaceId = useDashboardStore((s) => s.selectedWorkspaceId);
   const workspace = useDashboardStore((s) =>
     s.workspaces.find((w) => w.id === s.selectedWorkspaceId),
@@ -744,11 +844,19 @@ export default function SaveCard() {
       )}
     </>
   );
+  const firstContactPrompt = (
+    <FirstContactPrompt
+      workspaceTitle={workspace?.title ?? 'this workspace'}
+      onboarding={onboarding}
+      onDecision={onOnboardingDecision}
+    />
+  );
 
   if (state.status === 'loading') {
     return (
       <div className="sc-root" data-testid="save-card">
         {header}
+        {firstContactPrompt}
         <div className="sc-state" data-testid="save-card-loading">
           <div className="sc-state-title">Reading save progress…</div>
           <div className="sc-state-body">Gathering the workspace's uncommitted work into packages.</div>
@@ -761,6 +869,7 @@ export default function SaveCard() {
     return (
       <div className="sc-root" data-testid="save-card">
         {header}
+        {firstContactPrompt}
         <div className="sc-state sc-state-error" data-testid="save-card-error">
           <div className="sc-state-title">Save progress unavailable</div>
           <div className="sc-state-body">{state.message}</div>
@@ -900,6 +1009,7 @@ export default function SaveCard() {
   return (
     <div className="sc-root" data-testid="save-card">
       {header}
+      {firstContactPrompt}
 
       <QuotaWeakeningBanner warning={quotaWeakening} />
 
