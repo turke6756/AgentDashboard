@@ -250,6 +250,11 @@ const TESTS = [
   'dist/main/main/commit-candidates/scratch-policy-store.test.js',
   'dist/main/main/commit-candidates/onboarding-discovery.test.js',
   'dist/main/main/commit-candidates/snapshot-registry.test.js',
+  // Main-process OOM hardening WP-H: structural budget/single-flight oracle and
+  // the small programmatic hostile real-Git workspace fixture. Keep these ahead
+  // of later fail-fast suites so the hardening gate always enters.
+  'dist/main/main/commit-candidates/budget-structural.test.js',
+  'dist/main/main/commit-candidates/hostile-workspace-fixture.test.js',
   'dist/main/main/commit-candidates/capture-health.test.js',
   'dist/main/main/git-checkpoints/live-edge.test.js',
   'dist/main/main/commit-candidates/witness-projection.test.js',
