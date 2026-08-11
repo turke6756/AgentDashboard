@@ -76,6 +76,7 @@ import { ensureAgyPermissions, ensureAgyTrust } from './agy-settings';
 import { addProviderAutoApproveFlag } from './provider-auto-approve';
 import { ensureNodeShimDir } from '../node-shim';
 import { prepareRestrictedOutboxLaunch } from '../sandbox/outbox-launcher';
+import { resolveResearcherSandboxHome } from '../sandbox/researcher-home-factory';
 import { MEMORY_INDEX_MJS } from '../../shared/generated/memory-index-cli.generated';
 // WP-C — provider-neutral supervisor memory-index launch projection + Codex
 // pending-rail composition. The projection (readValidate + last-good/runtime
@@ -112,7 +113,7 @@ import {
 import type { RequestedPlanBinding } from '../../shared/commit-candidates';
 import { detectInteractivePrompt } from './interactive-prompt-detector';
 import { isNonBlockingNotificationType, isTurnCompleteNotificationMessage } from '../../shared/notification-classify';
-import { workspaceStateDirName } from '../workspace-state-dir';
+import { workspaceStateDir, workspaceStateDirName } from '../workspace-state-dir';
 import { ensureInstallationLauncher } from '../installation-descriptor';
 
 // Back-compat re-export shim: scaffold-version-migration.test.ts (and any other
@@ -5305,6 +5306,22 @@ export class AgentSupervisor extends EventEmitter {
     let runnerDirectSpawn = useDirectSpawn;
     if (roleLaneOf(agent) === 'researcher') {
       const workspaceRoot = getEffectiveWorkspaceRoot(agent);
+      // Forks supply overrideArgs and enter the factory explicitly at the AU-7
+      // bypass seam. Normal and resume launches enter here.
+      if (!overrideArgs) {
+        const researcherSandbox = resolveResearcherSandboxHome({
+          roleLane: roleLaneOf(agent),
+          workspaceStateRoot: workspaceStateDir(workspaceRoot),
+          agentId: agent.id,
+          provider: agent.provider,
+        });
+        if (!researcherSandbox) {
+          throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
+        }
+        // WP-3 consumes the returned redirect; WP-5 consumes the same derived
+        // discovery location. WP-2 enters and witnesses the construction seam.
+        console.log(`[Windows] Researcher sandbox home: ${researcherSandbox.researcherSandboxHomePath}`);
+      }
       const stateDir = workspaceStateDirName(workspaceRoot);
       const restricted = prepareRestrictedOutboxLaunch({
         command: launchCmd,
@@ -5908,6 +5925,16 @@ export class AgentSupervisor extends EventEmitter {
       sysPromptText = `Workspace root: ${persistentWorkspaceRoot}. cd there for project shell work. Use absolute paths for Read/Edit/Glob.`;
     } else if (agent.isResearcher && isClaude && !overrideCommand) {
       persistentWorkspaceRoot = getEffectiveWorkspaceRoot(agent);
+      const wslResearcherSandbox = resolveResearcherSandboxHome({
+        roleLane: roleLaneOf(agent),
+        workspaceStateRoot: workspaceStateDir(persistentWorkspaceRoot, 'wsl'),
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      if (!wslResearcherSandbox) {
+        throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
+      }
+      console.log(`[WSL] Researcher sandbox home: ${wslResearcherSandbox.researcherSandboxHomePath}`);
       const storeStateDir = workspaceStateDirName(persistentWorkspaceRoot, 'wsl');
       const storeDir = `${persistentWorkspaceRoot}/${storeStateDir}/research`;
       wslAddDir = storeDir;
@@ -6418,6 +6445,19 @@ export class AgentSupervisor extends EventEmitter {
     // (--tools/--disallowedTools), which the bypassed lane-aware injection would
     // otherwise have added. Without it the fork would be offered Bash/Edit again.
     const forkResearcher = forkLane === 'researcher';
+    if (forkResearcher) {
+      const forkWorkspaceRoot = getEffectiveWorkspaceRoot(newAgent);
+      const forkResearcherSandbox = resolveResearcherSandboxHome({
+        roleLane: forkLane,
+        workspaceStateRoot: workspaceStateDir(forkWorkspaceRoot, pathType),
+        agentId: newAgent.id,
+        provider: newAgent.provider,
+      });
+      if (!forkResearcherSandbox) {
+        throw new Error(`Researcher sandbox construction refused fork ${newAgent.id}`);
+      }
+      console.log(`[Fork] Researcher sandbox home: ${forkResearcherSandbox.researcherSandboxHomePath}`);
+    }
     // WP0.5 — fork bypasses the launch method's lane-aware MCP injection via
     // overrideArgs/overrideCommand, but STILL runs the launch method's child-env
     // block. Mint EXACTLY ONE token here and thread it to both the override MCP

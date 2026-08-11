@@ -44,6 +44,9 @@ experiments/
 .lares/*/.claude/.sysprompt-*.txt
 .lares/*/.claude/scheduled_tasks.lock
 .lares/main-crash.log
+# Per-agent sandbox homes may contain live provider credentials. The path is
+# derived from the state-dir root and agent id; it is runtime state, never source.
+/.lares/agent-homes/
 # The root legacy dir is retired except for the research-store compatibility tier
 # (its last tracked scaffold files were git rm'd 2026-08-04 — git checkouts
 # were resurrecting the folder after the .lares rename).
@@ -59,6 +62,7 @@ experiments/
 .dashboard/*/.claude/.sysprompt-*.txt
 .dashboard/*/.claude/scheduled_tasks.lock
 .dashboard/main-crash.log
+/.dashboard/agent-homes/
 
 # Internal agent state that must not ship in the public scaffold (anchored/specific)
 /.lares/*/memory/
