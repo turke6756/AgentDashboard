@@ -280,6 +280,10 @@ const TESTS = [
   // preview IPC facades (WP-3Z registration).
   'dist/main/main/commit-candidates/candidate-service.build.test.js',
   'dist/main/main/commit-candidates/index-fingerprint.test.js',
+  // Researcher sandbox usability rework WP-1: provider redirect facts and the
+  // activated-vs-absent support-verdict distinction. Keep ahead of the known
+  // foreign finalization-service fail-fast point so this package always enters.
+  'dist/main/main/sandbox/provider-redirect-adapters.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.finalize.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.preview.test.js',
