@@ -156,6 +156,30 @@ test('one waiter cancelling leaves shared work running for the remaining waiter'
   assert.equal(registry.hasCached(key('repo')), true);
 });
 
+test('a scoped recovery read waits for the canonical flight and never populates its cache', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<string>();
+  const gate = deferred<void>();
+  const order: string[] = [];
+  const canonical = registry.acquire(key('repo'), async () => {
+    order.push('canonical-start');
+    await gate.promise;
+    order.push('canonical-end');
+    return 'global';
+  });
+  const scoped = registry.acquireScoped(key('repo'), async () => {
+    order.push('scoped-start');
+    return 'scoped';
+  });
+  await flush();
+  assert.deepEqual(order, ['canonical-start']);
+  gate.resolve();
+  assert.equal(await canonical, 'global');
+  assert.equal(await scoped, 'scoped');
+  assert.deepEqual(order, ['canonical-start', 'canonical-end', 'scoped-start']);
+  assert.equal(registry.hasCached(key('repo')), true, 'only the canonical result remains cached');
+  assert.equal(await registry.acquire(key('repo'), async () => 'unexpected'), 'global');
+});
+
 // ── settled cache: TTL + LRU + invalidation ─────────────────────────────────────
 
 test('the settled cache serves within the 500 ms TTL and recomputes after it', async () => {

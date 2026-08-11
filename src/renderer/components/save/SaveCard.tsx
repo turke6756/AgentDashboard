@@ -36,7 +36,7 @@ import CandidatePreview, {
 import QuotaWeakeningBanner from './QuotaWeakeningBanner';
 import PlanMergeBack from './PlanMergeBack';
 import { groupExpiryEdgesByIntentUnit, formatExpiresIn } from './save-card-expiry';
-import { renderSaveRefusal } from './save-refusal-copy';
+import { degradedSaveCopy, renderSaveRefusal, saveCardComputeState } from './save-refusal-copy';
 import { createCandidateSubmitter } from './candidate-submit';
 import { initialSaveGestureState, saveGestureReducer } from './save-gesture-state';
 import './save-card.css';
@@ -219,9 +219,11 @@ function sweepSummary(results: readonly SaveSweepTerminalResult[], halted: boole
 const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   unit: SaveIntentUnitDto;
   workspaceId: string;
+  saveDisabled?: boolean;
 }>(({
   unit,
   workspaceId,
+  saveDisabled = false,
 }, ref) => {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [gesture, dispatch] = useReducer(saveGestureReducer, initialSaveGestureState);
@@ -463,7 +465,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
         type="button"
         className="ui-btn ui-btn-primary px-3 py-1 text-[12.5px]"
         data-testid="save-bundle-submit"
-        disabled={!pinned || submitLocked}
+        disabled={!pinned || submitLocked || saveDisabled}
         aria-busy={submitting}
         onClick={() => { void submit(); }}
       >
@@ -611,7 +613,22 @@ type LoadState =
       planningActivities: SaveCardInventoryResponse['planningActivities'];
       quotaWeakening: SaveCardQuotaWeakening | null;
       onboarding: SaveCardOnboardingPrompt | null;
+      computeState: SaveCardInventoryResponse['computeState'];
     };
+
+function readyState(response: SaveCardInventoryResponse): Extract<LoadState, { status: 'ready' }> {
+  return {
+    status: 'ready',
+    intentUnits: response.intentUnits,
+    unwitnessed: response.unwitnessed,
+    legacyTaskIdentityUnavailable: response.legacyTaskIdentityUnavailable,
+    legacyFinalizations: response.legacyFinalizations,
+    planningActivities: response.planningActivities,
+    quotaWeakening: response.quotaWeakening,
+    onboarding: response.onboarding ?? null,
+    computeState: response.computeState,
+  };
+}
 
 type SaveAllState =
   | { status: 'idle' }
@@ -656,16 +673,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   const cacheInventory = useSaveCardStore((s) => s.cacheInventory);
   const [state, setState] = useState<LoadState>(() =>
     cached
-      ? {
-          status: 'ready',
-          intentUnits: cached.inventory.intentUnits,
-          unwitnessed: cached.inventory.unwitnessed,
-          legacyTaskIdentityUnavailable: cached.inventory.legacyTaskIdentityUnavailable,
-          legacyFinalizations: cached.inventory.legacyFinalizations,
-          planningActivities: cached.inventory.planningActivities,
-          quotaWeakening: cached.inventory.quotaWeakening,
-          onboarding: cached.inventory.onboarding ?? null,
-        }
+      ? readyState(cached.inventory)
       : { status: 'loading' },
   );
   const [refreshing, setRefreshing] = useState(false);
@@ -675,6 +683,9 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   const [infoOpen, setInfoOpen] = useState(false);
   const [adoptingBaseline, setAdoptingBaseline] = useState(false);
   const [baselineResult, setBaselineResult] = useState<string | null>(null);
+  const [rescanningPath, setRescanningPath] = useState<string | null>(null);
+  const [rescanError, setRescanError] = useState<string | null>(null);
+  const [scopeDraft, setScopeDraft] = useState('');
   const infoRef = useRef<HTMLDivElement>(null);
   const infoButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -725,16 +736,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
         });
         if (isCurrent()) {
           cacheInventory(wsId, response);
-          setState({
-            status: 'ready',
-            intentUnits: response.intentUnits,
-            unwitnessed: response.unwitnessed,
-            legacyTaskIdentityUnavailable: response.legacyTaskIdentityUnavailable,
-            legacyFinalizations: response.legacyFinalizations,
-            planningActivities: response.planningActivities,
-            quotaWeakening: response.quotaWeakening,
-            onboarding: response.onboarding ?? null,
-          });
+          setState(readyState(response));
         }
       } catch (err) {
         if (isCurrent() && !keepVisible) {
@@ -754,16 +756,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
       return;
     }
     if (cached) {
-      setState({
-        status: 'ready',
-        intentUnits: cached.inventory.intentUnits,
-        unwitnessed: cached.inventory.unwitnessed,
-        legacyTaskIdentityUnavailable: cached.inventory.legacyTaskIdentityUnavailable,
-        legacyFinalizations: cached.inventory.legacyFinalizations,
-        planningActivities: cached.inventory.planningActivities,
-        quotaWeakening: cached.inventory.quotaWeakening,
-        onboarding: cached.inventory.onboarding ?? null,
-      });
+      setState(readyState(cached.inventory));
       if (isSaveCardInventoryFresh(cached)) return;
     }
     let active = true;
@@ -899,13 +892,103 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     );
   }
 
-  const { intentUnits, unwitnessed, legacyTaskIdentityUnavailable, legacyFinalizations, planningActivities, quotaWeakening } = state;
+  const { intentUnits, unwitnessed, legacyTaskIdentityUnavailable, legacyFinalizations,
+    planningActivities, quotaWeakening, computeState } = state;
   const loud = intentUnits.filter((unit) => unit.state !== 'committed' && unit.state !== 'superseded');
   const loudFileCount = loud.reduce((n, unit) => n + unit.members.length, 0);
   const saveableUnits = loud.filter((unit) => unit.saveability.saveable);
+  const allMembers = [
+    ...intentUnits.flatMap((unit) => unit.members),
+    ...unwitnessed,
+    ...legacyTaskIdentityUnavailable,
+  ];
+  const uniqueChangedEntries = new Set(allMembers.map((member) => member.entry.entryId)).size;
+  const computeProjection = { computeState, onboarding: suppliedOnboarding };
+  const snapshotState = saveCardComputeState(computeProjection);
+  const mintUiDisabled = snapshotState === 'partial';
+  const degradedCopy = degradedSaveCopy(computeProjection, uniqueChangedEntries);
+  const scopeOptions = [...new Map<string, {
+    pathBytesBase64: string; displayPath: string; countLabel: string | null;
+  }>([
+    ...(suppliedOnboarding?.recommendations ?? []).map((item) => [item.pathBytesBase64, {
+      pathBytesBase64: item.pathBytesBase64, displayPath: item.displayPath,
+      countLabel: item.countLabel,
+    }] as const),
+    ...allMembers.filter((member) => member.entry.path.utf8Clean).map((member) => [
+      member.entry.path.pathBytesBase64,
+      { pathBytesBase64: member.entry.path.pathBytesBase64, displayPath: member.entry.path.displayPath,
+        countLabel: null },
+    ] as const),
+  ]).values()].slice(0, 6);
+
+  const runScopedRescan = async (pathBytesBase64: string, displayPath: string) => {
+    if (!workspaceId || rescanningPath) return;
+    setRescanError(null);
+    setRescanningPath(pathBytesBase64);
+    try {
+      const response = await window.api.saveCard.scopedRescan({ workspaceId, pathBytesBase64 });
+      setState(readyState(response));
+    } catch {
+      setRescanError(`Lares could not finish the scoped rescan for ${displayPath}. Try another smaller scope.`);
+    } finally {
+      setRescanningPath(null);
+    }
+  };
+
+  const runDraftRescan = () => {
+    const displayPath = scopeDraft.trim().replace(/\\/g, '/');
+    if (!displayPath) return;
+    const bytes = new TextEncoder().encode(displayPath);
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    void runScopedRescan(btoa(binary), displayPath);
+  };
+
+  const degradedBanner = degradedCopy ? (
+    <section className="sc-state" data-testid="save-card-degraded" data-compute-state={snapshotState}>
+      <div className="sc-state-title">{degradedCopy.title}</div>
+      <div className="sc-state-body">{degradedCopy.body}</div>
+      {snapshotState === 'protection-incomplete' && allMembers.length > 0 && (
+        <ul data-testid="save-card-protection-assessments">
+          {allMembers.slice(0, 20).map((member) => {
+            const assessment = member.protectionAssessment;
+            const label = assessment?.evaluation === 'incomplete'
+              ? assessment.provenRung ? `${assessment.provenRung} proven` : 'unknown'
+              : assessment?.evaluation === 'complete' ? assessment.rung : member.protection;
+            return <li key={member.entry.entryId}>{member.entry.path.displayPath}: {label}</li>;
+          })}
+        </ul>
+      )}
+      {degradedCopy.budgetLine && <div className="sc-state-hint">{degradedCopy.budgetLine}</div>}
+      {(snapshotState === 'partial' || snapshotState === 'protection-incomplete') && (
+        <div className="sc-actions" aria-label="Scoped save rescans">
+          {scopeOptions.map((option) => (
+            <button key={option.pathBytesBase64} type="button"
+              className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+              disabled={rescanningPath !== null}
+              onClick={() => { void runScopedRescan(option.pathBytesBase64, option.displayPath); }}>
+              {rescanningPath === option.pathBytesBase64
+                ? `Rescanning ${option.displayPath}...`
+                : `Rescan ${option.displayPath}${option.countLabel ? ` (${option.countLabel})` : ''}`}
+            </button>
+          ))}
+          <label>
+            Smaller directory or path
+            <input type="text" value={scopeDraft} disabled={rescanningPath !== null}
+              onChange={(event) => setScopeDraft(event.target.value)}
+              placeholder="src/feature" aria-label="Smaller directory or path" />
+          </label>
+          <button type="button" className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+            disabled={rescanningPath !== null || scopeDraft.trim() === ''}
+            onClick={runDraftRescan}>Rescan path</button>
+        </div>
+      )}
+      {rescanError && <div className="sc-state-hint" role="alert">{rescanError}</div>}
+    </section>
+  ) : null;
 
   const startSaveAll = async () => {
-    if (!workspaceId || saveAllInFlightRef.current || saveAll.status !== 'idle') return;
+    if (!workspaceId || mintUiDisabled || saveAllInFlightRef.current || saveAll.status !== 'idle') return;
     saveAllInFlightRef.current = true;
     const prepared: Array<{
       unit: SaveIntentUnitDto;
@@ -993,11 +1076,13 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     return (
       <div className="sc-root" data-testid="save-card">
         {header}
+        {firstContactPrompt}
+        {degradedBanner}
         <div className="sc-state" data-testid="save-card-empty">
           <div className="sc-state-title">Nothing to save</div>
           <div className="sc-state-body">
             No uncommitted work was found in this workspace — the tree is clean, or every change is already
-            captured. Your progress is safe.
+            captured.
           </div>
           <div className="sc-actions">
             <button
@@ -1018,6 +1103,8 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     <div className="sc-root" data-testid="save-card">
       {header}
       {firstContactPrompt}
+
+      {degradedBanner}
 
       <QuotaWeakeningBanner warning={quotaWeakening} />
 
@@ -1061,6 +1148,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                               <SaveBundle unit={unit} />
                             ) : (
                               <PackageSaveGesture
+                                saveDisabled={mintUiDisabled}
                                 ref={(handle) => {
                                   if (handle) packageGestureRefs.current.set(unit.intentId, handle);
                                   else packageGestureRefs.current.delete(unit.intentId);
@@ -1139,7 +1227,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
             type="button"
             className="ui-btn ui-btn-primary px-3 py-1 text-[12.5px]"
             data-testid="save-all"
-            disabled={saveAll.status !== 'idle'}
+            disabled={saveAll.status !== 'idle' || mintUiDisabled}
             aria-busy={saveAll.status === 'preparing' || saveAll.status === 'sweeping'}
             onClick={() => { void startSaveAll(); }}
           >

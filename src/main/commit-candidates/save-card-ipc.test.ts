@@ -15,6 +15,7 @@ import {
   SAVECARD_CHANNELS,
   SAVECARD_ADOPT_BASELINE_CHANNEL,
   SAVECARD_ONBOARDING_DECISION_CHANNEL,
+  SAVECARD_SCOPED_RESCAN_CHANNEL,
   type SaveCardInventoryRequest,
   type SaveCardInventoryResponse,
 } from '../../shared/types';
@@ -133,6 +134,24 @@ test('production intent registration reaches the main-owned onboarding policy ro
   }), /string array/);
 });
 
+test('production intent registration reaches the validated scoped-rescan route', async () => {
+  const ipc = new FakeIpc();
+  const calls: unknown[] = [];
+  registerSaveCardIntentIpc(ipc, () => ({
+    getInventory: async () => inventoryFixture(),
+    scopedRescan: async (req) => { calls.push(req); return inventoryFixture(); },
+  }));
+  assert.ok(ipc.handlers.get(SAVECARD_SCOPED_RESCAN_CHANNEL),
+    'production registerSaveCardIntentIpc must register scoped rescan');
+  await ipc.invoke(SAVECARD_SCOPED_RESCAN_CHANNEL, {
+    workspaceId: 'ws-1', pathBytesBase64: 'c3JjLw==', repositoryKey: 'forbidden',
+  });
+  assert.deepEqual(calls, [{ workspaceId: 'ws-1', pathBytesBase64: 'c3JjLw==' }]);
+  await assert.rejects(() => ipc.invoke(SAVECARD_SCOPED_RESCAN_CHANNEL, {
+    workspaceId: 'ws-1', pathBytesBase64: '',
+  }), /non-empty pathBytesBase64/);
+});
+
 test('rejects malformed inventory requests before calling the route', async () => {
   const ipc = new FakeIpc();
   let calls = 0;
@@ -162,6 +181,43 @@ test('an unwired Save-card engine answers unavailable honestly', async () => {
     () => ipc.invoke(SAVECARD_CHANNELS.getInventory, { workspaceId: 'ws-1' }),
     /save-card engine unavailable|bootstrapping/i,
   );
+});
+
+test('production registerIpcHandlers mounts and enters scoped rescan', async () => {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const noop = () => undefined;
+  const electronPath = require.resolve('electron');
+  const ipcHandlersPath = require.resolve('../ipc-handlers');
+  const priorElectron = require.cache[electronPath];
+  const priorHandlers = require.cache[ipcHandlersPath];
+  require.cache[electronPath] = {
+    id: electronPath, filename: electronPath, loaded: true,
+    exports: {
+      ipcMain: { handle: (channel: string, handler: (...args: any[]) => any) => handlers.set(channel, handler) },
+      app: { getPath: () => process.cwd(), isPackaged: false, on: noop },
+      dialog: { showOpenDialog: noop, showMessageBox: noop },
+      shell: { openExternal: noop, trashItem: noop }, BrowserWindow: class {},
+      nativeTheme: { on: noop, themeSource: 'system', shouldUseDarkColors: false },
+    }, children: [], paths: [],
+  } as unknown as NodeModule;
+  delete require.cache[ipcHandlersPath];
+  try {
+    const bridge = require('../ipc-handlers') as typeof import('../ipc-handlers');
+    let entered = false;
+    bridge.setSaveCardRoutes({
+      getInventory: async () => inventoryFixture(),
+      scopedRescan: async () => { entered = true; return inventoryFixture(); },
+    });
+    const proxy = new Proxy({}, { get: () => noop });
+    bridge.registerIpcHandlers(proxy as any, proxy as any, {} as any);
+    const handler = handlers.get(SAVECARD_SCOPED_RESCAN_CHANNEL);
+    assert.ok(handler, 'REACHABILITY:registerIpcHandlers:savecard:scopedRescan');
+    await handler({}, { workspaceId: 'ws-1', pathBytesBase64: 'c3JjLw==' });
+    assert.equal(entered, true);
+  } finally {
+    if (priorElectron) require.cache[electronPath] = priorElectron; else delete require.cache[electronPath];
+    if (priorHandlers) require.cache[ipcHandlersPath] = priorHandlers; else delete require.cache[ipcHandlersPath];
+  }
 });
 
 (async () => {

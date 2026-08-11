@@ -129,6 +129,7 @@ test('deletion is protected by recorded absence but not while the path remains i
     assessment: { evaluation: 'complete', rung: 'checkpoint-protected' },
     weakest: 'checkpoint-protected',
     finalizationCoveredPathBytes: new Set(),
+    observedStopReasons: [],
   });
 
   const presentResult = await evaluateCheckpointProtection({

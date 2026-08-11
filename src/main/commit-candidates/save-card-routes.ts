@@ -19,7 +19,7 @@
 
 import * as fs from 'node:fs';
 
-import type { Agent, GitCapability, SaveCardInventoryRequest, SaveCardInventoryResponse, SaveIntentUnitDto, SaveCardPackageSaveability, SaveCardWorkerUnit } from '../../shared/types';
+import type { Agent, GitCapability, SaveCardInventoryRequest, SaveCardInventoryResponse, SaveCardScopedRescanRequest, SaveIntentUnitDto, SaveCardPackageSaveability, SaveCardWorkerUnit } from '../../shared/types';
 import type { ProtectionAssessment, SaveCardQuotaWeakening } from '../../shared/commit-candidates';
 import {
   getAgentsByWorkspace as dbGetAgentsByWorkspace,
@@ -226,8 +226,25 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
   const latestReadByWorkspace = new Map<string, CandidateInventoryRead>();
   const latestDiscoveryByWorkspace = new Map<string, FirstContactDiscovery>();
 
-  async function getInventory(
+  function validatedScopePath(req: SaveCardScopedRescanRequest): string {
+    const raw = Buffer.from(req.pathBytesBase64, 'base64');
+    if (raw.length === 0 || raw.toString('base64') !== req.pathBytesBase64
+        || raw.includes(0) || !Buffer.from(raw.toString('utf8'), 'utf8').equals(raw)) {
+      throw new Error('scoped rescan requires a valid UTF-8 Git path');
+    }
+    const pathspec = raw.toString('utf8').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (pathspec === '.' || pathspec.startsWith('/') || /^[A-Za-z]:\//.test(pathspec)
+        || pathspec.split('/').some((part) => part === '..' || part === '')) {
+      throw new Error('scoped rescan path must stay inside the repository');
+    }
+    const latest = latestReadByWorkspace.get(req.workspaceId);
+    if (!latest) throw new Error('scoped rescan is stale; refresh save progress first');
+    return pathspec;
+  }
+
+  async function buildInventory(
     req: SaveCardInventoryRequest,
+    scopePathspec?: string,
   ): Promise<SaveCardInventoryResponse> {
     const registeredWorkspaces = getWorkspaces();
     const capabilityByWorkspaceId = new Map<string, GitCapability>();
@@ -252,21 +269,22 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       }),
     );
 
-    const request = { targetWorkspaceId: req.workspaceId, workspaces };
+    const request = { targetWorkspaceId: req.workspaceId, workspaces, ...(scopePathspec ? { scopePathspec } : {}) };
     const target = workspaces.find((ws) => ws.workspaceId === req.workspaceId);
     const repositoryKey = snapshotRegistry && target
       ? await resolveRepositoryKey(target.workspaceDir, target.capability)
       : null;
     const read = snapshotRegistry && repositoryKey
-      ? await snapshotRegistry.acquire(
+      ? await (scopePathspec ? snapshotRegistry.acquireScoped : snapshotRegistry.acquire).call(
+          snapshotRegistry,
           { repositoryKey, policyGeneration: resolvePolicyGeneration(repositoryKey) },
           () => service.assembleInventory(request),
         )
       : await service.assembleInventory(request);
-    latestReadByWorkspace.set(req.workspaceId, read);
+    if (!scopePathspec) latestReadByWorkspace.set(req.workspaceId, read);
     deps.onRepositoryResolved?.(req.workspaceId, read.inventory.repository.repositoryKey);
     let onboarding: import('../../shared/types').SaveCardOnboardingPrompt | null = null;
-    if (deps.scratchPolicyStore && target?.capability.repoRoot) {
+    if (!scopePathspec && deps.scratchPolicyStore && target?.capability.repoRoot) {
       try {
         const discovery = await discoverFirstContactRoots({
           repoRoot: target.capability.repoRoot,
@@ -293,6 +311,18 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         // already-computed save inventory or persist completion.
         console.warn('[save-card-onboarding] bounded discovery unavailable:', error);
         latestDiscoveryByWorkspace.delete(req.workspaceId);
+      }
+    } else if (scopePathspec) {
+      const discovery = latestDiscoveryByWorkspace.get(req.workspaceId);
+      if (discovery?.presentation) {
+        onboarding = {
+          presentation: discovery.presentation,
+          recommendations: discovery.recommendations.map((item) => ({
+            pathBytesBase64: item.pathBytesBase64,
+            displayPath: item.displayPath,
+            countLabel: item.countLabel,
+          })),
+        };
       }
     }
     const quotaWeakening = read.quotaWeakening;
@@ -461,7 +491,28 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       planningActivities,
       quotaWeakening,
       onboarding,
+      computeState: {
+        scope: scopePathspec ? 'scoped' : 'global',
+        inventory: {
+          completeness: read.inventory.completeness ?? 'complete',
+          dirtyCorpusStopReasons: read.inventoryEvidence?.observedStopReasons ?? [],
+          observedEntries: read.inventoryEvidence?.observedEntries ?? read.inventory.entries.length,
+          observedStatusBytes: read.inventoryEvidence?.observedStatusBytes ?? 0,
+          observedPathBytes: read.inventoryEvidence?.observedPathBytes ?? 0,
+          totalsExact: read.inventoryEvidence?.totalsExact ?? read.inventory.totalsExact ?? true,
+        },
+        protection: {
+          assessment: read.protectionAssessment ?? { evaluation: 'complete', rung: 'unprotected' },
+          checkpointStopReasons: read.protectionStopReasons ?? [],
+        },
+      },
     };
+  }
+
+  const getInventory = (req: SaveCardInventoryRequest) => buildInventory(req);
+
+  async function scopedRescan(req: SaveCardScopedRescanRequest): Promise<SaveCardInventoryResponse> {
+    return buildInventory(req, validatedScopePath(req));
   }
 
   async function completeOnboarding(
@@ -505,5 +556,5 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     return { intentId: intent.id, title: intent.title, memberCount: members.length };
   }
 
-  return { getInventory, adoptAllAsBaseline, completeOnboarding };
+  return { getInventory, scopedRescan, adoptAllAsBaseline, completeOnboarding };
 }

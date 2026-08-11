@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import type { DirtyEntry } from '../../../shared/commit-candidates';
-import type { SaveCardInventoryResponse, SaveIntentUnitDto } from '../../../shared/types';
+import type { SaveCardInventoryResponse, SaveCardMemberDto, SaveIntentUnitDto } from '../../../shared/types';
 import { useSaveCardStore } from '../../stores/save-card-store';
 import SaveCard, { type SaveCardProps } from './SaveCard';
 
@@ -21,7 +21,7 @@ vi.mock('../../stores/dashboard-store', () => ({
   useDashboardStore: (selector: (state: typeof dashboardState) => unknown) => selector(dashboardState),
 }));
 
-function member(entryId: string, displayPath: string) {
+function member(entryId: string, displayPath: string): SaveCardMemberDto {
   return {
     entry: {
       entryId,
@@ -69,6 +69,7 @@ beforeEach(() => {
   (window as unknown as { api: unknown }).api = {
     saveCard: {
       getInventory,
+      scopedRescan: vi.fn(),
       completeOnboarding: vi.fn(async () => ({ policyGeneration: 1 })),
       markDone: vi.fn(), preview: vi.fn(), sweep: vi.fn(),
       resolveAttribution: vi.fn(), adoptAllAsBaseline: vi.fn(),
@@ -176,5 +177,93 @@ describe('SaveCard intent-first rendering', () => {
     expect(pool?.textContent).toContain('1 file');
     expect(pool?.querySelector('button')?.textContent).toContain('Adopt all as baseline');
     expect(container.querySelectorAll('[data-testid="save-intent-unit"]')).toHaveLength(0);
+  });
+
+  it('REACHABILITY:save-card-degraded-states renders lower bounds and gates mint until a complete scoped rescan', async () => {
+    const partial = inventory({
+      onboarding: { presentation: 'established', recommendations: [{
+        pathBytesBase64: btoa('node_modules/'), displayPath: 'node_modules/', countLabel: '>=10,000',
+      }] },
+      computeState: {
+        scope: 'global',
+        inventory: {
+          completeness: 'partial', dirtyCorpusStopReasons: ['entries'],
+          observedEntries: 10_001, observedStatusBytes: 64, observedPathBytes: 128, totalsExact: false,
+        },
+        protection: { assessment: { evaluation: 'complete', rung: 'unprotected' }, checkpointStopReasons: [] },
+      },
+    });
+    const scoped = inventory({
+      computeState: {
+        scope: 'scoped',
+        inventory: {
+          completeness: 'complete', dirtyCorpusStopReasons: [],
+          observedEntries: 1, observedStatusBytes: 8, observedPathBytes: 13, totalsExact: true,
+        },
+        protection: { assessment: { evaluation: 'complete', rung: 'unprotected' }, checkpointStopReasons: [] },
+      },
+    });
+    vi.mocked(window.api.saveCard.scopedRescan).mockResolvedValue(scoped);
+    await renderCard(partial);
+
+    const banner = container.querySelector('[data-testid="save-card-degraded"]') as HTMLElement;
+    expect(banner.dataset.computeState).toBe('partial');
+    expect(banner.textContent).toContain('at least 10,001 changes');
+    expect(banner.textContent).toContain('change-count budget');
+    expect(banner.textContent).toContain('Rescan node_modules/ (>=10,000)');
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')?.disabled).toBe(true);
+
+    const rescan = [...banner.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Rescan src/intent.ts')!;
+    await act(async () => { rescan.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(window.api.saveCard.scopedRescan).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', pathBytesBase64: btoa('src/intent.ts'),
+    });
+    expect(container.querySelector('[data-testid="save-card-degraded"]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')?.disabled).toBe(false);
+  });
+
+  it('shows approved zero-changed protection-incomplete copy from the aggregate assessment', async () => {
+    await renderCard(inventory({
+      intentUnits: [],
+      computeState: {
+        scope: 'global',
+        inventory: {
+          completeness: 'complete', dirtyCorpusStopReasons: [], observedEntries: 0,
+          observedStatusBytes: 0, observedPathBytes: 0, totalsExact: true,
+        },
+        protection: { assessment: { evaluation: 'incomplete' }, checkpointStopReasons: ['pairs'] },
+      },
+    }));
+    const banner = container.querySelector('[data-testid="save-card-degraded"]') as HTMLElement;
+    expect(banner.dataset.computeState).toBe('protection-incomplete');
+    expect(banner.textContent).toContain('Lares did not modify any files, but it could not finish checking checkpoint coverage.');
+    expect(banner.textContent).toContain('checkpoint membership-pair budget');
+  });
+
+  it('renders unresolved protection as unknown while preserving proven lower rungs', async () => {
+    const unresolved = member('entry-unknown', 'unknown.ts');
+    unresolved.protection = 'unknown';
+    unresolved.protectionAssessment = { evaluation: 'incomplete' };
+    const proven = member('entry-proven', 'proven.ts');
+    proven.protection = 'checkpoint-protected';
+    proven.protectionAssessment = { evaluation: 'incomplete', provenRung: 'checkpoint-protected' };
+    await renderCard(inventory({
+      intentUnits: [unit({ members: [unresolved, proven] })],
+      computeState: {
+        scope: 'global',
+        inventory: { completeness: 'complete', dirtyCorpusStopReasons: [], observedEntries: 2,
+          observedStatusBytes: 2, observedPathBytes: 2, totalsExact: true },
+        protection: { assessment: { evaluation: 'incomplete' }, checkpointStopReasons: [] },
+      },
+    }));
+    const assessments = container.querySelector('[data-testid="save-card-protection-assessments"]');
+    expect(assessments?.textContent).toContain('unknown.ts: unknown');
+    expect(assessments?.textContent).toContain('proven.ts: checkpoint-protected proven');
+  });
+
+  it('treats absent legacy compute evidence as complete', async () => {
+    await renderCard(inventory());
+    expect(container.querySelector('[data-testid="save-card-degraded"]')).toBeNull();
   });
 });

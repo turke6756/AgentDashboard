@@ -191,6 +191,7 @@ export interface CheckpointProtectionResult {
   /** Compatibility projection. `unknown` is not a fifth rung. */
   weakest: ProtectionRung | 'unknown';
   finalizationCoveredPathBytes: ReadonlySet<string>;
+  observedStopReasons: CheckpointProtectionBudgetReason[];
 }
 
 export type RawGitModeReader = (
@@ -726,6 +727,7 @@ export async function evaluateCheckpointProtection(
         },
         weakest: weakestProtectionRung(members.map((member) => member.protection as ProtectionRung)),
         finalizationCoveredPathBytes,
+        observedStopReasons: [...observedReasonCodes],
       };
     }
     const provenForAll: Array<Exclude<ProtectionRung, 'unprotected'>> = members.flatMap((member) =>
@@ -743,6 +745,7 @@ export async function evaluateCheckpointProtection(
       assessment,
       weakest: assessment.provenRung ?? 'unknown',
       finalizationCoveredPathBytes,
+      observedStopReasons: [...observedReasonCodes],
     };
   };
 

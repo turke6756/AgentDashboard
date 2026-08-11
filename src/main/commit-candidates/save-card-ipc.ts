@@ -17,6 +17,7 @@ import {
   SAVECARD_CHANNELS,
   SAVECARD_ADOPT_BASELINE_CHANNEL,
   SAVECARD_ONBOARDING_DECISION_CHANNEL,
+  SAVECARD_SCOPED_RESCAN_CHANNEL,
   SAVECARD_PREVIEW_CHANNEL,
   COMMIT_CANDIDATE_MINT_CHANNEL,
   SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL,
@@ -29,6 +30,7 @@ import {
   type SaveCardAdoptBaselineResponse,
   type SaveCardOnboardingDecisionRequest,
   type SaveCardOnboardingDecisionResponse,
+  type SaveCardScopedRescanRequest,
   type SaveCardPreviewRequest,
   type SaveCardPreviewResponse,
   type SaveCardMintRequest,
@@ -117,6 +119,9 @@ export interface SaveCardRoutes {
   completeOnboarding?(
     req: SaveCardOnboardingDecisionRequest,
   ): Promise<SaveCardOnboardingDecisionResponse>;
+  scopedRescan?(
+    req: SaveCardScopedRescanRequest,
+  ): Promise<SaveCardInventoryResponse>;
 }
 
 /** Minimal `ipcMain.handle` shape for testing without a live Electron main. */
@@ -184,6 +189,15 @@ function requireOnboardingDecision(raw: unknown): SaveCardOnboardingDecisionRequ
   };
 }
 
+function requireScopedRescan(raw: unknown): SaveCardScopedRescanRequest {
+  const request = requireRequest(raw);
+  const pathBytesBase64 = (raw as { pathBytesBase64?: unknown }).pathBytesBase64;
+  if (typeof pathBytesBase64 !== 'string' || pathBytesBase64 === '') {
+    throw new SaveCardIpcError('a non-empty pathBytesBase64 is required', 'save-card-bad-request');
+  }
+  return { workspaceId: request.workspaceId, pathBytesBase64 };
+}
+
 /**
  * Register the single Stage 1 Save-card read channel.
  *
@@ -219,6 +233,13 @@ export function registerSaveCardIntentIpc(
       throw new SaveCardIpcError('save tracking setup is unavailable', 'save-card-engine-unavailable');
     }
     return routes.completeOnboarding(requireOnboardingDecision(raw));
+  });
+  ipc.handle(SAVECARD_SCOPED_RESCAN_CHANNEL, async (_event, raw: unknown) => {
+    const routes = requireRoutes(getRoutes());
+    if (!routes.scopedRescan) {
+      throw new SaveCardIpcError('scoped save rescan is unavailable', 'save-card-engine-unavailable');
+    }
+    return routes.scopedRescan(requireScopedRescan(raw));
   });
 }
 

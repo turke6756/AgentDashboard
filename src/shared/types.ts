@@ -2157,10 +2157,14 @@ export const SAVECARD_CHANNELS = {
 
 export const SAVECARD_ADOPT_BASELINE_CHANNEL = 'savecard:adoptAllAsBaseline';
 export const SAVECARD_ONBOARDING_DECISION_CHANNEL = 'savecard:completeOnboarding' as const;
+export const SAVECARD_SCOPED_RESCAN_CHANNEL = 'savecard:scopedRescan' as const;
 
 /** Renderer request for the repository inventory containing this workspace. */
 export interface SaveCardInventoryRequest {
   workspaceId: string;
+}
+export interface SaveCardScopedRescanRequest extends SaveCardInventoryRequest {
+  pathBytesBase64: string;
 }
 
 export interface SaveCardAdoptBaselineRequest { workspaceId: string; }
@@ -2289,6 +2293,24 @@ export interface SaveCardInventoryResponse {
   quotaWeakening: import('./commit-candidates').SaveCardQuotaWeakening | null;
   /** Main-issued first-contact projection. Absent only for legacy/test providers. */
   onboarding?: SaveCardOnboardingPrompt | null;
+  /** Main-owned bounded-computation evidence. Legacy/test providers may omit it
+   * and are treated as a complete global read by renderer compatibility code. */
+  computeState?: {
+    scope: 'global' | 'scoped';
+    inventory: {
+      completeness: 'complete' | 'partial';
+      dirtyCorpusStopReasons: Array<'entries' | 'status-bytes' | 'path-bytes' | 'deadline'>;
+      observedEntries: number;
+      observedStatusBytes: number;
+      observedPathBytes: number;
+      /** Observed counters are lower bounds whenever this is false. */
+      totalsExact: boolean;
+    };
+    protection: {
+      assessment: import('./commit-candidates').ProtectionAssessment;
+      checkpointStopReasons: Array<'pairs' | 'estimated-stdin' | 'deadline'>;
+    };
+  };
 }
 
 export const SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL = 'savecard:resolveActivityMerge' as const;
@@ -3630,6 +3652,7 @@ export interface IpcApi {
    *  previews). No mutating method is exposed here. */
   saveCard: {
     getInventory: (req: SaveCardInventoryRequest) => Promise<SaveCardInventoryResponse>;
+    scopedRescan: (req: SaveCardScopedRescanRequest) => Promise<SaveCardInventoryResponse>;
     adoptAllAsBaseline: (
       req: SaveCardAdoptBaselineRequest,
     ) => Promise<SaveCardAdoptBaselineResponse>;

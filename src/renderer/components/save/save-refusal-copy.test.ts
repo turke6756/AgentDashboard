@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SaveRefusal } from '../../../shared/commit-candidates';
-import { renderSaveRefusal } from './save-refusal-copy';
+import { degradedSaveCopy, renderSaveRefusal, saveCardComputeState } from './save-refusal-copy';
 
 const refusalVectors: SaveRefusal[] = [
   { stage: 'saveability', code: 'save-card-no-repository', message: 'Mint stage rejected a candidate token.' },
@@ -40,5 +40,37 @@ describe('save refusal copy', () => {
       expect(copy).toMatch(/unattributed work/i);
       expect(copy).not.toMatch(/another agent's|foreign/i);
     }
+  });
+
+  it('keeps compute behavior independent of presentation while copy changes', () => {
+    const computeState = {
+      scope: 'global' as const,
+      inventory: {
+        completeness: 'partial' as const, dirtyCorpusStopReasons: ['path-bytes' as const],
+        observedEntries: 10_000, observedStatusBytes: 1, observedPathBytes: 2, totalsExact: false,
+      },
+      protection: { assessment: { evaluation: 'incomplete' as const }, checkpointStopReasons: [] },
+    };
+    const recommendation = [{ pathBytesBase64: 'eA==', displayPath: 'x', countLabel: '>=10,000' }];
+    const first = { computeState, onboarding: { presentation: 'first-contact' as const, recommendations: recommendation } };
+    const established = { computeState, onboarding: { presentation: 'established' as const, recommendations: recommendation } };
+    expect(saveCardComputeState(first)).toBe('partial');
+    expect(saveCardComputeState(established)).toBe('partial');
+    expect(degradedSaveCopy(first, 1)?.title).not.toBe(degradedSaveCopy(established, 1)?.title);
+    expect(degradedSaveCopy(first, 1)?.body).toBe(degradedSaveCopy(established, 1)?.body);
+  });
+
+  it('ships the approved ASCII-safe zero-changed protection copy', () => {
+    const copy = degradedSaveCopy({
+      computeState: {
+        scope: 'global',
+        inventory: { completeness: 'complete', dirtyCorpusStopReasons: [], observedEntries: 0,
+          observedStatusBytes: 0, observedPathBytes: 0, totalsExact: true },
+        protection: { assessment: { evaluation: 'incomplete' }, checkpointStopReasons: [] },
+      },
+      onboarding: null,
+    }, 0)?.body;
+    expect(copy).toBe('Lares did not modify any files, but it could not finish checking checkpoint coverage. Review a smaller scope or exclude directories you do not want included in save tracking.');
+    expect(copy).toMatch(/^[\x00-\x7F]+$/);
   });
 });

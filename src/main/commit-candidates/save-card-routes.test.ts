@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import type { PackageFinalization, SaveIntent, TurnWitnessRead } from '../database';
 import { resolveInternalGit } from '../git/git-runtime';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
-import { SAVECARD_CHANNELS, SAVECARD_ONBOARDING_DECISION_CHANNEL, type SaveCardInventoryResponse } from '../../shared/types';
+import { SAVECARD_CHANNELS, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, type SaveCardInventoryResponse } from '../../shared/types';
 import { registerSaveCardIpc, registerSaveCardIntentIpc, type IpcLike } from './save-card-ipc';
 import { createSaveCardRoutes, type SaveCardRoutesDeps } from './save-card-routes';
 import { createPreviewRoutes } from './preview-routes';
@@ -255,6 +255,12 @@ test('production route projects intent units and keeps unstamped work read-only'
   assert.deepEqual(inventory.legacyTaskIdentityUnavailable.map((member) => member.entry.path.displayPath), ['legacy.txt']);
   assert.deepEqual(inventory.unwitnessed.map((member) => member.entry.path.displayPath), ['human.txt']);
   assert.deepEqual(inventory.legacyFinalizations.map((row) => row.finalizationId), ['legacy-finalization']);
+  assert.equal(inventory.computeState?.scope, 'global');
+  assert.equal(inventory.computeState?.inventory.completeness, 'complete');
+  assert.equal(inventory.computeState?.inventory.totalsExact, true);
+  assert.equal(inventory.computeState?.inventory.observedEntries, 3);
+  assert.deepEqual(inventory.computeState?.inventory.dirtyCorpusStopReasons, []);
+  assert.equal(inventory.computeState?.protection.assessment.evaluation, 'complete');
 });
 
 test('production IPC registration reaches the intent route', async () => {
@@ -347,6 +353,29 @@ test('production inventory supplies first-contact discovery and policy completio
   );
   const repeated = await productionRoutes.getInventory({ workspaceId: 'workspace-1' });
   assert.equal(repeated.onboarding?.presentation, 'established');
+});
+
+test('production scoped-rescan channel enters the real route and independently completes an allowed path', async () => {
+  const ipc = new FakeIpc();
+  const productionRoutes = routes();
+  registerSaveCardIpc(ipc, () => productionRoutes);
+  registerSaveCardIntentIpc(ipc, () => productionRoutes);
+  const global = await ipc.invoke<SaveCardInventoryResponse>(SAVECARD_CHANNELS.getInventory, {
+    workspaceId: 'workspace-1',
+  });
+  const pathBytesBase64 = global.intentUnits[0].members[0].entry.path.pathBytesBase64;
+  const scoped = await ipc.invoke<SaveCardInventoryResponse>(SAVECARD_SCOPED_RESCAN_CHANNEL, {
+    workspaceId: 'workspace-1', pathBytesBase64,
+  });
+  assert.equal(scoped.computeState?.scope, 'scoped',
+    'REACHABILITY:save-card-degraded-states scoped IPC must return independently tagged evidence');
+  assert.equal(scoped.computeState?.inventory.completeness, 'complete');
+  assert.equal(scoped.computeState?.inventory.totalsExact, true);
+  assert.deepEqual(scoped.intentUnits.flatMap((unit) => unit.members)
+    .map((member) => member.entry.path.displayPath), ['task.txt']);
+  await assert.rejects(() => ipc.invoke(SAVECARD_SCOPED_RESCAN_CHANNEL, {
+    workspaceId: 'workspace-1', pathBytesBase64: Buffer.from('../outside').toString('base64'),
+  }), /inside the repository|stale/);
 });
 
 test('inventory projection invokes only read-only Git commands', async () => {

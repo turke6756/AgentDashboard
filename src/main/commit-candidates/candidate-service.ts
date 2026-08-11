@@ -170,6 +170,8 @@ export interface CandidateWorkspaceInput extends WorkspaceScopeInput {
 export interface CandidateReadRequest {
   targetWorkspaceId: string;
   workspaces: readonly CandidateWorkspaceInput[];
+  /** Main-validated repo-relative Git pathspec for a recovery rescan. */
+  scopePathspec?: string;
 }
 
 export type CaptureTurnReader = (
@@ -229,6 +231,15 @@ export interface CandidateInventoryRead {
   /** Compatibility projection containing complete rungs and incomplete proofs only. */
   protectionByEntryId: Record<string, ProtectionRung>;
   protectionAssessmentByEntryId?: Record<string, ProtectionAssessment>;
+  inventoryEvidence?: {
+    observedStopReasons: import('./dirty-inventory').DirtyBudgetReason[];
+    observedEntries: number;
+    observedStatusBytes: number;
+    observedPathBytes: number;
+    totalsExact: boolean;
+  };
+  protectionAssessment?: ProtectionAssessment;
+  protectionStopReasons?: import('./protection-read').CheckpointProtectionBudgetReason[];
   /** Turn IDs whose immutable stamp was legacy/missing, for honest UI labeling. */
   planAttributionUnavailableTurnIds: Set<string>;
   /** SC-WP-2L — retention quota-weakening warning; null unless a still-dirty edge is released. */
@@ -683,7 +694,9 @@ export class CommitCandidateService {
     });
     const gitExe = gitExeFor(target);
     const drafts = await Promise.all(
-      uniqueScopePrefixes(repository.workspaces).map((workspacePrefix) =>
+      (request.scopePathspec !== undefined
+        ? [request.scopePathspec]
+        : uniqueScopePrefixes(repository.workspaces)).map((workspacePrefix) =>
         produceDirtyInventory({
           repoRoot: target.capability.repoRoot!,
           workspacePrefix,
@@ -710,6 +723,13 @@ export class CommitCandidateService {
       ? 'complete'
       : 'partial';
     assembly.inventory.totalsExact = drafts.every((item) => item.totalsExact);
+    const inventoryEvidence = {
+      observedStopReasons: [...new Set(drafts.flatMap((item) => item.observedStopReasons))],
+      observedEntries: drafts.reduce((sum, item) => sum + item.observedEntries, 0),
+      observedStatusBytes: drafts.reduce((sum, item) => sum + item.observedStatusBytes, 0),
+      observedPathBytes: drafts.reduce((sum, item) => sum + item.observedPathBytes, 0),
+      totalsExact: drafts.every((item) => item.totalsExact),
+    };
     // Keep the structured WP-2 topology paired with the exact inventory object.
     // Preview routing preserves that object when it spreads the scope context, so
     // review construction never has to reverse-engineer contributor tuples from
@@ -736,6 +756,10 @@ export class CommitCandidateService {
     }
     const protectionByEntryId: Record<string, ProtectionRung> = {};
     const protectionAssessmentByEntryId: Record<string, ProtectionAssessment> = {};
+    let protectionAssessment: ProtectionAssessment = protectionInputsIncomplete
+      ? { evaluation: 'incomplete' }
+      : { evaluation: 'complete', rung: 'unprotected' };
+    let protectionStopReasons: import('./protection-read').CheckpointProtectionBudgetReason[] = [];
     let finalizationCoveredPathBytes: ReadonlySet<string> = new Set();
     if (assembly.inventory.entries.length > 0) {
       const protection = await evaluateCheckpointProtection({
@@ -751,6 +775,15 @@ export class CommitCandidateService {
         gitExe,
       });
       finalizationCoveredPathBytes = protection.finalizationCoveredPathBytes;
+      protectionStopReasons = [...protection.observedStopReasons];
+      protectionAssessment = protectionInputsIncomplete
+        ? protection.assessment.evaluation === 'complete'
+          && protection.assessment.rung !== 'unprotected'
+          ? { evaluation: 'incomplete', provenRung: protection.assessment.rung }
+          : protection.assessment.evaluation === 'incomplete'
+            ? protection.assessment
+            : { evaluation: 'incomplete' }
+        : protection.assessment;
       for (const member of protection.members) {
         const assessment: ProtectionAssessment = protectionInputsIncomplete
           ? member.assessment.evaluation === 'complete' && member.assessment.rung !== 'unprotected'
@@ -829,6 +862,9 @@ export class CommitCandidateService {
       unattributedCaptureHealth,
       protectionByEntryId,
       protectionAssessmentByEntryId,
+      inventoryEvidence,
+      protectionAssessment,
+      protectionStopReasons,
       planAttributionUnavailableTurnIds,
       quotaWeakening: this.deps.readQuotaWeakening?.(repository.repositoryKey) ?? null,
       ...(intentUnits ? { intentUnits } : {}),

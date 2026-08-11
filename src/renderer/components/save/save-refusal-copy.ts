@@ -1,8 +1,68 @@
 import type { SaveRefusal } from '../../../shared/commit-candidates';
 import type {
   CommitCoordinatorConsumeResponse,
+  SaveCardInventoryResponse,
   SaveCardMintResponse,
 } from '../../../shared/types';
+
+export type SaveCardComputeState =
+  | 'complete' | 'complete-summarized' | 'partial' | 'protection-incomplete';
+
+export function saveCardComputeState(
+  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>,
+): SaveCardComputeState {
+  const compute = response.computeState;
+  if (!compute) return 'complete';
+  if (compute.inventory.completeness === 'partial') return 'partial';
+  if (compute.protection.assessment.evaluation === 'incomplete') return 'protection-incomplete';
+  return response.onboarding?.recommendations.length ? 'complete-summarized' : 'complete';
+}
+
+const DIRTY_BUDGET_COPY: Record<string, string> = {
+  entries: 'change-count budget',
+  'status-bytes': 'Git status output budget',
+  'path-bytes': 'path-data budget',
+  deadline: 'inventory time budget',
+};
+const PROTECTION_BUDGET_COPY: Record<string, string> = {
+  pairs: 'checkpoint membership-pair budget',
+  'estimated-stdin': 'checkpoint query-memory budget',
+  deadline: 'checkpoint coverage time budget',
+};
+
+export function degradedSaveCopy(
+  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>,
+  changedCount: number,
+): { title: string; body: string; budgetLine: string | null } | null {
+  const state = saveCardComputeState(response);
+  const firstContact = response.onboarding?.presentation === 'first-contact';
+  if (state === 'complete') return null;
+  if (state === 'complete-summarized') {
+    return {
+      title: firstContact ? 'Save tracking setup is summarized' : 'Large directories are summarized',
+      body: 'The inventory and checkpoint coverage checks completed. Large untracked directories are collapsed below.',
+      budgetLine: null,
+    };
+  }
+  if (state === 'partial') {
+    const compute = response.computeState!;
+    const budgets = compute.inventory.dirtyCorpusStopReasons.map((reason) => DIRTY_BUDGET_COPY[reason]);
+    return {
+      title: firstContact ? 'Save tracking setup needs a smaller scope' : 'Save progress needs a smaller scope',
+      body: `Lares counted at least ${compute.inventory.observedEntries.toLocaleString('en-US')} changes before the workspace scan stopped. The results below are bounded lower bounds. Review a smaller scope or exclude directories you do not want included in save tracking.`,
+      budgetLine: budgets.length ? `Reached: ${budgets.join(', ')}.` : 'The bounded workspace inventory did not complete.',
+    };
+  }
+  const compute = response.computeState!;
+  const budgets = compute.protection.checkpointStopReasons.map((reason) => PROTECTION_BUDGET_COPY[reason]);
+  return {
+    title: firstContact ? 'Save tracking coverage needs review' : 'Checkpoint coverage needs review',
+    body: changedCount === 0
+      ? 'Lares did not modify any files, but it could not finish checking checkpoint coverage. Review a smaller scope or exclude directories you do not want included in save tracking.'
+      : 'Lares found changes, but it could not finish checking checkpoint coverage. Proven protection is preserved, and unresolved entries are shown as unknown. Review a smaller scope or exclude directories you do not want included in save tracking.',
+    budgetLine: budgets.length ? `Reached: ${budgets.join(', ')}.` : null,
+  };
+}
 
 /** One plain-language renderer vocabulary for every Save/Plan surface. */
 export function renderSaveRefusal(refusal: SaveRefusal): string {

@@ -20,7 +20,7 @@ export interface ReachabilityTargetRegistry {
 
 /** Bump this version whenever a target, adapter, or protected-path set changes. */
 export const REACHABILITY_TARGET_REGISTRY: ReachabilityTargetRegistry = Object.freeze({
-  version: '1',
+  version: '2',
   targets: Object.freeze({
     'wp-b3-real-ipc-registration': Object.freeze({
       runner: 'node-test' as const,
@@ -28,6 +28,14 @@ export const REACHABILITY_TARGET_REGISTRY: ReachabilityTargetRegistry = Object.f
       test_name: 'registerIpcHandlers registers the prove_reachability production channel',
       protected_test_paths: Object.freeze([
         'src/main/plans/reachability-prover.test.ts',
+      ]),
+    }),
+    'save-card-degraded-states': Object.freeze({
+      runner: 'vitest' as const,
+      file: 'src/renderer/components/save/SaveCard.test.tsx',
+      test_name: 'REACHABILITY:save-card-degraded-states renders lower bounds and gates mint until a complete scoped rescan',
+      protected_test_paths: Object.freeze([
+        'src/renderer/components/save/SaveCard.test.tsx',
       ]),
     }),
   }),

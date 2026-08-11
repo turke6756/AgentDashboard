@@ -131,6 +131,62 @@ export class CommitCandidateSnapshotRegistry<T> {
     return this.startFlight(key, compute, signal);
   }
 
+  /** Queue an independently evaluated scoped recovery read behind any canonical
+   * flight. The scoped result is never cached and never joins a global snapshot. */
+  acquireScoped(
+    key: SnapshotFlightKey,
+    compute: SnapshotComputation<T>,
+    options: SnapshotAcquireOptions = {},
+  ): Promise<T> {
+    const signal = options.signal;
+    if (signal?.aborted) return Promise.reject(abortError(signal));
+    const active = this.flights.get(key.repositoryKey);
+    if (active) return active.settle.then(() => this.acquireScoped(key, compute, options));
+
+    const controller = new AbortController();
+    let resolveSettle!: () => void;
+    const settle = new Promise<void>((resolve) => { resolveSettle = resolve; });
+    const flight: Flight<T> = {
+      policyGeneration: key.policyGeneration,
+      controller,
+      shared: Promise.resolve() as Promise<T>,
+      settle,
+      waiterCount: 1,
+      stale: true,
+    };
+    flight.shared = compute(controller.signal).finally(() => {
+      if (this.flights.get(key.repositoryKey) === flight) this.flights.delete(key.repositoryKey);
+      resolveSettle();
+    });
+    flight.shared.catch(() => undefined);
+    this.flights.set(key.repositoryKey, flight);
+    if (!signal) return flight.shared;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        controller.abort(abortError(signal));
+        reject(abortError(signal));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      flight.shared.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
   /** Drop the settled cache for a repository and prevent any in-flight result from
    *  repopulating it. Called on checkpoint / finalization / policy writes. */
   invalidate(repositoryKey: string): void {
