@@ -1,7 +1,6 @@
 // SC-WP-1F — read-only, exact checkpoint-protection evaluation.
 //
-// Stage 1 has no commit ledger, so this module can only produce
-// `checkpoint-protected` or `unprotected`. A checkpoint ref being live is merely
+// A checkpoint ref being live is merely
 // the first gate: the immutable commit named by that edge must also record the
 // member's exact {path, expected state, raw blob OID, mode} tuple.
 
@@ -12,6 +11,7 @@ import {
   PROTECTION_RUNG_ORDER,
   type DirtyEntry,
   type EncodedGitPath,
+  type ProtectionAssessment,
   type ProtectionRung,
 } from '../../shared/commit-candidates';
 import {
@@ -175,14 +175,21 @@ export type CurrentRepresentationReader = (
   options: ReadCurrentCommitRepresentationOptions,
 ) => Promise<CommitRepresentation>;
 
+export type { ProtectionAssessment } from '../../shared/commit-candidates';
+
 export interface MemberProtectionResult {
   entryId: string;
-  protection: ProtectionRung;
+  assessment: ProtectionAssessment;
+  /** Compatibility projection for rung-oriented consumers. Incomplete members
+   * without a proof are `unknown`, never falsely `unprotected`. */
+  protection: ProtectionRung | 'unknown';
 }
 
 export interface CheckpointProtectionResult {
   members: MemberProtectionResult[];
-  weakest: ProtectionRung;
+  assessment: ProtectionAssessment;
+  /** Compatibility projection. `unknown` is not a fifth rung. */
+  weakest: ProtectionRung | 'unknown';
   finalizationCoveredPathBytes: ReadonlySet<string>;
 }
 
@@ -620,8 +627,8 @@ async function probeCheckpointMembership(options: {
  * Evaluate Stage-1 protection with request-scoped, batched Git probes. Semantics
  * are unchanged — a member is checkpoint-protected iff its exact {path, expected
  * state, raw blob OID, mode} tuple is recorded in the tree of a live-verified
- * checkpoint edge; read failures degrade to unprotected, never to deletion
- * evidence. Only the Git spawn shape changes:
+ * checkpoint edge. A completed negative read is `unprotected`; a failed or
+ * budget-stopped read is incomplete/unknown, never negative evidence.
  *
  *  1. Every DISTINCT edge ref is live-verified in ONE `cat-file --batch-check`
  *     (not one `rev-parse` per edge). Repeated / shared refs collapse to one probe.
@@ -647,6 +654,7 @@ export async function evaluateCheckpointProtection(
   // the same absolute instant; no phase receives a fresh five-second allowance.
   const deadlineAt = options.deadlineAt ?? Date.now() + SNAPSHOT_TIME_BUDGET.hardMs;
   const observedReasonCodes: CheckpointProtectionBudgetReason[] = [];
+  let evaluationIncomplete = false;
   const observe = (reason: CheckpointProtectionBudgetReason): void => {
     if (!observedReasonCodes.includes(reason)) observedReasonCodes.push(reason);
   };
@@ -656,18 +664,24 @@ export async function evaluateCheckpointProtection(
   const deadlineRunGit: LiveEdgeRunGit = async (cwd, args, runOptions): Promise<GitRunResult> => {
     if (Date.now() >= deadlineAt) observe('deadline');
     try {
-      return await options.runGit(cwd, args, { ...runOptions, deadlineAt });
+      const result = await options.runGit(cwd, args, { ...runOptions, deadlineAt });
+      if (result.code !== 0) evaluationIncomplete = true;
+      return result;
     } catch (error) {
       observeDeadlineError(error);
+      if (!(error instanceof GitCommandError && error.kind === 'deadline')) evaluationIncomplete = true;
       throw error;
     }
   };
   const deadlineRunGitBytes: RunProtectionGitBytes = async (cwd, args, runOptions) => {
     if (Date.now() >= deadlineAt) observe('deadline');
     try {
-      return await options.runGitBytes(cwd, args, { ...runOptions, deadlineAt });
+      const result = await options.runGitBytes(cwd, args, { ...runOptions, deadlineAt });
+      if (result.code !== 0) evaluationIncomplete = true;
+      return result;
     } catch (error) {
       observeDeadlineError(error);
+      if (!(error instanceof GitCommandError && error.kind === 'deadline')) evaluationIncomplete = true;
       throw error;
     }
   };
@@ -676,6 +690,60 @@ export async function evaluateCheckpointProtection(
     deadlineAt,
     runGit: deadlineRunGit,
     runGitBytes: deadlineRunGitBytes,
+  };
+  let resolvedMembers: ProtectionMember[] = [...options.members];
+  const protectedIds = new Set<string>();
+  const finalizationCoveredPathBytes = new Set<string>();
+  const finish = (
+    ledgerProtection: ReadonlyMap<string, ProtectionRung> = new Map(),
+  ): CheckpointProtectionResult => {
+    const provenRung = (entryId: string): Exclude<ProtectionRung, 'unprotected'> | undefined => {
+      const ledgerRung = ledgerProtection.get(entryId);
+      if (ledgerRung && ledgerRung !== 'unprotected') return ledgerRung;
+      return protectedIds.has(entryId) ? 'checkpoint-protected' : undefined;
+    };
+    const members: MemberProtectionResult[] = options.members.map((member) => {
+      const proven = provenRung(member.entryId);
+      if (evaluationIncomplete) {
+        const assessment: ProtectionAssessment = proven
+          ? { evaluation: 'incomplete', provenRung: proven }
+          : { evaluation: 'incomplete' };
+        return { entryId: member.entryId, assessment, protection: proven ?? 'unknown' };
+      }
+      const rung = proven ?? 'unprotected';
+      return {
+        entryId: member.entryId,
+        assessment: { evaluation: 'complete', rung },
+        protection: rung,
+      };
+    });
+    if (!evaluationIncomplete) {
+      return {
+        members,
+        assessment: {
+          evaluation: 'complete',
+          rung: weakestProtectionRung(members.map((member) => member.protection as ProtectionRung)),
+        },
+        weakest: weakestProtectionRung(members.map((member) => member.protection as ProtectionRung)),
+        finalizationCoveredPathBytes,
+      };
+    }
+    const provenForAll: Array<Exclude<ProtectionRung, 'unprotected'>> = members.flatMap((member) =>
+      member.assessment.evaluation === 'incomplete' && member.assessment.provenRung
+        ? [member.assessment.provenRung]
+        : []);
+    const assessment: ProtectionAssessment = provenForAll.length === members.length
+      ? {
+          evaluation: 'incomplete',
+          provenRung: weakestProtectionRung(provenForAll) as Exclude<ProtectionRung, 'unprotected'>,
+        }
+      : { evaluation: 'incomplete' };
+    return {
+      members,
+      assessment,
+      weakest: assessment.provenRung ?? 'unknown',
+      finalizationCoveredPathBytes,
+    };
   };
 
   const finalizationEdges = (options.finalizations ?? [])
@@ -741,7 +809,7 @@ export async function evaluateCheckpointProtection(
   ) observe('pairs');
   if (estimatedPeakChunkBytes > maxEstimatedStdinBytes) observe('estimated-stdin');
   if (Date.now() >= deadlineAt) observe('deadline');
-  const throwObservedBudget = (): never => {
+  const reportObservedBudget = (): void => {
     const label = observedReasonCodes.includes('pairs')
       ? 'membership-probe pair budget exceeded — refusing'
       : 'membership-probe budget exceeded — refusing';
@@ -749,23 +817,27 @@ export async function evaluateCheckpointProtection(
       ...cardinality,
       reasonCodes: observedReasonCodes,
     });
-    throw new CheckpointProtectionBudgetExceededError(cardinality, [...observedReasonCodes]);
   };
-  const checkDeadline = (): void => {
+  const checkDeadline = (): boolean => {
     if (Date.now() >= deadlineAt) {
       observe('deadline');
-      throwObservedBudget();
+      reportObservedBudget();
+      evaluationIncomplete = true;
+      return false;
     }
+    return true;
   };
-  if (observedReasonCodes.length > 0) throwObservedBudget();
+  if (observedReasonCodes.length > 0) {
+    reportObservedBudget();
+    evaluationIncomplete = true;
+    return finish();
+  }
 
   const reader = options.readCheckpointTree ?? readCheckpointTree;
-  const protectedIds = new Set<string>();
-  const finalizationCoveredPathBytes = new Set<string>();
   const rawModeReader = options.readRawGitMode ?? readRawGitModeFromWorktree;
-  const resolvedMembers: ProtectionMember[] = [];
+  resolvedMembers = [];
   for (const member of options.members) {
-    checkDeadline();
+    if (!checkDeadline()) return finish();
     try {
       resolvedMembers.push({
         ...member,
@@ -775,11 +847,11 @@ export async function evaluateCheckpointProtection(
       });
     } catch (error) {
       observeDeadlineError(error);
-      if (observedReasonCodes.includes('deadline')) throwObservedBudget();
-      throw error;
+      evaluationIncomplete = true;
+      return finish();
     }
   }
-  checkDeadline();
+  if (!checkDeadline()) return finish();
 
   // A boundary tree covers the whole repository, but a finalization protects only
   // paths named in its frozen manifest. Require active+ready lifecycle, a live ref
@@ -815,6 +887,9 @@ export async function evaluateCheckpointProtection(
   const lsTreeOnly = resolvedMembers.filter(
     (member) => isLosslessUtf8Path(member.path) && !isCatFileSafePath(member.path),
   );
+  if (liveOids.length > 0 && resolvedMembers.some((member) => !isLosslessUtf8Path(member.path))) {
+    evaluationIncomplete = true;
+  }
 
   if (liveOids.length > 0 && batchable.length > 0) {
     const membership = await probeCheckpointMembership({
@@ -829,8 +904,12 @@ export async function evaluateCheckpointProtection(
       observeDeadlineError(error);
       return null;
     }); // a failed batch probe is not protection proof
-    if (observedReasonCodes.includes('deadline')) throwObservedBudget();
-    checkDeadline();
+    if (!membership) evaluationIncomplete = true;
+    if (observedReasonCodes.includes('deadline')) {
+      evaluationIncomplete = true;
+      return finish();
+    }
+    if (!checkDeadline()) return finish();
     if (membership) {
       // Absences are fully resolved by the batch — a deletion is protected the
       // moment any live commit records its path as absent.
@@ -865,7 +944,7 @@ export async function evaluateCheckpointProtection(
       );
       const byEntryId = new Map(modeCandidates.map((member) => [member.entryId, member]));
       while (pendingOids.size > 0) {
-        checkDeadline();
+        if (!checkDeadline()) return finish();
         const coverage = new Map<string, number>();
         for (const oids of pendingOids.values()) {
           for (const oid of oids) coverage.set(oid, (coverage.get(oid) ?? 0) + 1);
@@ -888,7 +967,11 @@ export async function evaluateCheckpointProtection(
           observeDeadlineError(error);
           return null;
         });
-        if (observedReasonCodes.includes('deadline')) throwObservedBudget();
+        if (!tree) evaluationIncomplete = true;
+        if (observedReasonCodes.includes('deadline')) {
+          evaluationIncomplete = true;
+          return finish();
+        }
         for (const id of here) {
           if (tree && memberMatchesTree(byEntryId.get(id)!, tree)) {
             protectedIds.add(id);
@@ -912,7 +995,7 @@ export async function evaluateCheckpointProtection(
     const pending = new Set(lsTreeOnly.map((member) => member.entryId));
     for (const checkpointOid of liveOids) {
       if (pending.size === 0) break;
-      checkDeadline();
+      if (!checkDeadline()) return finish();
       const tree = await reader({
         repoRoot: options.repoRoot,
         checkpointOid,
@@ -924,7 +1007,11 @@ export async function evaluateCheckpointProtection(
         observeDeadlineError(error);
         return null;
       });
-      if (observedReasonCodes.includes('deadline')) throwObservedBudget();
+      if (!tree) evaluationIncomplete = true;
+      if (observedReasonCodes.includes('deadline')) {
+        evaluationIncomplete = true;
+        return finish();
+      }
       if (!tree) continue;
       for (const member of lsTreeOnly) {
         if (pending.has(member.entryId) && memberMatchesTree(member, tree)) {
@@ -937,24 +1024,15 @@ export async function evaluateCheckpointProtection(
 
   // Ledger/database and temporary-index failures degrade to checkpoint evidence;
   // they never erase a proven live checkpoint rung or invent local protection.
-  checkDeadline();
+  if (!checkDeadline()) return finish();
   const ledgerProtection = await evaluateCommitLedgerProtection(budgetedOptions).catch(
     (error) => {
       observeDeadlineError(error);
+      evaluationIncomplete = true;
       return new Map<string, ProtectionRung>();
     },
   );
-  if (observedReasonCodes.includes('deadline')) throwObservedBudget();
-  checkDeadline();
-  const members: MemberProtectionResult[] = resolvedMembers.map((member) => ({
-    entryId: member.entryId,
-    protection: ledgerProtection.get(member.entryId)
-      ?? (protectedIds.has(member.entryId) ? 'checkpoint-protected' : 'unprotected'),
-  }));
-
-  return {
-    members,
-    weakest: weakestProtectionRung(members.map((member) => member.protection)),
-    finalizationCoveredPathBytes,
-  };
+  if (observedReasonCodes.includes('deadline')) evaluationIncomplete = true;
+  if (!checkDeadline()) return finish(ledgerProtection);
+  return finish(ledgerProtection);
 }

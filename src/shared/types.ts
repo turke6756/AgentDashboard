@@ -2207,7 +2207,10 @@ export type SaveCardPackageSaveability =
 
 export interface SaveCardMemberDto {
   entry: import('./commit-candidates').DirtyEntry;
-  protection: import('./commit-candidates').ProtectionRung;
+  /** Exact main-owned coverage evaluation. */
+  protectionAssessment?: import('./commit-candidates').ProtectionAssessment;
+  /** Compatibility projection. `unknown` is not a fifth protection rung. */
+  protection: import('./commit-candidates').ProtectionRung | 'unknown';
 }
 
 /** Intent-first Save-card projection. Topology is disclosure evidence only. */

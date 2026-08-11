@@ -412,6 +412,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
         components: read.components,
         ledger,
         protectionByEntryId: read.protectionByEntryId,
+        protectionAssessmentByEntryId: read.protectionAssessmentByEntryId,
         ...(read.intentUnits ? { intentUnits: read.intentUnits } : {}),
         ...(read.witnessedProvenanceByTurnId
           ? { witnessedProvenanceByTurnId: read.witnessedProvenanceByTurnId }

@@ -593,6 +593,35 @@ test('production coordinator seams reassemble a minted snapshot from the shared 
   ]);
 });
 
+test('partial global inventory cannot mint while a complete scoped inventory can', async () => {
+  const makeRoutes = (completeness: 'complete' | 'partial') => createPreviewRoutes(baseDeps({
+    assembleInventory: async () => read({
+      inventory: { ...inventory([entry('e1')]), completeness, totalsExact: completeness === 'complete' },
+    }),
+    getPackageFinalization: (id) => (id === 'fin-1' ? finalization({
+      memberManifestJson: JSON.stringify([{ ...frozen('e1'), commitBlobOid: OID }]),
+    }) : null),
+  }));
+  const request = {
+    workspaceId: 'ws-1', selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [],
+    finalizationIds: ['fin-1'],
+  };
+  const mint = async (completeness: 'complete' | 'partial') => {
+    const routes = makeRoutes(completeness);
+    const context = await routes.saveCardPreviewRoutes.resolvePreviewContext(request);
+    return routes.productionSeams.candidateService.mintCandidateToken({
+      selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
+      acknowledgeUnattributedEntryIds: [],
+    }, context) as CommitCandidate;
+  };
+  const partial = await mint('partial');
+  assert.deepEqual(partial.eligibility, { eligible: false, reason: 'checkpoint-unavailable' });
+  assert.equal(partial.token, null, 'REACHABILITY:partial-global-cannot-mint');
+  const completeScoped = await mint('complete');
+  assert.equal(completeScoped.eligibility.eligible, true);
+  assert.ok(completeScoped.token, 'REACHABILITY:complete-scoped-can-mint');
+});
+
 test('production trailer seam honors the per-repository Assisted-by opt-out', async () => {
   const routes = createPreviewRoutes(baseDeps({
     assembleInventory: async () => read({

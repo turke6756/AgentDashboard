@@ -24,6 +24,7 @@ import type {
   FinalizationRef,
   MintCandidateTokenRequest,
   PackageVerificationState,
+  ProtectionAssessment,
   ProtectionRung,
   RepositoryIdentity,
   RequestedPlanBinding,
@@ -57,6 +58,8 @@ type ExportShapes = [
     entries: DirtyEntry[];
     unattributedEntryIds: string[];
     topologyDigest: string;
+    completeness?: 'complete' | 'partial';
+    totalsExact?: boolean;
   }>>,
   Assert<Equal<DirtyEntry, {
     entryId: string;
@@ -128,7 +131,8 @@ type ExportShapes = [
     checkpointMode: string | null;
     coveringFinalizationIds: string[];
     packageVerification: PackageVerificationState;
-    protection: ProtectionRung;
+    protectionAssessment?: ProtectionAssessment;
+    protection: ProtectionRung | 'unknown';
   }>>,
   Assert<Equal<FinalizationRef, {
     finalizationId: string;

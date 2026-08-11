@@ -40,6 +40,10 @@ export interface DirtyInventory {
   entries: DirtyEntry[];
   unattributedEntryIds: string[];
   topologyDigest: string;
+  /** Main-owned bounded enumeration state. Legacy/test fixtures may omit it and
+   * are treated as complete; production always supplies it. */
+  completeness?: 'complete' | 'partial';
+  totalsExact?: boolean;
 }
 
 export interface DirtyEntry {
@@ -154,7 +158,10 @@ export interface CandidateMember {
   checkpointMode: string | null;
   coveringFinalizationIds: string[];
   packageVerification: PackageVerificationState;
-  protection: ProtectionRung;
+  /** Exact coverage evaluation. Production builders always populate this. */
+  protectionAssessment?: ProtectionAssessment;
+  /** Compatibility projection. `unknown` is presentation state, not a fifth rung. */
+  protection: ProtectionRung | 'unknown';
 }
 
 /** Schema versions for the main-owned review contract and its challenge atoms. */
@@ -526,6 +533,9 @@ export interface BundleCaptureHealth {
 }
 
 export type ProtectionRung = 'unprotected' | 'checkpoint-protected' | 'locally-committed' | 'remote-reachable';
+export type ProtectionAssessment =
+  | { evaluation: 'complete'; rung: ProtectionRung }
+  | { evaluation: 'incomplete'; provenRung?: Exclude<ProtectionRung, 'unprotected'> };
 export const PROTECTION_RUNG_ORDER: Record<ProtectionRung, number> =
   { 'unprotected': 0, 'checkpoint-protected': 1, 'locally-committed': 2, 'remote-reachable': 3 };
 

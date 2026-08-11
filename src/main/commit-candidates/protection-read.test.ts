@@ -14,7 +14,6 @@ import type { PackageFinalization } from '../database';
 import { resolveInternalGit } from '../git/git-runtime';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
 import {
-  CheckpointProtectionBudgetExceededError,
   PROBE_ESTIMATED_STDIN_BUDGET,
   PROBE_PAIR_BUDGET,
   PROBE_STDIN_CHUNK_BYTES,
@@ -107,9 +106,9 @@ test('real live checkpoint tree protects only the exact path/blob/mode tuple', a
   });
 
   assert.deepEqual(result.members, [
-    { entryId: 'exact', protection: 'checkpoint-protected' },
-    { entryId: 'wrong-blob', protection: 'unprotected' },
-    { entryId: 'wrong-mode', protection: 'unprotected' },
+    { entryId: 'exact', assessment: { evaluation: 'complete', rung: 'checkpoint-protected' }, protection: 'checkpoint-protected' },
+    { entryId: 'wrong-blob', assessment: { evaluation: 'complete', rung: 'unprotected' }, protection: 'unprotected' },
+    { entryId: 'wrong-mode', assessment: { evaluation: 'complete', rung: 'unprotected' }, protection: 'unprotected' },
   ]);
   assert.equal(result.weakest, 'unprotected');
 });
@@ -126,7 +125,8 @@ test('deletion is protected by recorded absence but not while the path remains i
     gitExe,
   });
   assert.deepEqual(absentResult, {
-    members: [{ entryId: 'deleted', protection: 'checkpoint-protected' }],
+    members: [{ entryId: 'deleted', assessment: { evaluation: 'complete', rung: 'checkpoint-protected' }, protection: 'checkpoint-protected' }],
+    assessment: { evaluation: 'complete', rung: 'checkpoint-protected' },
     weakest: 'checkpoint-protected',
     finalizationCoveredPathBytes: new Set(),
   });
@@ -154,7 +154,7 @@ test('a ready active finalization protects an exact untracked member and reports
     runGitBytes,
     gitExe,
   });
-  assert.deepEqual(result.members, [{ entryId: 'new', protection: 'checkpoint-protected' }]);
+  assert.deepEqual(result.members, [{ entryId: 'new', assessment: { evaluation: 'complete', rung: 'checkpoint-protected' }, protection: 'checkpoint-protected' }]);
   assert.deepEqual([...result.finalizationCoveredPathBytes], [untracked.path.pathBytesBase64]);
 });
 
@@ -209,7 +209,7 @@ test('a live ref + blob hit is insufficient when the mode-confirm read fails or 
     ]),
   ];
 
-  for (const reader of readers) {
+  for (const [index, reader] of readers.entries()) {
     const result = await evaluateCheckpointProtection({
       repoRoot: repo,
       members: [exact],
@@ -219,11 +219,15 @@ test('a live ref + blob hit is insufficient when the mode-confirm read fails or 
       readCheckpointTree: reader,
       gitExe,
     });
-    assert.equal(result.members[0].protection, 'unprotected');
+    assert.deepEqual(
+      result.members[0].assessment,
+      index < 2 ? { evaluation: 'incomplete' } : { evaluation: 'complete', rung: 'unprotected' },
+    );
+    assert.equal(result.members[0].protection, index < 2 ? 'unknown' : 'unprotected');
   }
 });
 
-test('a Git failure during the batched membership probe degrades to unprotected', async () => {
+test('a Git failure during the batched membership probe is incomplete, never unprotected', async () => {
   const exact = member('member', 'protected.txt', 'present', matchingBlobOid, '100644');
   const result = await evaluateCheckpointProtection({
     repoRoot: repo,
@@ -233,7 +237,46 @@ test('a Git failure during the batched membership probe degrades to unprotected'
     runGitBytes: unreachableBytes, // Phase-1 batch probe throws → no proof, no throw
     gitExe,
   });
-  assert.equal(result.members[0].protection, 'unprotected');
+  assert.deepEqual(result.members[0], {
+    entryId: 'member', assessment: { evaluation: 'incomplete' }, protection: 'unknown',
+  });
+  assert.deepEqual(result.assessment, { evaluation: 'incomplete' });
+});
+
+test('a Git failure during live-edge verification is incomplete, never unprotected', async () => {
+  const exact = member('member', 'protected.txt', 'present', matchingBlobOid, '100644');
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    runGit: async () => { throw new Error('simulated liveness read failure'); },
+    runGitBytes,
+    gitExe,
+  });
+  assert.deepEqual(result.members[0], {
+    entryId: 'member', assessment: { evaluation: 'incomplete' }, protection: 'unknown',
+  });
+});
+
+test('a proof found before a later probe failure survives as provenRung', async () => {
+  const exact = member('member', 'protected.txt', 'present', matchingBlobOid, null);
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    finalizations: [finalization(exact)],
+    readRawGitMode: () => '100644',
+    runGit,
+    runGitBytes: unreachableBytes,
+    gitExe,
+  });
+  assert.deepEqual(result.members[0].assessment, {
+    evaluation: 'incomplete', provenRung: 'checkpoint-protected',
+  });
+  assert.equal(result.members[0].protection, 'checkpoint-protected');
+  assert.deepEqual(result.assessment, {
+    evaluation: 'incomplete', provenRung: 'checkpoint-protected',
+  });
 });
 
 test('Stage 1 evaluator never emits locally-committed or remote-reachable', async () => {
@@ -354,7 +397,7 @@ test('liveness, membership, and tree reads receive one caller-supplied absolute 
   assert.ok(observedDeadlines.every((value) => value === deadlineAt));
 });
 
-test('membership-probe pair budget: below and exactly-at proceed, one pair above refuses pre-spawn', async () => {
+test('membership-probe pair budget: below and exactly-at proceed, one pair above is incomplete pre-spawn', async () => {
   const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
   const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
   // 1 live commit × 2 batchable members = 2 pairs.
@@ -380,25 +423,12 @@ test('membership-probe pair budget: below and exactly-at proceed, one pair above
   const realWarn = console.warn;
   console.warn = (...args: unknown[]) => { warned.push(args.map(String).join(' ')); };
   try {
-    await assert.rejects(
-      evaluateCheckpointProtection({
-        repoRoot: repo, members: [exact, ghost], checkpointEdges: edges,
-        maxMembershipProbePairs: 1, runGit, runGitBytes: countingBytes, gitExe,
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
-        assert.equal(error.code, 'checkpoint-protection-budget-exceeded');
-        assert.deepEqual(
-          { liveOids: error.cardinality.liveOids, batchable: error.cardinality.batchable, maxPairs: error.cardinality.maxPairs },
-          { liveOids: 1, batchable: 2, maxPairs: 1 },
-        );
-        // Counts only — the error (and therefore the log payload) carries no
-        // paths or workspace content.
-        const serialized = error.message + JSON.stringify(error.cardinality);
-        assert.ok(!serialized.includes('protected.txt') && !serialized.includes('ghost.txt'));
-        return true;
-      },
-    );
+    const result = await evaluateCheckpointProtection({
+      repoRoot: repo, members: [exact, ghost], checkpointEdges: edges,
+      maxMembershipProbePairs: 1, runGit, runGitBytes: countingBytes, gitExe,
+    });
+    assert.deepEqual(result.assessment, { evaluation: 'incomplete' });
+    assert.ok(result.members.every((item) => item.protection === 'unknown'));
   } finally {
     console.warn = realWarn;
   }
@@ -416,7 +446,7 @@ test('zero live checkpoint edges never trip the pair budget (retention-style cal
   assert.equal(result.members[0].protection, 'unprotected');
 });
 
-test('estimated-stdin guard proceeds at budget and refuses pre-spawn one pair above', async () => {
+test('estimated-stdin guard proceeds at budget and is incomplete pre-spawn one pair above', async () => {
   const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
   const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
   const onePairBudget = Math.floor((exact.path.pathBytesBase64.length * 3) / 4) + 42;
@@ -434,25 +464,18 @@ test('estimated-stdin guard proceeds at budget and refuses pre-spawn one pair ab
 
   const members = [exact, ghost];
   let bytesCalls = 0;
-  await assert.rejects(
-    evaluateCheckpointProtection({
-      repoRoot: repo,
-      members,
-      checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
-      maxMembershipProbePairs: members.length,
-      maxEstimatedMembershipProbeStdinBytes: onePairBudget,
-      runGit,
-      runGitBytes: async (...args) => { bytesCalls++; return runGitBytes(...args); },
-      gitExe,
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
-      assert.deepEqual(error.reasonCodes, ['estimated-stdin']);
-      assert.ok(error.cardinality.estimatedStdinBytes > error.cardinality.maxEstimatedStdinBytes);
-      return true;
-    },
-    'REACHABILITY:protection-budget-admission estimated stdin above the hard limit must refuse before spawn',
-  );
+  const overBudget = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members,
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    maxMembershipProbePairs: members.length,
+    maxEstimatedMembershipProbeStdinBytes: onePairBudget,
+    runGit,
+    runGitBytes: async (...args) => { bytesCalls++; return runGitBytes(...args); },
+    gitExe,
+  });
+  assert.deepEqual(overBudget.assessment, { evaluation: 'incomplete' },
+    'REACHABILITY:protection-budget-admission estimated stdin above the hard limit must be incomplete');
   assert.equal(bytesCalls, 0, 'stdin admission happens before every binary Git spawn');
 });
 
@@ -504,7 +527,7 @@ test('membership probe streams the cross-product in bounded chunks — no whole-
   }
 });
 
-test('a deadline elapsing between probe chunks surfaces incomplete evaluation as a typed refusal', async () => {
+test('a deadline elapsing between probe chunks surfaces incomplete evaluation', async () => {
   const exact = member('exact', 'protected.txt', 'present', matchingBlobOid, '100644');
   const ghost = member('ghost', 'ghost.txt', 'present', matchingBlobOid, '100644');
   const deadlineAt = Date.now() + 250;
@@ -518,23 +541,17 @@ test('a deadline elapsing between probe chunks surfaces incomplete evaluation as
     return out;
   };
 
-  await assert.rejects(
-    evaluateCheckpointProtection({
-      repoRoot: repo,
-      members: [exact, ghost],
-      checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
-      deadlineAt,
-      maxProbeStdinChunkBytes: 1, // one pair per chunk → a between-chunk deadline check
-      runGit,
-      runGitBytes: stallingBytes,
-      gitExe,
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
-      assert.ok(error.reasonCodes.includes('deadline'));
-      return true;
-    },
-  );
+  const result = await evaluateCheckpointProtection({
+    repoRoot: repo,
+    members: [exact, ghost],
+    checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
+    deadlineAt,
+    maxProbeStdinChunkBytes: 1, // one pair per chunk → a between-chunk deadline check
+    runGit,
+    runGitBytes: stallingBytes,
+    gitExe,
+  });
+  assert.deepEqual(result.assessment, { evaluation: 'incomplete' });
   assert.equal(batchChunks, 1, 'the probe stops at the chunk boundary, never spawning the next chunk');
 });
 
@@ -544,8 +561,12 @@ test('simultaneous admission and deadline trips collect every observed reason co
   let bytesCalls = 0;
   const deadlineIgnoringLiveness = (cwd: string, args: string[], opts: Parameters<typeof runGit>[2]) =>
     runGit(cwd, args, { ...opts, deadlineAt: undefined });
-  await assert.rejects(
-    evaluateCheckpointProtection({
+  const warned: unknown[][] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args); };
+  let result;
+  try {
+    result = await evaluateCheckpointProtection({
       repoRoot: repo,
       members: [exact, ghost],
       checkpointEdges: [{ ref: CHECKPOINT_REF, oid: checkpointOid }],
@@ -555,13 +576,14 @@ test('simultaneous admission and deadline trips collect every observed reason co
       runGit: deadlineIgnoringLiveness,
       runGitBytes: async (...args) => { bytesCalls++; return runGitBytes(...args); },
       gitExe,
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof CheckpointProtectionBudgetExceededError);
-      assert.deepEqual(new Set(error.reasonCodes), new Set(['pairs', 'estimated-stdin', 'deadline']));
-      return true;
-    },
-  );
+    });
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.deepEqual(result!.assessment, { evaluation: 'incomplete' });
+  const payload = warned.flat().find((item): item is { reasonCodes: string[] } =>
+    typeof item === 'object' && item !== null && 'reasonCodes' in item);
+  assert.deepEqual(new Set(payload?.reasonCodes), new Set(['pairs', 'estimated-stdin', 'deadline']));
   assert.equal(bytesCalls, 0);
 });
 

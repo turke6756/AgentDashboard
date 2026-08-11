@@ -91,6 +91,7 @@ import {
 import {
   evaluateCheckpointProtection,
   type CommitPathLinkReader,
+  type ProtectionAssessment,
   type ProtectionCheckpointEdge,
   type RunProtectionGitBytes,
 } from './protection-read';
@@ -225,7 +226,9 @@ export interface CandidateInventoryRead {
   components: ConflictComponent[];
   captureHealthByComponentId: Record<string, BundleCaptureHealth>;
   unattributedCaptureHealth: BundleCaptureHealth;
+  /** Compatibility projection containing complete rungs and incomplete proofs only. */
   protectionByEntryId: Record<string, ProtectionRung>;
+  protectionAssessmentByEntryId?: Record<string, ProtectionAssessment>;
   /** Turn IDs whose immutable stamp was legacy/missing, for honest UI labeling. */
   planAttributionUnavailableTurnIds: Set<string>;
   /** SC-WP-2L — retention quota-weakening warning; null unless a still-dirty edge is released. */
@@ -339,6 +342,9 @@ export class CommitCandidateService {
         [...new Set(request.acknowledgeUnattributedEntryIds)].sort(compareBase64),
     };
     const built = buildCandidate(normalizedRequest, context);
+    if (context.inventory.completeness === 'partial' && 'candidateId' in built) {
+      return { ...built, eligibility: { eligible: false, reason: 'checkpoint-unavailable' } };
+    }
     if (!('candidateId' in built) || !built.eligibility.eligible) return built;
     let reviewCarried = false;
 
@@ -474,6 +480,9 @@ export class CommitCandidateService {
       acknowledgeUnattributedEntryIds: sortedUniqueStrings(request.acknowledgeUnattributedEntryIds ?? []),
     };
     const built = buildCandidateV2(normalizedRequest, context);
+    if (context.inventory.completeness === 'partial' && 'candidateId' in built) {
+      return { ...built, eligibility: { eligible: false, reason: 'checkpoint-unavailable' } };
+    }
     if (!('candidateId' in built) || !built.eligibility.eligible) return built;
     if (this.composeLocks.isHeld(context.repository.repositoryKey)) {
       return { ...built, eligibility: { eligible: false, reason: 'compose-in-flight' } };
@@ -697,6 +706,10 @@ export class CommitCandidateService {
       this.deps.stampSource ?? null,
     );
     const assembly = assembleConflictComponents(draft, witnesses);
+    assembly.inventory.completeness = drafts.every((item) => item.completeness === 'complete')
+      ? 'complete'
+      : 'partial';
+    assembly.inventory.totalsExact = drafts.every((item) => item.totalsExact);
     // Keep the structured WP-2 topology paired with the exact inventory object.
     // Preview routing preserves that object when it spreads the scope context, so
     // review construction never has to reverse-engineer contributor tuples from
@@ -713,14 +726,16 @@ export class CommitCandidateService {
     );
     const turnsById = new Map(allTurns.map((turn) => [turn.id, turn]));
     let activeFinalizations: readonly PackageFinalization[] = [];
+    let protectionInputsIncomplete = false;
     try {
       activeFinalizations = this.deps.readActiveFinalizations?.(repository.repositoryKey) ?? [];
     } catch {
-      // Protection is evidence, never an availability gate. A database read
-      // failure cannot invent a durable edge, so continue with no coverage.
+      // A failed evidence read is unknown, not proof of missing protection.
+      protectionInputsIncomplete = true;
       activeFinalizations = [];
     }
     const protectionByEntryId: Record<string, ProtectionRung> = {};
+    const protectionAssessmentByEntryId: Record<string, ProtectionAssessment> = {};
     let finalizationCoveredPathBytes: ReadonlySet<string> = new Set();
     if (assembly.inventory.entries.length > 0) {
       const protection = await evaluateCheckpointProtection({
@@ -737,7 +752,19 @@ export class CommitCandidateService {
       });
       finalizationCoveredPathBytes = protection.finalizationCoveredPathBytes;
       for (const member of protection.members) {
-        protectionByEntryId[member.entryId] = member.protection;
+        const assessment: ProtectionAssessment = protectionInputsIncomplete
+          ? member.assessment.evaluation === 'complete' && member.assessment.rung !== 'unprotected'
+            ? { evaluation: 'incomplete', provenRung: member.assessment.rung }
+            : member.assessment.evaluation === 'incomplete'
+              ? member.assessment
+              : { evaluation: 'incomplete' }
+          : member.assessment;
+        protectionAssessmentByEntryId[member.entryId] = assessment;
+        if (assessment.evaluation === 'complete') {
+          protectionByEntryId[member.entryId] = assessment.rung;
+        } else if (assessment.provenRung) {
+          protectionByEntryId[member.entryId] = assessment.provenRung;
+        }
       }
     }
 
@@ -801,6 +828,7 @@ export class CommitCandidateService {
       captureHealthByComponentId,
       unattributedCaptureHealth,
       protectionByEntryId,
+      protectionAssessmentByEntryId,
       planAttributionUnavailableTurnIds,
       quotaWeakening: this.deps.readQuotaWeakening?.(repository.repositoryKey) ?? null,
       ...(intentUnits ? { intentUnits } : {}),
@@ -914,6 +942,7 @@ export interface CandidateBuildContext {
   witnessedProvenanceByTurnId?: ReadonlyMap<string, Readonly<WitnessedCommitProvenance>>;
   attributionResolutions?: readonly ReviewedAttributionResolution[];
   protectionByEntryId?: Readonly<Record<string, ProtectionRung>>;
+  protectionAssessmentByEntryId?: Readonly<Record<string, ProtectionAssessment>>;
   pinnedHeadOid: string | null;
   indexFingerprint: IndexFingerprintResult;
   contractVersion: number;
@@ -1557,18 +1586,33 @@ interface MemberVerification {
   usedFinalizationIds: string[];
 }
 
+function protectionFields(
+  assessment: ProtectionAssessment | undefined,
+  legacyRung: ProtectionRung | undefined,
+): Pick<CandidateMember, 'protectionAssessment' | 'protection'> {
+  const resolved = assessment
+    ?? (legacyRung ? { evaluation: 'complete' as const, rung: legacyRung } : { evaluation: 'incomplete' as const });
+  const proven = resolved.evaluation === 'complete' ? resolved.rung : resolved.provenRung;
+  return {
+    protectionAssessment: resolved,
+    protection: proven ?? 'unknown',
+  };
+}
+
 function verifyMember(
   entry: DirtyEntry,
   covering: readonly CoveringFrozen[],
   context: CandidateBuildContext,
 ): MemberVerification {
-  const protection = context.protectionByEntryId?.[entry.entryId] ?? 'unprotected';
   const base = {
     entryId: entry.entryId,
     path: entry.path,
     expectedWorktreeState: entry.expectedWorktreeState,
     rawWorktreeBlobOid: entry.rawWorktreeBlobOid,
-    protection,
+    ...protectionFields(
+      context.protectionAssessmentByEntryId?.[entry.entryId],
+      context.protectionByEntryId?.[entry.entryId],
+    ),
   };
 
   if (covering.length === 0) {
@@ -1677,7 +1721,6 @@ export function buildSelectionPreview(
 ): SelectionPreview {
   const selection = resolveSelection(request, context);
   const members: CandidateMember[] = selection.memberEntries.map((entry) => {
-    const protection = context.protectionByEntryId?.[entry.entryId] ?? 'unprotected';
     const verification: PackageVerificationState =
       entry.gitLevelEligibility === 'unsupported-git-state' ? 'unsupported-entry' : 'package-not-finalized';
     return {
@@ -1690,7 +1733,10 @@ export function buildSelectionPreview(
       checkpointMode: null,
       coveringFinalizationIds: [],
       packageVerification: verification,
-      protection,
+      ...protectionFields(
+        context.protectionAssessmentByEntryId?.[entry.entryId],
+        context.protectionByEntryId?.[entry.entryId],
+      ),
     };
   });
   const eligibility: CommitEligibility = { eligible: false, reason: 'package-not-finalized' };

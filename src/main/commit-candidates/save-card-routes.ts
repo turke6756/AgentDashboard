@@ -20,7 +20,7 @@
 import * as fs from 'node:fs';
 
 import type { Agent, GitCapability, SaveCardInventoryRequest, SaveCardInventoryResponse, SaveIntentUnitDto, SaveCardPackageSaveability, SaveCardWorkerUnit } from '../../shared/types';
-import type { SaveCardQuotaWeakening } from '../../shared/commit-candidates';
+import type { ProtectionAssessment, SaveCardQuotaWeakening } from '../../shared/commit-candidates';
 import {
   getAgentsByWorkspace as dbGetAgentsByWorkspace,
   getAgent as dbGetAgent,
@@ -63,6 +63,18 @@ import { discoverFirstContactRoots, recordOnboardingDecision, type FirstContactD
 import type { ScratchPolicyStore } from './scratch-policy-store';
 
 type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'startedAt' | 'endedAt'>;
+
+function protectionFields(assessment: ProtectionAssessment | undefined): {
+  protectionAssessment: ProtectionAssessment;
+  protection: import('../../shared/commit-candidates').ProtectionRung | 'unknown';
+} {
+  const resolved = assessment ?? { evaluation: 'incomplete' as const };
+  const proven = resolved.evaluation === 'complete' ? resolved.rung : resolved.provenRung;
+  return {
+    protectionAssessment: resolved,
+    protection: proven ?? 'unknown',
+  };
+}
 
 /** Injected seams. Production passes only `gitExe`; the rest default to the live
  *  database / git runtime. Tests override every seam with in-memory fakes. */
@@ -371,7 +383,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         planItem: planItem ? { id: planItem.id, title: planItem.title } : null,
         members: unit.memberEntryIds.map((entryId) => ({
           entry: entriesById.get(entryId)!,
-          protection: read.protectionByEntryId[entryId] ?? 'unprotected',
+          ...protectionFields(read.protectionAssessmentByEntryId?.[entryId]),
         })),
         contributors: unit.contributingAgentIds.flatMap((id) => {
           const worker = workerByAgentId.get(id);
@@ -394,7 +406,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     });
     const members = (entryIds: readonly string[]) => entryIds.map((entryId) => ({
       entry: entriesById.get(entryId)!,
-      protection: read.protectionByEntryId[entryId] ?? 'unprotected' as const,
+      ...protectionFields(read.protectionAssessmentByEntryId?.[entryId]),
     }));
     const unwitnessed = members(assembly.unwitnessedEntryIds);
     const legacyTaskIdentityUnavailable = members(

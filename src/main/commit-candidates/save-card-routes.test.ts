@@ -269,6 +269,53 @@ test('production IPC registration reaches the intent route', async () => {
   assert.equal(inventory.legacyTaskIdentityUnavailable.length, 1);
 });
 
+test('production route surfaces a failed protection probe as unknown, never unprotected', async () => {
+  const headOid = execFileSync(gitExe, ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const checkpointRef = 'refs/lares/checkpoints/wp-c/after';
+  execFileSync(gitExe, ['update-ref', checkpointRef, headOid], { cwd: repo, stdio: 'ignore' });
+  const productionRoutes = routes(undefined, {
+    readCaptureTurns: () => [{
+      id: 'turn-probe-failure', status: 'accepted',
+      beforeOid: null, beforeRef: null, beforeReady: false, beforeQuality: null,
+      afterOid: headOid, afterRef: checkpointRef, afterReady: true, afterQuality: 'hook',
+      beforePrunedAt: null, afterPrunedAt: null, failureReason: null,
+    }],
+    runGitBytes: async (cwd, args, options) => {
+      if (args[0] === 'cat-file' && args.includes('--batch-check') && args.includes('-z')) {
+        throw new Error('simulated membership probe failure');
+      }
+      return runGitBytes(cwd, args, { ...options, gitExe });
+    },
+  });
+  const inventory = await productionRoutes.getInventory({ workspaceId: 'workspace-1' });
+  const members = [
+    ...inventory.intentUnits.flatMap((unit) => unit.members),
+    ...inventory.unwitnessed,
+    ...inventory.legacyTaskIdentityUnavailable,
+  ];
+  assert.ok(members.length > 0);
+  assert.ok(members.every((member) => member.protectionAssessment?.evaluation === 'incomplete'));
+  assert.ok(members.every((member) => member.protection === 'unknown'),
+    'REACHABILITY:save-card-protection-assessment failed probes must never default to unprotected');
+});
+
+test('production route surfaces a failed protection evidence read as unknown', async () => {
+  let reads = 0;
+  const inventory = await routes(undefined, {
+    readActiveFinalizations: () => {
+      if (reads++ === 0) throw new Error('simulated protection database failure');
+      return [];
+    },
+  }).getInventory({ workspaceId: 'workspace-1' });
+  const members = [
+    ...inventory.intentUnits.flatMap((unit) => unit.members),
+    ...inventory.unwitnessed,
+    ...inventory.legacyTaskIdentityUnavailable,
+  ];
+  assert.ok(members.every((member) => member.protectionAssessment?.evaluation === 'incomplete'));
+  assert.ok(members.every((member) => member.protection === 'unknown'));
+});
+
 test('production inventory supplies first-contact discovery and policy completion persists through the repository store', async () => {
   const clutter = path.join(repo, 'node_modules');
   fs.mkdirSync(clutter, { recursive: true });
