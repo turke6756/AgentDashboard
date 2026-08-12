@@ -247,6 +247,7 @@ const TESTS = [
   'dist/main/main/commit-candidates/repository-identity.test.js',
   'dist/main/main/commit-candidates/scope-discovery.test.js',
   'dist/main/main/commit-candidates/dirty-inventory.test.js',
+  'dist/main/main/commit-candidates/dirty-inventory-batch-hash.test.js',
   'dist/main/main/commit-candidates/scratch-policy-store.test.js',
   'dist/main/main/commit-candidates/onboarding-discovery.test.js',
   'dist/main/main/commit-candidates/snapshot-registry.test.js',

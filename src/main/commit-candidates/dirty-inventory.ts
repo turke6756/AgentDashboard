@@ -321,6 +321,80 @@ interface ParsedEntry {
   hashPathBytes: Buffer | null;
 }
 
+export interface BatchHashEntry {
+  /** Null means the worktree entry is absent and must never be sent to Git. */
+  hashPathBytes: Buffer | null;
+}
+
+export interface HashEntriesBatchedOptions {
+  repoRoot: string;
+  entries: readonly BatchHashEntry[];
+  runGitBytes: RunGitBytesLike;
+  runGit: RunGitTextLike;
+  gitExe?: string;
+  deadlineAt: number;
+}
+
+function parseHashObjectOids(stdout: Buffer | string, expected: number): string[] | null {
+  const lines = (Buffer.isBuffer(stdout) ? stdout.toString('ascii') : stdout).split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const oids = lines.map((line) => line.endsWith('\r') ? line.slice(0, -1) : line);
+  return oids.length === expected && oids.every((oid) => /^[0-9a-f]{40,64}$/.test(oid))
+    ? oids
+    : null;
+}
+
+/** Hash present entries in resilient batches while preserving input alignment. */
+export async function hashEntriesBatched(opts: HashEntriesBatchedOptions): Promise<Array<string | null>> {
+  const results: Array<string | null> = opts.entries.map(() => null);
+  const present = opts.entries
+    .map((entry, index) => ({ index, hashPathBytes: entry.hashPathBytes }))
+    .filter((entry): entry is { index: number; hashPathBytes: Buffer } => entry.hashPathBytes !== null);
+  const hashArgs = ['hash-object', '--no-filters', '--stdin-paths'];
+
+  const hashBatch = async (batch: typeof present, retrySingleton = false): Promise<void> => {
+    if (batch.length === 0) return;
+    if (Date.now() >= opts.deadlineAt) {
+      throw new GitCommandError('deadline', 'dirty inventory hash deadline exceeded', null, '');
+    }
+
+    let oids: string[] | null = null;
+    try {
+      const runOptions: RunGitOptions = {
+        maxBytes: Math.max(4096, batch.length * 66),
+        gitExe: opts.gitExe,
+        deadlineAt: opts.deadlineAt,
+        timeoutMs: STATUS_TIMEOUT_MS,
+        allowNonzero: true,
+        stdin: Buffer.concat(batch.map((entry) => encodeHashObjectStdinPathLine(entry.hashPathBytes))),
+      };
+      const res = retrySingleton && batch.length === 1
+        ? await opts.runGit(opts.repoRoot, hashArgs, runOptions)
+        : await opts.runGitBytes(opts.repoRoot, hashArgs, runOptions);
+      if (res.code === 0) oids = parseHashObjectOids(res.stdout, batch.length);
+    } catch (error) {
+      if (error instanceof GitCommandError && error.kind === 'deadline') throw error;
+      // An ordinary execution failure is isolated in the same way as a nonzero
+      // or malformed response so independently hashable siblings are retained.
+    }
+
+    if (oids) {
+      batch.forEach((entry, offset) => {
+        results[entry.index] = oids![offset];
+      });
+      return;
+    }
+    if (batch.length === 1) return;
+
+    const midpoint = Math.floor(batch.length / 2);
+    await hashBatch(batch.slice(0, midpoint), true);
+    await hashBatch(batch.slice(midpoint), true);
+  };
+
+  await hashBatch(present);
+  return results;
+}
+
 function buildEntry(args: {
   repositoryKey: string;
   entryKind: DirtyEntry['entryKind'];
@@ -623,72 +697,22 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
     await readPhase('untracked', ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z']);
   }
 
-  const hashable = parsed.filter((p) => p.hashPathBytes !== null);
-  const hashArgs = ['hash-object', '--no-filters', '--stdin-paths'];
-  const hashMaxBytes = Math.max(4096, hashable.length * 66);
-  const parseOids = (stdout: Buffer | string, expected: number): string[] | null => {
-    const lines = (Buffer.isBuffer(stdout) ? stdout.toString('ascii') : stdout).split('\n');
-    if (lines.at(-1) === '') lines.pop();
-    const oids = lines.map((line) => line.endsWith('\r') ? line.slice(0, -1) : line);
-    return oids.length === expected && oids.every((oid) => /^[0-9a-f]{40,64}$/.test(oid))
-      ? oids
-      : null;
-  };
-
-  // Raw-hash pass: one common-case process hashes every present path in input
-  // order. Git aborts `--stdin-paths` on the first unhashable member, so any
-  // nonzero/malformed batch result is discarded and retried one entry per process.
-  // That slower fallback preserves the exact per-entry contract: absent entries
-  // were never sent, while only the individual unhashable entries remain null.
-  let batchOids: string[] | null = null;
-  let batchFailedNormally = false;
-  if (hashable.length > 0 && observedStopReasons.length === 0 && Date.now() >= deadlineAt) stop('deadline');
-  if (hashable.length > 0 && observedStopReasons.length === 0) {
+  if (parsed.some((entry) => entry.hashPathBytes !== null) && observedStopReasons.length === 0) {
     try {
-      const res = await runGitBytes(repoRoot, hashArgs, {
-        maxBytes: hashMaxBytes,
+      const hashOids = await hashEntriesBatched({
+        repoRoot,
+        entries: parsed,
+        runGitBytes,
+        runGit,
         gitExe,
         deadlineAt,
-        timeoutMs: STATUS_TIMEOUT_MS,
-        allowNonzero: true,
-        stdin: Buffer.concat(hashable.map((p) => encodeHashObjectStdinPathLine(p.hashPathBytes!))),
       });
-      if (res.code === 0) batchOids = parseOids(res.stdout, hashable.length);
-      if (!batchOids) batchFailedNormally = true;
+      parsed.forEach((entry, index) => {
+        entry.entry.rawWorktreeBlobOid = hashOids[index];
+      });
     } catch (error) {
       if (error instanceof GitCommandError && error.kind === 'deadline') stop('deadline');
-      else batchFailedNormally = true;
-    }
-  }
-
-  if (batchOids) {
-    hashable.forEach((p, index) => {
-      p.entry.rawWorktreeBlobOid = batchOids![index];
-    });
-  } else if (batchFailedNormally && observedStopReasons.length === 0) {
-    for (const p of hashable) {
-      if (Date.now() >= deadlineAt) {
-        stop('deadline');
-        break;
-      }
-      try {
-        const res = await runGit(repoRoot, hashArgs, {
-          maxBytes: 4096,
-          gitExe,
-          deadlineAt,
-          timeoutMs: STATUS_TIMEOUT_MS,
-          allowNonzero: true,
-          stdin: encodeHashObjectStdinPathLine(p.hashPathBytes!),
-        });
-        const oid = res.code === 0 ? parseOids(res.stdout, 1)?.[0] : undefined;
-        if (oid) p.entry.rawWorktreeBlobOid = oid;
-      } catch (error) {
-        if (error instanceof GitCommandError && error.kind === 'deadline') {
-          stop('deadline');
-          break;
-        }
-        /* unhashable → leave null */
-      }
+      else throw error;
     }
   }
 
