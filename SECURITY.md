@@ -48,27 +48,35 @@ controls on agent behaviour; there is no OS boundary preventing persuasive inbox
 text from influencing a privileged reader.
 
 On Windows, the restricted-token cage is a write boundary, not a read boundary.
-Its writable set is **granted roots ∪ world-writable locations**. More precisely,
-because the restricting SID list includes both `S-1-1-0` (Everyone) and the logon
-SID, the caged process can write wherever the ACL grants write to Everyone or to
-that logon SID, in addition to the explicit grants. The accompanying audit is not
-a complete inventory of that set: it covers the workspace root only, skips
-reparse points, resolves paths lexically, checks Everyone grants, and never
-examines logon-SID grants.
+WP-8 tightened its restricting SID list to the synthetic capability SID plus the
+logon SID, so its writable set is now **granted roots ∪ logon-SID-granted
+locations**; an Everyone-only write grant no longer makes a location writable by
+the caged process. Everyone remains in the independent token default DACL because
+removing it there prevents Node from initialising. The fail-closed ACL audit walks
+the configured workspace audit root, follows reparse points to canonical targets,
+and rejects logon-SID Allow-write grants outside the canonical grant roots. It
+still reports Everyone-writable directories as non-fatal host-hygiene telemetry.
+The audit is not a whole-host inventory: locations outside its configured roots
+remain unexamined.
 
-[Gate A's machine probe](.lares/research/inbox/2026-08-11-probe-deny-read-ace-synthetic-sid.md)
-returned **INERT**: a deny-read ACE for the synthetic restricting SID did not stop
+Gate A's machine probe, `2026-08-11-probe-deny-read-ace-synthetic-sid.md`
+(retained in the workspace's untrusted research inbox and deliberately not
+committed because it contains host identifiers), returned **INERT**: a deny-read
+ACE for the synthetic restricting SID did not stop
 the restricted child reading the known bytes, although the controls proved that
 the harness observed a real-user read denial and a synthetic-SID write denial.
 The restricted and unrestricted processes had identical normal-group SIDs for
-read purposes. Plan `plan_7068b26d` is therefore a usability fix and does **not**
-improve the researcher lane's security posture over what already ships. WP-8 is
-separately testing whether the restricting list can drop Everyone; that work is
-open and must not be treated as landed.
+read purposes. Plan `plan_7068b26d` is therefore primarily a usability fix and
+does **not** add read isolation. WP-8 is the sole security-hardening exception:
+it removed Everyone from the restricting SID list and measurably reduced the
+writable set, while retaining the logon-SID exposure described above. The
+[reviewed WP-8 probe report](.lares/research/cleared/2026-08-11-probe-wp8-restricting-sid-list.md)
+records the native-payload matrix and the audit correction.
 
-Read-side isolation remains a known gap. An
-[AppContainer feasibility probe](.lares/research/inbox/2026-08-11-spike-appcontainer-feasibility.md)
-demonstrated a viable direction: an ordinary same-user process read a
+Read-side isolation remains a known gap. The AppContainer feasibility report,
+`2026-08-11-spike-appcontainer-feasibility.md` (retained in the workspace's
+untrusted research inbox and not committed), demonstrated a viable direction:
+an ordinary same-user process read a
 credential-shaped test file, while a verified AppContainer read of the same path
 returned `EPERM`. AppContainer was declined on cost for now and is not a shipped
 feature. The remaining direction and its browser-loopback gate are recorded in an

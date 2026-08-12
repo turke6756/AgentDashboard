@@ -172,6 +172,14 @@ public static class LaresRestrictedOutboxNative {
         } finally { Marshal.FreeHGlobal(buffer); }
     }
 
+    public static string CurrentLogonSid() {
+        IntPtr token = IntPtr.Zero;
+        try {
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out token)) throw Win32("OpenProcessToken(logon SID audit)");
+            return GetLogonSidText(token);
+        } finally { if (token != IntPtr.Zero) CloseHandle(token); }
+    }
+
     static void SetCapabilityDefaultDacl(IntPtr token, IntPtr[] sids) {
         var entries = new EXPLICIT_ACCESS[sids.Length];
         for (int i = 0; i < sids.Length; i++) {
@@ -208,12 +216,13 @@ public static class LaresRestrictedOutboxNative {
             string logonSidText = GetLogonSidText(current);
             if (!ConvertStringSidToSid(logonSidText, out logonSid)) throw Win32("ConvertStringSidToSid(logon)");
             if (!ConvertStringSidToSid("S-1-1-0", out everyoneSid)) throw Win32("ConvertStringSidToSid(Everyone)");
-            // Exact Codex-architecture order: capability, logon, Everyone.
+            // Restrict writes to the synthetic capability grant plus the logon SID.
+            // Everyone remains in the separate default DACL below because a
+            // capability-only default DACL prevents native Node initialization.
             // CreateRestrictedToken requires Attributes=0 for every restricting SID.
             var groups = new [] {
                 new SID_AND_ATTRIBUTES { Sid = sid, Attributes = 0 },
-                new SID_AND_ATTRIBUTES { Sid = logonSid, Attributes = 0 },
-                new SID_AND_ATTRIBUTES { Sid = everyoneSid, Attributes = 0 }
+                new SID_AND_ATTRIBUTES { Sid = logonSid, Attributes = 0 }
             };
             if (!CreateRestrictedToken(current, DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
                     0, IntPtr.Zero, 0, IntPtr.Zero, (UInt32)groups.Length, groups, out restricted))
@@ -311,7 +320,11 @@ try {
   [LaresRestrictedOutboxNative]::Probe([string]$spec.syntheticSid)
   if ([string]$spec.mode -eq 'probe') { exit 0 }
 
+  $logonSid = [LaresRestrictedOutboxNative]::CurrentLogonSid()
+  # Everyone grants remain useful non-fatal telemetry. Everyone is no longer a
+  # restricting SID; logon-SID grants are the residual write-bypass condition.
   $worldWritable = [Collections.Generic.List[string]]::new()
+  $logonSidWritable = [Collections.Generic.List[string]]::new()
   $auditErrors = [Collections.Generic.List[string]]::new()
   $seenAuditDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $pendingAuditDirectories = [Collections.Generic.Queue[string]]::new()
@@ -327,8 +340,11 @@ try {
         $itemAcl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
         foreach ($candidate in $itemAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
           $isEveryone = $candidate.IdentityReference.Value -eq 'S-1-1-0'
+          $isLogonSid = $candidate.IdentityReference.Value -eq $logonSid
           $writes = ($candidate.FileSystemRights -band ([Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::FullControl -bor [Security.AccessControl.FileSystemRights]::CreateFiles)) -ne 0
-          if ($isEveryone -and $writes -and $candidate.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) { $worldWritable.Add($canonicalItem); break }
+          $allowsWrite = $writes -and $candidate.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+          if ($isEveryone -and $allowsWrite -and -not $worldWritable.Contains($canonicalItem)) { $worldWritable.Add($canonicalItem) }
+          if ($isLogonSid -and $allowsWrite -and -not $logonSidWritable.Contains($canonicalItem)) { $logonSidWritable.Add($canonicalItem) }
         }
         foreach ($child in Get-ChildItem -LiteralPath $canonicalItem -Directory -Force -ErrorAction Stop) {
           $pendingAuditDirectories.Enqueue($child.FullName)
@@ -336,9 +352,9 @@ try {
       }
     } catch { $auditErrors.Add($auditCandidate + ': ' + $_.Exception.Message) }
   }
-  $audit = [ordered]@{ syntheticSid = [string]$spec.syntheticSid; roots = @($spec.auditRoots); worldWritable = @($worldWritable); errors = @($auditErrors) }
+  $audit = [ordered]@{ syntheticSid = [string]$spec.syntheticSid; logonSid = $logonSid; roots = @($spec.auditRoots); worldWritable = @($worldWritable); logonSidWritable = @($logonSidWritable); errors = @($auditErrors) }
   [Console]::Error.WriteLine('${OUTBOX_AUDIT_MARKER} ' + ($audit | ConvertTo-Json -Compress -Depth 4))
-  $unsafeWorldWritable = @($worldWritable | Where-Object {
+  $unsafeLogonSidWritable = @($logonSidWritable | Where-Object {
     $candidate = $_
     -not @($spec.grantRoots | Where-Object {
       $grant = [string]$_
@@ -347,11 +363,11 @@ try {
         $candidate.StartsWith($grantPrefix, [StringComparison]::OrdinalIgnoreCase)
     }).Count
   })
-  if ($unsafeWorldWritable.Count -gt 0) {
-    throw ('world-writable directories outside the canonical grant roots defeat restricted-token enforcement: ' + ($unsafeWorldWritable -join ', '))
+  if ($unsafeLogonSidWritable.Count -gt 0) {
+    throw ('logon-SID-writable directories outside the canonical grant roots defeat restricted-token enforcement: ' + ($unsafeLogonSidWritable -join ', '))
   }
   if ($auditErrors.Count -gt 0) {
-    throw ('world-writable audit could not inspect every directory: ' + ($auditErrors -join ', '))
+    throw ('restricted-token ACL audit could not inspect every directory: ' + ($auditErrors -join ', '))
   }
 
   $exitCode = [LaresRestrictedOutboxNative]::Run([string]$spec.syntheticSid, [string]$spec.command, [string[]]$spec.args, [string]$spec.cwd)
