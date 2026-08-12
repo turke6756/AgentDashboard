@@ -10,7 +10,10 @@ export interface RestrictedOutboxLaunchOptions {
   command: string;
   args: string[];
   cwd: string;
-  outbox: string;
+  /** Canonical grant candidates (the research inbox and per-agent home). */
+  grantRoots?: string[];
+  /** Transitional single-root spelling retained until the coordinated caller lands. */
+  outbox?: string;
   auditRoots?: string[];
   env?: NodeJS.ProcessEnv;
 }
@@ -27,6 +30,8 @@ interface RestrictedOutboxLauncherDeps {
   powershellPath?: string;
   runPreflight?: (command: string, args: string[], env: NodeJS.ProcessEnv) => void;
   randomBytes?: (size: number) => Buffer;
+  /** Real-Windows rollback fault injection; throws after this many ACEs are installed. */
+  failAfterGrantCount?: number;
 }
 
 const SPEC_ENV = 'LARES_RESTRICTED_OUTBOX_SPEC_B64';
@@ -61,6 +66,11 @@ public static class LaresRestrictedOutboxNative {
     const UInt32 INFINITE = 0xFFFFFFFF;
     const UInt32 SE_GROUP_LOGON_ID = 0xC0000000;
     const UInt32 GENERIC_ALL = 0x10000000;
+    const UInt32 FILE_SHARE_READ = 0x00000001;
+    const UInt32 FILE_SHARE_WRITE = 0x00000002;
+    const UInt32 FILE_SHARE_DELETE = 0x00000004;
+    const UInt32 OPEN_EXISTING = 3;
+    const UInt32 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 
     [StructLayout(LayoutKind.Sequential)]
     struct SID_AND_ATTRIBUTES { public IntPtr Sid; public UInt32 Attributes; }
@@ -102,6 +112,11 @@ public static class LaresRestrictedOutboxNative {
     }
 
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateFile(string name, UInt32 access, UInt32 share, IntPtr security,
+        UInt32 creation, UInt32 flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern UInt32 GetFinalPathNameByHandle(IntPtr file, StringBuilder path, UInt32 length, UInt32 flags);
     [DllImport("advapi32.dll", SetLastError=true)]
     static extern bool OpenProcessToken(IntPtr process, UInt32 access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError=true)]
@@ -227,6 +242,21 @@ public static class LaresRestrictedOutboxNative {
         CloseHandle(token);
     }
 
+    public static string CanonicalizeDirectory(string path) {
+        IntPtr handle = CreateFile(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        if (handle == new IntPtr(-1)) throw Win32("CreateFileW(directory)");
+        try {
+            var result = new StringBuilder(32768);
+            UInt32 length = GetFinalPathNameByHandle(handle, result, (UInt32)result.Capacity, 0);
+            if (length == 0 || length >= result.Capacity) throw Win32("GetFinalPathNameByHandleW");
+            string value = result.ToString();
+            if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + value.Substring(8);
+            if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) return value.Substring(4);
+            return value;
+        } finally { CloseHandle(handle); }
+    }
+
     static string Quote(string value) {
         if (value.Length > 0 && value.IndexOfAny(new [] {' ', '\t', '\n', '\v', '"'}) < 0) return value;
         var b = new StringBuilder("\""); int slashes = 0;
@@ -261,46 +291,64 @@ public static class LaresRestrictedOutboxNative {
 Add-Type -TypeDefinition $nativeSource -Language CSharp
 
 $sid = [System.Security.Principal.SecurityIdentifier]::new([string]$spec.syntheticSid)
-$outbox = [IO.Path]::GetFullPath([string]$spec.outbox)
-$directory = [IO.DirectoryInfo]::new($outbox)
 $rights = [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::Synchronize
 $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
-$aceAdded = $false
+$grantsAdded = [Collections.Generic.List[object]]::new()
 try {
-  $acl = $directory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
-  $acl.AddAccessRule($rule)
-  $directory.SetAccessControl($acl)
-  $aceAdded = $true
+  foreach ($rootValue in $spec.grantRoots) {
+    $root = [LaresRestrictedOutboxNative]::CanonicalizeDirectory([string]$rootValue)
+    $directory = [IO.DirectoryInfo]::new($root)
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+    $acl = $directory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    $acl.AddAccessRule($rule)
+    $directory.SetAccessControl($acl)
+    $grantsAdded.Add([pscustomobject]@{ Directory = $directory; Rule = $rule })
+    if ($spec.failAfterGrantCount -and $grantsAdded.Count -ge [int]$spec.failAfterGrantCount) {
+      throw ('injected partial grant failure after ' + $grantsAdded.Count + ' ACE(s)')
+    }
+  }
 
   [LaresRestrictedOutboxNative]::Probe([string]$spec.syntheticSid)
   if ([string]$spec.mode -eq 'probe') { exit 0 }
 
   $worldWritable = [Collections.Generic.List[string]]::new()
   $auditErrors = [Collections.Generic.List[string]]::new()
+  $seenAuditDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $pendingAuditDirectories = [Collections.Generic.Queue[string]]::new()
   foreach ($rootValue in $spec.auditRoots) {
-    $root = [IO.Path]::GetFullPath([string]$rootValue)
-    $items = @([IO.DirectoryInfo]::new($root)) + @(Get-ChildItem -LiteralPath $root -Directory -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
-    foreach ($item in $items) {
-      try {
+    $pendingAuditDirectories.Enqueue([string]$rootValue)
+  }
+  while ($pendingAuditDirectories.Count -gt 0) {
+    $auditCandidate = $pendingAuditDirectories.Dequeue()
+    try {
+      $canonicalItem = [LaresRestrictedOutboxNative]::CanonicalizeDirectory($auditCandidate)
+      if ($seenAuditDirectories.Add($canonicalItem)) {
+        $item = [IO.DirectoryInfo]::new($canonicalItem)
         $itemAcl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
         foreach ($candidate in $itemAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
           $isEveryone = $candidate.IdentityReference.Value -eq 'S-1-1-0'
           $writes = ($candidate.FileSystemRights -band ([Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::FullControl -bor [Security.AccessControl.FileSystemRights]::CreateFiles)) -ne 0
-          if ($isEveryone -and $writes -and $candidate.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) { $worldWritable.Add($item.FullName); break }
+          if ($isEveryone -and $writes -and $candidate.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) { $worldWritable.Add($canonicalItem); break }
         }
-      } catch { $auditErrors.Add($item.FullName + ': ' + $_.Exception.Message) }
-    }
+        foreach ($child in Get-ChildItem -LiteralPath $canonicalItem -Directory -Force -ErrorAction Stop) {
+          $pendingAuditDirectories.Enqueue($child.FullName)
+        }
+      }
+    } catch { $auditErrors.Add($auditCandidate + ': ' + $_.Exception.Message) }
   }
   $audit = [ordered]@{ syntheticSid = [string]$spec.syntheticSid; roots = @($spec.auditRoots); worldWritable = @($worldWritable); errors = @($auditErrors) }
   [Console]::Error.WriteLine('${OUTBOX_AUDIT_MARKER} ' + ($audit | ConvertTo-Json -Compress -Depth 4))
-  $outboxPrefix = $outbox.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
   $unsafeWorldWritable = @($worldWritable | Where-Object {
-    -not $_.Equals($outbox, [StringComparison]::OrdinalIgnoreCase) -and
-    -not $_.StartsWith($outboxPrefix, [StringComparison]::OrdinalIgnoreCase)
+    $candidate = $_
+    -not @($spec.grantRoots | Where-Object {
+      $grant = [string]$_
+      $grantPrefix = $grant.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+      $candidate.Equals($grant, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate.StartsWith($grantPrefix, [StringComparison]::OrdinalIgnoreCase)
+    }).Count
   })
   if ($unsafeWorldWritable.Count -gt 0) {
-    throw ('world-writable directories outside the declared outbox defeat restricted-token enforcement: ' + ($unsafeWorldWritable -join ', '))
+    throw ('world-writable directories outside the canonical grant roots defeat restricted-token enforcement: ' + ($unsafeWorldWritable -join ', '))
   }
   if ($auditErrors.Count -gt 0) {
     throw ('world-writable audit could not inspect every directory: ' + ($auditErrors -join ', '))
@@ -312,11 +360,12 @@ try {
   [Console]::Error.WriteLine('[lares-outbox-sandbox:FAIL_CLOSED] ' + $_.Exception.Message)
   exit 126
 } finally {
-  if ($aceAdded) {
+  for ($index = $grantsAdded.Count - 1; $index -ge 0; $index--) {
+    $grant = $grantsAdded[$index]
     try {
-      $cleanupAcl = $directory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
-      [void]$cleanupAcl.RemoveAccessRuleSpecific($rule)
-      $directory.SetAccessControl($cleanupAcl)
+      $cleanupAcl = $grant.Directory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+      [void]$cleanupAcl.RemoveAccessRuleSpecific($grant.Rule)
+      $grant.Directory.SetAccessControl($cleanupAcl)
     } catch { [Console]::Error.WriteLine('[lares-outbox-sandbox:ACL_CLEANUP_FAILED] ' + $_.Exception.Message) }
   }
   if ($selfPath) { Remove-Item -LiteralPath $selfPath -Force -ErrorAction SilentlyContinue }
@@ -331,14 +380,54 @@ function syntheticSid(randomBytes: (size: number) => Buffer): string {
 
 function normalizeExistingDirectory(value: string, label: string): string {
   const resolved = path.resolve(value);
+  if (fs.lstatSync(resolved).isSymbolicLink()) {
+    throw new Error(`${label} must not be a reparse point: ${resolved}`);
+  }
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) throw new Error(`${label} is not a directory: ${resolved}`);
   return fs.realpathSync.native(resolved);
 }
 
+function isContainedPath(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function deduplicateWindowsPaths(values: string[]): string[] {
+  const byCaseFoldedPath = new Map<string, string>();
+  for (const value of values) {
+    const key = value.toLocaleLowerCase('en-US');
+    if (!byCaseFoldedPath.has(key)) byCaseFoldedPath.set(key, value);
+  }
+  return [...byCaseFoldedPath.values()];
+}
+
+function assertNoReparsePoints(root: string): void {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      const stat = fs.lstatSync(entryPath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`grant root contains a reparse point: ${entryPath}`);
+      }
+      if (stat.isDirectory()) pending.push(entryPath);
+    }
+  }
+}
+
+function removeStaleLaunchBootstraps(cwd: string): void {
+  for (const name of fs.readdirSync(cwd)) {
+    if (/^\.lares-outbox-launch-S-1-5-21-[A-Za-z0-9_-]+\.ps1$/i.test(name)) {
+      fs.rmSync(path.join(cwd, name), { force: true });
+    }
+  }
+}
+
 /**
  * Prepares an OS-enforced Windows launch. The preflight creates the real token
- * and adds/removes the real outbox ACE before returning, so callers never fall
+ * and adds/removes the real grant-root ACEs before returning, so callers never fall
  * through to an unrestricted provider launch when setup is unavailable.
  */
 export function prepareRestrictedOutboxLaunch(
@@ -351,17 +440,40 @@ export function prepareRestrictedOutboxLaunch(
   }
 
   const cwd = normalizeExistingDirectory(options.cwd, 'cwd');
-  fs.mkdirSync(options.outbox, { recursive: true });
-  const outbox = normalizeExistingDirectory(options.outbox, 'outbox');
+  removeStaleLaunchBootstraps(cwd);
+  const requestedGrantRoots = options.grantRoots?.length
+    ? options.grantRoots
+    : options.outbox
+      ? [options.outbox, options.env?.CLAUDE_CONFIG_DIR].filter((root): root is string => Boolean(root))
+      : [];
+  if (requestedGrantRoots.length === 0) throw new Error('at least one grant root is required');
+  for (const root of requestedGrantRoots) fs.mkdirSync(root, { recursive: true });
   const auditRoots = (options.auditRoots?.length ? options.auditRoots : [cwd])
     .map((root) => normalizeExistingDirectory(root, 'audit root'));
+  const grantRoots = deduplicateWindowsPaths(
+    requestedGrantRoots.map((root) => normalizeExistingDirectory(root, 'grant root')),
+  );
+  for (const root of grantRoots) {
+    if (!auditRoots.some((auditRoot) => isContainedPath(root, auditRoot))) {
+      throw new Error(`grant root escapes the canonical audit roots: ${root}`);
+    }
+    assertNoReparsePoints(root);
+  }
   const sid = syntheticSid(deps.randomBytes ?? crypto.randomBytes);
   const powershell = deps.powershellPath ?? path.join(
     process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
   );
   const bootstrapPath = path.join(cwd, `.lares-outbox-launch-${sid.replace(/[^A-Za-z0-9-]/g, '_')}.ps1`);
   const bootstrapArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', bootstrapPath];
-  const baseSpec = { syntheticSid: sid, outbox, auditRoots, command: path.resolve(options.command), args: options.args, cwd };
+  const baseSpec = {
+    syntheticSid: sid,
+    grantRoots,
+    auditRoots,
+    command: path.resolve(options.command),
+    args: options.args,
+    cwd,
+    failAfterGrantCount: deps.failAfterGrantCount,
+  };
   const envBase = { ...(options.env ?? process.env) };
   const probeEnv = {
     ...envBase,

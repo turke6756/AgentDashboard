@@ -285,6 +285,8 @@ const TESTS = [
   // foreign finalization-service fail-fast point so this package always enters.
   'dist/main/main/sandbox/provider-redirect-adapters.test.js',
   'dist/main/main/sandbox/researcher-home-factory.test.js',
+  'dist/main/main/sandbox/researcher-home-lifecycle.test.js',
+  'dist/main/main/sandbox/outbox-launcher.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.finalize.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.preview.test.js',

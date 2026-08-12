@@ -77,6 +77,12 @@ import { addProviderAutoApproveFlag } from './provider-auto-approve';
 import { ensureNodeShimDir } from '../node-shim';
 import { prepareRestrictedOutboxLaunch } from '../sandbox/outbox-launcher';
 import { resolveResearcherSandboxHome } from '../sandbox/researcher-home-factory';
+import {
+  prepareResearcherSandboxHome,
+  purgeResearcherSandboxHome,
+  type PreparedResearcherSandboxHome,
+} from '../sandbox/researcher-home-lifecycle';
+import { resolveWslHomeSubdir } from './log-readers/types';
 import { MEMORY_INDEX_MJS } from '../../shared/generated/memory-index-cli.generated';
 // WP-C — provider-neutral supervisor memory-index launch projection + Codex
 // pending-rail composition. The projection (readValidate + last-good/runtime
@@ -4843,7 +4849,7 @@ export class AgentSupervisor extends EventEmitter {
     return tracker;
   }
 
-  private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
+  private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string, prePreparedResearcherHome?: PreparedResearcherSandboxHome): Promise<void> {
     // WP0.5 — resolve EXACTLY ONE per-agent capability token at method entry,
     // before ANY environment or command construction. `mint()` rotates, so the
     // single token is threaded to the dashboard MCP config, the team MCP config,
@@ -5306,6 +5312,7 @@ export class AgentSupervisor extends EventEmitter {
     let runnerDirectSpawn = useDirectSpawn;
     if (roleLaneOf(agent) === 'researcher') {
       const workspaceRoot = getEffectiveWorkspaceRoot(agent);
+      let researcherHomeGrantRoot: string;
       // Forks supply overrideArgs and enter the factory explicitly at the AU-7
       // bypass seam. Normal and resume launches enter here.
       if (!overrideArgs) {
@@ -5318,16 +5325,32 @@ export class AgentSupervisor extends EventEmitter {
         if (!researcherSandbox) {
           throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
         }
-        // WP-3 consumes the returned redirect; WP-5 consumes the same derived
-        // discovery location. WP-2 enters and witnesses the construction seam.
-        console.log(`[Windows] Researcher sandbox home: ${researcherSandbox.researcherSandboxHomePath}`);
+        const trustedClaudeRoot = path.join(
+          process.env.USERPROFILE || process.env.HOME || '',
+          '.claude',
+        );
+        const preparedResearcherHome = prepareResearcherSandboxHome({
+          provider: agent.provider,
+          sandboxHome: researcherSandbox,
+          trustedProviderStateRoot: trustedClaudeRoot,
+          accountTempPath: process.env.TEMP || process.env.TMP,
+        });
+        Object.assign(extraEnv, preparedResearcherHome.extraEnv);
+        researcherHomeGrantRoot = preparedResearcherHome.filesystemHomePath;
+      } else {
+        if (!prePreparedResearcherHome) {
+          throw new Error(`Forked researcher sandbox was not prepared for agent ${agent.id}`);
+        }
+        Object.assign(extraEnv, prePreparedResearcherHome.extraEnv);
+        researcherHomeGrantRoot = prePreparedResearcherHome.filesystemHomePath;
       }
       const stateDir = workspaceStateDirName(workspaceRoot);
+      const researchInbox = path.join(workspaceRoot, stateDir, 'research', 'inbox');
       const restricted = prepareRestrictedOutboxLaunch({
         command: launchCmd,
         args,
         cwd: agent.workingDirectory,
-        outbox: path.join(workspaceRoot, stateDir, 'research', 'inbox'),
+        grantRoots: [researchInbox, researcherHomeGrantRoot],
         auditRoots: [workspaceRoot],
         env: { ...process.env, ...extraEnv },
       });
@@ -5900,10 +5923,6 @@ export class AgentSupervisor extends EventEmitter {
         wslEnvPrefix.push(`AGENT_DASHBOARD_PLAN_SECTION=${shQuote(agent.planSection)}`);
       }
     }
-    if (wslEnvPrefix.length > 0) {
-      command = `${wslEnvPrefix.join(' ')} ${command}`;
-    }
-
     // Persistent-agent workspace-root contract (see docs/PERSISTENT_AGENT_LAUNCH_CONTRACT.md).
     // Computed up here so it's available both for the bare-command case and for the
     // wrap-with-prompt case below. Fires for supervisors AND supervised workers
@@ -5934,7 +5953,20 @@ export class AgentSupervisor extends EventEmitter {
       if (!wslResearcherSandbox) {
         throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
       }
-      console.log(`[WSL] Researcher sandbox home: ${wslResearcherSandbox.researcherSandboxHomePath}`);
+      const trustedClaudeRoot = resolveWslHomeSubdir('.claude');
+      if (!trustedClaudeRoot) {
+        throw new Error('Researcher sandbox could not resolve the trusted WSL Claude state root');
+      }
+      const preparedResearcherHome = prepareResearcherSandboxHome({
+        provider: agent.provider,
+        sandboxHome: wslResearcherSandbox,
+        filesystemHomePath: wslToWindowsPath(wslResearcherSandbox.researcherSandboxHomePath),
+        trustedProviderStateRoot: trustedClaudeRoot,
+        accountTempPath: '/tmp',
+      });
+      for (const [name, value] of Object.entries(preparedResearcherHome.extraEnv)) {
+        wslEnvPrefix.push(`${name}=${shQuote(value)}`);
+      }
       const storeStateDir = workspaceStateDirName(persistentWorkspaceRoot, 'wsl');
       const storeDir = `${persistentWorkspaceRoot}/${storeStateDir}/research`;
       wslAddDir = storeDir;
@@ -5965,6 +5997,10 @@ export class AgentSupervisor extends EventEmitter {
         const memText = this.computeSupervisorMemoryInjectText(agent);
         if (memText) sysPromptText += `\n\n${memText}`;
       }
+    }
+
+    if (wslEnvPrefix.length > 0) {
+      command = `${wslEnvPrefix.join(' ')} ${command}`;
     }
 
     if (!overrideCommand) {
@@ -6445,6 +6481,7 @@ export class AgentSupervisor extends EventEmitter {
     // (--tools/--disallowedTools), which the bypassed lane-aware injection would
     // otherwise have added. Without it the fork would be offered Bash/Edit again.
     const forkResearcher = forkLane === 'researcher';
+    let forkPreparedResearcherHome: PreparedResearcherSandboxHome | undefined;
     if (forkResearcher) {
       const forkWorkspaceRoot = getEffectiveWorkspaceRoot(newAgent);
       const forkResearcherSandbox = resolveResearcherSandboxHome({
@@ -6456,7 +6493,21 @@ export class AgentSupervisor extends EventEmitter {
       if (!forkResearcherSandbox) {
         throw new Error(`Researcher sandbox construction refused fork ${newAgent.id}`);
       }
-      console.log(`[Fork] Researcher sandbox home: ${forkResearcherSandbox.researcherSandboxHomePath}`);
+      const trustedClaudeRoot = pathType === 'wsl'
+        ? resolveWslHomeSubdir('.claude')
+        : path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude');
+      if (!trustedClaudeRoot) {
+        throw new Error('Forked researcher sandbox could not resolve the trusted Claude state root');
+      }
+      forkPreparedResearcherHome = prepareResearcherSandboxHome({
+        provider: newAgent.provider,
+        sandboxHome: forkResearcherSandbox,
+        filesystemHomePath: pathType === 'wsl'
+          ? wslToWindowsPath(forkResearcherSandbox.researcherSandboxHomePath)
+          : forkResearcherSandbox.researcherSandboxHomePath,
+        trustedProviderStateRoot: trustedClaudeRoot,
+        accountTempPath: pathType === 'wsl' ? '/tmp' : (process.env.TEMP || process.env.TMP),
+      });
     }
     // WP0.5 — fork bypasses the launch method's lane-aware MCP injection via
     // overrideArgs/overrideCommand, but STILL runs the launch method's child-env
@@ -6474,7 +6525,7 @@ export class AgentSupervisor extends EventEmitter {
         ? ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', 'claude-sonnet-4-6']
         : [];
       const forkArgs = [...parts.slice(1), ...forkMcp, ...forkTools, '--resume', source.resumeSessionId, '--fork-session', '--session-id', newSessionId];
-      await this.launchWindowsAgent(newAgent, false, null, undefined, forkArgs, false, undefined, forkToken);
+      await this.launchWindowsAgent(newAgent, false, null, undefined, forkArgs, false, undefined, forkToken, forkPreparedResearcherHome);
     } else {
       const forkMcp = forkLane !== 'legacy'
         ? ` --mcp-config '${this.buildDashboardMcpConfigForLane(forkLane, 'wsl', this.buildIdentityEnvForAgent(newAgent), forkToken!)}'${forkStrict ? ' --strict-mcp-config' : ''}`
@@ -6482,7 +6533,10 @@ export class AgentSupervisor extends EventEmitter {
       const forkTools = forkResearcher
         ? ` --tools '${RESEARCHER_ALLOWED_TOOLS.join(',')}' --disallowedTools '${RESEARCHER_DISALLOWED_TOOLS.join(',')}' --model claude-sonnet-4-6`
         : '';
-      const forkCommand = `${source.command}${forkMcp}${forkTools} --resume ${source.resumeSessionId} --fork-session --session-id ${newSessionId}`;
+      const forkRedirectEnv = forkPreparedResearcherHome
+        ? `${Object.entries(forkPreparedResearcherHome.extraEnv).map(([name, value]) => `${name}=${shQuote(value)}`).join(' ')} `
+        : '';
+      const forkCommand = `${forkRedirectEnv}${source.command}${forkMcp}${forkTools} --resume ${source.resumeSessionId} --fork-session --session-id ${newSessionId}`;
       await this.launchWslAgent(newAgent, false, null, forkCommand, undefined, false, undefined, forkToken);
     }
 
@@ -7103,7 +7157,8 @@ export class AgentSupervisor extends EventEmitter {
   async deleteAgent(agentId: string): Promise<void> {
     // WP-1 (C): capture the log path BEFORE any DB mutation — dbDeleteAgent
     // removes the row, so the only reliable read of `logPath` is up front.
-    const logPath = getAgent(agentId)?.logPath ?? null;
+    const agentForDelete = getAgent(agentId);
+    const logPath = agentForDelete?.logPath ?? null;
 
     // Stop process if running. Use the delete-shutdown contract (not kill()):
     // it blocks any later persistScrollback() and closes the log stream so the
@@ -7154,6 +7209,17 @@ export class AgentSupervisor extends EventEmitter {
     // agent row is STILL present so the shared-reference scan can exclude this
     // id and detect only *other* agents pointing at the same path.
     if (logPath) reclaimAgentLogFiles(logPath, agentId, this.logsDir);
+    // Derive and purge the persistent home while the agent row still exists.
+    // A purge failure leaves the row intact instead of orphaning its directory.
+    if (agentForDelete && roleLaneOf(agentForDelete) === 'researcher') {
+      const workspaceRoot = getEffectiveWorkspaceRoot(agentForDelete);
+      const pathType = detectPathType(agentForDelete.workingDirectory);
+      const stateRoot = workspaceStateDir(workspaceRoot, pathType);
+      const logicalHome = pathType === 'wsl'
+        ? path.posix.join(stateRoot, 'agent-homes', agentId)
+        : path.win32.join(stateRoot, 'agent-homes', agentId);
+      purgeResearcherSandboxHome(pathType === 'wsl' ? wslToWindowsPath(logicalHome) : logicalHome);
+    }
     dbDeleteAgent(agentId);
     this.emit('agentDeleted', { agentId });
   }

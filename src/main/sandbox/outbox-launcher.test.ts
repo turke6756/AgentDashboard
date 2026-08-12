@@ -10,6 +10,49 @@ import {
   prepareRestrictedOutboxLaunch,
 } from './outbox-launcher';
 
+const SPEC_ENV = 'LARES_RESTRICTED_OUTBOX_SPEC_B64';
+
+function explicitSidGrantCount(directory: string, sid: string): number {
+  const powershell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  const script = [
+    `$acl = Get-Acl -LiteralPath ${JSON.stringify(directory)}`,
+    `$count = @($acl.Access | Where-Object { $_.IdentityReference.Value -eq ${JSON.stringify(sid)} -and -not $_.IsInherited }).Count`,
+    `[Console]::Out.Write($count)`,
+  ].join('; ');
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, `ACL inspection failed: ${result.stderr}`);
+  return Number(result.stdout.trim());
+}
+
+function setEveryoneModifyRule(directory: string, add: boolean): void {
+  const powershell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  const operation = add ? '$acl.AddAccessRule($rule)' : '[void]$acl.RemoveAccessRuleSpecific($rule)';
+  const script = [
+    `$directory = [IO.DirectoryInfo]::new(${JSON.stringify(directory)})`,
+    `$acl = $directory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)`,
+    `$sid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')`,
+    `$rights = [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::Synchronize`,
+    `$inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit`,
+    `$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $inheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)`,
+    operation,
+    `$directory.SetAccessControl($acl)`,
+  ].join('; ');
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, `Everyone ACL ${add ? 'setup' : 'cleanup'} failed: ${result.stderr}`);
+}
+
 test('non-Windows callers get a loud skip marker', () => {
   assert.throws(
     () => prepareRestrictedOutboxLaunch({ command: 'x', args: [], cwd: '.', outbox: '.' }, { platform: 'linux' }),
@@ -33,42 +76,183 @@ test('token-establishment failure fails closed before returning a launch', () =>
   }
 });
 
+test('grant roots are canonicalized and case-insensitively deduplicated before preflight', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-grant-roots-'));
+  const inbox = path.join(root, 'inbox');
+  const home = path.join(root, 'home');
+  let observedGrantRoots: string[] = [];
+  try {
+    fs.mkdirSync(inbox);
+    fs.mkdirSync(home);
+    const prepared = prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: [],
+      cwd: root,
+      grantRoots: [inbox, path.join(inbox, '.'), home],
+      auditRoots: [root],
+    }, {
+      platform: 'win32',
+      runPreflight: (_command, args, env) => {
+        const spec = JSON.parse(Buffer.from(env[SPEC_ENV]!, 'base64').toString('utf8')) as { grantRoots: string[] };
+        observedGrantRoots = spec.grantRoots;
+        fs.rmSync(args[args.indexOf('-File') + 1], { force: true });
+      },
+    });
+    assert.deepEqual(observedGrantRoots, [fs.realpathSync.native(inbox), fs.realpathSync.native(home)],
+      'REACHABILITY:restricted-launch-multiroot must send one canonical entry per grant root');
+    fs.rmSync(prepared.args[prepared.args.indexOf('-File') + 1], { force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shipping Claude launch shape grants the inbox and redirected per-agent home', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-shipping-grants-'));
+  const inbox = path.join(root, 'inbox');
+  const home = path.join(root, 'agent-home');
+  let observedGrantRoots: string[] = [];
+  try {
+    const prepared = prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: [],
+      cwd: root,
+      outbox: inbox,
+      auditRoots: [root],
+      env: { CLAUDE_CONFIG_DIR: home },
+    }, {
+      platform: 'win32',
+      runPreflight: (_command, args, env) => {
+        const spec = JSON.parse(Buffer.from(env[SPEC_ENV]!, 'base64').toString('utf8')) as { grantRoots: string[] };
+        observedGrantRoots = spec.grantRoots;
+        fs.rmSync(args[args.indexOf('-File') + 1], { force: true });
+      },
+    });
+    assert.deepEqual(observedGrantRoots, [fs.realpathSync.native(inbox), fs.realpathSync.native(home)],
+      'REACHABILITY:restricted-launch-multiroot production shape must carry inbox plus agent home');
+    fs.rmSync(prepared.args[prepared.args.indexOf('-File') + 1], { force: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('grant roots reject nested reparse points before any ACL mutation', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows junctions are unavailable on this platform');
+    return;
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-grant-reparse-'));
+  const grantRoot = path.join(root, 'home');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(grantRoot);
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, path.join(grantRoot, 'junction'), 'junction');
+  let preflightRan = false;
+  try {
+    assert.throws(() => prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: [],
+      cwd: root,
+      grantRoots: [grantRoot],
+      auditRoots: [root],
+    }, {
+      platform: 'win32',
+      runPreflight: () => { preflightRan = true; },
+    }), /contains a reparse point/);
+    assert.equal(preflightRan, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('stale restricted-launch bootstrap files are removed before setup', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-stale-launch-'));
+  const stale = path.join(root, '.lares-outbox-launch-S-1-5-21-1-2-3-4.ps1');
+  fs.writeFileSync(stale, 'stale');
+  try {
+    assert.throws(() => prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: [],
+      cwd: root,
+      grantRoots: [path.join(root, 'inbox')],
+    }, {
+      platform: 'win32',
+      runPreflight: () => { throw new Error('stop after stale cleanup'); },
+    }), /stop after stale cleanup/);
+    assert.equal(fs.existsSync(stale), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('shipping Windows researcher seam calls the restricted outbox launcher', () => {
   const supervisorSource = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'supervisor', 'index.ts'), 'utf8');
   assert.match(supervisorSource, /roleLaneOf\(agent\) === 'researcher'[\s\S]*prepareRestrictedOutboxLaunch\(\{/,
     'the production researcher branch must invoke restricted-token preparation');
+  assert.match(supervisorSource,
+    /prepareResearcherSandboxHome\(\{[\s\S]*Object\.assign\(extraEnv, preparedResearcherHome\.extraEnv\)[\s\S]*prepareRestrictedOutboxLaunch\(\{[\s\S]*env: \{ \.\.\.process\.env, \.\.\.extraEnv \}/,
+    'the production seam must pass the prepared Claude home redirect into multi-root preparation');
   assert.match(supervisorSource, /runner\.launch\(agent\.workingDirectory, runnerCommand, runnerArgs/,
     'the prepared wrapper command must reach the production runner');
 });
 
-test('real Windows restricted token writes only inside the declared outbox and reports audit', { timeout: 60_000 }, (t) => {
+test('main runner registers this suite ahead of the known fail-fast boundary', () => {
+  const runnerSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'run-main-tests.mjs'), 'utf8');
+  const thisSuite = runnerSource.indexOf("'dist/main/main/sandbox/outbox-launcher.test.js'");
+  const failFastBoundary = runnerSource.indexOf("'dist/main/main/commit-candidates/finalization-service.test.js'");
+  assert.ok(thisSuite >= 0, 'outbox-launcher.test.ts must not remain a dead suite');
+  assert.ok(thisSuite < failFastBoundary, 'outbox-launcher.test.ts must run ahead of finalization-service fail-fast');
+});
+
+test('partial multi-root setup removes every installed ACE', { timeout: 60_000 }, (t) => {
   if (process.platform !== 'win32') {
-    t.diagnostic(`${NON_WINDOWS_OUTBOX_SKIP_MARKER} real restricted-token integration test`);
-    t.skip('Windows restricted tokens are unavailable on this platform');
+    t.skip('Windows ACLs are unavailable on this platform');
     return;
   }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-partial-grant-'));
+  const inbox = path.join(root, 'inbox');
+  const home = path.join(root, 'home');
+  const sidPart = 0x01010101;
+  const sid = `S-1-5-21-${sidPart}-${sidPart}-${sidPart}-${sidPart}`;
+  try {
+    assert.throws(() => prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: [],
+      cwd: root,
+      grantRoots: [inbox, home],
+      auditRoots: [root],
+    }, {
+      randomBytes: () => Buffer.alloc(16, 1),
+      failAfterGrantCount: 1,
+    }), /FAIL_CLOSED.*restricted token could not be established/);
+    const inboxResidualGrants = explicitSidGrantCount(inbox, sid);
+    const homeResidualGrants = explicitSidGrantCount(home, sid);
+    t.diagnostic(`partial-failure residual grants: inbox=${inboxResidualGrants} home=${homeResidualGrants}`);
+    assert.equal(inboxResidualGrants, 0,
+      'partial failure must leave NO residual grant on the first root');
+    assert.equal(homeResidualGrants, 0,
+      'partial failure must leave NO residual grant on any later root');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-outbox-real-'));
-  const outbox = path.join(root, 'outbox');
-  const outside = path.join(root, 'outside');
-  fs.mkdirSync(outside);
-  const insideFile = path.join(outbox, 'inside.txt');
-  const outsideFile = path.join(outside, 'outside.txt');
-  const childScript = [
-    `const fs = require('fs')`,
-    `let inside = false, outsideDenied = false`,
-    `try { fs.writeFileSync(${JSON.stringify(insideFile)}, 'inside-ok'); inside = true } catch {}`,
-    `try { fs.writeFileSync(${JSON.stringify(outsideFile)}, 'outside-bad') } catch { outsideDenied = true }`,
-    `console.log(JSON.stringify({ inside, outsideDenied }))`,
-    `process.exit(inside && outsideDenied ? 0 : 9)`,
-  ].join(';');
-
+test('world-writable audit follows a reparse point and reports its canonical target', { timeout: 60_000 }, (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows junctions and ACLs are unavailable on this platform');
+    return;
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-audit-reparse-'));
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-audit-external-'));
+  const inbox = path.join(root, 'inbox');
+  const junction = path.join(root, 'external-junction');
+  fs.symlinkSync(external, junction, 'junction');
+  setEveryoneModifyRule(external, true);
   try {
     const prepared = prepareRestrictedOutboxLaunch({
       command: process.execPath,
-      args: ['-e', childScript],
+      args: ['-e', 'process.exit(0)'],
       cwd: root,
-      outbox,
+      grantRoots: [inbox],
       auditRoots: [root],
     });
     const result = spawnSync(prepared.command, prepared.args, {
@@ -78,14 +262,74 @@ test('real Windows restricted token writes only inside the declared outbox and r
       windowsHide: true,
       timeout: 45_000,
     });
+    assert.equal(result.status, 126, `audit should reject canonical target; stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /FAIL_CLOSED/);
+    assert.match(result.stderr.toLocaleLowerCase('en-US'), new RegExp(
+      fs.realpathSync.native(external).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').toLocaleLowerCase('en-US'),
+    ), 'audit must report the canonical target, not only the lexical junction path');
+  } finally {
+    fs.unlinkSync(junction);
+    setEveryoneModifyRule(external, false);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(external, { recursive: true, force: true });
+  }
+});
+
+test('real Windows restricted token writes in two granted roots and denies a third', { timeout: 60_000 }, (t) => {
+  if (process.platform !== 'win32') {
+    t.diagnostic(`${NON_WINDOWS_OUTBOX_SKIP_MARKER} real restricted-token integration test`);
+    t.skip('Windows restricted tokens are unavailable on this platform');
+    return;
+  }
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-outbox-real-'));
+  const inbox = path.join(root, 'inbox');
+  const home = path.join(root, 'home');
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside);
+  const inboxFile = path.join(inbox, 'inbox.txt');
+  const homeFile = path.join(home, 'home.txt');
+  const outsideFile = path.join(outside, 'outside.txt');
+  const childScript = [
+    `const fs = require('fs')`,
+    `let inbox = false, home = false, outsideDenied = false`,
+    `try { fs.writeFileSync(${JSON.stringify(inboxFile)}, 'inbox-ok'); inbox = true } catch {}`,
+    `try { fs.writeFileSync(${JSON.stringify(homeFile)}, 'home-ok'); home = true } catch {}`,
+    `try { fs.writeFileSync(${JSON.stringify(outsideFile)}, 'outside-bad') } catch { outsideDenied = true }`,
+    `console.log(JSON.stringify({ inbox, home, outsideDenied }))`,
+    `process.exit(inbox && home && outsideDenied ? 0 : 9)`,
+  ].join(';');
+
+  try {
+    const prepared = prepareRestrictedOutboxLaunch({
+      command: process.execPath,
+      args: ['-e', childScript],
+      cwd: root,
+      grantRoots: [inbox, home, path.join(inbox, '.')],
+      auditRoots: [root],
+    }, { randomBytes: () => Buffer.alloc(16, 2) });
+    const result = spawnSync(prepared.command, prepared.args, {
+      cwd: root,
+      env: { ...process.env, ...prepared.env },
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 45_000,
+    });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-    assert.match(result.stdout, /"inside":true/);
+    t.diagnostic(`restricted child result: ${result.stdout.trim()}`);
+    assert.match(result.stdout, /"inbox":true/);
+    assert.match(result.stdout, /"home":true/);
     assert.match(result.stdout, /"outsideDenied":true/);
     assert.match(result.stderr, new RegExp(OUTBOX_AUDIT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(result.stderr, /"worldWritable":\[\]/);
-    assert.equal(fs.readFileSync(insideFile, 'utf8'), 'inside-ok');
+    assert.equal(fs.readFileSync(inboxFile, 'utf8'), 'inbox-ok');
+    assert.equal(fs.readFileSync(homeFile, 'utf8'), 'home-ok');
     assert.equal(fs.existsSync(outsideFile), false);
+    const sidPart = 0x02020202;
+    const sid = `S-1-5-21-${sidPart}-${sidPart}-${sidPart}-${sidPart}`;
+    assert.equal(explicitSidGrantCount(inbox, sid), 0, 'successful launch must clean the inbox grant');
+    assert.equal(explicitSidGrantCount(home, sid), 0, 'successful launch must clean the home grant');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
