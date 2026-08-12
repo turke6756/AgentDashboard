@@ -110,7 +110,7 @@ const REASON_LABEL: Record<Extract<CommitEligibility, { eligible: false }>['reas
   'finalization-conflict': 'Two finalizations disagree on this work — cannot save.',
   'extraneous-finalization': 'A requested finalization covers none of this selection.',
   'intent-revision-stale': 'This save intent changed since review — preview it again.',
-  'resolution-required': 'Resolve every cross-intent lost-update risk before saving.',
+  'stale-preview': 'This preview is out of date — preview it again to see the current selection.',
   'resolution-stale': 'A cross-intent resolution is stale — review the current evidence.',
   'unattributed-not-acknowledged': 'Acknowledge the unattributed changes to continue.',
   'compose-in-flight': 'Another save is in flight for this repository — try again shortly.',

@@ -150,7 +150,7 @@ type ExportShapes = [
         reason:
           'byte-mismatch' | 'package-not-finalized' | 'checkpoint-unavailable'
           | 'finalization-conflict' | 'extraneous-finalization'
-          | 'intent-revision-stale' | 'resolution-required' | 'resolution-stale'
+          | 'intent-revision-stale' | 'resolution-stale' | 'stale-preview'
           | 'unattributed-not-acknowledged'
           | 'compose-in-flight' | 'unsupported-git-state';
       }>>,

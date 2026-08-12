@@ -383,7 +383,7 @@ export class CommitCandidateService {
         return refused;
       }
       const freshManifest = buildReviewedSemanticManifest(built, context);
-      const verdict = evaluateReviewedManifestCarry(
+      const verdict = carryReviewedManifest(
         reviewed,
         freshManifest,
         request.acknowledgedChallengeAtoms ?? [],
@@ -393,13 +393,16 @@ export class CommitCandidateService {
       );
       if (!verdict.carried) {
         const acknowledgement = verdict.reason === 'challenge-not-covered';
+        const stalePreview = verdict.reason === 'cross-intent-changed';
         const refused = {
           ...built,
           eligibility: {
             eligible: false,
             reason: acknowledgement
               ? ('unattributed-not-acknowledged' as const)
-              : ('byte-mismatch' as const),
+              : stalePreview
+                ? ('stale-preview' as const)
+                : ('byte-mismatch' as const),
           },
         };
         carryVerdictByCandidate.set(refused, verdict);
@@ -957,6 +960,7 @@ export type ReviewCarryRefusalReason =
   | 'discharge-unproven'
   | 'attribution-changed'
   | 'challenge-not-covered'
+  | 'cross-intent-changed'
   | 'fresh-eligibility-failed'
   | 'fresh-closure-unproven';
 
@@ -1385,7 +1389,7 @@ function challengeMatchesTopology(manifest: AnyReviewedSemanticManifest): boolea
 
 /** Adopted carry predicate: equality of the reviewed universe with the sole
  * proof-bearing asymmetry that an exact reviewed effect may be discharged. */
-export function evaluateReviewedManifestCarry(
+export function carryReviewedManifest(
   reviewed: AnyReviewedSemanticManifest,
   fresh: AnyReviewedSemanticManifest,
   acknowledgedAtoms: readonly ReviewChallengeAtom[],
@@ -1463,11 +1467,22 @@ export function evaluateReviewedManifestCarry(
   if (!canonicalEqual(expectedTopology, fresh.attributionTopology)) {
     return refuse('attribution-changed');
   }
-  if (!challengeMatchesTopology(fresh)
-      || (discharged.length === 0 && !canonicalEqual(reviewed.challengeAtoms, fresh.challengeAtoms))) {
+  if (!challengeMatchesTopology(fresh)) {
     return refuse('challenge-not-covered');
   }
-  if (!atomsCovered(fresh.challengeAtoms, acknowledgedAtoms)) {
+  const reviewedUnattributedAtoms = reviewed.challengeAtoms.filter((atom) => atom.kind === 'unattributed');
+  const freshUnattributedAtoms = fresh.challengeAtoms.filter((atom) => atom.kind === 'unattributed');
+  const reviewedCrossIntentAtoms = reviewed.challengeAtoms.filter(isCrossIntentAtom);
+  const freshCrossIntentAtoms = fresh.challengeAtoms.filter(isCrossIntentAtom);
+  if (discharged.length === 0
+      && !canonicalEqual(reviewedUnattributedAtoms, freshUnattributedAtoms)) {
+    return refuse('challenge-not-covered');
+  }
+  if (discharged.length === 0
+      && !canonicalEqual(reviewedCrossIntentAtoms, freshCrossIntentAtoms)) {
+    return refuse('cross-intent-changed');
+  }
+  if (!atomsCovered(freshUnattributedAtoms, acknowledgedAtoms)) {
     return refuse('challenge-not-covered');
   }
   return {
@@ -1477,6 +1492,10 @@ export function evaluateReviewedManifestCarry(
     dischargedPathBytesBase64: discharged.sort(compareBase64),
   };
 }
+
+/** Compatibility export for direct carry-predicate callers. Production minting
+ * enters through carryReviewedManifest so its reason mapping stays reachable. */
+export const evaluateReviewedManifestCarry = carryReviewedManifest;
 
 function retainedEffect(
   pathBytesBase64: string,
@@ -2009,24 +2028,9 @@ export function buildCandidateV2(
     return { ...built, eligibility: { eligible: false, reason: 'resolution-stale' } };
   }
   const resolutions = selectedResolutions as ReviewedAttributionResolution[];
-  const crossAtoms = (context.reviewChallengeAtoms ?? assemblyByInventory.get(context.inventory)?.reviewChallengeAtoms ?? [])
-    .filter((atom): atom is import('../../shared/commit-candidates').CrossIntentChallengeAtom =>
-      isCrossIntentAtom(atom)
-      && selectedEntrySet.has(context.inventory.entries.find((entry) =>
-        entry.path.pathBytesBase64 === atom.pathBytesBase64)?.entryId ?? '')
-      && selectedIds.includes(atom.earlierIntentId)
-      && selectedIds.includes(atom.laterIntentId));
-  const resolutionFor = (atom: import('../../shared/commit-candidates').CrossIntentChallengeAtom) =>
-    resolutions.find((resolution) => resolution.evidenceDigest === atom.evidenceDigest
-      && resolution.affectedPathBytesBase64.includes(atom.pathBytesBase64)
-      && resolution.intentIds.includes(atom.earlierIntentId)
-      && resolution.intentIds.includes(atom.laterIntentId));
-  const missingResolution = crossAtoms.some((atom) => !resolutionFor(atom));
   const eligibility: CommitEligibility = staleIntent
     ? { eligible: false, reason: 'intent-revision-stale' }
-    : missingResolution
-      ? { eligible: false, reason: 'resolution-required' }
-      : built.eligibility;
+    : built.eligibility;
   const normalizedIntents = [...reviewedIntents].sort((a, b) => compareBase64(a.intentId, b.intentId));
   const normalizedResolutions = [...resolutions].sort((a, b) => compareBase64(a.resolutionId, b.resolutionId));
   const candidateId = sha256Hex(canonicalize({

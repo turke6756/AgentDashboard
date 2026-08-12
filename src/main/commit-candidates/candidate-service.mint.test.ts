@@ -20,6 +20,8 @@ import type {
 import {
   CommitCandidateService,
   buildCandidate,
+  buildReviewedSemanticManifest,
+  rememberReviewedSemanticManifest,
   type CandidateBuildContext,
   type CandidateServiceDeps,
   type CandidateTokenStoreOptions,
@@ -458,8 +460,22 @@ function asCandidate(value: ReturnType<CommitCandidateService['mintCandidateToke
     selectedIntentIds: ['intent-a', 'intent-b'], selectedNamedSaveSetIds: [],
     resolutionIds: [], finalizationIds: [one.id, two.id],
   };
-  const missing = asCandidate(service().mintCandidateTokenV2(request, ctx));
-  assert.deepEqual(missing.eligibility, { eligible: false, reason: 'resolution-required' });
+  const noResolutionStore = service();
+  const withoutResolution = asCandidate(noResolutionStore.mintCandidateTokenV2(request, ctx));
+  assert.deepEqual(withoutResolution.eligibility, { eligible: true });
+  assert.deepEqual(withoutResolution.saveIntentIds, ['intent-a', 'intent-b']);
+  assert.ok(withoutResolution.token, 'fresh cross-intent presence mints without acknowledgement');
+  assert.deepEqual(
+    noResolutionStore.resolveCandidateToken(withoutResolution.token!.tokenId)?.candidate.saveIntentIds,
+    ['intent-a', 'intent-b'],
+    'an absent resolution preserves every selected intent in the committed snapshot',
+  );
+
+  const vanishedResolution = asCandidate(service().mintCandidateTokenV2(
+    { ...request, resolutionIds: ['resolution-that-vanished'] }, ctx));
+  assert.deepEqual(vanishedResolution.eligibility, { eligible: false, reason: 'resolution-stale' });
+  assert.equal(vanishedResolution.token, null);
+
   const minted = asCandidate(service().mintCandidateTokenV2({ ...request, resolutionIds: ['resolution-1'] }, ctx));
   assert.equal(minted.contractVersion, 2);
   assert.deepEqual(minted.saveIntentIds, ['intent-a', 'intent-b']);
@@ -478,6 +494,77 @@ function asCandidate(value: ReturnType<CommitCandidateService['mintCandidateToke
     localCheckpointRefs: ['refs/lares/turn-a/after', 'refs/lares/turn-b/after'],
   });
   assert.equal(witnessedSnapshot, null, 'tokens remain service-local');
+}
+
+// WP-10: disjoint intent paths carry no cross-intent atom and mint without a resolution.
+{
+  const first = entry('disjoint-first.ts');
+  const second = entry('disjoint-second.ts');
+  const firstFinalization = finalization([frozen('disjoint-first.ts')], 'fin-disjoint-first');
+  const secondFinalization = finalization([frozen('disjoint-second.ts')], 'fin-disjoint-second');
+  firstFinalization.packageId = 'intent-disjoint-first';
+  secondFinalization.packageId = 'intent-disjoint-second';
+  firstFinalization.contractVersion = 2;
+  secondFinalization.contractVersion = 2;
+  const base = context({ entries: [first, second], finalizations: [firstFinalization, secondFinalization] });
+  const ctx: CandidateBuildContext = {
+    ...base,
+    contractVersion: 2,
+    intentUnits: [
+      { intentId: 'intent-disjoint-first', kind: 'task', revision: 1, title: 'First', planId: null, planItemId: null, memberEntryIds: [first.entryId] },
+      { intentId: 'intent-disjoint-second', kind: 'task', revision: 1, title: 'Second', planId: null, planItemId: null, memberEntryIds: [second.entryId] },
+    ],
+    reviewChallengeAtoms: [],
+  };
+  const minted = asCandidate(service().mintCandidateTokenV2({
+    selectedIntentIds: ['intent-disjoint-first', 'intent-disjoint-second'],
+    selectedNamedSaveSetIds: [],
+    resolutionIds: [],
+    finalizationIds: [firstFinalization.id, secondFinalization.id],
+  }, ctx));
+  assert.deepEqual(minted.eligibility, { eligible: true });
+  assert.ok(minted.token, 'disjoint-path intents mint without a cross-intent atom');
+}
+
+// WP-10 production entry: carryReviewedManifest distinguishes cross-intent-only
+// drift from unattributed acknowledgement drift and maps it to refresh-only refusal.
+{
+  const shared = entry('carry-shared.ts');
+  const comp = component([shared]);
+  const fin = finalization([frozen('carry-shared.ts')], 'fin-carry-shared');
+  const reviewedAtom: CrossIntentChallengeAtom = {
+    kind: 'cross-intent', atomId: 'cross:carry:v1', digest: 'carry-digest-v1', reasonVersion: 1,
+    pathBytesBase64: shared.path.pathBytesBase64, displayPath: 'carry-shared.ts',
+    earlierIntentId: 'intent-a', laterIntentId: 'intent-b', evidenceDigest: 'carry-evidence-v1',
+    resolution: null,
+  };
+  const reviewedContext: CandidateBuildContext = {
+    ...context({ entries: [shared], components: [comp], finalizations: [fin] }),
+    reviewChallengeAtoms: [reviewedAtom],
+  };
+  const request = requestFor(reviewedContext, [comp.componentId], [], [fin.id]);
+  const reviewedCandidate = asCandidate(buildCandidate(request, reviewedContext));
+  const reviewedDigest = rememberReviewedSemanticManifest(
+    buildReviewedSemanticManifest(reviewedCandidate, reviewedContext),
+  );
+  const freshAtom: CrossIntentChallengeAtom = {
+    ...reviewedAtom,
+    atomId: 'cross:carry:v2',
+    digest: 'carry-digest-v2',
+    evidenceDigest: 'carry-evidence-v2',
+  };
+  const freshContext: CandidateBuildContext = { ...reviewedContext, reviewChallengeAtoms: [freshAtom] };
+  const refused = asCandidate(service().mintCandidateToken({
+    ...request,
+    reviewedManifestDigest: reviewedDigest,
+    acknowledgedChallengeAtoms: [],
+  }, freshContext));
+  assert.deepEqual(
+    refused.eligibility,
+    { eligible: false, reason: 'stale-preview' },
+    'REACHABILITY:stale-preview-reason carryReviewedManifest must map cross-intent drift to refresh',
+  );
+  assert.equal(refused.token, null);
 }
 
 console.log('candidate-service.mint: v1 refusals + v2 intent/resolution contract passed');
