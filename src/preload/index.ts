@@ -38,6 +38,13 @@ const api: IpcApi = {
       ipcRenderer.on('workspace:security-notice', listener);
       return () => ipcRenderer.removeListener('workspace:security-notice', listener);
     },
+    suggestGitignore: (workspaceId) => ipcRenderer.invoke('workspace:gitignore-suggest', workspaceId),
+    acceptGitignore: (workspaceId) => ipcRenderer.invoke('workspace:gitignore-accept', workspaceId),
+    onGitignoreSuggestion: (callback) => {
+      const listener = (_event: any, notice: any) => callback(notice);
+      ipcRenderer.on('workspace:gitignore-suggested', listener);
+      return () => ipcRenderer.removeListener('workspace:gitignore-suggested', listener);
+    },
   },
   agents: {
     list: (workspaceId) => ipcRenderer.invoke('agent:list', workspaceId),

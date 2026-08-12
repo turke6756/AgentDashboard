@@ -95,6 +95,7 @@ import {
 } from './orchestration/orchestration-provider-settings-transport';
 import { resolvePlanBindingAtBoundary } from './api-server';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
+import { registerGitignoreSuggestionIpc } from './commit-candidates/exhaust-exclusions';
 
 // Managed temp dir for clipboard-bitmap pastes. Dropped OS files inject their
 // OWN on-disk path (converted) and never land here — only screenshots do.
@@ -220,6 +221,14 @@ export function registerIpcHandlers(
     broadcastToDetachedViews(ORCHESTRATION_PROVIDER_SETTINGS_CHANNELS.changed, event);
   });
 
+  const gitignoreSuggestions = registerGitignoreSuggestionIpc(
+    ipcMain,
+    (channel, notice) => {
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, notice);
+    },
+    (workspaceId) => getWorkspace(workspaceId)?.path ?? null,
+  );
+
   // Workspace handlers
   ipcMain.handle('workspace:list', () => getWorkspaces());
   ipcMain.handle('workspace:create', (_e, input) => {
@@ -241,6 +250,7 @@ export function registerIpcHandlers(
     // registration (the per-launch refresh in ensureWorkspaceScripts heals it
     // thereafter). Never throws (warn-and-skip inside).
     ensureInstallationLauncher(ws.path, ws.pathType);
+    gitignoreSuggestions.workspaceOpened(ws.id);
     return ws;
   });
   ipcMain.handle('workspace:delete', (_e, id) => deleteWorkspace(id));

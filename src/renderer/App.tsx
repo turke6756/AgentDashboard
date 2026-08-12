@@ -15,6 +15,7 @@ import PressureNotification from './components/watchdog/PressureNotification';
 import LogRetentionNotice from './components/watchdog/LogRetentionNotice';
 import MemoryWarningBanner from './components/memory/MemoryWarningBanner';
 import SecurityNoticeCard from './components/workspace/SecurityNoticeCard';
+import GitignoreSuggestionCard from './components/workspace/GitignoreSuggestionCard';
 import RuntimePrerequisitesDialog from './components/onboarding/RuntimePrerequisitesDialog';
 import PrerequisitesCard from './components/onboarding/PrerequisitesCard';
 
@@ -301,6 +302,10 @@ function AppInner() {
           pressure pop-up owns bottom-right): detection + user-authorized
           Recycle-Bin removal of the old EDR-triggering launch.vbs. */}
       <SecurityNoticeCard />
+
+      {/* Ask-first workspace exhaust exclusions, raised on registration or from
+          the workspace context menu's explicit on-demand review. */}
+      <GitignoreSuggestionCard />
 
       {/* Prerequisite surfaces (packaging plan §6.3): a once-per-version modal
           plus a dismissible, rediscoverable card while no agent CLI exists. */}

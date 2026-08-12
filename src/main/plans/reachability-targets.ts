@@ -20,8 +20,16 @@ export interface ReachabilityTargetRegistry {
 
 /** Bump this version whenever a target, adapter, or protected-path set changes. */
 export const REACHABILITY_TARGET_REGISTRY: ReachabilityTargetRegistry = Object.freeze({
-  version: '2',
+  version: '3',
   targets: Object.freeze({
+    'exhaust-exclusions-suggest': Object.freeze({
+      runner: 'node-test' as const,
+      file: 'src/main/commit-candidates/exhaust-exclusions.test.ts',
+      test_name: 'production workspace-open and on-demand IPC enter the suggestion seam and acceptance',
+      protected_test_paths: Object.freeze([
+        'src/main/commit-candidates/exhaust-exclusions.test.ts',
+      ]),
+    }),
     'wp-b3-real-ipc-registration': Object.freeze({
       runner: 'node-test' as const,
       file: 'src/main/plans/reachability-prover.test.ts',

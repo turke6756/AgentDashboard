@@ -693,6 +693,15 @@ export default function Sidebar({ width }: SidebarProps) {
               >
                 New Folder...
               </button>
+              <button
+                onClick={() => {
+                  void window.api.workspaces.suggestGitignore(contextMenu.wsId);
+                  setContextMenu(null);
+                }}
+                className="ui-menu-item"
+              >
+                Review suggested ignores
+              </button>
               <div className="ui-menu-divider" />
               <button
                 onClick={() => setConfirmDelete(contextMenu.wsId)}

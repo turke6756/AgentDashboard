@@ -292,6 +292,7 @@ const TESTS = [
   'dist/main/main/supervisor/log-readers/provider-state-home.test.js',
   // Save-card WP-F2: keep the fallback finalization->sweep composition and the
   // atomic generic save-unit ledger ahead of the known foreign fail-fast point.
+  'dist/main/main/commit-candidates/exhaust-exclusions.test.js',
   'dist/main/main/commit-candidates/save-card-readiness.test.js',
   'dist/main/main/commit-candidates/save-sweep-service.test.js',
   'dist/main/main/database.intent-ledger.test.js',

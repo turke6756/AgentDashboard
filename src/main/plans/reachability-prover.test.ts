@@ -135,6 +135,19 @@ function removeFixture(root: string): void {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+function removeIgnoredFixture(root: string): void {
+  const makeWritable = (target: string): void => {
+    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+      const child = path.join(target, entry.name);
+      if (entry.isDirectory()) makeWritable(child);
+      else fs.chmodSync(child, 0o666);
+    }
+    fs.chmodSync(target, 0o777);
+  };
+  makeWritable(root);
+  removeFixture(root);
+}
+
 const realProduction = [
   "function registerLive(registry) { registry.set('live', () => 'ok'); }",
   'function register(registry) { registerLive(registry); }',
@@ -233,6 +246,31 @@ test('real registration and production construction refute independently and bin
     }
     assert.notEqual(evidence[0].obligationId, evidence[1].obligationId);
   } finally { removeFixture(ctx.root); }
+});
+
+test('ignored declared mutation path is force-staged and proved', async () => {
+  const entry: Entry = { path: 'fixture/production.js', symbol: 'registerLive',
+    test: 'fixture/registration.test.js', mutation: 'reachability-mutations/registration.patch',
+    target: 'ignored-mutation', marker: 'REACHABILITY:real-registration' };
+  const ctx = fixture({ production: realProduction,
+    tests: { 'registration.test.js': registrationTest },
+    patches: { 'registration.patch': registrationPatch }, entries: [entry] });
+  write(ctx.root, '.gitignore', '/reachability-mutations/\n');
+  try {
+    const result = await proveReachability({ repositoryRoot: ctx.root, planFolder: ctx.planFolder,
+      packageId: 'WP-PROOF', baseOid: ctx.baseOid, foreignEditPaths: [] }, {
+      registry: registry([{ name: entry.target, file: entry.test, testName: 'real registration' }]),
+      listObligations: () => obligationRows(1), persistEvidence: () => undefined,
+    });
+    assert.equal(result.verdict, 'pass', JSON.stringify(result.obligations));
+    assert.equal(result.obligations[0].classification, 'expected-assertion-refuted');
+    assert.match(git(ctx.root, 'ls-tree', result.specimen.commitOid, '--', entry.mutation),
+      /reachability-mutations\/registration\.patch$/);
+    assert.equal(result.specimen.dirtyDeclaredPathStatus.some((line) => line.includes(entry.mutation)), false,
+      'neighboring git status intentionally does not report ignored declared artifacts');
+  } finally {
+    removeIgnoredFixture(ctx.root);
+  }
 });
 
 test('constructor-only entering test fails refutation because it stays green', async () => {

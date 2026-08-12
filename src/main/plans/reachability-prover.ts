@@ -349,7 +349,8 @@ export async function proveReachability(
   let specimenCommitOid = '';
   try {
     requireSuccess(await runGit(run, repositoryRoot, ['read-tree', request.baseOid], indexEnv), 'read base tree');
-    requireSuccess(await runGit(run, repositoryRoot, ['add', '-A', '--', ...includedPaths], indexEnv), 'stage declared paths');
+    // `-f` is load-bearing: mutation artifacts may be declared under a package-owned ignored directory.
+    requireSuccess(await runGit(run, repositoryRoot, ['add', '-A', '-f', '--', ...includedPaths], indexEnv), 'stage declared paths');
     specimenTreeOid = requireSuccess(await runGit(run, repositoryRoot, ['write-tree'], indexEnv), 'write specimen tree');
     specimenCommitOid = requireSuccess(await runGit(run, repositoryRoot,
       ['commit-tree', specimenTreeOid, '-p', request.baseOid], {

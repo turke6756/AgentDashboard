@@ -108,6 +108,15 @@ experiments/
 # are useless to anyone else cloning the repo. Keep your own copy locally.
 /AgentDashboard.bat
 
+# Agent work-package scratch trees (compiled test outputs etc.). Thousands of
+# un-ignored files here put the dirty-inventory scan into multi-GB territory and
+# OOM'd the main process twice (2026-08-08/09) — see
+# .lares/proposals/2026-08-10-oom-incident-root-cause-and-hardening.md
+# (prop_1d831b09). Zero tracked paths start
+# with `.wp`, so this cannot shadow repo content. Agents: prefer scratch dirs
+# OUTSIDE the repo entirely.
+/.wp*
+
 # Local scratch — throwaway files from spikes and manual pokes.
 /hello.py
 /proposed
@@ -122,3 +131,20 @@ experiments/
 # build.extraResources; it is NEVER checked into git. git-runtime's dev fallback
 # resolves the bundled git.exe out of this same path.
 /third_party/git-for-windows/.staging/
+
+# Lares-created scan exhaust (suggested to workspaces; accepted here).
+/reachability-mutations/
+/.lares/reachability-mutations/
+/.dashboard/reachability-mutations/
+/.lares/research/scratch/
+/.dashboard/research/scratch/
+/.lares/scratch/
+/.dashboard/scratch/
+/.lares/archive/
+/.dashboard/archive/
+/.lares/tmp/
+/.dashboard/tmp/
+/.lares/tmp-*
+/.dashboard/tmp-*
+/.lares/*.log
+/.dashboard/*.log
