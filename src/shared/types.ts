@@ -2347,6 +2347,11 @@ export interface SaveCardInventoryResponse {
       assessment: import('./commit-candidates').ProtectionAssessment;
       checkpointStopReasons: Array<'pairs' | 'estimated-stdin' | 'deadline'>;
     };
+    snapshot?: {
+      snapshotId: string;
+      boundaryInputFingerprint: string;
+      stability: 'stable' | 'unstable';
+    };
   };
 }
 

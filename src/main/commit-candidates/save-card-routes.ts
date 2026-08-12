@@ -62,6 +62,8 @@ import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { discoverFirstContactRoots, recordOnboardingDecision, type FirstContactDiscovery } from './onboarding-discovery';
 import type { ScratchPolicyStore } from './scratch-policy-store';
 import { assessSaveUnitReadiness } from './save-card-readiness';
+import { buildPinnedSnapshot } from './pinned-snapshot-build';
+import { PinnedSnapshotStore } from './pinned-snapshot-store';
 
 type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'sessionId' | 'startedAt' | 'endedAt'>;
 
@@ -127,6 +129,8 @@ export interface SaveCardRoutesDeps {
   onRepositoryResolved?: (workspaceId: string, repositoryKey: string) => void;
   /** Called after an authoritative policy write. */
   onPolicyWrite?: (repositoryKey: string) => void;
+  /** Durable card snapshot authority; deliberately separate from snapshotRegistry. */
+  pinnedSnapshotStore?: PinnedSnapshotStore;
 }
 
 function minTime(values: Array<number | null | undefined>): number | null {
@@ -185,6 +189,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     ?? ((workspaceId: string) => dbListTurnRecords(workspaceId, { limit: Number.MAX_SAFE_INTEGER }));
   const snapshotRegistry = deps.snapshotRegistry;
   const resolvePolicyGeneration = deps.resolvePolicyGeneration ?? (() => 0);
+  const pinnedSnapshotStore = deps.pinnedSnapshotStore ?? new PinnedSnapshotStore();
 
   // WP-G — resolve the canonical `repositoryKey` for the flight identity from the
   // target's ALREADY-probed capability (no new heavy scan), so a concurrent
@@ -545,6 +550,52 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       boundaryStatus: row.boundaryStatus,
       finalizedAt: row.finalizedAt,
     }));
+    const headResult = target?.capability.repoRoot
+      ? await runGit(target.capability.repoRoot, ['rev-parse', 'HEAD'], {
+          gitExe, allowNonzero: true, timeoutMs: 10_000, maxBytes: 1024,
+        })
+      : null;
+    const snapshot = await buildPinnedSnapshot({
+      store: pinnedSnapshotStore,
+      identityBefore: () => ({
+        head: read.inventory.repository.repositoryKey,
+        index: read.inventory.topologyDigest,
+      }),
+      identityAfter: () => ({
+        head: read.inventory.repository.repositoryKey,
+        index: read.inventory.topologyDigest,
+      }),
+      assemble: () => ({
+        repositoryKey: read.inventory.repository.repositoryKey,
+        targetWorkspaceId: req.workspaceId,
+        policyGeneration: resolvePolicyGeneration(read.inventory.repository.repositoryKey),
+        pinnedHeadOid: headResult?.code === 0 ? headResult.stdout.trim() || null : null,
+        indexFingerprint: read.inventory.topologyDigest,
+        scopePathspecBytes: scopePathspec ?? null,
+        boundaryInputs: {
+          completeness: read.inventory.completeness ?? 'complete',
+          stopReasons: read.inventoryEvidence?.observedStopReasons ?? [],
+        },
+        entries: read.inventory.entries,
+        grouping: [
+          ...assembly.intentUnits.map((unit) => ({
+            saveUnitId: unit.intent.id, saveUnitKind: unit.intent.kind,
+            memberEntryIds: unit.memberEntryIds,
+          })),
+          ...assembly.fallbackUnits.map((unit) => ({
+            saveUnitId: unit.saveUnitId, saveUnitKind: unit.saveUnitKind,
+            memberEntryIds: unit.memberEntryIds,
+          })),
+        ],
+        intentUnits: assembly.intentUnits,
+        fallbackUnits: assembly.fallbackUnits,
+        componentEntryIds: Object.fromEntries(read.components.map((component) => [
+          component.componentId, component.dirtyEntryIds,
+        ])),
+        unattributedEntryIds: read.inventory.unattributedEntryIds,
+        stability: 'stable' as const,
+      }),
+    });
     return {
       intentUnits,
       fallbackUnits,
@@ -568,6 +619,11 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         protection: {
           assessment: read.protectionAssessment ?? { evaluation: 'complete', rung: 'unprotected' },
           checkpointStopReasons: read.protectionStopReasons ?? [],
+        },
+        snapshot: {
+          snapshotId: snapshot.snapshotId,
+          boundaryInputFingerprint: snapshot.boundaryInputFingerprint,
+          stability: snapshot.stability,
         },
       },
     };

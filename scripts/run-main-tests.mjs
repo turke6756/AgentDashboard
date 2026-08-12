@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const TESTS = [
+  'dist/main/main/commit-candidates/pinned-snapshot-build.test.js',
+  'dist/main/main/commit-candidates/pinned-snapshot-store.test.js',
   'dist/main/shared/notification-classify.test.js',
   'dist/main/shared/package-rollup.test.js',
   // Edit-loss §4.0/§4.1: shared content-identity hash vectors + the
