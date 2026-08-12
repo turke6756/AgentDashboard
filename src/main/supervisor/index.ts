@@ -82,7 +82,7 @@ import {
   purgeResearcherSandboxHome,
   type PreparedResearcherSandboxHome,
 } from '../sandbox/researcher-home-lifecycle';
-import { resolveWslHomeSubdir } from './log-readers/types';
+import { resolveProviderStateHome, resolveWslHomeSubdir } from './log-readers/types';
 import { MEMORY_INDEX_MJS } from '../../shared/generated/memory-index-cli.generated';
 // WP-C — provider-neutral supervisor memory-index launch projection + Codex
 // pending-rail composition. The projection (readValidate + last-good/runtime
@@ -1811,6 +1811,20 @@ function getEffectiveWorkspaceRoot(agent: Agent): string {
   return agent.workingDirectory;
 }
 
+/** Derived projection only: the workspace state directory can rename in place. */
+function resolveAgentProviderFilesystemStateHome(agent: Agent): string | null {
+  if (agent.provider !== 'claude') return null;
+  return resolveProviderStateHome({
+    agentId: agent.id,
+    provider: agent.provider,
+    roleLane: roleLaneOf(agent),
+    workspaceStateRoot: workspaceStateDir(
+      getEffectiveWorkspaceRoot(agent),
+      detectPathType(agent.workingDirectory),
+    ),
+  });
+}
+
 function formatBracketedPaste(text: string): string {
   const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const body = normalized
@@ -2404,6 +2418,7 @@ export class AgentSupervisor extends EventEmitter {
           sessionId: a.resumeSessionId || '',
           workingDirectory: a.workingDirectory,
           provider: a.provider,
+          providerStateHome: resolveAgentProviderFilesystemStateHome(a),
           startedAt: a.createdAt,
           // Context Window Warning: which per-role gauge cap this agent's
           // readings are computed against (readers apply it via
@@ -5202,15 +5217,7 @@ export class AgentSupervisor extends EventEmitter {
     // discovery decline, or at the hard cap. A solo launch acquires instantly.
     let codexSnapshot: Awaited<ReturnType<typeof snapshotCodexSessions>> | null = null;
     let codexLaunchStartedAt = 0;
-    if (shouldDiscoverCodexSession({ provider: agent.provider, resume, freshSession })) {
-      const gate = await this.codexLaunchGate.acquire('windows');
-      this.codexGateReleases.set(agent.id, gate.release);
-      if (gate.waitedMs > 0) {
-        console.log(`[supervisor] codex launch gate: agent ${agent.id} waited ${gate.waitedMs}ms behind ${gate.queuedBehind} launch(es) on windows`);
-      }
-      codexSnapshot = await snapshotCodexSessions('windows');
-      codexLaunchStartedAt = Date.now();
-    }
+    let codexStateRoot: string | undefined;
 
     // BUG-13 Path A: disable Claude Code's next-prompt ghost-text suggestion
     // rendering. The grey suggestion bytes (a) flap PTY-fallback status
@@ -5238,8 +5245,12 @@ export class AgentSupervisor extends EventEmitter {
       // Env-provided (NOT script-dir-relative): the CODEX_HOME copy of the
       // script would otherwise spool to ~/, invisible to the tailer.
       const spoolRoot = getEffectiveWorkspaceRoot(agent);
-      extraEnv.DASHBOARD_SPOOL_PATH = path.join(
-        spoolRoot, workspaceStateDirName(spoolRoot), 'pending-status.jsonl');
+      // Researcher child paths are lifecycle-owned and logical (POSIX in WSL).
+      // The tailer's Windows-visible path is derived separately below.
+      if (roleLaneOf(agent) !== 'researcher') {
+        extraEnv.DASHBOARD_SPOOL_PATH = path.join(
+          spoolRoot, workspaceStateDirName(spoolRoot), 'pending-status.jsonl');
+      }
       // Tail the same file from the dashboard side.
       this.ensureSpoolTailer(agent);
       // Lares-rename regression fix: a pre-rename agent relaunches into its
@@ -5337,12 +5348,14 @@ export class AgentSupervisor extends EventEmitter {
         });
         Object.assign(extraEnv, preparedResearcherHome.extraEnv);
         researcherHomeGrantRoot = preparedResearcherHome.filesystemHomePath;
+        codexStateRoot = preparedResearcherHome.filesystemHomePath;
       } else {
         if (!prePreparedResearcherHome) {
           throw new Error(`Forked researcher sandbox was not prepared for agent ${agent.id}`);
         }
         Object.assign(extraEnv, prePreparedResearcherHome.extraEnv);
         researcherHomeGrantRoot = prePreparedResearcherHome.filesystemHomePath;
+        codexStateRoot = prePreparedResearcherHome.filesystemHomePath;
       }
       const stateDir = workspaceStateDirName(workspaceRoot);
       const researchInbox = path.join(workspaceRoot, stateDir, 'research', 'inbox');
@@ -5358,6 +5371,17 @@ export class AgentSupervisor extends EventEmitter {
       runnerArgs = restricted.args;
       runnerDirectSpawn = true;
       Object.assign(extraEnv, restricted.env);
+    }
+    // Load-bearing order: derive + reset the per-agent home above, then take
+    // the snapshot and begin DB discovery against that same root.
+    if (shouldDiscoverCodexSession({ provider: agent.provider, resume, freshSession })) {
+      const gate = await this.codexLaunchGate.acquire('windows');
+      this.codexGateReleases.set(agent.id, gate.release);
+      if (gate.waitedMs > 0) {
+        console.log(`[supervisor] codex launch gate: agent ${agent.id} waited ${gate.waitedMs}ms behind ${gate.queuedBehind} launch(es) on windows`);
+      }
+      codexSnapshot = await snapshotCodexSessions('windows', codexStateRoot);
+      codexLaunchStartedAt = Date.now();
     }
     const extraEnvArg = Object.keys(extraEnv).length > 0 ? extraEnv : undefined;
     // P1 §2 step 4a(iii) — current-launch stamp for the tmux-option freshness
@@ -5636,7 +5660,10 @@ export class AgentSupervisor extends EventEmitter {
   private findLatestClaudeHookSessionFromSpool(agent: Agent): string | null {
     let readPath: string;
     try {
-      readPath = resolveSpoolReadPath(getEffectiveWorkspaceRoot(agent));
+      readPath = resolveSpoolReadPath(
+        getEffectiveWorkspaceRoot(agent),
+        roleLaneOf(agent) === 'researcher' ? resolveAgentProviderFilesystemStateHome(agent) : null,
+      );
     } catch {
       return null;
     }
@@ -5750,6 +5777,7 @@ export class AgentSupervisor extends EventEmitter {
   }
 
   private async launchWslAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, overrideCommand?: string, sessionId?: string, freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
+    let codexStateRoot: string | undefined;
     if (!agent.tmuxSessionName) throw new Error('No tmux session name');
 
     // Grok is Windows-first: the WSL submit-encoding / transport path has not
@@ -5865,8 +5893,12 @@ export class AgentSupervisor extends EventEmitter {
       // always-write transport. shQuote'd: workspace paths can contain
       // spaces, and bash command-prefix assignments word-split otherwise.
       const wslSpoolRoot = getEffectiveWorkspaceRoot(agent);
-      wslEnvPrefix.push(
-        `DASHBOARD_SPOOL_PATH=${shQuote(`${wslSpoolRoot}/${workspaceStateDirName(wslSpoolRoot, 'wsl')}/pending-status.jsonl`)}`);
+      // Researcher child paths are supplied once by the lifecycle payload.
+      if (roleLaneOf(agent) !== 'researcher') {
+        const wslSpoolPath = `${wslSpoolRoot}/${workspaceStateDirName(wslSpoolRoot, 'wsl')}/pending-status.jsonl`;
+        wslEnvPrefix.push(
+          `DASHBOARD_SPOOL_PATH=${shQuote(wslSpoolPath)}`);
+      }
       // Tail the same file from the dashboard side (UNC form).
       this.ensureSpoolTailer(agent);
       // Lares-rename regression fix (mirror of the Windows path above): heal
@@ -5964,6 +5996,7 @@ export class AgentSupervisor extends EventEmitter {
         trustedProviderStateRoot: trustedClaudeRoot,
         accountTempPath: '/tmp',
       });
+      codexStateRoot = preparedResearcherHome.filesystemHomePath;
       for (const [name, value] of Object.entries(preparedResearcherHome.extraEnv)) {
         wslEnvPrefix.push(`${name}=${shQuote(value)}`);
       }
@@ -6297,7 +6330,7 @@ export class AgentSupervisor extends EventEmitter {
       if (gate.waitedMs > 0) {
         console.log(`[supervisor] codex launch gate: agent ${agent.id} waited ${gate.waitedMs}ms behind ${gate.queuedBehind} launch(es) on wsl`);
       }
-      codexSnapshot = await snapshotCodexSessions('wsl');
+      codexSnapshot = await snapshotCodexSessions('wsl', codexStateRoot);
       codexLaunchStartedAt = Date.now();
     }
 
@@ -8100,7 +8133,10 @@ export class AgentSupervisor extends EventEmitter {
     if (!(roleLaneOf(agent) !== 'legacy' || isCodexHookPersona(agent))) return;
     let readPath: string;
     try {
-      readPath = resolveSpoolReadPath(getEffectiveWorkspaceRoot(agent));
+      readPath = resolveSpoolReadPath(
+        getEffectiveWorkspaceRoot(agent),
+        roleLaneOf(agent) === 'researcher' ? resolveAgentProviderFilesystemStateHome(agent) : null,
+      );
     } catch (err) {
       console.warn(`[hook-spool] could not resolve spool read path for ${agent.id}:`, err);
       return;

@@ -13,6 +13,7 @@ interface AgentSession {
   sessionId: string;
   workingDirectory: string;
   provider: AgentProvider;
+  providerStateHome?: string | null;
   startedAt?: string;
 }
 
@@ -586,6 +587,7 @@ export class SessionLogDispatcher extends EventEmitter {
       sessionId: session.sessionId,
       workingDirectory: session.workingDirectory,
       provider: session.provider,
+      providerStateHome: session.providerStateHome,
       startedAt: session.startedAt,
       subscribed: this.subscribers.has(session.agentId),
     };

@@ -40,6 +40,7 @@ export interface RecoverCodexSessionOptions {
 
 export interface CodexSessionSnapshot {
   home: CodexSessionHome;
+  stateRoot?: string;
   paths: Set<string>;
 }
 
@@ -87,10 +88,14 @@ export interface DiscoverCodexSessionOptions {
 }
 
 /** Snapshot rollout paths currently on disk for one Codex home root. */
-export async function snapshotCodexSessions(home: CodexSessionHome): Promise<CodexSessionSnapshot> {
+export async function snapshotCodexSessions(
+  home: CodexSessionHome,
+  stateRoot?: string,
+): Promise<CodexSessionSnapshot> {
   return {
     home,
-    paths: new Set(listCodexRolloutFiles({ home }).map((file) => file.path)),
+    stateRoot,
+    paths: new Set(listCodexRolloutFiles({ home, stateRoot }).map((file) => file.path)),
   };
 }
 
@@ -126,7 +131,9 @@ export async function discoverNewCodexSession(
     // fallback file scan below is skipped too (we return here, not break).
     if (options.shouldAbort?.()) return null;
     lastSqlOutcome = queryStateSqlite({
-      statePath: options.statePath,
+      statePath: options.statePath ?? (before.stateRoot
+        ? nodePath.join(before.stateRoot, 'state_5.sqlite')
+        : undefined),
       opener: options.openSqliteDb,
       workingDirectoryNormalized: targetCwd,
       launchedAfterSeconds,
@@ -188,7 +195,7 @@ export async function discoverNewCodexSession(
   //   - 2+ ambiguous matches → return null + warn (BUG-26 — refuse to guess)
   const current = options.listFiles
     ? options.listFiles(before.home)
-    : listCodexRolloutFiles({ home: before.home });
+    : listCodexRolloutFiles({ home: before.home, stateRoot: before.stateRoot });
   const candidates = current
     .filter((file) => !before.paths.has(file.path))
     .filter((file) => file.mtimeMs >= options.launchedAfterMs);

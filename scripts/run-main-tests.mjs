@@ -287,6 +287,7 @@ const TESTS = [
   'dist/main/main/sandbox/researcher-home-factory.test.js',
   'dist/main/main/sandbox/researcher-home-lifecycle.test.js',
   'dist/main/main/sandbox/outbox-launcher.test.js',
+  'dist/main/main/supervisor/log-readers/provider-state-home.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.finalize.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.preview.test.js',

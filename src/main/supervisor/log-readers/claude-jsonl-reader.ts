@@ -129,6 +129,24 @@ export class ClaudeJsonlReader implements ChatLogReader {
     return dir;
   }
 
+  /** The live session projection supplies an agent-specific root. Legacy
+   * one-shot helpers without agent context retain the account-home fallback. */
+  private getProjectsDirs(session: ChatLogReaderSession): {
+    windowsDir: string | null;
+    wslDir: string | null;
+  } {
+    if (session.providerStateHome) {
+      const projects = path.join(session.providerStateHome, 'projects');
+      return session.workingDirectory.startsWith('/')
+        ? { windowsDir: null, wslDir: projects }
+        : { windowsDir: projects, wslDir: null };
+    }
+    return {
+      windowsDir: this.getWindowsProjectsDir(),
+      wslDir: this.getWslProjectsDir(),
+    };
+  }
+
   invalidatePath(agentId: string): void {
     const cached = this.resolvedPaths.get(agentId);
     if (cached) {
@@ -823,8 +841,7 @@ export class ClaudeJsonlReader implements ChatLogReader {
     const slug = this.makeSlug(workingDirectory);
     const fileName = `${sessionId}.jsonl`;
 
-    const wslDir = this.getWslProjectsDir();
-    const windowsDir = this.getWindowsProjectsDir();
+    const { wslDir, windowsDir } = this.getProjectsDirs(session);
 
     // Primary: the id-named file in the expected slug dir (session-id-exact).
     if (workingDirectory.startsWith('/') && wslDir) {

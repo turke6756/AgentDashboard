@@ -809,9 +809,16 @@ function listRolloutsInBaseDir(baseDir: string, daysBack: number | 'all'): Codex
  *  under Windows and/or WSL Codex homes. */
 export function listCodexRolloutFiles(options: {
   home?: CodexSessionHome;
+  /** Explicit per-agent CODEX_HOME; omitted for the account-wide roots. */
+  stateRoot?: string;
   daysBack?: number | 'all';
 } = {}): CodexRolloutFile[] {
   const daysBack = options.daysBack ?? RECENT_CWD_DISCOVERY_DAYS;
+  if (options.stateRoot) {
+    const home = options.home ?? 'windows';
+    return listRolloutsInBaseDir(path.join(options.stateRoot, 'sessions'), daysBack)
+      .map((file) => ({ ...file, home }));
+  }
   const { windowsDir, wslUncDir } = resolveHomeSubdir('.codex/sessions');
   const roots: Array<{ home: CodexSessionHome; dir: string | null }> = [
     { home: 'windows', dir: windowsDir },

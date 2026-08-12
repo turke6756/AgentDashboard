@@ -186,6 +186,52 @@ describe('production researcher lifecycle entry', () => {
     );
   });
 
+  test('researcher launch has exactly one DASHBOARD_SPOOL_PATH writer: the lifecycle payload', () => {
+    const sandboxHome = resolveResearcherSandboxHome({
+      roleLane: 'researcher',
+      workspaceStateRoot: '/home/u/proj/.lares',
+      agentId: 'researcher-wsl',
+      provider: 'claude',
+    });
+    assert.ok(sandboxHome);
+    const filesystemHomePath = path.join(fixtureRoot, 'wsl-filesystem-home');
+    const prepared = prepareResearcherSandboxHome({
+      provider: 'claude',
+      sandboxHome,
+      filesystemHomePath,
+      trustedProviderStateRoot: trustedClaudeRoot,
+      accountTempPath: '/tmp',
+    });
+    assert.equal(
+      prepared.extraEnv.DASHBOARD_SPOOL_PATH,
+      '/home/u/proj/.lares/agent-homes/researcher-wsl/spool/pending-status.jsonl',
+      'the hook runs inside WSL and must receive its logical POSIX path',
+    );
+    assert.equal(prepared.filesystemHomePath, path.resolve(filesystemHomePath));
+    assert.notEqual(prepared.extraEnv.DASHBOARD_SPOOL_PATH, prepared.filesystemHomePath);
+
+    const windowsStart = supervisorSource.indexOf('private async launchWindowsAgent');
+    const wslStart = supervisorSource.indexOf('private async launchWslAgent', windowsStart);
+    const windowsLaunch = supervisorSource.slice(windowsStart, wslStart);
+    const wslLaunch = supervisorSource.slice(wslStart, supervisorSource.indexOf('private async', wslStart + 1));
+
+    assert.match(
+      windowsLaunch,
+      /if \(roleLaneOf\(agent\) !== 'researcher'\) \{\s*extraEnv\.DASHBOARD_SPOOL_PATH =/,
+      'the workspace-spool writer must explicitly exclude Windows researcher launches',
+    );
+    assert.match(
+      wslLaunch,
+      /if \(roleLaneOf\(agent\) !== 'researcher'\) \{[\s\S]*?wslEnvPrefix\.push\(\s*`DASHBOARD_SPOOL_PATH=/,
+      'the workspace-spool writer must explicitly exclude WSL researcher launches',
+    );
+    assert.equal(
+      supervisorSource.match(/preparedResearcherHome\.extraEnv/g)?.length,
+      2,
+      'Windows and WSL launches must each consume the single lifecycle-owned researcher payload',
+    );
+  });
+
   test('agent-row deletion enters the sandbox-home purge seam', () => {
     assert.match(
       supervisorSource,
