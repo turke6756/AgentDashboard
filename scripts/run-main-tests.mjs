@@ -286,6 +286,7 @@ const TESTS = [
   'dist/main/main/sandbox/provider-redirect-adapters.test.js',
   'dist/main/main/sandbox/researcher-home-factory.test.js',
   'dist/main/main/sandbox/researcher-home-lifecycle.test.js',
+  'dist/main/main/sandbox/researcher-home-untrusted.test.js',
   'dist/main/main/sandbox/outbox-launcher.test.js',
   'dist/main/main/supervisor/log-readers/provider-state-home.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',

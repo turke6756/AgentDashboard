@@ -22,6 +22,7 @@ import {
   type ChatLogReaderSession,
 } from './types';
 import { parseSqliteUtcMs } from '../sqlite-time';
+import { refuseResearcherHomeConfig } from '../../sandbox/researcher-home-untrusted';
 
 interface ToolResultLocation {
   jsonlPath: string;
@@ -136,7 +137,10 @@ export class ClaudeJsonlReader implements ChatLogReader {
     wslDir: string | null;
   } {
     if (session.providerStateHome) {
-      const projects = path.join(session.providerStateHome, 'projects');
+      const projects = refuseResearcherHomeConfig(
+        path.join(session.providerStateHome, 'projects'),
+        'chat-transcript',
+      );
       return session.workingDirectory.startsWith('/')
         ? { windowsDir: null, wslDir: projects }
         : { windowsDir: projects, wslDir: null };

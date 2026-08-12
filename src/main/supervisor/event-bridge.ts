@@ -8,6 +8,7 @@ import {
   buildEventPayload,
   buildConsolidatedPayload,
 } from './event-payload-builder';
+import { frameResearcherHomeData } from '../sandbox/researcher-home-untrusted';
 import {
   SUPERVISOR_EVENT_COOLDOWN_MS,
   SUPERVISOR_EVENT_LOG_TAIL_LINES,
@@ -450,7 +451,9 @@ export class EventBridge {
         turnCount: stats?.turnCount,
         model: stats?.model,
         logTail,
-        lastAssistantMessage,
+        lastAssistantMessage: agent.isResearcher && lastAssistantMessage
+          ? frameResearcherHomeData(lastAssistantMessage)
+          : lastAssistantMessage,
         filesTouched: filesTouched?.map(f => ({
           filePath: f.filePath,
           operation: f.operation,
@@ -458,7 +461,9 @@ export class EventBridge {
         // P2-03: pass waiting metadata through to the payload builder when
         // present on the inbound event.
         waitingKind: data.waitingKind,
-        waitingExcerpt: data.waitingExcerpt,
+        waitingExcerpt: agent.isResearcher && data.waitingExcerpt
+          ? frameResearcherHomeData(data.waitingExcerpt)
+          : data.waitingExcerpt,
       };
 
       const recipients = this.recipientsFor(agent, event);

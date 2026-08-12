@@ -1817,7 +1817,12 @@ export class ApiServer {
       // UI, MCP read_agent_chat, groupthink relay loop).
       this.supervisor.maybeRecoverCodexSid(agentId);
       const messages = await this.supervisor.getChatService().getMessages(agentId, { limit, role });
-      return { agentId, limit, messages };
+      return {
+        agentId,
+        limit,
+        messages,
+        researcherSandboxUntrusted: target.isResearcher === true,
+      };
     }
 
     // GET /api/agents/:id/file-activities — files the agent has read/written/created.

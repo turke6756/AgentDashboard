@@ -77,6 +77,7 @@ import { addProviderAutoApproveFlag } from './provider-auto-approve';
 import { ensureNodeShimDir } from '../node-shim';
 import { prepareRestrictedOutboxLaunch } from '../sandbox/outbox-launcher';
 import { resolveResearcherSandboxHome } from '../sandbox/researcher-home-factory';
+import { refuseUnrestrictedLaunchProviderHomes } from '../sandbox/researcher-home-untrusted';
 import {
   prepareResearcherSandboxHome,
   purgeResearcherSandboxHome,
@@ -5388,6 +5389,13 @@ export class AgentSupervisor extends EventEmitter {
     // gate. Set IMMEDIATELY BEFORE the actual runner launch so no event this
     // launch produces can predate the stamp.
     this.launchStartedAt.set(agent.id, Date.now());
+    if (roleLaneOf(agent) !== 'researcher') {
+      refuseUnrestrictedLaunchProviderHomes([
+        extraEnv.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+        extraEnv.CODEX_HOME ?? process.env.CODEX_HOME,
+        extraEnv.GROK_HOME ?? process.env.GROK_HOME,
+      ]);
+    }
     runner.launch(agent.workingDirectory, runnerCommand, runnerArgs, agent.logPath || '', runnerDirectSpawn, extraEnvArg);
     updateAgentPid(agent.id, runner.pid);
     // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle
@@ -6349,6 +6357,13 @@ export class AgentSupervisor extends EventEmitter {
       // the queue for the full hard-cap window.
       this.releaseCodexLaunchGate(agent.id);
       throw new Error(`Codex fresh launch for ${agent.id} unexpectedly contains a 'resume' subcommand`);
+    }
+    if (roleLaneOf(agent) !== 'researcher') {
+      refuseUnrestrictedLaunchProviderHomes([
+        process.env.CLAUDE_CONFIG_DIR,
+        process.env.CODEX_HOME,
+        process.env.GROK_HOME,
+      ]);
     }
     await runner.launch(wslWorkDir, command, nativeLogPath, diagnostics);
     // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle

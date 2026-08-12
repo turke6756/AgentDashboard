@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { detectPathType, wslToWindowsPath } from '../path-utils';
 import { workspaceStateDir } from '../workspace-state-dir';
+import { refuseResearcherHomeConfig } from '../sandbox/researcher-home-untrusted';
 import type { ParsedHookEvent } from './index';
 
 /** Startup lookback window: at init the tailer seeks to
@@ -47,7 +48,10 @@ export function resolveSpoolReadPath(workspaceRoot: string, providerStateHome?: 
     const filesystemHome = providerStateHome.startsWith('/')
       ? wslToWindowsPath(providerStateHome)
       : providerStateHome;
-    return path.join(filesystemHome, 'spool', 'pending-status.jsonl');
+    return refuseResearcherHomeConfig(
+      path.join(filesystemHome, 'spool', 'pending-status.jsonl'),
+      'hook-spool',
+    );
   }
   const winRoot = detectPathType(workspaceRoot) === 'wsl' && workspaceRoot.startsWith('/')
     ? wslToWindowsPath(workspaceRoot)

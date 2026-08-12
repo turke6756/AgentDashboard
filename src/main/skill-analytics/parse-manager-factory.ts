@@ -24,6 +24,7 @@ import { buildMcpToolsetReverseMap, type McpToolsetResolver } from './mcp-toolse
 import { makePlansAwareDefsProvider } from './plans-toolset-defs';
 import { ParseManager, type ManagerDeps } from './parse-manager';
 import type { ParseDb } from './parse-runner';
+import { refuseResearcherHomeConfig } from '../sandbox/researcher-home-untrusted';
 
 /** Built once from the P1 toolset defs; require()d scripts are module-cached. */
 let mcpToolsetResolver: McpToolsetResolver | null = null;
@@ -37,11 +38,11 @@ function getMcpToolsetResolver(): McpToolsetResolver {
 }
 
 /** Best-effort skill slugs from the resident skills dirs (dir names under .claude/skills). */
-function scanKnownSkills(): Set<string> {
+export function scanKnownSkillsFromDirs(dirs: ReadonlyArray<string | null>): Set<string> {
   const out = new Set<string>();
-  const dirs = [resolveWindowsHomeSubdir('.claude/skills'), resolveWslHomeSubdir('.claude/skills')];
   for (const dir of dirs) {
     if (!dir) continue;
+    refuseResearcherHomeConfig(dir, 'scanner');
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -53,6 +54,13 @@ function scanKnownSkills(): Set<string> {
     }
   }
   return out;
+}
+
+function scanKnownSkills(): Set<string> {
+  return scanKnownSkillsFromDirs([
+    resolveWindowsHomeSubdir('.claude/skills'),
+    resolveWslHomeSubdir('.claude/skills'),
+  ]);
 }
 
 /** The non-Electron half of ManagerDeps. Caller adds `onProgress` (renderer broadcast). */
