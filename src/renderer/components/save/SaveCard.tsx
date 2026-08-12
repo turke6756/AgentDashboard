@@ -270,6 +270,22 @@ interface PackageSaveGestureHandle {
   showSweepUncertain: () => void;
 }
 
+export function composeSaveDisabledReason(options: {
+  snapshotStable: boolean;
+  saveable: boolean;
+  saveGate?: SaveIntentUnitDto['saveGate'];
+  snapshotRefusal?: 'snapshot-stale' | 'snapshot-gone' | null;
+  transient?: boolean;
+}): string | null {
+  if (!options.snapshotStable) return 'This save is unavailable because the inventory snapshot is unstable. Refresh to review a stable snapshot.';
+  if (!options.saveable) return 'This package cannot be saved from its current workspace.';
+  if (options.saveGate && !options.saveGate.ready) return `This package is not ready to save because ${options.saveGate.unhashedMemberCount} member${options.saveGate.unhashedMemberCount === 1 ? '' : 's'} has not been scanned or hashed yet.`;
+  if (options.snapshotRefusal === 'snapshot-stale') return 'This inventory snapshot is stale. Refresh before preparing or saving.';
+  if (options.snapshotRefusal === 'snapshot-gone') return 'This inventory snapshot is no longer available. Refresh before preparing or saving.';
+  if (options.transient) return 'This package is busy; wait for the current operation to finish.';
+  return null;
+}
+
 function sweepSummary(results: readonly SaveSweepTerminalResult[], halted: boolean) {
   return {
     saved: results.filter((result) => result.kind === 'saved').length,
@@ -285,10 +301,18 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   unit: SaveIntentUnitDto;
   workspaceId: string;
   saveDisabled?: boolean;
+  snapshotId?: string;
+  snapshotFingerprint?: string;
+  snapshotStable?: boolean;
+  onNonFreshMarkDone?: () => void;
 }>(({
   unit,
   workspaceId,
   saveDisabled = false,
+  snapshotId,
+  snapshotFingerprint,
+  snapshotStable = true,
+  onNonFreshMarkDone,
 }, ref) => {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [gesture, dispatch] = useReducer(saveGestureReducer, initialSaveGestureState);
@@ -320,6 +344,8 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   ): Promise<SaveCardFleetAdhocMarkDoneSuccess[] | null> => {
     if (pinInFlightRef.current || gesture.status === 'pinning' || gesture.status === 'reviewing'
       || gesture.status === 'sweeping') return null;
+    if (composeSaveDisabledReason({ snapshotStable, saveable: unit.saveability.saveable,
+      saveGate: unit.saveGate, snapshotRefusal: null })) return null;
     const unsaveable = unit.saveability.saveable === false ? unit : null;
     if (unsaveable?.saveability.saveable === false) {
       dispatch({
@@ -344,8 +370,11 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
             saveUnitId: bundle.saveUnitId ?? bundle.intentId,
             saveUnitKind: 'agent-session-fallback',
             targetWorkspaceId: workspaceId,
+            pinnedSnapshotId: snapshotId,
+            pinnedSnapshotFingerprint: snapshotFingerprint,
           })
-        : window.api.saveCard.markDone({ packageId: bundle.intentId, targetWorkspaceId: workspaceId }),
+        : window.api.saveCard.markDone({ packageId: bundle.intentId, targetWorkspaceId: workspaceId,
+          pinnedSnapshotId: snapshotId, pinnedSnapshotFingerprint: snapshotFingerprint }),
     ));
     const nextPins = [...retained];
     const failures: Array<{ packageId: string; refusal: SaveRefusal }> = [];
@@ -374,6 +403,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
         return;
       }
       const successful = response as SaveCardFleetAdhocMarkDoneSuccess;
+      if (successful.boundaryStatus !== 'ready') onNonFreshMarkDone?.();
       nextPins.push(successful);
       if (successful.boundaryStatus !== 'ready') {
         failures.push({
@@ -492,7 +522,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
       code: 'repository-outcome-uncertain',
       message: 'The save-all outcome is uncertain. Lares will not retry automatically.',
     }),
-  }), [draft, unit, packageName, pinned, pins, workspaceId]);
+  }), [draft, unit, packageName, pinned, pins, workspaceId, snapshotId, snapshotFingerprint, snapshotStable]);
 
   if (!hasSelectable) return null;
 
@@ -533,19 +563,26 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   const recover = () => {
     void pinPackage(true);
   };
+  const snapshotRefusal = gesture.status === 'refused'
+    && (gesture.refusal.code === 'snapshot-stale' || gesture.refusal.code === 'snapshot-gone')
+    ? gesture.refusal.code : null;
+  const disabledReason = composeSaveDisabledReason({ snapshotStable, saveable: unit.saveability.saveable,
+    saveGate: unit.saveGate, snapshotRefusal, transient: submitting });
   return (
     <div className="sc-save-launcher">
       <SaveBundle
         unit={unit}
         pinned={pinned}
         pinning={gesture.status === 'pinning' || gesture.status === 'reviewing' || previewBusy}
+        pinDisabled={Boolean(disabledReason)} pinReason={disabledReason}
         onPin={() => { void pinPackage(); }}
       />
       <button
         type="button"
         className="ui-btn ui-btn-primary px-3 py-1 text-[12.5px]"
         data-testid="save-bundle-submit"
-        disabled={!pinned || submitLocked || saveDisabled}
+        disabled={!pinned || submitLocked || saveDisabled || Boolean(disabledReason)}
+        aria-describedby={disabledReason ? `save-reason-${unit.intentId}` : undefined}
         aria-busy={submitting}
         onClick={() => { void submit(); }}
       >
@@ -1004,7 +1041,21 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     witnessedUngroupable,
   };
   const snapshotState = saveCardComputeState(computeProjection);
-  const mintUiDisabled = snapshotState === 'partial' || snapshotState === 'assessment-unavailable';
+  const snapshotStable = computeState?.snapshot?.stability !== 'unstable';
+  const snapshotId = computeState?.snapshot?.snapshotId;
+  const snapshotFingerprint = computeState?.snapshot?.boundaryInputFingerprint;
+  const saveAllReason = !snapshotStable
+    ? 'Save all is unavailable because the inventory snapshot is unstable. Refresh first.'
+    : saveableUnits.length === 0
+      ? 'Save all is unavailable because no displayed package is currently saveable.'
+      : loud.some((unit) => unit.saveability.saveable === false)
+        ? 'Save all is unavailable because at least one displayed package cannot be saved.'
+        : loud.some((unit) => unit.saveGate && !unit.saveGate.ready)
+          ? 'Save all is unavailable because at least one displayed package has not been fully scanned or hashed.'
+          : computeState?.inventory.completeness === 'partial'
+            ? 'Save all is unavailable because the inventory is incomplete; review packages individually or complete the scan.'
+            : null;
+  const saveAllDisabled = Boolean(saveAllReason);
   const degradedCopy = degradedSaveCopy(computeProjection, uniqueChangedEntries);
   const scopeOptions = [...new Map<string, {
     pathBytesBase64: string; displayPath: string; countLabel: string | null;
@@ -1056,8 +1107,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     <section className="sc-state" data-testid="save-card-degraded" data-compute-state={snapshotState}>
       {budgetBanner ?? (
         <>
-          <div className="sc-state-title">{degradedCopy.title}</div>
-          <div className="sc-state-body">{degradedCopy.body}</div>
+          <div className="sc-state-title">{snapshotState === 'assessment-unavailable' ? 'No bounded save action is available — Save status could not be assessed' : degradedCopy.title}</div>
+          <div className="sc-state-body">{snapshotState === 'assessment-unavailable'
+            ? `${degradedCopy.body} No save action is offered until the inventory can be bounded.`
+            : degradedCopy.body}</div>
           {degradedCopy.budgetLine && <div className="sc-state-hint">{degradedCopy.budgetLine}</div>}
         </>
       )}
@@ -1100,7 +1153,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   ) : null;
 
   const startSaveAll = async () => {
-    if (!workspaceId || mintUiDisabled || saveAllInFlightRef.current || saveAll.status !== 'idle') return;
+    if (!workspaceId || saveAllDisabled || saveAllInFlightRef.current || saveAll.status !== 'idle') return;
     saveAllInFlightRef.current = true;
     const prepared: Array<{
       unit: SaveIntentUnitDto;
@@ -1261,7 +1314,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                               <SaveBundle unit={unit} />
                             ) : (
                               <PackageSaveGesture
-                                saveDisabled={mintUiDisabled}
+                                snapshotId={snapshotId}
+                                snapshotFingerprint={snapshotFingerprint}
+                                snapshotStable={snapshotStable}
+                                onNonFreshMarkDone={() => { void refresh(); }}
                                 ref={(handle) => {
                                   if (handle) packageGestureRefs.current.set(unit.intentId, handle);
                                   else packageGestureRefs.current.delete(unit.intentId);
@@ -1291,7 +1347,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
               {fallbackUnits.map((unit) => (
                 <article key={unit.saveUnitId ?? unit.intentId} data-testid="fallback-save-unit">
                   <PackageSaveGesture
-                    saveDisabled={mintUiDisabled}
+                    snapshotId={snapshotId}
+                    snapshotFingerprint={snapshotFingerprint}
+                    snapshotStable={snapshotStable}
+                    onNonFreshMarkDone={() => { void refresh(); }}
                     ref={(handle) => {
                       const id = unit.saveUnitId ?? unit.intentId;
                       if (handle) packageGestureRefs.current.set(id, handle);
@@ -1335,8 +1394,12 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                   setAdoptingBaseline(true);
                   void window.api.saveCard.adoptAllAsBaseline({ workspaceId })
                     .then((result) => {
-                      setBaselineResult(`${result.title} · ${result.memberCount} files`);
-                      refresh();
+                      if (!('ok' in result) || result.ok) {
+                        setBaselineResult(`${result.title} · ${result.memberCount} files`);
+                        refresh();
+                      } else {
+                        setBaselineResult(result.message);
+                      }
                     })
                     .finally(() => setAdoptingBaseline(false));
                 }}
@@ -1364,7 +1427,8 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
             type="button"
             className="ui-btn ui-btn-primary px-3 py-1 text-[12.5px]"
             data-testid="save-all"
-            disabled={saveAll.status !== 'idle' || mintUiDisabled}
+            disabled={saveAll.status !== 'idle' || saveAllDisabled}
+            aria-describedby={saveAllDisabled ? 'save-all-reason' : undefined}
             aria-busy={saveAll.status === 'preparing' || saveAll.status === 'sweeping'}
             onClick={() => { void startSaveAll(); }}
           >
@@ -1374,6 +1438,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                 ? 'Saving packages…'
                 : 'Save all packages'}
           </button>
+          {saveAllDisabled && <div id="save-all-reason" className="sc-meta">{saveAllReason}</div>}
         </div>
       )}
       {(saveAll.status === 'preparing' || saveAll.status === 'sweeping') && (

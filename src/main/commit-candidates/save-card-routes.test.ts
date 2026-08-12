@@ -337,6 +337,26 @@ test('production route projects intent units and keeps unstamped work read-only'
   assert.equal(inventory.computeState?.protection.assessment.evaluation, 'complete');
 });
 
+test('REACHABILITY: adopt-all refuses partial inventory before createNamedSaveSet', async () => {
+  let createCalls = 0;
+  const productionRoutes = routes(undefined, {
+    createNamedSaveSet: (() => {
+      createCalls += 1;
+      throw new Error('createNamedSaveSet must not be reached');
+    }) as never,
+  });
+  const inventory = await productionRoutes.getInventory({ workspaceId: 'workspace-1', inventoryTimeBudgetMs: 1 });
+  assert.equal(inventory.computeState?.inventory.completeness, 'partial',
+    'fixture must enter through a genuinely partial inventory');
+  const result = await productionRoutes.adoptAllAsBaseline!({ workspaceId: 'workspace-1', inventoryTimeBudgetMs: 1 });
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'adopt-all-inventory-partial',
+    message: 'Adopt all is unavailable because the workspace inventory is incomplete. Run a complete scan first.',
+  });
+  assert.equal(createCalls, 0, 'REACHABILITY: adopt-all guard must precede createNamedSaveSet');
+});
+
 test('production IPC registration reaches the intent route', async () => {
   const ipc = new FakeIpc();
   const productionRoutes = routes();

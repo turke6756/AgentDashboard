@@ -15,11 +15,15 @@ export default function SaveBundle({
   pinned = false,
   pinning = false,
   onPin,
+  pinDisabled = false,
+  pinReason,
 }: {
   unit: SaveIntentUnitDto;
   pinned?: boolean;
   pinning?: boolean;
   onPin?: () => void;
+  pinDisabled?: boolean;
+  pinReason?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const health = unit.topologyEvidence.captureHealth;
@@ -31,10 +35,15 @@ export default function SaveBundle({
           <span> · {unit.members.length} file{unit.members.length === 1 ? '' : 's'}</span>
         </div>
         {onPin && (
+          <>
           <button type="button" className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
-            data-testid="save-bundle-pin" disabled={pinning || pinned} onClick={onPin}>
+            data-testid="save-bundle-pin" disabled={pinning || pinned || pinDisabled}
+            aria-describedby={pinDisabled && pinReason ? `save-reason-${unit.intentId}` : undefined}
+            onClick={onPin}>
             {pinning ? 'Preparing…' : pinned ? 'Prepared' : 'Prepare'}
           </button>
+          {pinDisabled && pinReason && <span id={`save-reason-${unit.intentId}`} className="sc-meta">{pinReason}</span>}
+          </>
         )}
       </div>
       <div className="sc-meta">

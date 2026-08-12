@@ -665,6 +665,10 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     const inventory = await getInventory(req);
     const read = latestReadByWorkspace.get(req.workspaceId);
     if (!read) throw new Error('fresh intent inventory unavailable');
+    if (inventory.computeState?.inventory.completeness === 'partial') {
+      return { ok: false, code: 'adopt-all-inventory-partial',
+        message: 'Adopt all is unavailable because the workspace inventory is incomplete. Run a complete scan first.' };
+    }
     const members = inventory.unwitnessed ?? [];
     if (members.length === 0) throw new Error('there are no unwitnessed changes to adopt');
     const createdAt = Date.now();
@@ -680,7 +684,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       })),
       createdAt,
     });
-    return { intentId: intent.id, title: intent.title, memberCount: members.length };
+    return { ok: true, intentId: intent.id, title: intent.title, memberCount: members.length };
   }
 
   return { getInventory, scopedRescan, adoptAllAsBaseline, completeOnboarding };

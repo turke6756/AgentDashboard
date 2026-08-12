@@ -2182,8 +2182,16 @@ export interface SaveCardScopedRescanRequest extends SaveCardInventoryRequest {
   pathBytesBase64: string;
 }
 
-export interface SaveCardAdoptBaselineRequest { workspaceId: string; }
-export interface SaveCardAdoptBaselineResponse { intentId: string; title: string; memberCount: number; }
+export interface SaveCardAdoptBaselineRequest {
+  workspaceId: string;
+  /** Test/diagnostic budget override; production UI omits this. */
+  inventoryTimeBudgetMs?: number;
+}
+export type SaveCardAdoptBaselineResponse =
+  | { ok: true; intentId: string; title: string; memberCount: number }
+  | { ok: false; code: 'adopt-all-inventory-partial'; message: string }
+  /** Legacy test/provider compatibility; production routes always return ok. */
+  | { intentId: string; title: string; memberCount: number };
 export type SaveCardOnboardingDecision = 'exclude-selected' | 'keep-everything' | 'decide-later';
 export interface SaveCardOnboardingPrompt {
   presentation: 'first-contact' | 'established';
