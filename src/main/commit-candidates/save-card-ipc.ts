@@ -397,7 +397,25 @@ function requireMarkDoneRequest(raw: unknown): SaveCardSaveUnitMarkDoneRequest {
       'save-card-bad-request',
     );
   }
-  return { saveUnitId, saveUnitKind, targetWorkspaceId };
+  const repositoryKey = (raw as { repositoryKey?: unknown }).repositoryKey;
+  const pinnedSnapshotId = (raw as { pinnedSnapshotId?: unknown }).pinnedSnapshotId;
+  const pinnedSnapshotFingerprint = (raw as { pinnedSnapshotFingerprint?: unknown }).pinnedSnapshotFingerprint;
+  const optionalString = (name: string, value: unknown): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value === '') {
+      throw new SaveCardIpcError(`a non-empty ${name} is required when supplied`, 'save-card-bad-request');
+    }
+    return value;
+  };
+  const parsedRepositoryKey = optionalString('repositoryKey', repositoryKey);
+  const parsedSnapshotId = optionalString('pinnedSnapshotId', pinnedSnapshotId);
+  const parsedSnapshotFingerprint = optionalString('pinnedSnapshotFingerprint', pinnedSnapshotFingerprint);
+  return {
+    saveUnitId, saveUnitKind, targetWorkspaceId,
+    ...(parsedRepositoryKey === undefined ? {} : { repositoryKey: parsedRepositoryKey }),
+    ...(parsedSnapshotId === undefined ? {} : { pinnedSnapshotId: parsedSnapshotId }),
+    ...(parsedSnapshotFingerprint === undefined ? {} : { pinnedSnapshotFingerprint: parsedSnapshotFingerprint }),
+  };
 }
 
 function toMarkDoneResponse(

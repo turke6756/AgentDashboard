@@ -104,6 +104,8 @@ import { deriveRepositoryIdentity } from './repository-identity';
 import type { RunGit } from '../git/git-runtime';
 import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { canonicalize } from './jcs';
+import { PinnedSnapshotStore, type PinnedSnapshotDescriptor } from './pinned-snapshot-store';
+import { assessSaveUnitReadiness } from './save-card-readiness';
 import type { FreshSaveSweepResolution } from './save-sweep-service';
 import type {
   FinalizePlanItemDoneRequest,
@@ -185,6 +187,7 @@ export interface PreviewRoutesDeps {
   snapshotRegistry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>;
   /** Flight generation for a repository (WP-E policy store). Default 0. */
   resolvePolicyGeneration?: (repositoryKey: string) => number;
+  pinnedSnapshotStore?: PinnedSnapshotStore;
   /** Authoritative finalization write completed; invalidate presentation cache. */
   onRepositoryFinalized?: (repositoryKey: string) => void;
   onRepositoryResolved?: (workspaceId: string, repositoryKey: string) => void;
@@ -239,6 +242,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   saveCardFinalizeRoutes: SaveCardFinalizeRoutes;
   productionSeams: PreviewProductionSeams;
 } {
+  const pinnedSnapshotStore = deps.pinnedSnapshotStore;
   const gitExe = deps.gitExe;
   const getWorkspaces = deps.getWorkspaces ?? dbGetWorkspaces;
   const probeWorkspaceGit = deps.probeWorkspaceGit ?? realProbeWorkspaceGit;
@@ -1076,6 +1080,86 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     const targetWorkspaceId = request.targetWorkspaceId;
     const saveUnitId = 'saveUnitId' in request ? request.saveUnitId : request.packageId;
     const saveUnitKind = 'saveUnitKind' in request ? request.saveUnitKind : 'named-save-set';
+    const pinnedSnapshotId = request.pinnedSnapshotId;
+    if (pinnedSnapshotId !== undefined || request.pinnedSnapshotFingerprint !== undefined) {
+      const refuse = (message: string, code: 'snapshot-stale' | 'snapshot-gone'): never => {
+        throw new SaveCardFinalizeRefusalError(message, code, targetWorkspaceId, targetWorkspaceId);
+      };
+      const validatedSnapshotId: string = pinnedSnapshotId ?? refuse('The save card snapshot handle is missing; refresh the inventory.', 'snapshot-gone');
+      if (request.repositoryKey === undefined) refuse('The save card repository identity is missing; refresh the inventory.', 'snapshot-stale');
+      const descriptor = (pinnedSnapshotStore?.resolve(validatedSnapshotId) as PinnedSnapshotDescriptor | null | undefined)
+        ?? refuse('The save card snapshot is no longer retained; refresh the inventory.', 'snapshot-gone');
+      if (descriptor.stability !== 'stable') refuse('The save card snapshot became unstable; refresh the inventory.', 'snapshot-stale');
+      if (descriptor.targetWorkspaceId !== targetWorkspaceId
+          || (request.repositoryKey !== undefined && descriptor.repositoryKey !== request.repositoryKey)
+          || (request.pinnedSnapshotFingerprint !== undefined
+            && descriptor.boundaryInputFingerprint !== request.pinnedSnapshotFingerprint)
+          || descriptor.policyGeneration !== (deps.resolvePolicyGeneration?.(descriptor.repositoryKey) ?? 0)) {
+        refuse('The save card snapshot is stale or belongs to a different repository/workspace; refresh the inventory.', 'snapshot-stale');
+      }
+      const entryMap = new Map((descriptor.entries as DirtyEntry[]).map((entry) => [entry.entryId, entry]));
+      const intentUnits = descriptor.intentUnits as Array<{ intentId?: string; kind?: string; memberEntryIds?: readonly string[] }>;
+      const fallbackUnits = descriptor.fallbackUnits as Array<{ saveUnitId?: string; saveUnitKind?: string; memberEntryIds?: readonly string[] }>;
+      const grouping = descriptor.grouping.find((unit) => unit.saveUnitId === saveUnitId && unit.saveUnitKind === saveUnitKind);
+      const componentId = saveUnitId.startsWith('component:') ? saveUnitId.slice('component:'.length) : saveUnitId;
+      const entryIds = grouping?.memberEntryIds
+        ?? intentUnits.find((unit) => unit.intentId === saveUnitId && unit.kind === saveUnitKind)?.memberEntryIds
+        ?? fallbackUnits.find((unit) => unit.saveUnitId === saveUnitId && unit.saveUnitKind === saveUnitKind)?.memberEntryIds
+        ?? descriptor.componentEntryIds[componentId]
+        ?? (saveUnitId === `unattributed:${descriptor.repositoryKey}` ? descriptor.unattributedEntryIds : undefined);
+      const selectedEntryIds: readonly string[] = entryIds ?? refuse(`The pinned save unit is unknown: ${saveUnitId}.`, 'snapshot-stale');
+      const entries = selectedEntryIds.map((id) => entryMap.get(id)).filter((entry): entry is DirtyEntry => !!entry);
+      if (entries.length === 0) refuse(`The pinned save unit has no dirty members: ${saveUnitId}.`, 'snapshot-stale');
+      const readiness = assessSaveUnitReadiness(entries);
+      if (!readiness.ready) refuse('The pinned save unit contains members that were not hashed; refresh the inventory.', 'snapshot-stale');
+
+      const workspaceRow = getWorkspaces().find((workspace) => workspace.id === targetWorkspaceId)
+        ?? refuse('The target workspace is no longer registered; refresh the inventory.', 'snapshot-stale');
+      const probed = await (deps.probeWorkspaceGit ?? realProbeWorkspaceGit)(
+        canonicalDir(realpath, workspaceRow.path),
+      );
+      const repoRoot = repositoryLocations.get(descriptor.repositoryKey)?.repoRoot ?? probed.repoRoot
+        ?? refuse('The pinned repository is no longer available; refresh the inventory.', 'snapshot-stale');
+      const head = await runGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], {
+        gitExe, allowNonzero: true, timeoutMs: HEAD_TIMEOUT_MS, maxBytes: 4096,
+      });
+      const currentHead = head.code === 0 ? head.stdout.trim() || null : null;
+      const currentIndex = await computeIndexFingerprint({ repoRoot, runGitBytes, runGit, gitExe, withWriteTree: false });
+      if (currentHead !== descriptor.pinnedHeadOid || currentIndex.fingerprint !== descriptor.indexFingerprint) {
+        refuse('The repository changed after the card was prepared; refresh the inventory.', 'snapshot-stale');
+      }
+      if (!deps.captureFinalizationBoundary) {
+        throw new SaveCardFinalizeRefusalError(
+          'Boundary-capture stage refused because checkpoint capture is unavailable.',
+          'boundary-capture-unavailable', targetWorkspaceId, targetWorkspaceId,
+        );
+      }
+      const boundary = await deps.captureFinalizationBoundary(targetWorkspaceId, `lares:finalization:${saveUnitId}`);
+      const tree = await readCheckpointTree({
+        repoRoot, checkpointOid: boundary.treeOid, paths: entries.map((entry) => entry.path), runGitBytes, gitExe,
+      });
+      const capturedTree = tree ?? refuse('The captured boundary could not be verified; refresh the inventory.', 'snapshot-stale');
+      for (const entry of entries) {
+        const captured = capturedTree.get(entry.path.pathBytesBase64);
+        const matches = entry.expectedWorktreeState === 'present'
+          ? captured !== undefined && captured.rawBlobOid === entry.rawWorktreeBlobOid && captured.mode === entry.worktreeMode
+          : captured === undefined && entry.rawWorktreeBlobOid === null && entry.worktreeMode === null;
+        if (!matches) refuse('The captured boundary differs from the card snapshot; nothing was finalized.', 'snapshot-stale');
+      }
+      const members = entries.map((entry): CommitRepresentationEntry => ({
+        path: entry.path, commitPathspecs: entry.commitPathspecs,
+        expectedWorktreeState: entry.expectedWorktreeState, rawWorktreeBlobOid: entry.rawWorktreeBlobOid,
+      }));
+      return {
+        packageId: saveUnitId, saveUnitId, saveUnitKind, repositoryKey: descriptor.repositoryKey,
+        finalizedBy: 'human-ipc', checkpointTurnId: null, boundaryOid: boundary.oid, contractVersion,
+        createdFromWorkspaceId: targetWorkspaceId, members, repoRoot, pinnedHeadOid: descriptor.pinnedHeadOid,
+        gitExe, runGit, runGitBytes,
+        pinnedSelection: { selectedComponentIds: descriptor.componentEntryIds[componentId] ? [componentId] : [],
+          selectedUnattributedEntryIds: descriptor.unattributedEntryIds.length > 0 && !descriptor.componentEntryIds[componentId] ? [...selectedEntryIds].sort() : [],
+          frozenMemberCount: members.length },
+      };
+    }
     if (!deps.captureFinalizationBoundary) {
       throw new SaveCardFinalizeRefusalError(
         'Boundary-capture stage refused because checkpoint capture is unavailable.',

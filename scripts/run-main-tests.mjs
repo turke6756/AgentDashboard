@@ -298,6 +298,7 @@ const TESTS = [
   'dist/main/main/commit-candidates/save-card-readiness.test.js',
   'dist/main/main/commit-candidates/save-sweep-service.test.js',
   'dist/main/main/database.intent-ledger.test.js',
+  'dist/main/main/commit-candidates/preview-routes-pinned.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.finalize.test.js',
   'dist/main/main/commit-candidates/save-card-ipc.preview.test.js',

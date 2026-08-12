@@ -2596,6 +2596,9 @@ export interface SaveCardFleetAdhocMarkDoneRequest {
    *  (the same repository scope the inventory used), NEVER by a contributing
    *  agent's home workspace or by scanning every registered workspace. */
   targetWorkspaceId: string;
+  repositoryKey?: string;
+  pinnedSnapshotId?: string;
+  pinnedSnapshotFingerprint?: string;
 }
 
 export type SaveCardFinalizeOutcome =
@@ -2624,6 +2627,9 @@ export interface SaveCardSaveUnitMarkDoneRequest {
   saveUnitId: string;
   saveUnitKind: import('./commit-candidates').ProjectedSaveUnitKind;
   targetWorkspaceId: string;
+  repositoryKey?: string;
+  pinnedSnapshotId?: string;
+  pinnedSnapshotFingerprint?: string;
 }
 
 export type SaveCardFleetAdhocRefusalCode =
@@ -2631,7 +2637,9 @@ export type SaveCardFleetAdhocRefusalCode =
   | 'save-card-unknown-workspace'
   | 'boundary-capture-unavailable'
   | 'boundary-package-empty'
-  | 'boundary-package-unknown';
+  | 'boundary-package-unknown'
+  | 'snapshot-stale'
+  | 'snapshot-gone';
 
 export interface SaveCardFleetAdhocMarkDoneRefusal {
   ok: false;

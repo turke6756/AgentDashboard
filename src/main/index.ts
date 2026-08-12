@@ -39,6 +39,7 @@ import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
 import { createPreviewRoutes } from './commit-candidates/preview-routes';
 import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
 import { ScratchPolicyStore } from './commit-candidates/scratch-policy-store';
+import { PinnedSnapshotStore } from './commit-candidates/pinned-snapshot-store';
 import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
 import { CommitCoordinator } from './git-checkpoints/commit-coordinator';
 import { ActivityMergeService } from './git-checkpoints/activity-merge-service';
@@ -853,6 +854,7 @@ app.whenReady().then(async () => {
           // per-service coalescing is provably insufficient. Sharing this instance
           // is what makes a concurrent save-card + preview compute one snapshot.
           const snapshotRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+          const pinnedSnapshotStore = new PinnedSnapshotStore();
           const scratchPolicyStore = new ScratchPolicyStore(
             path.join(app.getPath('userData'), 'scratch-policies'),
           );
@@ -874,6 +876,7 @@ app.whenReady().then(async () => {
             gitExe: engine.gitExe,
             readQuotaWeakening: (repositoryKey) => quotaWeakeningByRepo.get(repositoryKey) ?? null,
             snapshotRegistry,
+            pinnedSnapshotStore,
             scratchPolicyStore,
             resolvePolicyGeneration,
             onRepositoryResolved: rememberRepository,
@@ -892,6 +895,7 @@ app.whenReady().then(async () => {
             queue: engine.queue,
             captureFinalizationBoundary: engine.captureFinalizationBoundary,
             snapshotRegistry,
+            pinnedSnapshotStore,
             resolvePolicyGeneration,
             onRepositoryFinalized: (repositoryKey) => snapshotRegistry.invalidate(repositoryKey),
             onRepositoryResolved: rememberRepository,
