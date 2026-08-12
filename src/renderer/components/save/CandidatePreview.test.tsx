@@ -9,7 +9,7 @@
  *   - server-derived `Lares-*` trailers render READ-ONLY (no bound input);
  *   - a user trailer in the reserved `Lares-` namespace is rejected + blocks save;
  *   - NO one-click save for verified-mismatch / degraded / unfinalized work;
- *   - the overlap / unattributed acknowledgements gate the one-click save.
+ *   - cross-intent evidence is informational and the aggregate unattributed acknowledgement gates save.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React, { act } from 'react';
@@ -278,50 +278,35 @@ describe('CandidatePreview', () => {
     const save = () => q('candidate-preview-save') as HTMLButtonElement;
     expect(save().disabled).toBe(true);
 
-    const unattr = q('candidate-preview-unattributed-ack')!.querySelector('input') as HTMLInputElement;
+    const unattr = q('candidate-preview-unattributed-ack-all')!.querySelector('input') as HTMLInputElement;
     await act(async () => { unattr.click(); });
     expect(save().disabled).toBe(false);
   });
 
-  it('scenario 7: cross-intent divergence blocks only on one three-choice picker', async () => {
+  it('REACHABILITY:preview-degating renders cross-intent presence as non-blocking co-contributor context', async () => {
     const atom = crossIntentAtom();
-    const onCrossIntentResolution = vi.fn();
     preview.mockResolvedValue(response({
       reviewedManifest: { ...response().reviewedManifest!, challengeAtoms: [atom] },
     }));
-    await render({ onCrossIntentResolution });
+    await render();
 
-    const pickers = all('candidate-preview-cross-intent-picker');
-    expect(pickers).toHaveLength(1);
-    expect(pickers[0].textContent).toContain('src/shared.ts');
-    const choices = pickers[0].querySelectorAll<HTMLInputElement>('input[type="radio"]');
-    expect(choices).toHaveLength(3);
-    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(true);
-
-    await act(async () => { choices[0].click(); await Promise.resolve(); });
-    expect(onCrossIntentResolution).toHaveBeenCalledWith(atom, 'commit-together');
-    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('scenario 8: lost-work choice requests authority and cannot commit stale bytes', async () => {
-    const atom = crossIntentAtom();
-    const onCrossIntentResolution = vi.fn();
-    preview.mockResolvedValue(response({
-      reviewedManifest: { ...response().reviewedManifest!, challengeAtoms: [atom] },
-    }));
-    await render({ onCrossIntentResolution });
-
-    const restore = q('candidate-preview-cross-intent-picker')!
-      .querySelector<HTMLInputElement>('input[value="restore-lost-work"]')!;
-    await act(async () => { restore.click(); await Promise.resolve(); });
-
-    expect(onCrossIntentResolution).toHaveBeenCalledWith(atom, 'restore-lost-work');
-    expect(q('candidate-preview-restore-authority-note')!.textContent).toContain('supervisor');
-    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(true);
+    const note = q('candidate-preview-cross-intent-note')!;
+    expect(note.textContent).toContain('Co-contributor context for src/shared.ts');
+    expect(note.textContent).toContain('informational and does not block saving');
+    expect(note.textContent).toContain('Checkpoint history can help review earlier versions');
+    expect(note.querySelector('input')).toBeNull();
+    expect(note.querySelector('button')).toBeNull();
+    expect(note.querySelector('a')).toBeNull();
+    expect(container.querySelector('input[type="radio"]')).toBeNull();
+    expect(container.textContent).not.toContain('restore-lost-work');
+    expect(
+      (q('candidate-preview-save') as HTMLButtonElement).disabled,
+      'REACHABILITY:preview-degating cross-intent context must not gate Save',
+    ).toBe(false);
   });
 
   it('labels unattributed acknowledgements with paths and acknowledges a backlog in one gesture', async () => {
-    const entries = Array.from({ length: 100 }, (_, index) => member(`u${index}`, 'verified-match'));
+    const entries = [member('first', 'verified-match'), member('second', 'verified-match')];
     const atoms: ReviewChallengeAtom[] = entries.map((item, index) => ({
       kind: 'unattributed', atomId: `unattributed-${index}`, digest: `digest-${index}`,
       pathBytesBase64: item.path.pathBytesBase64, memberEffectDigest: `effect-${index}`,
@@ -333,19 +318,15 @@ describe('CandidatePreview', () => {
     }));
     await render();
 
-    const rows = container.querySelectorAll('[data-testid="candidate-preview-unattributed-ack"]');
-    expect(rows).toHaveLength(100);
-    expect(rows[0].textContent).toContain('src/u0.ts');
-    expect(rows[0].textContent).not.toContain('u0 —');
-
+    const acknowledgement = q('candidate-preview-unattributed-ack-all')!;
+    expect(q('candidate-preview-unattributed')!.textContent).toContain('src/first.ts');
+    expect(q('candidate-preview-unattributed')!.textContent).toContain('src/second.ts');
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(acknowledgement.textContent).not.toMatch(/Acknowledge all \d+/);
     const acknowledgeAll = q('candidate-preview-unattributed-ack-all')!.querySelector('input') as HTMLInputElement;
     await act(async () => { acknowledgeAll.click(); });
     expect(acknowledgeAll.checked).toBe(true);
-    expect(Array.from(rows).every((row) => (row.querySelector('input') as HTMLInputElement).checked)).toBe(true);
-
-    await act(async () => { (rows[0].querySelector('input') as HTMLInputElement).click(); });
-    expect((rows[0].querySelector('input') as HTMLInputElement).checked).toBe(false);
-    expect((rows[1].querySelector('input') as HTMLInputElement).checked).toBe(true);
+    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('drops an acknowledgement when its atom digest changes', async () => {
@@ -363,7 +344,7 @@ describe('CandidatePreview', () => {
     });
     await render({ authoritativeResponse: first });
     await act(async () => {
-      (q('candidate-preview-unattributed-ack')!.querySelector('input') as HTMLInputElement).click();
+      (q('candidate-preview-unattributed-ack-all')!.querySelector('input') as HTMLInputElement).click();
     });
 
     const changedUnattributed = { ...unattributedAtom, digest: 'unattributed-new' };
@@ -377,7 +358,36 @@ describe('CandidatePreview', () => {
     });
     await render({ authoritativeResponse: second });
 
-    expect((q('candidate-preview-unattributed-ack')!.querySelector('input') as HTMLInputElement).checked).toBe(false);
+    expect((q('candidate-preview-unattributed-ack-all')!.querySelector('input') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('refreshes a stale preview, then shows current co-contributor context and an eligible save', async () => {
+    preview
+      .mockResolvedValueOnce(response({
+        candidate: candidate({ eligible: false, reason: 'stale-preview' }, [member('old', 'verified-match')]),
+      }))
+      .mockResolvedValueOnce(response({
+        candidate: candidate({ eligible: true }, [member('new', 'verified-match', 'src/new-contributor.ts')]),
+        reviewedManifest: {
+          ...response().reviewedManifest!,
+          reviewedManifestDigest: 'review-current',
+          challengeAtoms: [crossIntentAtom({ displayPath: 'src/new-contributor.ts' })],
+        },
+      }));
+    await render();
+
+    expect(q('candidate-preview-refresh')).not.toBeNull();
+    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      (q('candidate-preview-refresh') as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(q('candidate-preview-refresh')).toBeNull();
+    expect(q('candidate-preview-members')!.textContent).toContain('src/new-contributor.ts');
+    expect(q('candidate-preview-cross-intent-note')!.textContent).toContain('src/new-contributor.ts');
+    expect((q('candidate-preview-save') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('surfaces an honest error when the preview cannot be assembled', async () => {

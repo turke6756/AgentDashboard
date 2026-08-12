@@ -6,7 +6,6 @@ import type {
   PackageVerificationState,
   ReviewChallengeAtom,
   CrossIntentChallengeAtom,
-  CrossIntentResolution,
 } from '../../../shared/commit-candidates';
 import { renderSaveRefusal } from './save-refusal-copy';
 
@@ -14,7 +13,7 @@ import { renderSaveRefusal } from './save-refusal-copy';
 //
 // Renders the WP-3G `CommitCandidate` / `SelectionPreview` the main process
 // assembled for one explicit selection: per-member verification verdicts, the
-// overlap / unattributed acknowledgement checkboxes, an EDITABLE commit-message
+// cross-intent context, the aggregate unattributed acknowledgement, an EDITABLE commit-message
 // body, and the server-derived READ-ONLY `Lares-*` trailer previews. A user may
 // add their own trailers in a SEPARATE namespace that can never override a
 // `Lares-*` line. There is NO one-click save path for mismatch / degraded /
@@ -28,7 +27,6 @@ export interface CandidatePreviewSelection {
   selectedUnattributedEntryIds: string[];
   selectedIntentIds?: string[];
   selectedNamedSaveSetIds?: string[];
-  resolutionIds?: string[];
   finalizationIds: string[];
 }
 
@@ -54,12 +52,6 @@ export interface CandidatePreviewProps {
   authoritativeResponse?: SaveCardPreviewResponse | null;
   /** Lets the package checkbox mirror preview/verification work in place. */
   onBusyChange?: (busy: boolean) => void;
-  /** Main-owned persistence seam. A restore choice is a request to supervisor
-   * authority; CandidatePreview never mutates repository bytes itself. */
-  onCrossIntentResolution?: (
-    atom: CrossIntentChallengeAtom,
-    resolution: CrossIntentResolution,
-  ) => void | Promise<void>;
 }
 
 export interface CandidatePreviewDraft {
@@ -71,11 +63,6 @@ export interface CandidatePreviewDraft {
   /** Exact challenge evidence acknowledged by the human. Both atom id and digest
    * are retained, so a changed atom resets without disturbing unchanged atoms. */
   acknowledgedChallengeAtoms: ReviewChallengeAtom[];
-  crossIntentResolutions?: Array<{
-    atomId: string;
-    evidenceDigest: string;
-    resolution: CrossIntentResolution;
-  }>;
   previewedCandidateId: string | null;
   componentTopologyDigest: string;
   checkedUnattributedEntryIds: string[];
@@ -178,16 +165,6 @@ function crossIntentKey(atom: CrossIntentChallengeAtom): string {
   return `${atom.atomId}\0${atom.evidenceDigest}`;
 }
 
-function retainCrossResolutions(
-  current: Record<string, CrossIntentResolution>,
-  response: SaveCardPreviewResponse,
-): Record<string, CrossIntentResolution> {
-  return Object.fromEntries(crossIntentAtoms(response).flatMap((atom) => {
-    const resolution = atom.resolution ?? current[crossIntentKey(atom)];
-    return resolution ? [[crossIntentKey(atom), resolution]] : [];
-  }));
-}
-
 export default function CandidatePreview({
   workspaceId,
   selection,
@@ -198,13 +175,11 @@ export default function CandidatePreview({
   onDraftChange,
   authoritativeResponse,
   onBusyChange,
-  onCrossIntentResolution,
 }: CandidatePreviewProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [messageBody, setMessageBody] = useState('');
   const [userTrailers, setUserTrailers] = useState('');
   const [acknowledgedAtoms, setAcknowledgedAtoms] = useState<ReviewChallengeAtom[]>([]);
-  const [crossResolutions, setCrossResolutions] = useState<Record<string, CrossIntentResolution>>({});
   const [commitBusy, setCommitBusy] = useState(false);
   const commitInFlightRef = useRef(false);
 
@@ -237,7 +212,6 @@ export default function CandidatePreview({
         setState({ status: 'ready', response });
         setMessageBody(response.defaultMessageBody);
         setAcknowledgedAtoms((current) => retainAcknowledgedAtoms(current, response));
-        setCrossResolutions((current) => retainCrossResolutions(current, response));
       } catch (err) {
         if (isCurrent()) setState({ status: 'error', message: `Preview verification stage failed unexpectedly: ${errorMessage(err)}` });
       }
@@ -258,7 +232,6 @@ export default function CandidatePreview({
     if (!authoritativeResponse) return;
     setState({ status: 'ready', response: authoritativeResponse });
     setAcknowledgedAtoms((current) => retainAcknowledgedAtoms(current, authoritativeResponse));
-    setCrossResolutions((current) => retainCrossResolutions(current, authoritativeResponse));
   }, [authoritativeResponse]);
 
   useEffect(() => {
@@ -267,13 +240,6 @@ export default function CandidatePreview({
     const eligible = response.candidate.eligibility.eligible === true;
     const reservedTrailer = firstReservedTrailerLine(userTrailers);
     const currentAtoms = challengeAtoms(response);
-    const currentCrossAtoms = crossIntentAtoms(response);
-    const selectedCrossResolutions = currentCrossAtoms.flatMap((atom) => {
-      const resolution = atom.resolution ?? crossResolutions[crossIntentKey(atom)];
-      return resolution ? [{ atomId: atom.atomId, evidenceDigest: atom.evidenceDigest, resolution }] : [];
-    });
-    const crossIntentSatisfied = selectedCrossResolutions.length === currentCrossAtoms.length
-      && selectedCrossResolutions.every((item) => item.resolution !== 'restore-lost-work');
     const unattributedSatisfied = currentAtoms
       .filter((atom) => atom.kind === 'unattributed')
       .every((atom) => isAcknowledged(acknowledgedAtoms, atom))
@@ -287,7 +253,6 @@ export default function CandidatePreview({
       reviewedManifestDigest: response.reviewedManifest?.reviewedManifestDigest ?? null,
       durableFinalizationIntent: response.durableFinalizationIntent ?? [],
       acknowledgedChallengeAtoms: acknowledgedAtoms,
-      crossIntentResolutions: selectedCrossResolutions,
       previewedCandidateId: response.isCandidate && 'candidateId' in response.candidate
         ? response.candidate.candidateId
         : null,
@@ -296,13 +261,12 @@ export default function CandidatePreview({
       messageBody,
       userTrailers,
       canSave: response.isCandidate && eligible && unattributedSatisfied
-        && crossIntentSatisfied
         && Boolean(response.reviewedManifest?.reviewedManifestDigest)
         && Boolean(response.durableFinalizationIntent?.length) && !reservedTrailer,
       reservedTrailer,
       acknowledgedUnattributedEntryIds: checkedUnattributedEntryIds,
     });
-  }, [state, onDraftChange, messageBody, userTrailers, acknowledgedAtoms, crossResolutions]);
+  }, [state, onDraftChange, messageBody, userTrailers, acknowledgedAtoms]);
 
   if (state.status === 'loading') {
     return (
@@ -341,18 +305,12 @@ export default function CandidatePreview({
   const reservedTrailer = firstReservedTrailerLine(userTrailers);
   const currentAtoms = challengeAtoms(response);
   const currentCrossAtoms = crossIntentAtoms(response);
-  const selectedCrossResolutions = currentCrossAtoms.flatMap((atom) => {
-    const resolution = atom.resolution ?? crossResolutions[crossIntentKey(atom)];
-    return resolution ? [{ atomId: atom.atomId, evidenceDigest: atom.evidenceDigest, resolution }] : [];
-  });
-  const crossIntentSatisfied = selectedCrossResolutions.length === currentCrossAtoms.length
-    && selectedCrossResolutions.every((item) => item.resolution !== 'restore-lost-work');
   const unattributedSatisfied = currentAtoms
     .filter((atom) => atom.kind === 'unattributed')
     .every((atom) => isAcknowledged(acknowledgedAtoms, atom))
     && response.unacknowledgedUnattributedEntryIds.every((id) =>
       isAcknowledged(acknowledgedAtoms, unattributedAtomForEntry(response, id)));
-  const acksSatisfied = unattributedSatisfied && crossIntentSatisfied;
+  const acksSatisfied = unattributedSatisfied; // CandidatePreview de-gates informational cross-intent context.
   // One-click save is allowed ONLY for a finalization-backed candidate that the
   // server declared eligible, with every acknowledgement satisfied and no reserved
   // user trailer. Mismatch / degraded / unfinalized work is previewable, never
@@ -367,20 +325,6 @@ export default function CandidatePreview({
       const retained = previous.filter((atom) => !keys.has(atomKey(atom)));
       return checked ? [...retained, ...atoms] : retained;
     });
-  };
-
-  const toggleUnattributed = (entryId: string) => {
-    const atom = unattributedAtomForEntry(response, entryId);
-    if (!atom) return;
-    setAtomsAcknowledged([atom], !isAcknowledged(acknowledgedAtoms, atom));
-  };
-
-  const resolveCrossIntent = async (
-    atom: CrossIntentChallengeAtom,
-    resolution: CrossIntentResolution,
-  ) => {
-    await onCrossIntentResolution?.(atom, resolution);
-    setCrossResolutions((current) => ({ ...current, [crossIntentKey(atom)]: resolution }));
   };
 
   const unattributedRows = response.unacknowledgedUnattributedEntryIds.map((entryId) => ({
@@ -416,6 +360,17 @@ export default function CandidatePreview({
         )}
       </div>
 
+      {!candidate.eligibility.eligible && candidate.eligibility.reason === 'stale-preview' && (
+        <button
+          type="button"
+          className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+          data-testid="candidate-preview-refresh"
+          onClick={() => { void load(() => true); }}
+        >
+          Refresh preview
+        </button>
+      )}
+
       {response.selectionDrift.added.length > 0 && blockingDriftNames.length === 0 && (
         <div className="sc-save-note" data-testid="candidate-preview-added-drift">
           {response.selectionDrift.added.length} unpinned file
@@ -439,73 +394,36 @@ export default function CandidatePreview({
         ))}
       </ul>
 
-      {/* Acknowledgements — must be satisfied before a one-click save. */}
-      {currentCrossAtoms.map((atom) => {
-        const selected = atom.resolution ?? crossResolutions[crossIntentKey(atom)] ?? null;
-        return (
-          <fieldset
-            key={crossIntentKey(atom)}
-            className="sc-preview-cross-intent"
-            data-testid="candidate-preview-cross-intent-picker"
-            data-path-bytes={atom.pathBytesBase64}
-          >
-            <legend>Two tasks diverged on {atom.displayPath}</legend>
-            <div className="sc-save-note">
-              Choose how to preserve the intent history. This decision resets if file or witness evidence changes.
-            </div>
-            {([
-              ['commit-together', 'Commit together'],
-              ['superseded-intentionally', 'Superseded intentionally'],
-              ['restore-lost-work', 'Work was lost — restore'],
-            ] as const).map(([resolution, label]) => (
-              <label key={resolution} className="sc-preview-ack">
-                <input
-                  type="radio"
-                  name={`cross-intent-${atom.atomId}`}
-                  value={resolution}
-                  checked={selected === resolution}
-                  onChange={() => { void resolveCrossIntent(atom, resolution); }}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-            {selected === 'restore-lost-work' && (
-              <div className="sc-save-note" data-testid="candidate-preview-restore-authority-note">
-                Restore is sent to supervisor checkpoint authority. This stale preview cannot be saved.
-              </div>
-            )}
-          </fieldset>
-        );
-      })}
-      {unattributedRows.length > 1 && (
-        <label className="sc-preview-ack" data-testid="candidate-preview-unattributed-ack-all">
-          <input
-            type="checkbox"
-            checked={allUnattributedAcknowledged}
-            disabled={unattributedAtoms.length !== unattributedRows.length}
-            onChange={(event) => setAtomsAcknowledged(unattributedAtoms, event.target.checked)}
-          />
-          <span>Acknowledge all {unattributedRows.length} unattributed changes.</span>
-        </label>
-      )}
-      {unattributedRows.map(({ entryId, atom, displayPath }) => {
-        return (
-        <label
-          key={entryId}
-          className="sc-preview-ack"
-          data-testid="candidate-preview-unattributed-ack"
-          data-entry-id={entryId}
+      {currentCrossAtoms.map((atom) => (
+        <section
+          key={crossIntentKey(atom)}
+          className="sc-preview-cross-intent sc-save-note"
+          data-testid="candidate-preview-cross-intent-note"
+          data-path-bytes={atom.pathBytesBase64}
         >
-          <input
-            type="checkbox"
-            checked={isAcknowledged(acknowledgedAtoms, atom)}
-            disabled={!atom}
-            onChange={() => toggleUnattributed(entryId)}
-          />
-          <span>Include unattributed change {displayPath} — I acknowledge no agent was seen touching it.</span>
-        </label>
-        );
-      })}
+          <strong>Co-contributor context for {atom.displayPath}</strong>
+          <div>
+            Other work also contributed to this path. This is informational and does not block saving.
+            Checkpoint history can help review earlier versions.
+          </div>
+        </section>
+      ))}
+      {unattributedRows.length > 0 && (
+        <section data-testid="candidate-preview-unattributed">
+          <ul>
+            {unattributedRows.map(({ entryId, displayPath }) => <li key={entryId}>{displayPath}</li>)}
+          </ul>
+          <label className="sc-preview-ack" data-testid="candidate-preview-unattributed-ack-all">
+            <input
+              type="checkbox"
+              checked={allUnattributedAcknowledged}
+              disabled={unattributedAtoms.length !== unattributedRows.length}
+              onChange={(event) => setAtomsAcknowledged(unattributedAtoms, event.target.checked)}
+            />
+            <span>I acknowledge these unattributed changes were not witnessed by an agent.</span>
+          </label>
+        </section>
+      )}
 
       {/* Editable commit-message body. */}
       <label className="sc-preview-msg-label" htmlFor="candidate-preview-message">
@@ -583,7 +501,6 @@ export default function CandidatePreview({
                   reviewedManifestDigest: response.reviewedManifest?.reviewedManifestDigest ?? null,
                   durableFinalizationIntent: response.durableFinalizationIntent ?? [],
                   acknowledgedChallengeAtoms: acknowledgedAtoms,
-                  crossIntentResolutions: selectedCrossResolutions,
                   previewedCandidateId: response.isCandidate && 'candidateId' in response.candidate
                     ? response.candidate.candidateId
                     : null,

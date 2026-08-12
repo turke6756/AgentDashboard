@@ -128,7 +128,9 @@ async function runCandidateSubmit(
       preview,
     );
   }
-  if (!input.draft && (preview.reviewedManifest?.challengeAtoms.length ?? 0) > 0) {
+  const hasUnattributedChallenge = preview.reviewedManifest?.challengeAtoms
+    .some((atom) => atom.kind === 'unattributed') ?? false;
+  if (!input.draft && hasUnattributedChallenge) {
     return localRefusal(
       'preview-verify',
       'acknowledgement-missing',

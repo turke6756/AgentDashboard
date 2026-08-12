@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ReviewChallengeAtom } from '../../../shared/commit-candidates';
+import type { CrossIntentChallengeAtom, ReviewChallengeAtom } from '../../../shared/commit-candidates';
 import type { SaveCardPreviewResponse, SaveSweepResponse } from '../../../shared/types';
 import type { CandidatePreviewDraft } from './CandidatePreview';
 import { createCandidateSubmitter } from './candidate-submit';
@@ -13,6 +13,13 @@ const selection = {
 const unattributedAtom: ReviewChallengeAtom = {
   kind: 'unattributed', atomId: 'unattributed-1', digest: 'atom-digest-1',
   pathBytesBase64: 'c3JjL2EudHM=', memberEffectDigest: 'effect-entry-1',
+};
+
+const crossIntentAtom: CrossIntentChallengeAtom = {
+  kind: 'cross-intent', atomId: 'cross-intent-1', digest: 'cross-digest-1', reasonVersion: 1,
+  pathBytesBase64: 'c3JjL3NoYXJlZC50cw==', displayPath: 'src/shared.ts',
+  earlierIntentId: 'intent-earlier', laterIntentId: 'intent-later',
+  evidenceDigest: 'cross-digest-1', resolution: null,
 };
 
 function preview(over: Partial<SaveCardPreviewResponse> = {}): SaveCardPreviewResponse {
@@ -170,7 +177,20 @@ describe('candidate submit sweep transaction', () => {
       && result.response.results.every((terminal) => terminal.kind === 'saved'))).toBe(true);
   });
 
-  it('requires the review pane when the server returns challenge atoms', async () => {
+  it('REACHABILITY:candidate-submit-degating lets undrafted cross-intent-only evidence proceed', async () => {
+    const deps = api();
+    deps.preview.mockResolvedValue(preview({
+      reviewedManifest: { ...preview().reviewedManifest!, challengeAtoms: [crossIntentAtom] },
+    }));
+
+    await expect(
+      createCandidateSubmitter(deps).submit({ workspaceId: 'ws-1', selection }),
+      'REACHABILITY:candidate-submit-degating cross-intent context must reach sweep',
+    ).resolves.toMatchObject({ kind: 'completed' });
+    expect(deps.sweep).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps undrafted unattributed evidence behind acknowledgement-missing', async () => {
     const deps = api();
     deps.preview.mockResolvedValue(preview({
       reviewedManifest: { ...preview().reviewedManifest!, challengeAtoms: [unattributedAtom] },
@@ -178,6 +198,32 @@ describe('candidate submit sweep transaction', () => {
     await expect(createCandidateSubmitter(deps).submit({ workspaceId: 'ws-1', selection }))
       .resolves.toMatchObject({ kind: 'refused', refusal: { code: 'acknowledgement-missing' } });
     expect(deps.sweep).not.toHaveBeenCalled();
+  });
+
+  it('keeps undrafted mixed evidence blocked because the unattributed atom dominates', async () => {
+    const deps = api();
+    // Cross-intent context alone proceeds; this fixture differs only by the
+    // unattributed atom, so the surviving unattributed guard solely determines refusal.
+    deps.preview.mockResolvedValue(preview({
+      reviewedManifest: {
+        ...preview().reviewedManifest!, challengeAtoms: [crossIntentAtom, unattributedAtom],
+      },
+    }));
+    await expect(createCandidateSubmitter(deps).submit({ workspaceId: 'ws-1', selection }))
+      .resolves.toMatchObject({ kind: 'refused', refusal: { code: 'acknowledgement-missing' } });
+    expect(deps.sweep).not.toHaveBeenCalled();
+  });
+
+  it('lets a drafted acknowledgement proceed with unattributed evidence', async () => {
+    const deps = api();
+    const response = preview({
+      reviewedManifest: { ...preview().reviewedManifest!, challengeAtoms: [unattributedAtom] },
+    });
+    await expect(createCandidateSubmitter(deps).submit({
+      workspaceId: 'ws-1', selection,
+      draft: draft({ response, acknowledgedChallengeAtoms: [unattributedAtom] }),
+    })).resolves.toMatchObject({ kind: 'completed' });
+    expect(deps.sweep).toHaveBeenCalledTimes(1);
   });
 
   it('marks sweep transport loss uncertain and never retries automatically', async () => {

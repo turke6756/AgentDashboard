@@ -206,7 +206,7 @@ describe('SaveCard intent-first rendering', () => {
     expect(request).not.toHaveProperty('packageId');
   });
 
-  it('commits one fallback gesture when its member is shared with a second fallback unit', async () => {
+  it('commits one fallback gesture with cross-intent context when its member is shared with another fallback unit', async () => {
     const first = unit({
       intentId: 'agent-fallback:first', kind: 'agent-session-fallback',
       saveUnitId: 'agent-fallback:first', saveUnitKind: 'agent-session-fallback',
@@ -241,7 +241,12 @@ describe('SaveCard intent-first rendering', () => {
       selectionDriftDisplayPaths: {},
       pinnedSelection: { selectedComponentIds: [], selectedUnattributedEntryIds: ['entry-1'], frozenMemberCount: 1 },
       reviewedManifest: { manifestVersion: 2, reviewedManifestDigest: 'review-digest', members: [],
-        challengeVersion: 1, challengeAtoms: [] },
+        challengeVersion: 1, challengeAtoms: [{
+          kind: 'cross-intent', atomId: 'fallback-cross', digest: 'fallback-cross-digest', reasonVersion: 1,
+          pathBytesBase64: btoa('src/intent.ts'), displayPath: 'src/intent.ts',
+          earlierIntentId: first.intentId, laterIntentId: second.intentId,
+          evidenceDigest: 'fallback-cross-digest', resolution: null,
+        }] },
       durableFinalizationIntent: [{ finalizationId: 'fallback-fin', packageId: first.intentId,
         packageRevision: 1, boundaryStatus: 'ready', frozenMemberManifestDigest: 'frozen-digest' }],
     } as never);
@@ -264,7 +269,12 @@ describe('SaveCard intent-first rendering', () => {
     expect(window.api.saveCard.preview).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1', saveUnitIds: [first.intentId], finalizationIds: ['fallback-fin'],
     }));
-    expect(window.api.saveCard.sweep).toHaveBeenCalled();
+    const previewRequest = vi.mocked(window.api.saveCard.preview).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(previewRequest).not.toHaveProperty('resolutionIds');
+    expect(window.api.saveCard.resolveAttribution).not.toHaveBeenCalled();
+    expect(window.api.saveCard.sweep).toHaveBeenCalledWith(expect.objectContaining({
+      acknowledgedChallengeAtoms: [],
+    }));
     expect(article.textContent).toContain('saved — commit commit-1');
   });
 
