@@ -23,6 +23,7 @@ import { resolveInternalGit } from '../git/git-runtime';
 import { ComposeLockRegistry } from '../commit-candidates/compose-lock-registry';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
 import { readCurrentCommitRepresentation } from '../commit-candidates/commit-representation';
+import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
 import { BUNDLE_CONTRACT_VERSION } from '../../shared/constants';
 import type { CandidateTokenSnapshot } from '../commit-candidates/candidate-service';
 import type { CandidateMember, CommitCandidate, CommitOutcome, RepositoryIdentity } from '../../shared/commit-candidates';
@@ -110,6 +111,12 @@ async function preview(root: string, tokenId = 'token-1'): Promise<Preview> {
     },
   });
   const member = candidateMember(relative, rawBlobOid, rep.commitBlobOid, rep.commitMode);
+  const indexFingerprint = await computeIndexFingerprint({
+    repoRoot: root,
+    gitExe: EXE,
+    runGit,
+    runGitBytes,
+  });
   const repository: RepositoryIdentity = {
     repositoryKey: REPOSITORY_KEY,
     objectDatabaseKey: `odb:${root}`,
@@ -149,8 +156,8 @@ async function preview(root: string, tokenId = 'token-1'): Promise<Preview> {
       },
       componentTopologyDigest: 'topology-race',
       pinnedHeadOid: head,
-      indexFingerprint: 'preview-index-fingerprint',
-      indexWriteTreeOid: null,
+      indexFingerprint: indexFingerprint.fingerprint,
+      indexWriteTreeOid: indexFingerprint.writeTreeOid,
       commitEffects: [{
         pathBytesBase64: member.path.pathBytesBase64,
         operation: 'write',
@@ -240,6 +247,7 @@ interface HarnessOptions {
   reassemble?: CommitCoordinatorDeps['reassemble'];
   readMemberRepresentation?: CommitCoordinatorDeps['readMemberRepresentation'];
   runGit?: CommitCoordinatorDeps['runGit'];
+  runGitBytes?: CommitCoordinatorDeps['runGitBytes'];
 }
 
 function harness(pre: Preview, options: HarnessOptions = {}) {
@@ -255,7 +263,7 @@ function harness(pre: Preview, options: HarnessOptions = {}) {
     tokens,
     attempts,
     runGit: options.runGit ?? ((cwd, args, opts) => runGit(cwd, args, { ...opts, gitExe: EXE })),
-    runGitBytes: (cwd, args, opts) => runGitBytes(cwd, args, { ...opts, gitExe: EXE }),
+    runGitBytes: options.runGitBytes ?? ((cwd, args, opts) => runGitBytes(cwd, args, { ...opts, gitExe: EXE })),
     reassemble: options.reassemble ?? (async (snapshot) => live(snapshot)),
     readMemberRepresentation: options.readMemberRepresentation ?? actualRepresentation,
     locateRepository: () => ({ repoRoot: pre.root, gitExe: EXE }),
@@ -374,6 +382,133 @@ test('row 3b — write after final revalidation cannot enter commit and remains 
   assertHeadFile(root, 'selected.txt', 'reviewed-selected\n');
   assertFile(root, 'selected.txt', 'concurrent-unreviewed\n');
   assert.equal(gitText(root, ['status', '--short', '--', 'selected.txt']).trim(), 'M selected.txt');
+});
+
+test('consume-time index mutation after final member read aborts stale before commit', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  let indexMutated = false;
+  const { coordinator } = harness(pre, {
+    readMemberRepresentation: async (input) => {
+      const representation = await actualRepresentation(input);
+      if (!indexMutated) {
+        indexMutated = true;
+        fs.writeFileSync(path.join(root, 'other.txt'), 'staged-after-final-read\n');
+        gitText(root, ['add', '--', 'other.txt']);
+      }
+      return representation;
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'index fingerprint race' }));
+  assert.equal(outcome.status, 'aborted-stale', 'REACHABILITY:consume-index-fingerprint');
+  assert.equal(indexMutated, true, 'the index mutation followed the final member read');
+  assert.equal(gitText(root, ['rev-parse', 'HEAD']).trim(), pre.head);
+  assert.deepEqual(gitBytes(root, ['show', ':other.txt']), Buffer.from('staged-after-final-read\n'));
+});
+
+test('consume-time unmerged index aborts stale before commit', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  let unmergedInjected = false;
+  const { coordinator } = harness(pre, {
+    readMemberRepresentation: async (input) => {
+      const representation = await actualRepresentation(input);
+      if (!unmergedInjected) {
+        unmergedInjected = true;
+        const blobOid = gitText(root, ['rev-parse', 'HEAD:other.txt']).trim();
+        execFileSync(EXE, ['update-index', '--index-info'], {
+          cwd: root,
+          input: `100644 ${blobOid} 1\tconflict.txt\n100644 ${blobOid} 2\tconflict.txt\n`,
+        });
+      }
+      return representation;
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'unmerged index race' }));
+  assert.equal(outcome.status, 'aborted-stale');
+  assert.equal(unmergedInjected, true);
+  assert.equal(gitText(root, ['rev-parse', 'HEAD']).trim(), pre.head);
+});
+
+test('consume-time fingerprint read failure aborts stale before commit', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  let initialSnapshotReadComplete = false;
+  const { coordinator } = harness(pre, {
+    runGitBytes: async (cwd, args, opts) => {
+      if (args[0] === 'ls-files' && args.includes('--stage')) {
+        if (initialSnapshotReadComplete) throw new Error('injected fingerprint read failure');
+        const result = await runGitBytes(cwd, args, { ...opts, gitExe: EXE });
+        initialSnapshotReadComplete = true;
+        return result;
+      }
+      return runGitBytes(cwd, args, { ...opts, gitExe: EXE });
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'fingerprint read failure' }));
+  assert.equal(outcome.status, 'aborted-stale');
+  assert.equal(initialSnapshotReadComplete, true, 'the mandatory integrity snapshot succeeded first');
+  assert.equal(gitText(root, ['rev-parse', 'HEAD']).trim(), pre.head);
+});
+
+test('mandatory pre-operation index read failure aborts stale before commit', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  const { coordinator } = harness(pre, {
+    runGitBytes: async () => {
+      throw new Error('injected index snapshot read failure');
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'index snapshot failure' }));
+  assert.equal(outcome.status, 'aborted-stale');
+  assert.equal(gitText(root, ['rev-parse', 'HEAD']).trim(), pre.head);
+});
+
+test('matching authoritative fingerprint commits when secondary write-tree is unavailable', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  assert.ok(pre.snapshot.indexWriteTreeOid, 'fixture minted a secondary write-tree identity');
+  let secondaryUnavailable = false;
+  const { coordinator } = harness(pre, {
+    runGit: async (cwd, args, opts) => {
+      if (!secondaryUnavailable && args[0] === 'write-tree' && !opts.indexFile) {
+        secondaryUnavailable = true;
+        throw new Error('injected secondary write-tree failure');
+      }
+      return runGit(cwd, args, { ...opts, gitExe: EXE });
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'secondary unavailable' }));
+  assert.equal(outcome.status, 'committed', JSON.stringify(outcome));
+  assert.equal(secondaryUnavailable, true);
+  assertHeadFile(root, 'selected.txt', 'reviewed-selected\n');
+});
+
+test('secondary write-tree mismatch aborts stale when both identities are available', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'selected.txt'), 'reviewed-selected\n');
+  const pre = await preview(root);
+  assert.ok(pre.snapshot.indexWriteTreeOid, 'fixture minted a secondary write-tree identity');
+  let secondaryReplaced = false;
+  const { coordinator } = harness(pre, {
+    runGit: async (cwd, args, opts) => {
+      const result = await runGit(cwd, args, { ...opts, gitExe: EXE });
+      if (!secondaryReplaced && args[0] === 'write-tree' && !opts.indexFile) {
+        secondaryReplaced = true;
+        return { ...result, stdout: `${pre.head}\n` };
+      }
+      return result;
+    },
+  });
+  const outcome = classified(await coordinator.commit({ tokenId: 'token-1', message: 'secondary mismatch' }));
+  assert.equal(outcome.status, 'aborted-stale');
+  assert.equal(secondaryReplaced, true);
+  assert.equal(gitText(root, ['rev-parse', 'HEAD']).trim(), pre.head);
 });
 
 test('row 4 — index mutation after preview changes identity and aborts without repair', async () => {

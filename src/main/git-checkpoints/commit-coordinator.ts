@@ -62,6 +62,7 @@ import type {
 import { writeIntentCommitLedger } from '../database';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
 import { parseStageEntries } from '../commit-candidates/commit-representation';
+import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
 import {
   candidateCommitSigningArgs,
   readCandidateCommitPolicy,
@@ -702,7 +703,7 @@ export class CommitCoordinator {
     try {
       beforeIndex = await this.readIndex(repoRoot, gitExe);
     } catch (error) {
-      return { kind: 'aborted-error', reason: `cannot snapshot the real index: ${error instanceof Error ? error.message : String(error)}`, resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
+      return { kind: 'stale', reason: `cannot snapshot the real index: ${error instanceof Error ? error.message : String(error)}`, resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
     }
 
     // FINAL raw + clean-filtered byte-match revalidation, immediately before commit
@@ -729,6 +730,35 @@ export class CommitCoordinator {
       if (result.kind === 'moved') {
         return { kind: 'stale', reason: `selected bytes moved for ${result.member.path.displayPath}`, resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
       }
+    }
+
+    // Re-read the authoritative real-index fingerprint after the final member
+    // reads and before constructing any tree or commit object. This closes the
+    // consume-time gap for index writes already visible at this read. A later
+    // external write can still race this observation; the post-operation index
+    // integrity check below remains the evidence for that honest limit and may
+    // legitimately report a mismatch after the commit already exists.
+    let recomputedIndex: Awaited<ReturnType<typeof computeIndexFingerprint>>;
+    try {
+      recomputedIndex = await computeIndexFingerprint({
+        repoRoot,
+        gitExe,
+        runGit: this.d.runGit,
+        runGitBytes: this.d.runGitBytes,
+      });
+    } catch (error) {
+      return { kind: 'stale', reason: `cannot recompute the real-index fingerprint: ${error instanceof Error ? error.message : String(error)}`, resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
+    }
+    if (recomputedIndex.hasUnmerged) {
+      return { kind: 'stale', reason: 'real index contains unmerged entries', resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
+    }
+    if (recomputedIndex.fingerprint !== snapshot.indexFingerprint) {
+      return { kind: 'stale', reason: 'real-index fingerprint diverged since mint', resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
+    }
+    if (snapshot.indexWriteTreeOid !== null
+      && recomputedIndex.writeTreeOid !== null
+      && recomputedIndex.writeTreeOid !== snapshot.indexWriteTreeOid) {
+      return { kind: 'stale', reason: 'real-index write-tree identity diverged since mint', resolvedHeadOid: await this.readHead(repoRoot, gitExe) };
     }
 
     // The temp index is isolated from the real index. It is seeded from the pinned
@@ -871,6 +901,9 @@ export class CommitCoordinator {
 
       const mismatchedTreePaths = this.compareEffects(effects, tree);
 
+      // External-race detection after the operation: a mismatch here may be
+      // legitimate evidence of an outside index write after the final pre-commit
+      // fingerprint read, and therefore may be reported after the commit exists.
       let integrity: IndexIntegrityResult;
       if (!reconciliationAvailable) {
         integrity = { status: 'unavailable', mismatchedPaths: [] };
