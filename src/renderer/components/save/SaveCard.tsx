@@ -13,6 +13,7 @@ import {
   useSaveCardStore,
   useSaveCardAttention,
 } from '../../stores/save-card-store';
+import { SAVE_CARD_LONGER_SCAN_BUDGET_MS } from '../../../shared/types';
 import type {
   SaveCardFleetAdhocMarkDoneResponse,
   SaveCardFleetAdhocMarkDoneSuccess,
@@ -54,6 +55,65 @@ export interface SaveCardProps {
     decision: 'exclude-selected' | 'keep-everything' | 'decide-later',
     selectedPathBytesBase64: string[],
   ) => Promise<void> | void;
+}
+
+export interface BudgetStopBannerOptions {
+  computeState: SaveCardInventoryResponse['computeState'];
+  firstContact?: boolean;
+  onLongerScan: (timeBudgetMs: number) => void;
+  longerScanInProgress?: boolean;
+}
+
+/** Render inventory-budget copy while keeping the rerun attached to the real
+ * Save-card inventory refresh path. */
+export function renderBudgetStopBanner({
+  computeState,
+  firstContact = false,
+  onLongerScan,
+  longerScanInProgress = false,
+}: BudgetStopBannerOptions): React.ReactNode {
+  const inventory = computeState?.inventory;
+  if (!inventory || inventory.completeness !== 'partial') return null;
+  const reasons = inventory.dirtyCorpusStopReasons;
+  if (reasons.includes('deadline')) {
+    return (
+      <>
+        <div className="sc-state-title">
+          {firstContact ? 'Save tracking setup ran out of time' : 'Save progress ran out of time'}
+        </div>
+        <div className="sc-state-body">
+          The scan ran out of time, not space — {inventory.observedEntries.toLocaleString('en-US')} changes found so far.
+        </div>
+        <div className="sc-state-hint">Run a longer scan to look for the remaining changes.</div>
+        <div className="sc-actions">
+          <button type="button" className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+            data-testid="save-card-longer-scan" disabled={longerScanInProgress}
+            onClick={() => onLongerScan(SAVE_CARD_LONGER_SCAN_BUDGET_MS)}>
+            {longerScanInProgress ? 'Running a longer scan...' : 'Run a longer scan'}
+          </button>
+        </div>
+      </>
+    );
+  }
+  const labels: Record<string, string> = {
+    entries: 'change-count budget',
+    'status-bytes': 'Git status output budget',
+    'path-bytes': 'path-data budget',
+  };
+  const reached = reasons.map((reason) => labels[reason]).filter(Boolean);
+  return (
+    <>
+      <div className="sc-state-title">
+        {firstContact ? 'Save tracking setup needs a smaller scope' : 'Save progress needs a smaller scope'}
+      </div>
+      <div className="sc-state-body">
+        Lares counted at least {inventory.observedEntries.toLocaleString('en-US')} changes before the workspace scan stopped. The results below are bounded lower bounds. Review a smaller scope or exclude directories you do not want included in save tracking.
+      </div>
+      <div className="sc-state-hint">
+        {reached.length ? `Reached: ${reached.join(', ')}.` : 'The bounded workspace inventory did not complete.'}
+      </div>
+    </>
+  );
 }
 
 function FirstContactPrompt({
@@ -750,12 +810,15 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   }, [infoOpen]);
 
   const load = useCallback(
-    async (wsId: string, isCurrent: () => boolean, keepVisible: boolean) => {
+    async (wsId: string, isCurrent: () => boolean, keepVisible: boolean, timeBudgetMs?: number) => {
       if (keepVisible) setRefreshing(true);
       else setState({ status: 'loading' });
       try {
         const response: SaveCardInventoryResponse = await window.api.saveCard.getInventory({
           workspaceId: wsId,
+          ...(timeBudgetMs !== undefined
+            ? { inventoryTimeBudgetMs: timeBudgetMs }
+            : {}),
         });
         if (isCurrent()) {
           cacheInventory(wsId, response);
@@ -789,10 +852,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     };
   }, [workspaceId, cached?.loadedAt, load]);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((timeBudgetMs?: number) => {
     if (!workspaceId) return;
     let active = true;
-    void load(workspaceId, () => active, state.status === 'ready');
+    void load(workspaceId, () => active, state.status === 'ready', timeBudgetMs);
   }, [workspaceId, load, state.status]);
 
   const suppliedOnboarding = onboarding ?? (state.status === 'ready' ? state.onboarding : null);
@@ -905,7 +968,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
               type="button"
               className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
               data-testid="save-card-retry"
-              onClick={refresh}
+              onClick={() => refresh()}
             >
               Try again
             </button>
@@ -980,10 +1043,24 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     void runScopedRescan(btoa(binary), displayPath);
   };
 
+  const budgetBanner = snapshotState === 'partial'
+    ? renderBudgetStopBanner({
+        computeState: computeProjection.computeState,
+        firstContact: suppliedOnboarding?.presentation === 'first-contact',
+        onLongerScan: refresh,
+        longerScanInProgress: refreshing,
+      })
+    : null;
+
   const degradedBanner = degradedCopy ? (
     <section className="sc-state" data-testid="save-card-degraded" data-compute-state={snapshotState}>
-      <div className="sc-state-title">{degradedCopy.title}</div>
-      <div className="sc-state-body">{degradedCopy.body}</div>
+      {budgetBanner ?? (
+        <>
+          <div className="sc-state-title">{degradedCopy.title}</div>
+          <div className="sc-state-body">{degradedCopy.body}</div>
+          {degradedCopy.budgetLine && <div className="sc-state-hint">{degradedCopy.budgetLine}</div>}
+        </>
+      )}
       {snapshotState === 'protection-incomplete' && allMembers.length > 0 && (
         <ul data-testid="save-card-protection-assessments">
           {allMembers.slice(0, 20).map((member) => {
@@ -995,7 +1072,6 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
           })}
         </ul>
       )}
-      {degradedCopy.budgetLine && <div className="sc-state-hint">{degradedCopy.budgetLine}</div>}
       {(snapshotState === 'partial' || snapshotState === 'protection-incomplete') && (
         <div className="sc-actions" aria-label="Scoped save rescans">
           {scopeOptions.map((option) => (
@@ -1126,7 +1202,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
               type="button"
               className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
               data-testid="save-card-retry"
-              onClick={refresh}
+              onClick={() => refresh()}
             >
               Refresh
             </button>

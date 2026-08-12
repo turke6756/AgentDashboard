@@ -2174,7 +2174,10 @@ export const SAVECARD_SCOPED_RESCAN_CHANNEL = 'savecard:scopedRescan' as const;
 /** Renderer request for the repository inventory containing this workspace. */
 export interface SaveCardInventoryRequest {
   workspaceId: string;
+  /** Optional one-shot escalation for the Save-card longer-scan affordance. */
+  inventoryTimeBudgetMs?: number;
 }
+export const SAVE_CARD_LONGER_SCAN_BUDGET_MS = 24_000 as const;
 export interface SaveCardScopedRescanRequest extends SaveCardInventoryRequest {
   pathBytesBase64: string;
 }

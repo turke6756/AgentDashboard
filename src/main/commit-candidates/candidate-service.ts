@@ -175,6 +175,7 @@ export interface CandidateReadRequest {
   workspaces: readonly CandidateWorkspaceInput[];
   /** Main-validated repo-relative Git pathspec for a recovery rescan. */
   scopePathspec?: string;
+  inventoryTimeBudgetMs?: number;
 }
 
 export type CaptureTurnReader = (
@@ -722,6 +723,7 @@ export class CommitCandidateService {
           runGitBytes: this.deps.runGitBytes,
           runGit: this.deps.runGit,
           gitExe,
+          timeBudgetMs: request.inventoryTimeBudgetMs,
         }),
       ),
     );

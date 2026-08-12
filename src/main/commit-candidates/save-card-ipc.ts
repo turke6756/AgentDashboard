@@ -110,6 +110,7 @@ export {
   type SaveCardFleetAdhocMarkDoneRequest,
   type SaveCardFleetAdhocMarkDoneResponse,
 } from '../../shared/types';
+import { SAVE_CARD_LONGER_SCAN_BUDGET_MS } from '../../shared/types';
 
 /** Narrow read-only surface injected after the Save-card engine is available. */
 export interface SaveCardRoutes {
@@ -169,7 +170,14 @@ function requireRequest(raw: unknown): SaveCardInventoryRequest {
       'save-card-bad-request',
     );
   }
-  return { workspaceId };
+  const inventoryTimeBudgetMs = (raw as { inventoryTimeBudgetMs?: unknown }).inventoryTimeBudgetMs;
+  if (inventoryTimeBudgetMs !== undefined && inventoryTimeBudgetMs !== SAVE_CARD_LONGER_SCAN_BUDGET_MS) {
+    throw new SaveCardIpcError('unsupported inventory time budget', 'save-card-bad-request');
+  }
+  return {
+    workspaceId,
+    ...(inventoryTimeBudgetMs === SAVE_CARD_LONGER_SCAN_BUDGET_MS ? { inventoryTimeBudgetMs } : {}),
+  };
 }
 
 function requireOnboardingDecision(raw: unknown): SaveCardOnboardingDecisionRequest {

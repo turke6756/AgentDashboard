@@ -69,6 +69,7 @@ export interface ProduceDirtyInventoryOptions {
   runGitStream?: RunGitStreamLike;
   gitExe?: string;
   deadlineAt?: number;
+  timeBudgetMs?: number;
   /** Status-byte hard cap. Retained for compatibility; status is not buffered. */
   maxBytes?: number;
   /** WP-A test seam; WP-B replaces this with its named entry budget. */
@@ -104,7 +105,7 @@ export interface DirtyInventoryResult extends DirtyInventoryDraft {
 export const DIRTY_ENTRY_BUDGET = Object.freeze({ soft: 5_000, hard: 10_000 });
 export const STATUS_OUTPUT_BYTE_BUDGET = Object.freeze({ hard: 64 << 20 });
 export const PATH_BYTES_BUDGET = Object.freeze({ hard: 16 << 20 });
-export const SNAPSHOT_TIME_BUDGET = Object.freeze({ softMs: 2_000, hardMs: 5_000 });
+export const SNAPSHOT_TIME_BUDGET = Object.freeze({ softMs: 2_000, hardMs: 12_000 });
 const STATUS_TIMEOUT_MS = 30_000;
 
 // ── Path encoding (§2: bytes authoritative; display derived after) ─────────────
@@ -589,7 +590,7 @@ export async function produceDirtyInventory(opts: ProduceDirtyInventoryOptions):
   const maxBytes = opts.maxBytes ?? STATUS_OUTPUT_BYTE_BUDGET.hard;
   const maxEntries = opts.maxEntries ?? DIRTY_ENTRY_BUDGET.hard;
   const maxPathBytes = opts.maxPathBytes ?? PATH_BYTES_BUDGET.hard;
-  const deadlineAt = opts.deadlineAt ?? Date.now() + SNAPSHOT_TIME_BUDGET.hardMs;
+  const deadlineAt = opts.deadlineAt ?? Date.now() + (opts.timeBudgetMs ?? SNAPSHOT_TIME_BUDGET.hardMs);
   const runStream = opts.runGitStream ?? runGitStreaming;
 
   // §2 source command. `--no-optional-locks` avoids touching index.lock on a

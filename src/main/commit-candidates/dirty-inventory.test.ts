@@ -215,7 +215,7 @@ test('named dirty-inventory budgets match the approved hard and soft values', ()
   assert.deepEqual(DIRTY_ENTRY_BUDGET, { soft: 5_000, hard: 10_000 });
   assert.deepEqual(STATUS_OUTPUT_BYTE_BUDGET, { hard: 64 << 20 });
   assert.deepEqual(PATH_BYTES_BUDGET, { hard: 16 << 20 });
-  assert.deepEqual(SNAPSHOT_TIME_BUDGET, { softMs: 2_000, hardMs: 5_000 });
+  assert.deepEqual(SNAPSHOT_TIME_BUDGET, { softMs: 2_000, hardMs: 12_000 });
 });
 
 test('hash-object stdin path encoder emits raw and Git C-quoted lines byte-exactly', () => {

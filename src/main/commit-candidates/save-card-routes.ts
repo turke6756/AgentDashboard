@@ -278,7 +278,14 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       }),
     );
 
-    const request = { targetWorkspaceId: req.workspaceId, workspaces, ...(scopePathspec ? { scopePathspec } : {}) };
+    const request = {
+      targetWorkspaceId: req.workspaceId,
+      workspaces,
+      ...(scopePathspec ? { scopePathspec } : {}),
+      ...(req.inventoryTimeBudgetMs !== undefined
+        ? { inventoryTimeBudgetMs: req.inventoryTimeBudgetMs }
+        : {}),
+    };
     const target = workspaces.find((ws) => ws.workspaceId === req.workspaceId);
     const repositoryKey = snapshotRegistry && target
       ? await resolveRepositoryKey(target.workspaceDir, target.capability)
