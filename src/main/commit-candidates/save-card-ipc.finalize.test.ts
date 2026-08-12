@@ -15,7 +15,7 @@ import {
   registerSaveCardFinalizeIpc,
   SaveCardFinalizeRefusalError,
   SAVECARD_FINALIZE_CHANNEL,
-  type FleetAdhocBoundaryContext,
+  type SaveUnitBoundaryContext,
   type IpcLike,
   type SaveCardFinalizeRoutes,
   type SaveCardFleetAdhocMarkDoneResponse,
@@ -140,9 +140,10 @@ const fakeFreeze: MemberFreezer = async (entry) => ({
 
 /** A finalize context for `pkg-fleet`. Note: NO finalizationKind / plan fields —
  *  the channel pins those, so the provider physically cannot supply them. */
-function boundaryContext(over: Partial<FleetAdhocBoundaryContext> = {}): FleetAdhocBoundaryContext {
+function boundaryContext(over: Partial<SaveUnitBoundaryContext> = {}): SaveUnitBoundaryContext {
   return {
     packageId: 'pkg-fleet', repositoryKey: 'repo-1', finalizedBy: 'human-ipc',
+    saveUnitId: 'pkg-fleet', saveUnitKind: 'named-save-set',
     checkpointTurnId: 'turn-1', boundaryOid: OID_A, contractVersion: 1,
     createdFromWorkspaceId: 'ws-1', members: [member('src/a.ts')],
     repoRoot: '/unused', pinnedHeadOid: null,
@@ -153,9 +154,18 @@ function boundaryContext(over: Partial<FleetAdhocBoundaryContext> = {}): FleetAd
   };
 }
 
-function makeRoutes(store: FakeIntentStore, opts: { fail?: boolean } = {}, over: Partial<FleetAdhocBoundaryContext> = {}): SaveCardFinalizeRoutes {
+function requestIdentity(req: Parameters<SaveCardFinalizeRoutes['resolveBoundary']>[0]) {
+  return 'saveUnitId' in req
+    ? { saveUnitId: req.saveUnitId, saveUnitKind: req.saveUnitKind }
+    : { saveUnitId: req.packageId, saveUnitKind: 'named-save-set' as const };
+}
+
+function makeRoutes(store: FakeIntentStore, opts: { fail?: boolean } = {}, over: Partial<SaveUnitBoundaryContext> = {}): SaveCardFinalizeRoutes {
   return {
-    resolveBoundary: async (req) => boundaryContext({ packageId: req.packageId, contractVersion: 2, ...over }),
+    resolveBoundary: async (req) => {
+      const identity = requestIdentity(req);
+      return boundaryContext({ packageId: identity.saveUnitId, ...identity, contractVersion: 2, ...over });
+    },
     finalizeIntentDeps: {
       store,
       writeRef: makeWriter(new FakeStore(), opts),
@@ -203,7 +213,10 @@ test('production handler writes a v2 named-save-set finalization', async () => {
   const store = new FakeIntentStore();
   try {
     registerSaveCardFinalizeIpc(ipc, () => ({
-      resolveBoundary: async (req) => boundaryContext({ packageId: req.packageId, contractVersion: 2 }),
+      resolveBoundary: async (req) => {
+        const identity = requestIdentity(req);
+        return boundaryContext({ packageId: identity.saveUnitId, ...identity, contractVersion: 2 });
+      },
       finalizeIntentDeps: {
         store, writeRef: makeWriter(new FakeStore()), freeze: fakeFreeze,
         now: () => 100, newId: () => 'fin-intent',
@@ -218,6 +231,22 @@ test('production handler writes a v2 named-save-set finalization', async () => {
     assert.equal(store.rows.get('fin-intent')?.lifecycleStatus, 'active');
   } finally {
   }
+});
+
+test('production finalize IPC passes the fallback discriminant into finalizeSaveUnit', async () => {
+  const ipc = new FakeIpc();
+  const store = new FakeIntentStore();
+  registerSaveCardFinalizeIpc(ipc, () => makeRoutes(store));
+  const response = await ipc.invoke(SAVECARD_FINALIZE_CHANNEL, {
+    saveUnitId: 'agent-fallback:stable',
+    saveUnitKind: 'agent-session-fallback',
+    targetWorkspaceId: 'ws-1',
+  }) as Exclude<SaveCardFleetAdhocMarkDoneResponse, { ok: false }>;
+  assert.equal(response.packageId, 'agent-fallback:stable');
+  const row = store.rows.get('fin-fleet');
+  assert.equal(row?.saveUnitId, 'agent-fallback:stable');
+  assert.equal(row?.saveUnitKind, 'agent-session-fallback',
+    'REACHABILITY:finalize-ipc-enters-producer');
 });
 
 test('the mark-done channel is DISTINCT — it registers its own mutating channel name', () => {
@@ -252,13 +281,17 @@ test('rejects a malformed mark-done request before resolving the boundary', asyn
   const ipc = new FakeIpc();
   let resolved = 0;
   registerSaveCardFinalizeIpc(ipc, () => ({
-    resolveBoundary: async (req) => { resolved++; return boundaryContext({ packageId: req.packageId }); },
+    resolveBoundary: async (req) => {
+      resolved++;
+      const identity = requestIdentity(req);
+      return boundaryContext({ packageId: identity.saveUnitId, ...identity });
+    },
   }));
 
-  await assert.rejects(() => ipc.invoke(SAVECARD_FINALIZE_CHANNEL, null), /non-empty packageId/i);
+  await assert.rejects(() => ipc.invoke(SAVECARD_FINALIZE_CHANNEL, null), /non-empty .*packageId/i);
   await assert.rejects(
     () => ipc.invoke(SAVECARD_FINALIZE_CHANNEL, { packageId: '', targetWorkspaceId: 'ws-1' }),
-    /non-empty packageId/i,
+    /non-empty .*packageId/i,
   );
   // targetWorkspaceId is equally required — a fleet-adhoc mark-done cannot route
   // without knowing the pane's repository, so it is rejected before resolving.

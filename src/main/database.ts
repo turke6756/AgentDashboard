@@ -2534,7 +2534,7 @@ function initContextOptimizerSchema(): void {
     CREATE TABLE IF NOT EXISTS save_intent_finalizations (
       id                   TEXT PRIMARY KEY,
       save_unit_id         TEXT NOT NULL,
-      save_unit_kind       TEXT NOT NULL CHECK (save_unit_kind IN ('task','named-save-set')),
+      save_unit_kind       TEXT NOT NULL CHECK (save_unit_kind IN ('task','named-save-set','agent-session-fallback')),
       revision             INTEGER NOT NULL CHECK (revision > 0),
       repository_key       TEXT NOT NULL,
       member_manifest_json TEXT NOT NULL,
@@ -2564,7 +2564,56 @@ function initContextOptimizerSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_commit_intent_links_intent
       ON commit_intent_links(intent_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS commit_save_unit_links (
+      repository_key TEXT NOT NULL,
+      commit_oid      TEXT NOT NULL,
+      save_unit_id    TEXT NOT NULL,
+      save_unit_kind  TEXT NOT NULL CHECK (save_unit_kind IN ('task','named-save-set','agent-session-fallback')),
+      disposition     TEXT NOT NULL CHECK (disposition IN ('committed','superseded')),
+      created_at      INTEGER NOT NULL,
+      PRIMARY KEY (repository_key, commit_oid, save_unit_id, save_unit_kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_commit_save_unit_links_unit
+      ON commit_save_unit_links(save_unit_id, save_unit_kind, created_at);
   `);
+  // WP-F2: the unit-shaped V2 finalization table is known-empty at rollout. A
+  // database created by an older build still carries the narrower CHECK even
+  // though CREATE TABLE IF NOT EXISTS above is a no-op. Widen only that empty
+  // table, and fail closed rather than putting any existing history at risk.
+  const saveIntentFinalizationSql = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'save_intent_finalizations'`,
+  ).get() as { sql?: string } | undefined;
+  if (!saveIntentFinalizationSql?.sql?.includes("'agent-session-fallback'")) {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM save_intent_finalizations').get() as { count: number };
+    if (Number(row.count) !== 0) {
+      throw new Error('refusing to widen populated save_intent_finalizations');
+    }
+    db.exec(`
+      DROP TABLE save_intent_finalizations;
+      CREATE TABLE save_intent_finalizations (
+        id                   TEXT PRIMARY KEY,
+        save_unit_id         TEXT NOT NULL,
+        save_unit_kind       TEXT NOT NULL CHECK (save_unit_kind IN ('task','named-save-set','agent-session-fallback')),
+        revision             INTEGER NOT NULL CHECK (revision > 0),
+        repository_key       TEXT NOT NULL,
+        member_manifest_json TEXT NOT NULL,
+        checkpoint_oid       TEXT NOT NULL,
+        boundary_ref         TEXT,
+        boundary_status      TEXT NOT NULL CHECK (boundary_status IN ('ready','unavailable','pruned')),
+        lifecycle_status     TEXT NOT NULL CHECK (lifecycle_status IN ('active','superseded','committed','abandoned')),
+        finalized_at         INTEGER NOT NULL,
+        finalized_by         TEXT NOT NULL,
+        superseded_by_finalization_id TEXT REFERENCES save_intent_finalizations(id),
+        failure_reason       TEXT,
+        UNIQUE (save_unit_id, revision)
+      );
+      CREATE UNIQUE INDEX idx_save_intent_finalizations_active
+        ON save_intent_finalizations(save_unit_id) WHERE lifecycle_status = 'active';
+      CREATE INDEX idx_save_intent_finalizations_repository
+        ON save_intent_finalizations(repository_key, lifecycle_status);
+    `);
+  }
   try { db.exec(`ALTER TABLE turn_records ADD COLUMN intent_id TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE turn_records ADD COLUMN intent_stamp_source TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN intent_id TEXT`); } catch { /* exists */ }
@@ -5747,8 +5796,19 @@ export interface CommitIntentLink {
   createdAt: number;
 }
 
+export interface CommitSaveUnitLink {
+  repositoryKey: string;
+  commitOid: string;
+  saveUnitId: string;
+  saveUnitKind: SaveUnitKind;
+  disposition: 'committed' | 'superseded';
+  createdAt: number;
+}
+
 export interface IntentCommitLedgerWrite extends CommitLedgerWrite {
   intentLinks: readonly CommitIntentLink[];
+  /** Generic write-side identity. Optional only for pre-WP-F2 callers/tests. */
+  saveUnitLinks?: readonly CommitSaveUnitLink[];
   consumedResolutions: readonly { id: string; evidenceDigest: string; candidateId: string }[];
   finalizationIds: readonly string[];
 }
@@ -5909,6 +5969,17 @@ export function writeIntentCommitLedger(write: IntentCommitLedgerWrite): void {
            committed_at = CASE WHEN ? = 'committed' THEN ? ELSE committed_at END
           WHERE id = ? AND state IN ('open','ready')`,
         [link.disposition, link.disposition, link.createdAt, link.intentId],
+      );
+    }
+    for (const link of write.saveUnitLinks ?? []) {
+      run(
+        `INSERT INTO commit_save_unit_links
+          (repository_key, commit_oid, save_unit_id, save_unit_kind, disposition, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repository_key, commit_oid, save_unit_id, save_unit_kind) DO UPDATE SET
+           disposition = excluded.disposition`,
+        [link.repositoryKey, link.commitOid, link.saveUnitId, link.saveUnitKind,
+          link.disposition, link.createdAt],
       );
     }
     for (const consumed of write.consumedResolutions) {
@@ -7736,6 +7807,24 @@ export function listAllPlanExecutionRunIds(): Set<string> {
   return new Set(rows.map((r: any) => String(r.id)));
 }
 
+export function listCommitSaveUnitLinks(
+  repositoryKey: string,
+  commitOid: string,
+): CommitSaveUnitLink[] {
+  return queryAll(
+    `SELECT * FROM commit_save_unit_links
+      WHERE repository_key = ? AND commit_oid = ? ORDER BY save_unit_id, save_unit_kind`,
+    [repositoryKey, commitOid],
+  ).map((row: any) => ({
+    repositoryKey: row.repository_key,
+    commitOid: row.commit_oid,
+    saveUnitId: row.save_unit_id,
+    saveUnitKind: row.save_unit_kind,
+    disposition: row.disposition,
+    createdAt: row.created_at,
+  }));
+}
+
 /** True when a plan has ever minted an execution run (active or archived). */
 export function planHasExecutionRuns(planId: string): boolean {
   return queryOne('SELECT 1 AS present FROM plan_execution_runs WHERE plan_id = ? LIMIT 1', [planId]) != null;
@@ -7838,7 +7927,7 @@ export interface AttributionResolution {
   consumedByCandidateId: string | null;
 }
 
-export type SaveUnitKind = 'task' | 'named-save-set';
+export type SaveUnitKind = 'task' | 'named-save-set' | 'agent-session-fallback';
 export interface SaveIntentFinalization {
   id: string;
   saveUnitId: string;

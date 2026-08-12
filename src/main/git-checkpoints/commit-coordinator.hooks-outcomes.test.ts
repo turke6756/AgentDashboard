@@ -37,6 +37,7 @@ import {
   type CommitClosureStore,
 } from './commit-reconciler';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
 import { runGit, runGitBytes, type RunGitOptions } from './git-command';
 
 interface TestCase { name: string; run(): Promise<void>; }
@@ -114,6 +115,7 @@ interface Preview {
 
 async function preview(root: string, tokenId = 'token-1', candidateId = 'candidate-hooks'): Promise<Preview> {
   const head = gitText(root, ['rev-parse', 'HEAD']).trim();
+  const index = await computeIndexFingerprint({ repoRoot: root, gitExe: EXE, runGit, runGitBytes });
   const relative = 'selected.txt';
   const encoded = pathOf(relative);
   const rawBlobOid = gitText(root, ['hash-object', '--no-filters', '--', relative]).trim();
@@ -168,8 +170,8 @@ async function preview(root: string, tokenId = 'token-1', candidateId = 'candida
       },
       componentTopologyDigest: 'topology-hooks',
       pinnedHeadOid: head,
-      indexFingerprint: 'preview-index-fingerprint',
-      indexWriteTreeOid: null,
+      indexFingerprint: index.fingerprint,
+      indexWriteTreeOid: index.writeTreeOid,
       commitEffects: [{
         pathBytesBase64: member.path.pathBytesBase64,
         operation: 'write',

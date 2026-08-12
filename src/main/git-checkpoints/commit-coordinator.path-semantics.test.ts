@@ -23,6 +23,7 @@ import { runGit, runGitBytes } from './git-command';
 import { resolveInternalGit } from '../git/git-runtime';
 import { ComposeLockRegistry } from '../commit-candidates/compose-lock-registry';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
 import { readCurrentCommitRepresentation } from '../commit-candidates/commit-representation';
 import { BUNDLE_CONTRACT_VERSION } from '../../shared/constants';
 import type { CandidateTokenSnapshot } from '../commit-candidates/candidate-service';
@@ -89,6 +90,7 @@ interface Preview {
 
 async function preview(root: string, inputs: MemberInput[], tokenId = 'token-paths'): Promise<Preview> {
   const head = gitText(root, ['rev-parse', 'HEAD']).trim();
+  const index = await computeIndexFingerprint({ repoRoot: root, gitExe: EXE, runGit, runGitBytes });
   const members: CandidateMember[] = [];
   const liveMembers: LiveMember[] = [];
   const expected = new Map<string, { state: 'present' | 'absent'; oid: string | null; mode: string | null }>();
@@ -195,8 +197,8 @@ async function preview(root: string, inputs: MemberInput[], tokenId = 'token-pat
       },
       componentTopologyDigest: 'topology-paths',
       pinnedHeadOid: head,
-      indexFingerprint: 'path-preview-index',
-      indexWriteTreeOid: null,
+      indexFingerprint: index.fingerprint,
+      indexWriteTreeOid: index.writeTreeOid,
       commitEffects,
       finalizationManifests: [],
       associations: [{

@@ -194,6 +194,8 @@ async function setup(): Promise<void> {
       return runGitBytes(cwd, args, { ...options, gitExe });
     },
     readTurnWitnesses: (workspaceId) => witnessRows[workspaceId] ?? [],
+    readFallbackTurnIdentity: () => null,
+    readFallbackAgent: () => null,
     readCaptureTurns,
   });
 }

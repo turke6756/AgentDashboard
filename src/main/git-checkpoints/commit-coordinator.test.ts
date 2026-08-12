@@ -16,6 +16,7 @@
 //     staged content preserved byte-identical.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -33,7 +34,8 @@ import {
 import { ComposeLockRegistry } from '../commit-candidates/compose-lock-registry';
 import { CheckpointQueue } from './checkpoint-queue';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
-import { readCurrentCommitRepresentation } from '../commit-candidates/commit-representation';
+import { parseStageEntries, readCurrentCommitRepresentation } from '../commit-candidates/commit-representation';
+import { canonicalize } from '../commit-candidates/jcs';
 import { runGit, runGitBytes, type GitRunBytesResult, type GitRunResult, type RunGitOptions } from './git-command';
 import { resolveInternalGit } from '../git/git-runtime';
 import { BUNDLE_CONTRACT_VERSION } from '../../shared/constants';
@@ -223,6 +225,7 @@ function treeBuf(entries: Array<{ pathB64: string; mode: string; oid: string }>)
 }
 
 function makeFakeGit(config: FakeGitConfig) {
+  const initialIndex = config.indexReads?.[0] ?? Buffer.alloc(0);
   const indexQueue = [...(config.indexReads ?? [Buffer.alloc(0), Buffer.alloc(0)])];
   const constructedTreeOid = 'c'.repeat(40);
   let commitCount = 0;
@@ -282,7 +285,19 @@ function makeFakeGit(config: FakeGitConfig) {
     }
     throw new Error(`unexpected fake runGitBytes: ${args.join(' ')}`);
   };
-  return { runGit: runGitFake, runGitBytes: runGitBytesFake, commitCount: () => commitCount };
+  return { runGit: runGitFake, runGitBytes: runGitBytesFake, commitCount: () => commitCount, initialIndex };
+}
+
+function indexFingerprint(index: Buffer): string {
+  const entries = parseStageEntries(index)
+    .map((entry) => ({
+      mode: entry.mode, oid: entry.oid, stage: entry.stage,
+      pathBytesBase64: entry.pathBytesBase64,
+    }))
+    .sort((left, right) => (left.pathBytesBase64 < right.pathBytesBase64 ? -1
+      : left.pathBytesBase64 > right.pathBytesBase64 ? 1
+        : left.stage < right.stage ? -1 : left.stage > right.stage ? 1 : 0));
+  return createHash('sha256').update(canonicalize(entries), 'utf8').digest('hex');
 }
 
 interface HarnessOverrides {
@@ -298,10 +313,14 @@ interface HarnessOverrides {
 }
 
 function fakeHarness(snapshot: CandidateTokenSnapshot, git: ReturnType<typeof makeFakeGit>, overrides: HarnessOverrides = {}) {
-  const tokens = new FakeTokens(snapshot);
+  const effectiveSnapshot: CandidateTokenSnapshot = {
+    ...snapshot,
+    indexFingerprint: indexFingerprint(git.initialIndex),
+  };
+  const tokens = new FakeTokens(effectiveSnapshot);
   const attempts = new FakeAttempts();
   const composeLocks = overrides.composeLocks ?? new ComposeLockRegistry();
-  const expectedByEntry = new Map(snapshot.candidate.members.map((m) => [m.entryId, m]));
+  const expectedByEntry = new Map(effectiveSnapshot.candidate.members.map((m) => [m.entryId, m]));
   const coordinator = new CommitCoordinator({
     composeLocks,
     queue: overrides.queue ?? new CheckpointQueue(),
@@ -329,7 +348,7 @@ function fakeHarness(snapshot: CandidateTokenSnapshot, git: ReturnType<typeof ma
     now: () => 1000,
     newAttemptId: () => 'attempt-1',
     writeIntentLedger: overrides.writeIntentLedger,
-    contractVersion: overrides.contractVersion ?? snapshot.candidate.contractVersion,
+    contractVersion: overrides.contractVersion ?? effectiveSnapshot.candidate.contractVersion,
     resolvePlanningActivity: overrides.resolvePlanningActivity,
     advancePlanningActivityHead: overrides.advancePlanningActivityHead,
     promotePlanningActivity: overrides.promotePlanningActivity,
@@ -604,8 +623,53 @@ test('v2 committed outcome writes the intent ledger once after the verified HEAD
   assert.equal(ledgerWrites.length, 1);
   assert.equal(ledgerWrites[0].record.commitOid, 'b'.repeat(40));
   assert.deepEqual(ledgerWrites[0].intentLinks.map((link) => link.intentId), ['intent-1']);
+  assert.ok(ledgerWrites[0].saveUnitLinks?.some((link) =>
+    link.saveUnitId === 'intent-1' && link.saveUnitKind === 'task'));
   assert.deepEqual(ledgerWrites[0].consumedResolutions.map((row) => row.id), ['resolution-1']);
   assert.deepEqual(ledgerWrites[0].finalizationIds, ['f1']);
+});
+
+test('fallback commit writes only the generic save-unit ledger after runLockedCommit', async () => {
+  const legacySnapshot = makeSnapshot({
+    contractVersion: 2,
+    members: [{ entryId: 'e1', relative: 'a.txt', rawBlobOid: 'r1', commitBlobOid: 'c1', commitMode: '100644' }],
+  });
+  const snapshot: CandidateTokenSnapshot = {
+    ...legacySnapshot,
+    candidate: {
+      ...legacySnapshot.candidate,
+      saveUnitIds: ['agent-fallback:stable'],
+      saveUnits: [{
+        saveUnitId: 'agent-fallback:stable',
+        saveUnitKind: 'agent-session-fallback',
+        revision: 1,
+        planId: null,
+        planItemId: null,
+        finalizationId: 'fallback-fin',
+      }],
+      saveIntentIds: [],
+    },
+    normalizedRequest: {
+      selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [],
+      finalizationIds: ['fallback-fin'], acknowledgeUnattributedEntryIds: [],
+    },
+  };
+  const ledgerWrites: import('../database').IntentCommitLedgerWrite[] = [];
+  const { coordinator } = fakeHarness(snapshot, makeFakeGit(committedGit()), {
+    writeIntentLedger: (write) => { ledgerWrites.push(write); },
+    contractVersion: 2,
+  });
+  const result = await coordinator.commit({ tokenId: 'tok-1', message: 'Save fallback' });
+  assert.equal((result as any).outcome.status, 'committed');
+  const write = ledgerWrites.find((candidate) => candidate.record.commitOid === 'b'.repeat(40));
+  assert.ok(write, 'runLockedCommit must reach the post-CAS ledger write');
+  assert.ok(write.saveUnitLinks?.some((link) =>
+    link.saveUnitId === 'agent-fallback:stable'
+      && link.saveUnitKind === 'agent-session-fallback'
+      && link.disposition === 'committed'),
+  'REACHABILITY:commit-save-unit-links-write');
+  assert.ok(!write.intentLinks.some((link) => link.intentId === 'agent-fallback:stable'),
+    'a fallback id must never enter the save_intents FK ledger');
 });
 
 test('marked commit with unexpected parent → repository-state-uncertain, OID preserved, no drift-into-committed', async () => {
@@ -662,7 +726,7 @@ test('hook alters an UNRELATED staged entry though committed tree matches → in
   const other = pathOf('unrelated.txt');
   const before = stageBuf([{ mode: '100644', oid: '1111111111111111111111111111111111111111', stage: '0', path: 'unrelated.txt' }]);
   const after = stageBuf([{ mode: '100644', oid: '2222222222222222222222222222222222222222', stage: '0', path: 'unrelated.txt' }]);
-  const git = makeFakeGit(committedGit({ indexReads: [before, after] }));
+  const git = makeFakeGit(committedGit({ indexReads: [before, before, after] }));
   const { coordinator } = fakeHarness(snapshot, git);
   const result = await coordinator.commit({ tokenId: 'tok-1', message: 'msg' });
   const outcome = (result as any).outcome;
@@ -683,7 +747,7 @@ test('pre-existing staged member-adjacent content excluded; only its committed p
     { mode: '100644', oid: 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1', stage: '0', path: 'a.txt' },
     { mode: '100644', oid: '9999999999999999999999999999999999999999', stage: '0', path: 'keep.txt' },
   ]);
-  const git = makeFakeGit(committedGit({ indexReads: [before, after] }));
+  const git = makeFakeGit(committedGit({ indexReads: [before, before, after] }));
   const { coordinator } = fakeHarness(snapshot, git);
   const result = await coordinator.commit({ tokenId: 'tok-1', message: 'msg' });
   const outcome = (result as any).outcome;
@@ -741,11 +805,16 @@ async function realMember(root: string, head: string | null, relative: string) {
 }
 
 function realHarness(snapshot: CandidateTokenSnapshot, root: string) {
-  const tokens = new FakeTokens(snapshot);
+  const staged = execFileSync(EXE, ['ls-files', '--stage', '-z'], { cwd: root });
+  const effectiveSnapshot: CandidateTokenSnapshot = {
+    ...snapshot,
+    indexFingerprint: indexFingerprint(staged),
+  };
+  const tokens = new FakeTokens(effectiveSnapshot);
   const attempts = new FakeAttempts();
   const composeLocks = new ComposeLockRegistry();
   const coordinator = new CommitCoordinator({
-    contractVersion: snapshot.candidate.contractVersion,
+    contractVersion: effectiveSnapshot.candidate.contractVersion,
     composeLocks,
     queue: new CheckpointQueue(),
     tokens,

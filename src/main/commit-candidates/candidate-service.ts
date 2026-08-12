@@ -36,7 +36,7 @@ import type {
   ReviewedSemanticManifest,
   ReviewedSemanticManifestV2,
   AnyReviewedSemanticManifest,
-  ReviewedSaveIntent,
+  ReviewedSaveUnit,
   ReviewedAttributionResolution,
 } from '../../shared/commit-candidates';
 import {
@@ -449,7 +449,13 @@ export class CommitCandidateService {
       issuedAt: now,
       expiresAt: now + this.tokenTtlMs,
     };
-    const candidate = cloneAndFreeze({ ...built, token });
+    const saveUnits = reviewedSaveUnitsForFinalizations(normalizedRequest.finalizationIds, context);
+    const candidate = cloneAndFreeze({
+      ...built,
+      saveUnitIds: saveUnits.map((unit) => unit.saveUnitId),
+      saveUnits,
+      token,
+    });
     const carryVerdict = carryVerdictByCandidate.get(built);
     if (carryVerdict) carryVerdictByCandidate.set(candidate, carryVerdict);
     const selectedComponents = context.components.filter((component) =>
@@ -495,6 +501,7 @@ export class CommitCandidateService {
     context: CandidateBuildContext,
   ): CommitCandidate | SelectionPreview {
     const normalizedRequest: MintCandidateTokenRequestV2 = {
+      saveUnitIds: sortedUniqueStrings(request.saveUnitIds ?? []),
       selectedIntentIds: sortedUniqueStrings(request.selectedIntentIds),
       selectedNamedSaveSetIds: sortedUniqueStrings(request.selectedNamedSaveSetIds),
       resolutionIds: sortedUniqueStrings(request.resolutionIds),
@@ -1007,6 +1014,9 @@ export interface CandidateBuildContext {
   /** Fresh intent-first selection documents. Required by v2 mint only. */
   intentUnits?: readonly CandidateIntentUnit[];
   fallbackUnits?: readonly CandidateFallbackUnit[];
+  /** Exact unit discriminants retained while V2 finalizations are adapted to
+   * the legacy PackageFinalization read shape. */
+  saveUnitFinalizations?: readonly CandidateSaveUnitFinalization[];
   witnessedProvenanceByTurnId?: ReadonlyMap<string, Readonly<WitnessedCommitProvenance>>;
   attributionResolutions?: readonly ReviewedAttributionResolution[];
   protectionByEntryId?: Readonly<Record<string, ProtectionRung>>;
@@ -1034,6 +1044,34 @@ export interface CandidateFallbackUnit {
   saveUnitKind: 'agent-session-fallback';
   memberEntryIds: string[];
   contributingTurnIds: string[];
+}
+
+export interface CandidateSaveUnitFinalization {
+  finalizationId: string;
+  saveUnitId: string;
+  saveUnitKind: import('../../shared/commit-candidates').ProjectedSaveUnitKind;
+  revision: number;
+  planId: string | null;
+  planItemId: string | null;
+}
+
+function reviewedSaveUnitsForFinalizations(
+  finalizationIds: readonly string[],
+  context: CandidateBuildContext,
+): ReviewedSaveUnit[] {
+  const selected = new Set(finalizationIds);
+  return (context.saveUnitFinalizations ?? [])
+    .filter((unit) => selected.has(unit.finalizationId))
+    .map((unit) => ({
+      saveUnitId: unit.saveUnitId,
+      saveUnitKind: unit.saveUnitKind,
+      revision: unit.revision,
+      planId: unit.planId,
+      planItemId: unit.planItemId,
+      finalizationId: unit.finalizationId,
+    }))
+    .sort((left, right) => compareBase64(left.saveUnitId, right.saveUnitId)
+      || compareBase64(left.saveUnitKind, right.saveUnitKind));
 }
 
 /** Main-owned acknowledgement classifier. Renderer-selected members never
@@ -1252,23 +1290,15 @@ export function buildReviewedSemanticManifest(
     challengeAtoms: [...topologyEvidence.topologyAtoms, ...unattributedAtoms],
   };
   if (candidate.contractVersion !== 2) return normalizeReviewedSemanticManifest(base);
-  const selectedUnits = (context.intentUnits ?? [])
-    .filter((unit) => candidate.saveIntentIds?.includes(unit.intentId));
-  const saveIntents: ReviewedSaveIntent[] = selectedUnits.map((unit) => ({
-    intentId: unit.intentId,
-    kind: unit.kind,
-    revision: unit.revision,
-    title: unit.title,
-    planId: unit.planId,
-    planItemId: unit.planItemId,
-    finalizationId: finalizations.find((finalization) =>
-      finalization.packageId === unit.intentId)?.finalizationId ?? '',
-  }));
+  const saveUnits = candidate.saveUnits ?? reviewedSaveUnitsForFinalizations(
+    finalizations.map((finalization) => finalization.finalizationId),
+    context,
+  );
   return normalizeReviewedSemanticManifest({
     ...base,
     manifestVersion: REVIEWED_SEMANTIC_MANIFEST_VERSION_V2,
     candidateContractVersion: 2,
-    saveIntents,
+    saveUnits,
     attributionResolutions: candidate.attributionResolutions ?? [],
   } satisfies ReviewedSemanticManifestV2);
 }
@@ -1974,9 +2004,27 @@ export function buildCandidateV2(
   request: MintCandidateTokenRequestV2,
   context: CandidateBuildContext,
 ): CommitCandidate | SelectionPreview {
-  const units = context.intentUnits ?? [];
-  const byId = new Map(units.map((unit) => [unit.intentId, unit]));
+  const units = [
+    ...(context.intentUnits ?? []).map((unit) => ({
+      saveUnitId: unit.intentId,
+      saveUnitKind: unit.kind as import('../../shared/commit-candidates').ProjectedSaveUnitKind,
+      revision: unit.revision,
+      planId: unit.planId,
+      planItemId: unit.planItemId,
+      memberEntryIds: unit.memberEntryIds,
+    })),
+    ...(context.fallbackUnits ?? []).map((unit) => ({
+      saveUnitId: unit.saveUnitId,
+      saveUnitKind: unit.saveUnitKind as import('../../shared/commit-candidates').ProjectedSaveUnitKind,
+      revision: 0,
+      planId: null,
+      planItemId: null,
+      memberEntryIds: unit.memberEntryIds,
+    })),
+  ];
+  const byId = new Map(units.map((unit) => [unit.saveUnitId, unit]));
   const selectedIds = sortedUniqueStrings([
+    ...(request.saveUnitIds ?? []),
     ...request.selectedIntentIds,
     ...request.selectedNamedSaveSetIds,
   ]);
@@ -1985,13 +2033,11 @@ export function buildCandidateV2(
     if (!unit) throw new Error(`unknown save intent in selection: ${id}`);
     return unit;
   });
-  if (selectedUnits.some((unit) => unit.kind === 'task'
-      && !request.selectedIntentIds.includes(unit.intentId))) {
-    throw new Error('task intents must be selected through selectedIntentIds');
+  if (request.selectedIntentIds.some((id) => byId.get(id)?.saveUnitKind !== 'task')) {
+    throw new Error('selectedIntentIds may contain only task intents');
   }
-  if (selectedUnits.some((unit) => unit.kind === 'named-save-set'
-      && !request.selectedNamedSaveSetIds.includes(unit.intentId))) {
-    throw new Error('named save sets must be selected through selectedNamedSaveSetIds');
+  if (request.selectedNamedSaveSetIds.some((id) => byId.get(id)?.saveUnitKind !== 'named-save-set')) {
+    throw new Error('selectedNamedSaveSetIds may contain only named save sets');
   }
   const memberEntryIds = sortedUniqueStrings(selectedUnits.flatMap((unit) => unit.memberEntryIds));
   const selectedEntrySet = new Set(memberEntryIds);
@@ -2006,19 +2052,23 @@ export function buildCandidateV2(
   if (!('candidateId' in built)) return built;
 
   const finalizationById = new Map(context.finalizations.map((row) => [row.id, row]));
-  const reviewedIntents: ReviewedSaveIntent[] = selectedUnits.map((unit) => {
+  const reviewedUnits: ReviewedSaveUnit[] = selectedUnits.map((unit) => {
     const finalization = request.finalizationIds
       .map((id) => finalizationById.get(id))
-      .find((row) => row?.packageId === unit.intentId);
+      .find((row) => row?.packageId === unit.saveUnitId);
     return {
-      intentId: unit.intentId, kind: unit.kind, revision: unit.revision,
-      title: unit.title, planId: unit.planId, planItemId: unit.planItemId,
+      saveUnitId: unit.saveUnitId,
+      saveUnitKind: unit.saveUnitKind,
+      revision: unit.saveUnitKind === 'agent-session-fallback'
+        ? finalization?.packageRevision ?? 0
+        : unit.revision,
+      planId: unit.planId, planItemId: unit.planItemId,
       finalizationId: finalization?.id ?? '',
     };
   });
-  const staleIntent = reviewedIntents.some((intent) => {
-    const finalization = finalizationById.get(intent.finalizationId);
-    return !finalization || finalization.packageRevision !== intent.revision
+  const staleIntent = reviewedUnits.some((unit) => {
+    const finalization = finalizationById.get(unit.finalizationId);
+    return !finalization || finalization.packageRevision !== unit.revision
       || finalization.lifecycleStatus !== 'active';
   });
 
@@ -2031,17 +2081,21 @@ export function buildCandidateV2(
   const eligibility: CommitEligibility = staleIntent
     ? { eligible: false, reason: 'intent-revision-stale' }
     : built.eligibility;
-  const normalizedIntents = [...reviewedIntents].sort((a, b) => compareBase64(a.intentId, b.intentId));
+  const normalizedUnits = [...reviewedUnits].sort((a, b) => compareBase64(a.saveUnitId, b.saveUnitId));
   const normalizedResolutions = [...resolutions].sort((a, b) => compareBase64(a.resolutionId, b.resolutionId));
   const candidateId = sha256Hex(canonicalize({
     candidateContractVersion: 2,
     legacyCandidateClosureId: built.candidateId,
-    saveIntents: normalizedIntents,
+    saveUnits: normalizedUnits,
     attributionResolutions: normalizedResolutions,
   }));
   return {
     ...built, candidateId, contractVersion: 2, componentIds,
-    saveIntentIds: normalizedIntents.map((intent) => intent.intentId),
+    saveUnitIds: normalizedUnits.map((unit) => unit.saveUnitId),
+    saveUnits: normalizedUnits,
+    saveIntentIds: normalizedUnits
+      .filter((unit) => unit.saveUnitKind !== 'agent-session-fallback')
+      .map((unit) => unit.saveUnitId),
     selectedNamedSaveSetIds: sortedUniqueStrings(request.selectedNamedSaveSetIds),
     attributionResolutions: normalizedResolutions,
     eligibility,

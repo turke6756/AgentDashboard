@@ -23,6 +23,7 @@ import { renderSaveRefusal } from './save-refusal-copy';
 // exists yet (the CommitCoordinator is a later stage).
 
 export interface CandidatePreviewSelection {
+  saveUnitIds?: string[];
   selectedComponentIds: string[];
   selectedUnattributedEntryIds: string[];
   selectedIntentIds?: string[];

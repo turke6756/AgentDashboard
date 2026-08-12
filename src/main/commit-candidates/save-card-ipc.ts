@@ -40,13 +40,14 @@ import {
   type SaveCardAttributionResolutionResponse,
   type SaveCardPinnedSelection,
   type SaveCardFleetAdhocMarkDoneRequest,
+  type SaveCardSaveUnitMarkDoneRequest,
   type SaveCardFleetAdhocMarkDoneResponse,
   type SaveCardFleetAdhocRefusalCode,
   type SaveCardAttentionRequest,
   type SaveCardCheckpointExpiryNotice,
   type SaveCardAttentionChangedPayload,
 } from '../../shared/types';
-import type { PackageFinalization } from '../database';
+import type { PackageFinalization, SaveUnitKind } from '../database';
 import {
   finalizePackage,
   finalizeSaveUnit,
@@ -317,13 +318,20 @@ export type FleetAdhocBoundaryContext = Omit<
   'finalizationKind' | 'planId' | 'planItemId'
 > & { pinnedSelection: SaveCardPinnedSelection };
 
+export type SaveUnitBoundaryContext = FleetAdhocBoundaryContext & {
+  saveUnitId: string;
+  saveUnitKind: SaveUnitKind;
+};
+
 /** Renderer-safe result of a fleet-adhoc mark-done. `boundaryRef` is always
  *  captured — even an `unavailable` outcome names the ref it failed to pin. */
 /** The main-process seam the mark-done channel drives. `resolveBoundary` maps a
  *  renderer `packageId` to the full finalize context; `finalizeDeps` is left
  *  undefined in production so the live DB store + real ref writer are used. */
 export interface SaveCardFinalizeRoutes {
-  resolveBoundary(req: SaveCardFleetAdhocMarkDoneRequest): Promise<FleetAdhocBoundaryContext>;
+  resolveBoundary(
+    req: SaveCardFleetAdhocMarkDoneRequest | SaveCardSaveUnitMarkDoneRequest,
+  ): Promise<SaveUnitBoundaryContext>;
   finalizeDeps?: FinalizePackageDeps;
   finalizeIntentDeps?: FinalizeSaveUnitDeps;
   onFinalized?: (repositoryKey: string) => void;
@@ -356,19 +364,31 @@ function requireFinalizeRoutes(routes: SaveCardFinalizeRoutes | null): SaveCardF
   return routes;
 }
 
-function requireMarkDoneRequest(raw: unknown): SaveCardFleetAdhocMarkDoneRequest {
+function requireMarkDoneRequest(raw: unknown): SaveCardSaveUnitMarkDoneRequest {
   if (!raw || typeof raw !== 'object') {
     throw new SaveCardIpcError(
       'a request with a non-empty packageId is required',
       'save-card-bad-request',
     );
   }
-  const packageId = (raw as { packageId?: unknown }).packageId;
-  if (typeof packageId !== 'string' || packageId === '') {
+  const requestedSaveUnitId = (raw as { saveUnitId?: unknown }).saveUnitId;
+  const legacyPackageId = (raw as { packageId?: unknown }).packageId;
+  const saveUnitId = typeof requestedSaveUnitId === 'string' && requestedSaveUnitId !== ''
+    ? requestedSaveUnitId
+    : legacyPackageId;
+  if (typeof saveUnitId !== 'string' || saveUnitId === '') {
     throw new SaveCardIpcError(
-      'a non-empty packageId is required',
+      'a non-empty saveUnitId or packageId is required',
       'save-card-bad-request',
     );
+  }
+  const requestedKind = (raw as { saveUnitKind?: unknown }).saveUnitKind;
+  const saveUnitKind = requestedSaveUnitId === undefined
+    ? 'named-save-set'
+    : requestedKind;
+  if (saveUnitKind !== 'task' && saveUnitKind !== 'named-save-set'
+      && saveUnitKind !== 'agent-session-fallback') {
+    throw new SaveCardIpcError('a valid saveUnitKind is required', 'save-card-bad-request');
   }
   const targetWorkspaceId = (raw as { targetWorkspaceId?: unknown }).targetWorkspaceId;
   if (typeof targetWorkspaceId !== 'string' || targetWorkspaceId === '') {
@@ -377,7 +397,7 @@ function requireMarkDoneRequest(raw: unknown): SaveCardFleetAdhocMarkDoneRequest
       'save-card-bad-request',
     );
   }
-  return { packageId, targetWorkspaceId };
+  return { saveUnitId, saveUnitKind, targetWorkspaceId };
 }
 
 function toMarkDoneResponse(
@@ -414,7 +434,7 @@ export function registerSaveCardFinalizeIpc(
   ipc.handle(SAVECARD_FINALIZE_CHANNEL, async (_event, raw: unknown) => {
     const routes = requireFinalizeRoutes(getRoutes());
     const request = requireMarkDoneRequest(raw);
-    let context: FleetAdhocBoundaryContext;
+    let context: SaveUnitBoundaryContext;
     try {
       context = await routes.resolveBoundary(request);
     } catch (error) {
@@ -435,8 +455,8 @@ export function registerSaveCardFinalizeIpc(
     }
     const result = await finalizeSaveUnit({
       ...context,
-      saveUnitId: context.packageId,
-      saveUnitKind: 'named-save-set',
+      saveUnitId: context.saveUnitId,
+      saveUnitKind: context.saveUnitKind,
     }, routes.finalizeIntentDeps);
     routes.onFinalized?.(context.repositoryKey);
     const outcome: FinalizeOutcome = result.outcome;
@@ -529,6 +549,7 @@ function requirePreviewRequest(raw: unknown): SaveCardPreviewRequest {
     workspaceId: record.workspaceId,
     selectedComponentIds: optionalStrings('selectedComponentIds'),
     selectedUnattributedEntryIds: optionalStrings('selectedUnattributedEntryIds'),
+    saveUnitIds: optionalStrings('saveUnitIds'),
     selectedIntentIds: optionalStrings('selectedIntentIds'),
     selectedNamedSaveSetIds: optionalStrings('selectedNamedSaveSetIds'),
     resolutionIds: optionalStrings('resolutionIds'),
@@ -544,6 +565,7 @@ function requirePreviewRequest(raw: unknown): SaveCardPreviewRequest {
 
 const MINT_REQUEST_FIELDS = new Set([
   'workspaceId',
+  'saveUnitIds',
   'selectedIntentIds',
   'selectedNamedSaveSetIds',
   'resolutionIds',
@@ -573,6 +595,7 @@ function requireMintRequest(raw: unknown): SaveCardMintRequest {
   };
   return {
     workspaceId: record.workspaceId,
+    saveUnitIds: record.saveUnitIds === undefined ? [] : strings('saveUnitIds'),
     selectedIntentIds: strings('selectedIntentIds'),
     selectedNamedSaveSetIds: strings('selectedNamedSaveSetIds'),
     resolutionIds: strings('resolutionIds'),
@@ -971,9 +994,11 @@ export function registerSaveCardPreviewIpc(
     const routes = requirePreviewRoutes(getRoutes());
     const request = requirePreviewRequest(raw);
     const context = await routes.resolvePreviewContext(request);
-    const intentSelection = (request.selectedIntentIds?.length ?? 0) > 0
+    const intentSelection = (request.saveUnitIds?.length ?? 0) > 0
+      || (request.selectedIntentIds?.length ?? 0) > 0
       || (request.selectedNamedSaveSetIds?.length ?? 0) > 0;
     const candidate = intentSelection ? buildCandidateV2({
+      saveUnitIds: request.saveUnitIds ?? [],
       selectedIntentIds: request.selectedIntentIds ?? [],
       selectedNamedSaveSetIds: request.selectedNamedSaveSetIds ?? [],
       resolutionIds: request.resolutionIds ?? [],

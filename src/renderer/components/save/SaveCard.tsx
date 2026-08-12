@@ -143,6 +143,7 @@ function selectionForIntent(
   finalizationIds: string[] = [],
 ): CandidatePreviewSelection {
   return {
+    saveUnitIds: [unit.saveUnitId ?? unit.intentId],
     selectedComponentIds: [...unit.topologyEvidence.componentIds],
     selectedUnattributedEntryIds: unit.kind === 'named-save-set' || unit.kind === 'agent-session-fallback'
       ? unit.members.map((member) => member.entry.entryId)

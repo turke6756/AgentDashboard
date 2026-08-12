@@ -185,6 +185,32 @@ test('v2 task finalization preserves freeze-ref-transaction ordering without a l
   assert.deepEqual(events, ['ref', 'insert:intent-fin-1']);
 });
 
+test('agent-session fallback finalization preserves its distinct unit identity', async () => {
+  const rows = new Map<string, SaveIntentFinalization>();
+  const store: SaveIntentFinalizationStore = {
+    getActive: (id) => [...rows.values()].find((row) => row.saveUnitId === id
+      && row.lifecycleStatus === 'active') ?? null,
+    maxRevision: () => 0,
+    insert: (row) => { rows.set(row.id, structuredClone(row)); },
+    supersede: () => { throw new Error('fresh fallback must not supersede'); },
+    setBoundaryStatus: () => { throw new Error('fresh fallback must not reattach'); },
+    transact: (fn) => fn(),
+  };
+  const result = await finalizeSaveUnit({
+    saveUnitId: 'agent-fallback:stable',
+    saveUnitKind: 'agent-session-fallback',
+    repositoryKey: 'repo-1', finalizedBy: 'human-ipc', boundaryOid: OID_A,
+    members: [member('src/fallback.ts')], repoRoot: '/unused', pinnedHeadOid: null,
+  }, {
+    store, freeze: fakeFreeze, now: () => 100, newId: () => 'fallback-fin-1',
+    writeRef: async () => ({ ok: true }),
+  });
+  assert.equal(result.finalization.saveUnitId, 'agent-fallback:stable');
+  assert.equal(result.finalization.saveUnitKind, 'agent-session-fallback');
+  assert.equal(rows.get('fallback-fin-1')?.saveUnitId, 'agent-fallback:stable',
+    'REACHABILITY:fallback-finalization-row');
+});
+
 // ── ordering + fresh create ──────────────────────────────────────────────────────
 
 test('ordering: ref is created BEFORE the row insert, and the row is ready', async () => {

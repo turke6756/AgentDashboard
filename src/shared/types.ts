@@ -2401,6 +2401,7 @@ export const SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL = 'savecard:resolveAttribut
  *  `SelectionPreview`, never a committable candidate). */
 export interface SaveCardPreviewRequest {
   workspaceId: string;
+  saveUnitIds?: string[];
   selectedComponentIds?: string[];
   selectedUnattributedEntryIds?: string[];
   selectedIntentIds?: string[];
@@ -2417,6 +2418,9 @@ export interface SaveCardPreviewRequest {
  * renderer may only echo server identities and explicit human acknowledgements. */
 export interface SaveCardMintRequestV2 {
   workspaceId: string;
+  /** Canonical generic selection; task/named-set callers may continue to use
+   * their compatibility arrays during the transition. */
+  saveUnitIds?: string[];
   selectedIntentIds: string[];
   selectedNamedSaveSetIds: string[];
   resolutionIds: string[];

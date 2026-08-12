@@ -117,6 +117,14 @@ type DatabaseModule = typeof import('./database');
       lifecycleStatus: 'active', finalizedAt: 4, finalizedBy: 'tester',
       supersededByFinalizationId: null, failureReason: null,
     });
+    db.insertSaveIntentFinalization({
+      id: 'fallback-finalization', saveUnitId: 'fallback-unit',
+      saveUnitKind: 'agent-session-fallback', revision: 1,
+      repositoryKey, memberManifestJson: '[]', checkpointOid: 'a'.repeat(40),
+      boundaryRef: 'refs/lares/finalizations/fallback-unit/1', boundaryStatus: 'ready',
+      lifecycleStatus: 'active', finalizedAt: 4, finalizedBy: 'tester',
+      supersededByFinalizationId: null, failureReason: null,
+    });
 
     const record = {
       repositoryKey, commitOid: 'b'.repeat(40), parentOid: 'a'.repeat(40), observedAt: 5,
@@ -126,6 +134,12 @@ type DatabaseModule = typeof import('./database');
       record,
       intentLinks: [{ repositoryKey, commitOid: record.commitOid, intentId: first.id,
         disposition: 'committed', resolutionId: 'resolution-1', createdAt: 5 }],
+      saveUnitLinks: [
+        { repositoryKey, commitOid: record.commitOid, saveUnitId: first.id,
+          saveUnitKind: 'named-save-set', disposition: 'committed', createdAt: 5 },
+        { repositoryKey, commitOid: record.commitOid, saveUnitId: 'fallback-unit',
+          saveUnitKind: 'agent-session-fallback', disposition: 'committed', createdAt: 5 },
+      ],
       consumedResolutions: [
         { id: 'resolution-1', evidenceDigest: 'evidence-1', candidateId: 'candidate-1' },
         { id: 'missing-resolution', evidenceDigest: 'missing', candidateId: 'candidate-1' },
@@ -133,6 +147,8 @@ type DatabaseModule = typeof import('./database');
       finalizationIds: ['finalization-1'],
     }), /stale attribution resolution/);
     assert.deepEqual(db.listCommitIntentLinks(repositoryKey, record.commitOid), [], 'link insert rolled back');
+    assert.deepEqual(db.listCommitSaveUnitLinks(repositoryKey, record.commitOid), [],
+      'generic save-unit links roll back with the intent ledger');
     assert.equal(db.getSaveIntent(first.id)?.state, 'open', 'intent transition rolled back');
     assert.equal(db.getAttributionResolution('resolution-1')?.consumedByCandidateId, null,
       'resolution consumption rolled back');
@@ -143,15 +159,28 @@ type DatabaseModule = typeof import('./database');
       record,
       intentLinks: [{ repositoryKey, commitOid: record.commitOid, intentId: first.id,
         disposition: 'committed', resolutionId: 'resolution-1', createdAt: 5 }],
+      saveUnitLinks: [
+        { repositoryKey, commitOid: record.commitOid, saveUnitId: first.id,
+          saveUnitKind: 'named-save-set', disposition: 'committed', createdAt: 5 },
+        { repositoryKey, commitOid: record.commitOid, saveUnitId: 'fallback-unit',
+          saveUnitKind: 'agent-session-fallback', disposition: 'committed', createdAt: 5 },
+      ],
       consumedResolutions: [
         { id: 'resolution-1', evidenceDigest: 'evidence-1', candidateId: 'candidate-1' },
       ],
-      finalizationIds: ['finalization-1'],
+      finalizationIds: ['finalization-1', 'fallback-finalization'],
     });
-    assert.equal(db.listCommitIntentLinks(repositoryKey, record.commitOid).length, 1);
+    assert.ok(db.listCommitIntentLinks(repositoryKey, record.commitOid)
+      .some((link) => link.intentId === first.id));
+    const saveUnitLinks = db.listCommitSaveUnitLinks(repositoryKey, record.commitOid);
+    assert.ok(saveUnitLinks.some((link) => link.saveUnitId === first.id
+      && link.saveUnitKind === 'named-save-set'));
+    assert.ok(saveUnitLinks.some((link) => link.saveUnitId === 'fallback-unit'
+      && link.saveUnitKind === 'agent-session-fallback'));
     assert.equal(db.getSaveIntent(first.id)?.state, 'committed');
     assert.equal(db.getAttributionResolution('resolution-1')?.consumedByCandidateId, 'candidate-1');
     assert.equal(db.getSaveIntentFinalization('finalization-1')?.lifecycleStatus, 'committed');
+    assert.equal(db.getSaveIntentFinalization('fallback-finalization')?.lifecycleStatus, 'committed');
     const turn = db.allocateAndInsertTurn(workspace.id, { id: 'turn-promoted' });
     db.updateTurnRecord(turn.id, {
       beforeRef: 'refs/lares/checkpoints/ws/turn-promoted/before', beforeOid: 'c'.repeat(40), beforeReady: true,

@@ -20,6 +20,7 @@ import type {
 import {
   CommitCandidateService,
   buildCandidate,
+  buildCandidateV2,
   buildReviewedSemanticManifest,
   rememberReviewedSemanticManifest,
   type CandidateBuildContext,
@@ -146,6 +147,8 @@ function context(options: {
   finalizations?: PackageFinalization[];
   unattributed?: string[];
   repository?: RepositoryIdentity;
+  fallbackUnits?: CandidateBuildContext['fallbackUnits'];
+  saveUnitFinalizations?: CandidateBuildContext['saveUnitFinalizations'];
 } = {}): CandidateBuildContext {
   const repo = options.repository ?? repository();
   const entries = options.entries ?? [];
@@ -177,7 +180,62 @@ function context(options: {
     pinnedHeadOid: 'h'.repeat(40),
     indexFingerprint: fingerprint,
     contractVersion: 1,
+    fallbackUnits: options.fallbackUnits,
+    saveUnitFinalizations: options.saveUnitFinalizations,
   };
+}
+
+{
+  const shared = entry('fallback-shared.txt');
+  const fallbackUnitId = 'agent-fallback:stable';
+  const row = finalization([frozen('fallback-shared.txt')], 'fallback-fin');
+  row.packageId = fallbackUnitId;
+  const ctx = context({
+    entries: [shared],
+    components: [component([shared])],
+    finalizations: [row],
+    fallbackUnits: [
+      { saveUnitId: fallbackUnitId, saveUnitKind: 'agent-session-fallback',
+        memberEntryIds: [shared.entryId], contributingTurnIds: ['turn-a'] },
+      { saveUnitId: 'agent-fallback:second', saveUnitKind: 'agent-session-fallback',
+        memberEntryIds: [shared.entryId], contributingTurnIds: ['turn-b'] },
+    ],
+    saveUnitFinalizations: [{
+      finalizationId: row.id, saveUnitId: fallbackUnitId,
+      saveUnitKind: 'agent-session-fallback', revision: row.packageRevision,
+      planId: null, planItemId: null,
+    }],
+  });
+  const request = {
+    saveUnitIds: [fallbackUnitId], selectedIntentIds: [], selectedNamedSaveSetIds: [],
+    resolutionIds: [], finalizationIds: [row.id],
+  };
+  const store = service();
+  const minted = asCandidate(store.mintCandidateTokenV2(request, ctx));
+  assert.deepEqual(minted.saveUnitIds, [fallbackUnitId]);
+  assert.deepEqual(minted.saveIntentIds, [], 'fallback selection never fabricates a save_intents id');
+  assert.equal(minted.saveUnits?.[0]?.saveUnitKind, 'agent-session-fallback');
+  assert.ok(minted.token);
+  const snapshot = store.resolveCandidateToken(minted.token!.tokenId);
+  assert.equal(snapshot?.candidate.saveUnits?.[0]?.saveUnitId, fallbackUnitId);
+  const reordered = buildCandidateV2(request, {
+    ...ctx,
+    fallbackUnits: [...(ctx.fallbackUnits ?? [])].reverse(),
+    inventory: { ...ctx.inventory, entries: [...ctx.inventory.entries].reverse() },
+  });
+  assert.ok('candidateId' in reordered);
+  assert.equal(reordered.candidateId, minted.candidateId,
+    'lens/display ordering cannot change generic save-unit candidate identity');
+  const reviewed = buildReviewedSemanticManifest(minted, ctx);
+  assert.ok('saveUnits' in reviewed && reviewed.saveUnits?.some((unit) =>
+    unit.saveUnitId === fallbackUnitId && unit.saveUnitKind === 'agent-session-fallback'));
+  assert.ok(!('saveIntents' in reviewed), 'new reviewed manifests use the generic unit shape');
+
+  const previewOnly = buildCandidateV2({ ...request, finalizationIds: [] }, {
+    ...ctx, finalizations: [], saveUnitFinalizations: [], currentCommitReps: new Map(),
+  });
+  assert.ok(!('candidateId' in previewOnly));
+  assert.deepEqual(previewOnly.eligibility, { eligible: false, reason: 'package-not-finalized' });
 }
 
 function service(tokenStore: CandidateTokenStoreOptions = {}): CommitCandidateService {

@@ -601,6 +601,17 @@ export class CommitCoordinator {
             const resolutions = snapshot.candidate.attributionResolutions ?? [];
             const resolutionForIntent = (intentId: string) => resolutions.find((resolution) =>
               resolution.intentIds.includes(intentId));
+            const saveUnits = snapshot.candidate.saveUnits
+              ?? (snapshot.candidate.saveIntentIds ?? []).map((intentId) => ({
+                saveUnitId: intentId,
+                saveUnitKind: snapshot.candidate.selectedNamedSaveSetIds?.includes(intentId)
+                  ? 'named-save-set' as const
+                  : 'task' as const,
+                revision: 0,
+                planId: null,
+                planItemId: null,
+                finalizationId: '',
+              }));
             (this.d.writeIntentLedger ?? writeIntentCommitLedger)({
               record: {
                 repositoryKey: snapshot.repositoryKey, commitOid: locked.commitOid,
@@ -625,6 +636,19 @@ export class CommitCoordinator {
                 overlapCount: snapshot.associations.filter((association) =>
                   association.memberEntryIds.includes(member.entryId)).length,
               })),
+              saveUnitLinks: saveUnits.map((unit) => {
+                const resolution = resolutionForIntent(unit.saveUnitId);
+                const superseded = resolution?.resolution === 'superseded-intentionally'
+                  && resolution.intentIds[0] === unit.saveUnitId;
+                return {
+                  repositoryKey: snapshot.repositoryKey,
+                  commitOid: locked.commitOid,
+                  saveUnitId: unit.saveUnitId,
+                  saveUnitKind: unit.saveUnitKind,
+                  disposition: superseded ? 'superseded' as const : 'committed' as const,
+                  createdAt,
+                };
+              }),
               intentLinks: (snapshot.candidate.saveIntentIds ?? []).map((intentId) => {
                 const resolution = resolutionForIntent(intentId);
                 const superseded = resolution?.resolution === 'superseded-intentionally'

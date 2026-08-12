@@ -28,7 +28,8 @@ import * as fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { GitCapability, SaveCardMintRequestV2, SaveCardPreviewRequest, SaveSweepIntent,
-  SaveCardAttributionResolutionRequest, SaveCardAttributionResolutionResponse } from '../../shared/types';
+  SaveCardAttributionResolutionRequest, SaveCardAttributionResolutionResponse,
+  SaveCardFleetAdhocMarkDoneRequest, SaveCardSaveUnitMarkDoneRequest } from '../../shared/types';
 import type { PlanCandidatePreviewRequest } from '../../shared/types';
 import type { DirtyEntry, WitnessedCommitProvenance } from '../../shared/commit-candidates';
 import { BUNDLE_CONTRACT_VERSION } from '../../shared/constants';
@@ -91,7 +92,7 @@ import type { TurnWitnessReader } from './witness-projection';
 import type { CommitPathLinkReader } from './protection-read';
 import { SaveCardFinalizeRefusalError } from './save-card-ipc';
 import type {
-  FleetAdhocBoundaryContext,
+  SaveUnitBoundaryContext,
   SaveCardFinalizeRoutes,
   SaveCardPreviewRoutes,
   SaveCardMintRoutes,
@@ -150,6 +151,7 @@ export interface PreviewRoutesDeps {
   listNamedSaveSetMembers?: import('./candidate-service').CandidateServiceDeps['listNamedSaveSetMembers'];
   getPlan?: import('./candidate-service').CandidateServiceDeps['getPlan'];
   getPackageFinalization?: (id: string) => PackageFinalization | null;
+  getSaveIntentFinalization?: (id: string) => SaveIntentFinalization | null;
   getPlanWorkPackage?: (id: string) => PlanWorkPackage | null;
   listPlanWorkPackagePaths?: (id: string) => PlanWorkPackagePath[];
   runGit?: RunGitTextLike;
@@ -265,6 +267,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   const listRepoCommitPathLinks = deps.listRepoCommitPathLinks
     ?? ((repositoryKey: string) => dbListCommitPathLinks(repositoryKey));
   const getPackageFinalization = deps.getPackageFinalization ?? dbGetPackageFinalization;
+  const getSaveIntentFinalization = deps.getSaveIntentFinalization ?? dbGetSaveIntentFinalization;
   const getPlanWorkPackage = deps.getPlanWorkPackage ?? dbGetPlanWorkPackage;
   const listPlanWorkPackagePaths = deps.listPlanWorkPackagePaths ?? dbListPlanWorkPackagePaths;
   const runGit = deps.runGit ?? realRunGit;
@@ -414,6 +417,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
         protectionByEntryId: read.protectionByEntryId,
         protectionAssessmentByEntryId: read.protectionAssessmentByEntryId,
         ...(read.intentUnits ? { intentUnits: read.intentUnits } : {}),
+        ...(read.fallbackUnits ? { fallbackUnits: read.fallbackUnits } : {}),
         ...(read.witnessedProvenanceByTurnId
           ? { witnessedProvenanceByTurnId: read.witnessedProvenanceByTurnId }
           : {}),
@@ -499,16 +503,49 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     };
   }
 
+  function readFinalization(id: string): {
+    finalization: PackageFinalization;
+    saveUnit: import('./candidate-service').CandidateSaveUnitFinalization;
+  } | null {
+    const legacy = getPackageFinalization(id);
+    if (legacy) {
+      return {
+        finalization: legacy,
+        saveUnit: {
+          finalizationId: legacy.id,
+          saveUnitId: legacy.packageId,
+          saveUnitKind: legacy.finalizationKind === 'plan-package' ? 'task' : 'named-save-set',
+          revision: legacy.packageRevision,
+          planId: legacy.planId,
+          planItemId: legacy.planItemId,
+        },
+      };
+    }
+    const row = getSaveIntentFinalization(id);
+    if (!row) return null;
+    return {
+      finalization: adaptIntentFinalization(row),
+      saveUnit: {
+        finalizationId: row.id,
+        saveUnitId: row.saveUnitId,
+        saveUnitKind: row.saveUnitKind,
+        revision: row.revision,
+        planId: null,
+        planItemId: null,
+      },
+    };
+  }
+
   async function buildContext(
     scope: PreviewScope,
     selectedComponentIds: readonly string[],
     selectedUnattributedEntryIds: readonly string[],
     finalizationIds: readonly string[],
   ): Promise<CandidateBuildContext> {
-    const finalizations = [...new Set(finalizationIds)]
-      .map((id) => getPackageFinalization(id)
-        ?? (() => { const row = dbGetSaveIntentFinalization(id); return row ? adaptIntentFinalization(row) : null; })())
-      .filter((f): f is PackageFinalization => f !== null);
+    const resolvedFinalizations = [...new Set(finalizationIds)]
+      .map(readFinalization)
+      .filter((value): value is NonNullable<typeof value> => value !== null);
+    const finalizations = resolvedFinalizations.map((value) => value.finalization);
     const effectiveMembers = finalizationIds.length === 0
       ? selectionMembers(scope, selectedComponentIds, selectedUnattributedEntryIds)
       : resolvePinnedSelectionDrift({
@@ -525,17 +562,28 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
           scope,
           effectiveMembers,
         );
-    return { ...scope.context, finalizations, currentCommitReps };
+    return {
+      ...scope.context,
+      finalizations,
+      saveUnitFinalizations: resolvedFinalizations.map((value) => value.saveUnit),
+      currentCommitReps,
+    };
   }
 
   const saveCardPreviewRoutes: SaveCardPreviewRoutes = {
     async resolvePreviewContext(req: SaveCardPreviewRequest): Promise<CandidateBuildContext> {
       const scope = await assembleScope(req.workspaceId, true);
       const selectedIds = new Set([
+        ...(req.saveUnitIds ?? []),
         ...(req.selectedIntentIds ?? []),
         ...(req.selectedNamedSaveSetIds ?? []),
       ]);
-      const selectedUnits = (scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId));
+      const selectedUnits = [
+        ...(scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+        ...(scope.context.fallbackUnits ?? []).filter((unit) => selectedIds.has(unit.saveUnitId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+      ];
       const selectedMemberIds = new Set(selectedUnits.flatMap((unit) => unit.memberEntryIds));
       return buildContext(
         scope,
@@ -555,8 +603,17 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     async mintCandidate(req: SaveCardMintRequestV2) {
       const scope = await assembleScope(req.workspaceId);
       const v2Request = req;
-      const selectedIds = new Set([...v2Request.selectedIntentIds, ...v2Request.selectedNamedSaveSetIds]);
-      const selectedUnits = (scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId));
+      const selectedIds = new Set([
+        ...(v2Request.saveUnitIds ?? []),
+        ...v2Request.selectedIntentIds,
+        ...v2Request.selectedNamedSaveSetIds,
+      ]);
+      const selectedUnits = [
+        ...(scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+        ...(scope.context.fallbackUnits ?? []).filter((unit) => selectedIds.has(unit.saveUnitId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+      ];
       if (selectedUnits.length !== selectedIds.size) throw new Error('selected save intent is stale or unknown');
       const memberEntryIds = [...new Set(selectedUnits.flatMap((unit) => unit.memberEntryIds))].sort();
       const context = await buildContext(
@@ -576,6 +633,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
         }));
       const v2Context = { ...context, attributionResolutions };
       const candidate = service.mintCandidateTokenV2({
+        saveUnitIds: v2Request.saveUnitIds,
         selectedIntentIds: v2Request.selectedIntentIds,
         selectedNamedSaveSetIds: v2Request.selectedNamedSaveSetIds,
         resolutionIds: v2Request.resolutionIds,
@@ -719,8 +777,17 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     let context: CandidateBuildContext;
     let rebuilt;
     if (isV2MintRequest(request)) {
-      const selectedIds = new Set([...request.selectedIntentIds, ...request.selectedNamedSaveSetIds]);
-      const units = (scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId));
+      const selectedIds = new Set([
+        ...(request.saveUnitIds ?? []),
+        ...request.selectedIntentIds,
+        ...request.selectedNamedSaveSetIds,
+      ]);
+      const units = [
+        ...(scope.context.intentUnits ?? []).filter((unit) => selectedIds.has(unit.intentId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+        ...(scope.context.fallbackUnits ?? []).filter((unit) => selectedIds.has(unit.saveUnitId))
+          .map((unit) => ({ memberEntryIds: unit.memberEntryIds })),
+      ];
       const memberEntryIds = [...new Set(units.flatMap((unit) => unit.memberEntryIds))].sort();
       const base = await buildContext(scope, [], memberEntryIds, request.finalizationIds);
       const attributionResolutions = request.resolutionIds.map((id) => dbGetAttributionResolution(id))
@@ -925,7 +992,8 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   async function resolveSweepIntent(
     intent: Readonly<SaveSweepIntent>,
   ): Promise<FreshSaveSweepResolution> {
-    const finalization = getPackageFinalization(intent.finalizationId);
+    const resolvedFinalization = readFinalization(intent.finalizationId);
+    const finalization = resolvedFinalization?.finalization ?? null;
     const scope = await assembleRepositoryScope(
       intent.repositoryKey,
       finalization?.createdFromWorkspaceId,
@@ -1002,10 +1070,12 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
   // `save-card-no-repository` / `save-card-unknown-workspace` refusals for the
   // genuine cases (the pane's OWN workspace has no repo, or is unregistered), so
   // an unrelated repo-less workspace can no longer poison every save.
-  async function resolveFleetBoundary(
-    packageId: string,
-    targetWorkspaceId: string,
-  ): Promise<FleetAdhocBoundaryContext> {
+  async function resolveSaveUnitBoundary(
+    request: SaveCardFleetAdhocMarkDoneRequest | SaveCardSaveUnitMarkDoneRequest,
+  ): Promise<SaveUnitBoundaryContext> {
+    const targetWorkspaceId = request.targetWorkspaceId;
+    const saveUnitId = 'saveUnitId' in request ? request.saveUnitId : request.packageId;
+    const saveUnitKind = 'saveUnitKind' in request ? request.saveUnitKind : 'named-save-set';
     if (!deps.captureFinalizationBoundary) {
       throw new SaveCardFinalizeRefusalError(
         'Boundary-capture stage refused because checkpoint capture is unavailable.',
@@ -1016,18 +1086,26 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     }
     const scope = await assembleScope(targetWorkspaceId);
     const repository = scope.context.repository;
-    const componentId = packageId.startsWith('component:')
-      ? packageId.slice('component:'.length)
-      : packageId;
+    const componentId = saveUnitId.startsWith('component:')
+      ? saveUnitId.slice('component:'.length)
+      : saveUnitId;
     const component = scope.context.components.find((candidate) => candidate.componentId === componentId);
-    const entryIds = component
+    const projectedIntentUnit = (scope.context.intentUnits ?? []).find((unit) =>
+      unit.intentId === saveUnitId && unit.kind === saveUnitKind);
+    const projectedFallbackUnit = (scope.context.fallbackUnits ?? []).find((unit) =>
+      unit.saveUnitId === saveUnitId && unit.saveUnitKind === saveUnitKind);
+    const legacyEntryIds = saveUnitKind === 'named-save-set' && component
       ? component.dirtyEntryIds
-      : packageId === `unattributed:${repository.repositoryKey}`
+      : saveUnitKind === 'named-save-set'
+          && saveUnitId === `unattributed:${repository.repositoryKey}`
         ? scope.context.inventory.unattributedEntryIds
         : null;
+    const entryIds = projectedIntentUnit?.memberEntryIds
+      ?? projectedFallbackUnit?.memberEntryIds
+      ?? legacyEntryIds;
     if (!entryIds) {
       throw new SaveCardFinalizeRefusalError(
-        `Boundary-capture stage refused because the fleet-adhoc package is unknown: ${packageId}.`,
+        `Boundary-capture stage refused because the save unit is unknown: ${saveUnitId}.`,
         'boundary-package-unknown',
         targetWorkspaceId,
         targetWorkspaceId,
@@ -1045,7 +1123,7 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
       }));
     if (members.length === 0) {
       throw new SaveCardFinalizeRefusalError(
-        `Boundary-capture stage refused because the package has no dirty members: ${packageId}.`,
+        `Boundary-capture stage refused because the save unit has no dirty members: ${saveUnitId}.`,
         'boundary-package-empty',
         targetWorkspaceId,
         targetWorkspaceId,
@@ -1053,10 +1131,12 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     }
     const boundary = await deps.captureFinalizationBoundary(
       targetWorkspaceId,
-      `lares:finalization:${packageId}`,
+      `lares:finalization:${saveUnitId}`,
     );
     return {
-      packageId,
+      packageId: saveUnitId,
+      saveUnitId,
+      saveUnitKind,
       repositoryKey: repository.repositoryKey,
       finalizedBy: 'human-ipc',
       checkpointTurnId: null,
@@ -1072,15 +1152,15 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
       queue: deps.queue,
       commonDirQueueKey: deps.queue ? repository.objectDatabaseKey : undefined,
       pinnedSelection: {
-        selectedComponentIds: component ? [component.componentId] : [],
-        selectedUnattributedEntryIds: component ? [] : [...entryIds].sort(),
+        selectedComponentIds: legacyEntryIds && component ? [component.componentId] : [],
+        selectedUnattributedEntryIds: legacyEntryIds && component ? [] : [...entryIds].sort(),
         frozenMemberCount: members.length,
       },
     };
   }
 
   const saveCardFinalizeRoutes: SaveCardFinalizeRoutes = {
-    resolveBoundary: (request) => resolveFleetBoundary(request.packageId, request.targetWorkspaceId),
+    resolveBoundary: resolveSaveUnitBoundary,
     onFinalized: deps.onRepositoryFinalized,
   };
   const saveCardAttributionResolutionRoutes: SaveCardAttributionResolutionRoutes = {

@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type { CandidateTokenSnapshot } from '../commit-candidates/candidate-service';
 import { ComposeLockRegistry } from '../commit-candidates/compose-lock-registry';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
 import type { CandidateMember, CommitCandidate, RepositoryIdentity } from '../../shared/commit-candidates';
 import { CheckpointQueue } from './checkpoint-queue';
 import { CommitCoordinator, type CoordinatorTokenStore } from './commit-coordinator';
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(repo, 'dependent.cjs'), 'module.exports = 2;\n');
     git(['config', 'lares.candidateValidation.enabled', 'true']);
     git(['config', '--add', 'lares.candidateValidation.command', 'node main.cjs']);
+    const index = await computeIndexFingerprint({ repoRoot: repo, gitExe, runGit, runGitBytes });
 
     const makeSnapshot = (paths: string[], tokenId: string): CandidateTokenSnapshot => {
       const members: CandidateMember[] = paths.map((relative, index) => {
@@ -90,7 +92,8 @@ async function main(): Promise<void> {
       return {
         token: candidate.token!, candidate, repositoryKey: repository.repositoryKey,
         normalizedRequest: { selectedIntentIds: [], selectedNamedSaveSetIds: [], resolutionIds: [], finalizationIds: [], acknowledgeUnattributedEntryIds: [] },
-        componentTopologyDigest: 'topology', pinnedHeadOid: head, indexFingerprint: 'index', indexWriteTreeOid: null,
+        componentTopologyDigest: 'topology', pinnedHeadOid: head,
+        indexFingerprint: index.fingerprint, indexWriteTreeOid: index.writeTreeOid,
         commitEffects: members.map((member) => ({
           pathBytesBase64: member.path.pathBytesBase64, operation: 'write', expectedState: 'present',
           rawBlobOid: member.rawWorktreeBlobOid, commitBlobOid: member.expectedCommitBlobOid, commitMode: member.expectedCommitMode,

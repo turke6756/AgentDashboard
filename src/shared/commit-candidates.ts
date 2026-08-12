@@ -141,6 +141,10 @@ export interface CommitCandidate {
   token: CommitCandidateToken | null;
   /** Present on the intent-first v2 contract. Legacy v1 readers omit these. */
   saveIntentIds?: string[];
+  /** Main-owned unit identities selected for this candidate. */
+  saveUnitIds?: string[];
+  /** Frozen generic unit metadata used by the post-CAS write-side ledger. */
+  saveUnits?: ReviewedSaveUnit[];
   selectedNamedSaveSetIds?: string[];
   attributionResolutions?: ReviewedAttributionResolution[];
 }
@@ -195,6 +199,17 @@ export interface ReviewedSaveIntent {
   kind: 'task' | 'named-save-set';
   revision: number;
   title: string;
+  planId: string | null;
+  planItemId: string | null;
+  finalizationId: string;
+}
+
+/** Unit-shaped review identity. Unlike ReviewedSaveIntent this can describe a
+ * fallback unit without pretending that a save_intents row exists. */
+export interface ReviewedSaveUnit {
+  saveUnitId: string;
+  saveUnitKind: ProjectedSaveUnitKind;
+  revision: number;
   planId: string | null;
   planItemId: string | null;
   finalizationId: string;
@@ -315,7 +330,10 @@ export interface ReviewedSemanticManifestV2 {
   gitObjectFormat: 'sha1' | 'sha256';
   finalizations: ReviewedFinalizationIntent[];
   members: ReviewedSemanticMember[];
-  saveIntents: ReviewedSaveIntent[];
+  /** New production writers emit saveUnits. saveIntents remains a read-only
+   * compatibility arm for reviewed manifests created before WP-F2. */
+  saveUnits?: ReviewedSaveUnit[];
+  saveIntents?: ReviewedSaveIntent[];
   attributionResolutions: ReviewedAttributionResolution[];
   attributionTopology: ReviewedAttributionTopology;
   closureObligations: ReviewedClosureObligation[];
@@ -440,7 +458,7 @@ function sortedByJcs<T>(values: T[]): T[] {
 export function normalizeReviewedSemanticManifest<T extends AnyReviewedSemanticManifest>(
   manifest: T,
 ): T {
-  return {
+  const normalized: AnyReviewedSemanticManifest = {
     ...manifest,
     finalizations: sortedByJcs(manifest.finalizations.map((finalization) => ({
       ...finalization,
@@ -466,15 +484,24 @@ export function normalizeReviewedSemanticManifest<T extends AnyReviewedSemanticM
     },
     closureObligations: sortedByJcs(manifest.closureObligations),
     challengeAtoms: sortedByJcs(manifest.challengeAtoms.map((atom) => ({ ...atom }))),
-    ...('saveIntents' in manifest ? {
-      saveIntents: sortedByJcs(manifest.saveIntents),
+    ...(manifest.manifestVersion === REVIEWED_SEMANTIC_MANIFEST_VERSION_V2 ? {
+      saveUnits: sortedByJcs(manifest.saveUnits ?? (manifest.saveIntents ?? []).map((intent) => ({
+        saveUnitId: intent.intentId,
+        saveUnitKind: intent.kind,
+        revision: intent.revision,
+        planId: intent.planId,
+        planItemId: intent.planItemId,
+        finalizationId: intent.finalizationId,
+      }))),
       attributionResolutions: sortedByJcs(manifest.attributionResolutions.map((resolution) => ({
         ...resolution,
         affectedPathBytesBase64: sortedStrings(resolution.affectedPathBytesBase64),
         intentIds: [...resolution.intentIds].sort(),
       }))),
     } : {}),
-  } as T;
+  } as AnyReviewedSemanticManifest;
+  if ('saveIntents' in normalized) delete normalized.saveIntents;
+  return normalized as T;
 }
 
 /** JCS bytes used by main for a typed manifest comparison or SHA-256 digest. */
@@ -553,6 +580,9 @@ export interface MintCandidateTokenRequest {
 }
 
 export interface MintCandidateTokenRequestV2 {
+  /** Canonical generic selection. Optional while task/named-set callers use the
+   * two compatibility arrays below. */
+  saveUnitIds?: string[];
   selectedIntentIds: string[];
   selectedNamedSaveSetIds: string[];
   resolutionIds: string[];

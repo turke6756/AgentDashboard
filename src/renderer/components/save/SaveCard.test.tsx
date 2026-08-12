@@ -206,6 +206,68 @@ describe('SaveCard intent-first rendering', () => {
     expect(request).not.toHaveProperty('packageId');
   });
 
+  it('commits one fallback gesture when its member is shared with a second fallback unit', async () => {
+    const first = unit({
+      intentId: 'agent-fallback:first', kind: 'agent-session-fallback',
+      saveUnitId: 'agent-fallback:first', saveUnitKind: 'agent-session-fallback',
+      plan: null, planItem: null,
+    });
+    const second = unit({
+      intentId: 'agent-fallback:second', kind: 'agent-session-fallback',
+      saveUnitId: 'agent-fallback:second', saveUnitKind: 'agent-session-fallback',
+      plan: null, planItem: null,
+    });
+    vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
+      finalizationId: 'fallback-fin', packageId: first.intentId, finalizationKind: 'fleet-adhoc',
+      outcome: 'created', boundaryRef: 'refs/lares/fallback', boundaryStatus: 'ready', packageRevision: 1,
+      pinnedSelection: { selectedComponentIds: [], selectedUnattributedEntryIds: ['entry-1'] },
+    } as never);
+    vi.mocked(window.api.saveCard.preview).mockResolvedValue({
+      isCandidate: true,
+      candidate: {
+        candidateId: 'fallback-candidate', contractVersion: 2,
+        repository: {
+          repositoryKey: 'repo-1', objectDatabaseKey: 'odb-1', gitObjectFormat: 'sha1', bareRepo: false,
+          workspaces: [{ workspaceId: 'ws-1', workspacePrefix: '' }],
+        },
+        componentIds: [], selectedUnattributedEntryIds: ['entry-1'], members: [],
+        finalizations: [{ finalizationId: 'fallback-fin', packageId: first.intentId,
+          packageRevision: 1, boundaryStatus: 'ready' }],
+        eligibility: { eligible: true }, token: null,
+      },
+      laresTrailers: [], defaultMessageBody: 'Save fallback',
+      unacknowledgedUnattributedEntryIds: [], componentTopologyDigest: 'topology',
+      selectionDrift: { added: [], missing: [], reAttributed: [], byteMoved: [] },
+      selectionDriftDisplayPaths: {},
+      pinnedSelection: { selectedComponentIds: [], selectedUnattributedEntryIds: ['entry-1'], frozenMemberCount: 1 },
+      reviewedManifest: { manifestVersion: 2, reviewedManifestDigest: 'review-digest', members: [],
+        challengeVersion: 1, challengeAtoms: [] },
+      durableFinalizationIntent: [{ finalizationId: 'fallback-fin', packageId: first.intentId,
+        packageRevision: 1, boundaryStatus: 'ready', frozenMemberManifestDigest: 'frozen-digest' }],
+    } as never);
+    vi.mocked(window.api.saveCard.sweep).mockResolvedValue({
+      halted: false, haltKind: null,
+      results: [{ kind: 'saved', repositoryKey: 'repo-1', finalizationId: 'fallback-fin',
+        packageId: first.intentId, packageRevision: 1, attemptId: 'attempt-1', commitOid: 'commit-1' }],
+    });
+    await renderCard(inventory({ intentUnits: [], fallbackUnits: [first, second] }));
+    const article = container.querySelectorAll<HTMLElement>('[data-testid="fallback-save-unit"]')[0];
+    await act(async () => {
+      article.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      article.querySelector<HTMLButtonElement>('[data-testid="save-bundle-submit"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(window.api.saveCard.preview).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1', saveUnitIds: [first.intentId], finalizationIds: ['fallback-fin'],
+    }));
+    expect(window.api.saveCard.sweep).toHaveBeenCalled();
+    expect(article.textContent).toContain('saved — commit commit-1');
+  });
+
   it('shows a visible warning for a null-session coarse fallback unit', async () => {
     await renderCard(inventory({
       intentUnits: [],

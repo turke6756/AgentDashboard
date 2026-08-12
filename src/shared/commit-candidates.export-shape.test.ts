@@ -112,6 +112,8 @@ type ExportShapes = [
     eligibility: CommitEligibility;
     token: CommitCandidateToken | null;
     saveIntentIds?: string[];
+    saveUnitIds?: string[];
+    saveUnits?: import('./commit-candidates').ReviewedSaveUnit[];
     selectedNamedSaveSetIds?: string[];
     attributionResolutions?: ReviewedAttributionResolution[];
   }>>,

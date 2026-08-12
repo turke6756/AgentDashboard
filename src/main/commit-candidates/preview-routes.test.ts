@@ -30,9 +30,13 @@ import type {
   RepositoryIdentity,
   SelectionPreview,
 } from '../../shared/commit-candidates';
-import type { PackageFinalization } from '../database';
+import type { PackageFinalization, SaveIntentFinalization } from '../database';
 import type { GitCapability } from '../../shared/types';
-import type { FrozenManifestMember } from './finalization-service';
+import {
+  finalizeSaveUnit,
+  type FrozenManifestMember,
+  type SaveIntentFinalizationStore,
+} from './finalization-service';
 import { canonicalize } from './jcs';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
@@ -449,6 +453,60 @@ test('fleet-adhoc routes by the pane workspace, not a repo-less overlapping work
   assert.equal(context.members.length, 1);
 });
 
+test('fallback boundary reprojects main-owned members and ignores renderer member claims', async () => {
+  const captures: Array<{ workspaceId: string; label: string }> = [];
+  const fallbackUnitId = 'agent-fallback:shared-a';
+  const { saveCardFinalizeRoutes } = createPreviewRoutes(baseDeps({
+    assembleInventory: async () => read({
+      inventory: inventory([entry('e1'), entry('e2')]),
+      components: [component('c1', ['e1', 'e2'])],
+      fallbackUnits: [
+        { saveUnitId: fallbackUnitId, saveUnitKind: 'agent-session-fallback',
+          memberEntryIds: ['e1'], contributingTurnIds: ['turn-a'] },
+        { saveUnitId: 'agent-fallback:shared-b', saveUnitKind: 'agent-session-fallback',
+          memberEntryIds: ['e1'], contributingTurnIds: ['turn-b'] },
+      ],
+    }),
+    captureFinalizationBoundary: async (workspaceId, label) => {
+      captures.push({ workspaceId, label });
+      return { oid: 'c'.repeat(40), treeOid: 'd'.repeat(40) };
+    },
+  }));
+  const context = await saveCardFinalizeRoutes.resolveBoundary({
+    saveUnitId: fallbackUnitId,
+    saveUnitKind: 'agent-session-fallback',
+    targetWorkspaceId: 'ws-1',
+    memberEntryIds: ['e2'],
+  } as Parameters<typeof saveCardFinalizeRoutes.resolveBoundary>[0]);
+  assert.equal(context.saveUnitId, fallbackUnitId);
+  assert.equal(context.saveUnitKind, 'agent-session-fallback');
+  assert.deepEqual(context.members.map((member) => member.path.pathBytesBase64), [b64('e1')],
+    'REACHABILITY:boundary-reprojects-independently');
+  assert.deepEqual(captures, [{
+    workspaceId: 'ws-1', label: `lares:finalization:${fallbackUnitId}`,
+  }]);
+});
+
+test('named save-set boundary resolves through the same canonical unit path', async () => {
+  const saveUnitId = 'adopt-all-as-baseline';
+  const { saveCardFinalizeRoutes } = createPreviewRoutes(baseDeps({
+    assembleInventory: async () => read({
+      intentUnits: [{
+        intentId: saveUnitId, kind: 'named-save-set', revision: 1, title: 'Adopt baseline',
+        planId: null, planItemId: null, memberEntryIds: ['e1'], contributingTurnIds: [],
+      }],
+    }),
+    captureFinalizationBoundary: async () => ({ oid: 'c'.repeat(40), treeOid: 'd'.repeat(40) }),
+  }));
+  const context = await saveCardFinalizeRoutes.resolveBoundary({
+    saveUnitId,
+    saveUnitKind: 'named-save-set',
+    targetWorkspaceId: 'ws-1',
+  });
+  assert.equal(context.packageId, saveUnitId);
+  assert.deepEqual(context.members.map((member) => member.path.pathBytesBase64), [b64('e1')]);
+});
+
 // The genuine no-repo case survives: when the PANE itself is the repo-less
 // workspace, the finalize still refuses typed (never a silent success).
 test('fleet-adhoc still refuses typed when the PANE workspace itself has no repo', async () => {
@@ -687,6 +745,70 @@ test('production sweep seam reconstructs a durable intent from fresh route state
   assert.equal(resolved.context.repository.repositoryKey, REPO_KEY);
   assert.equal(resolved.context.indexFingerprint.hasUnmerged, false);
   await routes.productionSeams.refreshSweepInventory(REPO_KEY);
+});
+
+test('production finalizeSaveUnit row is dual-read by the sweep route for a fallback unit', async () => {
+  const fallbackUnitId = 'agent-fallback:stable';
+  const rows = new Map<string, SaveIntentFinalization>();
+  const store: SaveIntentFinalizationStore = {
+    getActive: (id) => [...rows.values()].find((row) => row.saveUnitId === id
+      && row.lifecycleStatus === 'active') ?? null,
+    maxRevision: () => 0,
+    insert: (row) => { rows.set(row.id, structuredClone(row)); },
+    supersede: () => { throw new Error('fresh fallback must not supersede'); },
+    setBoundaryStatus: () => { throw new Error('fresh fallback must not reattach'); },
+    transact: (fn) => fn(),
+  };
+  const finalized = await finalizeSaveUnit({
+    saveUnitId: fallbackUnitId,
+    saveUnitKind: 'agent-session-fallback',
+    repositoryKey: REPO_KEY,
+    finalizedBy: 'human-ipc',
+    boundaryOid: 'c'.repeat(40),
+    members: [{
+      path: encPath('e1'), commitPathspecs: [encPath('e1')],
+      expectedWorktreeState: 'present', rawWorktreeBlobOid: 'raw-e1',
+    }],
+    repoRoot: '/repo', pinnedHeadOid: 'a'.repeat(40),
+  }, {
+    store,
+    writeRef: async () => ({ ok: true }),
+    freeze: async () => ({
+      expectedState: 'present', rawBlobOid: 'raw-e1',
+      commitBlobOid: 'commit-e1', commitMode: '100644',
+    }),
+    now: () => 10,
+    newId: () => 'fallback-fin',
+  });
+  const routes = createPreviewRoutes(baseDeps({
+    assembleInventory: async () => read({
+      fallbackUnits: [{
+        saveUnitId: fallbackUnitId,
+        saveUnitKind: 'agent-session-fallback',
+        memberEntryIds: ['e1'],
+        contributingTurnIds: ['turn-1'],
+      }],
+    }),
+    getSaveIntentFinalization: (id) => rows.get(id) ?? null,
+  }));
+  const frozenMemberManifestDigest = createHash('sha256')
+    .update(canonicalize(JSON.parse(finalized.memberManifestJson)))
+    .digest('hex');
+  const resolved = await routes.productionSeams.resolveSweepIntent({
+    repositoryKey: REPO_KEY,
+    finalizationId: finalized.finalization.id,
+    packageId: fallbackUnitId,
+    packageRevision: finalized.finalization.revision,
+    frozenMemberManifestDigest,
+    reviewedManifestDigest: 'd'.repeat(64),
+    message: 'Save fallback',
+  });
+  assert.equal(resolved.kind, 'candidate');
+  if (resolved.kind !== 'candidate') return;
+  assert.ok(resolved.context.saveUnitFinalizations?.some((unit) =>
+    unit.saveUnitId === fallbackUnitId
+      && unit.saveUnitKind === 'agent-session-fallback'),
+  'REACHABILITY:fallback-finalization-row');
 });
 
 (async () => {

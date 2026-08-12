@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
-import type { PackageFinalization } from '../database';
+import type { PackageFinalization, SaveIntentFinalization } from '../database';
+import { createHash } from 'node:crypto';
 import type { CommitRepresentation } from './commit-representation';
 import type {
   CommitCandidate,
@@ -24,6 +25,8 @@ import {
   type FreshSaveSweepResolution,
 } from './save-sweep-service';
 import type { SweepConsumableCoordinatorResult } from './commit-coordinator-ipc';
+import { createPreviewRoutes, type PreviewRoutesDeps } from './preview-routes';
+import { canonicalize } from './jcs';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
 const tests: TestCase[] = [];
@@ -234,6 +237,95 @@ function saved(attemptId = 'attempt-1', commitOid = COMMIT): SweepConsumableCoor
     },
   };
 }
+
+test('production sweep enters resolveSweepIntent and commits a fallback with a shared member', async () => {
+  const shared = entry('shared.txt');
+  const fallbackUnitId = 'agent-fallback:first';
+  const frozenMembers = [{
+    pathBytesBase64: shared.path.pathBytesBase64,
+    expectedState: 'present' as const,
+    rawBlobOid: shared.rawWorktreeBlobOid,
+    commitBlobOid: 'b'.repeat(40),
+    commitMode: '100644',
+  }];
+  const finalization: SaveIntentFinalization = {
+    id: 'fallback-fin', saveUnitId: fallbackUnitId,
+    saveUnitKind: 'agent-session-fallback', revision: 1,
+    repositoryKey: REPOSITORY_KEY, memberManifestJson: canonicalize(frozenMembers),
+    checkpointOid: 'b'.repeat(40), boundaryRef: 'refs/lares/finalizations/fallback/1',
+    boundaryStatus: 'ready', lifecycleStatus: 'active', finalizedAt: 1,
+    finalizedBy: 'human-ipc', supersededByFinalizationId: null, failureReason: null,
+  };
+  const component = componentFor([shared], 'component-shared');
+  const capability = {
+    resolution: {} as never, repoState: null, commonDir: '/repo/.git',
+    commonDirQueueKey: 'repo', repoRoot: '/repo', workspacePrefix: '',
+    protectedRoot: false, reason: 'ok' as never, detail: null,
+  };
+  const stage = Buffer.concat([
+    Buffer.from(`100644 ${'b'.repeat(40)} 0\t`, 'ascii'),
+    Buffer.from(shared.path.displayPath, 'utf8'), Buffer.from([0]),
+  ]);
+  const routes = createPreviewRoutes({
+    gitExe: 'git', getWorkspaces: () => [{ id: 'ws-1', path: '/repo' }],
+    probeWorkspaceGit: async () => capability,
+    realpath: (value) => value,
+    assembleInventory: async () => ({
+      inventory: {
+        repository: contextFor([shared]).context.repository,
+        entries: [shared], unattributedEntryIds: [], topologyDigest: 'shared-topology',
+        completeness: 'complete', totalsExact: true,
+      },
+      components: [component], captureHealthByComponentId: {},
+      unattributedCaptureHealth: {} as never, protectionByEntryId: {},
+      planAttributionUnavailableTurnIds: new Set(), quotaWeakening: null,
+      fallbackUnits: [
+        { saveUnitId: fallbackUnitId, saveUnitKind: 'agent-session-fallback',
+          memberEntryIds: [shared.entryId], contributingTurnIds: ['turn-a'] },
+        { saveUnitId: 'agent-fallback:second', saveUnitKind: 'agent-session-fallback',
+          memberEntryIds: [shared.entryId], contributingTurnIds: ['turn-b'] },
+      ],
+    }),
+    listRepoCommitPathLinks: () => [],
+    getPackageFinalization: () => null,
+    getSaveIntentFinalization: (id) => id === finalization.id ? finalization : null,
+    runGit: (async (_cwd, args) => args[0] === 'rev-parse'
+      ? { code: 0, stdout: `${HEAD}\n`, stderr: '' }
+      : { code: 0, stdout: '', stderr: '' }) as PreviewRoutesDeps['runGit'],
+    runGitBytes: (async (_cwd, args) => args[0] === 'ls-files'
+      ? { code: 0, stdout: stage, stderr: '' }
+      : { code: 0, stdout: Buffer.alloc(0), stderr: '' }) as PreviewRoutesDeps['runGitBytes'],
+  });
+  const frozenMemberManifestDigest = createHash('sha256')
+    .update(canonicalize(frozenMembers)).digest('hex');
+  const seed = {
+    repositoryKey: REPOSITORY_KEY, finalizationId: finalization.id,
+    packageId: fallbackUnitId, packageRevision: 1, frozenMemberManifestDigest,
+    reviewedManifestDigest: '', message: 'Save fallback',
+  };
+  const initiallyResolved = await routes.productionSeams.resolveSweepIntent(seed);
+  assert.equal(initiallyResolved.kind, 'candidate');
+  if (initiallyResolved.kind !== 'candidate') return;
+  const reviewedCandidate = buildCandidate(initiallyResolved.selection, initiallyResolved.context);
+  assert.ok('candidateId' in reviewedCandidate);
+  const manifest = buildReviewedSemanticManifest(reviewedCandidate as CommitCandidate, initiallyResolved.context);
+  const reviewedManifestDigest = rememberReviewedSemanticManifest(manifest);
+  let consumed = false;
+  const service = new SaveSweepService({
+    candidateService: routes.productionSeams.candidateService,
+    resolveIntent: routes.productionSeams.resolveSweepIntent,
+    consume: async () => { consumed = true; return saved(); },
+    refreshInventory: routes.productionSeams.refreshSweepInventory,
+  });
+  const response = await service.sweep({
+    intents: [{ ...seed, reviewedManifestDigest }],
+    reviewedManifestDigests: [reviewedManifestDigest],
+    acknowledgedChallengeAtoms: manifest.challengeAtoms,
+  });
+  assert.ok(response.results.some((result) => result.kind === 'saved'),
+    'REACHABILITY:fallback-finalization-commit');
+  assert.equal(consumed, true);
+});
 
 function ready(value: ReturnType<typeof reviewedIntent>): FreshSaveSweepResolution {
   return {
