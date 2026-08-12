@@ -9,6 +9,16 @@ export type SaveCardComputeState =
   | 'complete' | 'complete-summarized' | 'partial' | 'protection-incomplete'
   | 'assessment-unavailable';
 
+const BOUNDARY_CAPTURE_REFUSAL_COPY: Readonly<Record<string, string>> = Object.freeze({
+  'boundary-capture-unavailable': 'Lares cannot prepare this package because checkpoint capture is unavailable.',
+  'boundary-package-unknown': 'Lares cannot prepare this package because this save unit is no longer known.',
+  'boundary-package-empty': 'Lares cannot prepare this package because it has no changed files to save.',
+});
+
+export function renderBoundaryCaptureRefusal(code: string): string | null {
+  return BOUNDARY_CAPTURE_REFUSAL_COPY[code] ?? null;
+}
+
 export function saveCardComputeState(
   response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>
     & Partial<Pick<SaveCardInventoryResponse,
@@ -91,9 +101,9 @@ export function renderSaveRefusal(refusal: SaveRefusal): string {
     case 'saveability':
       return 'This package cannot be saved from this workspace.';
     case 'boundary-capture':
-      return refusal.paths?.length
+      return renderBoundaryCaptureRefusal(refusal.code) ?? (refusal.paths?.length
         ? `Lares could not gather the current work for ${refusal.paths.join(', ')}.`
-        : "Lares could not gather this package's current work.";
+        : "Lares could not gather this package's current work.");
     case 'freeze':
       return 'This package is not ready to save.';
     case 'preview-verify':

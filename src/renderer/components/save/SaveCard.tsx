@@ -36,7 +36,12 @@ import CandidatePreview, {
 import QuotaWeakeningBanner from './QuotaWeakeningBanner';
 import PlanMergeBack from './PlanMergeBack';
 import { groupExpiryEdgesByIntentUnit, formatExpiresIn } from './save-card-expiry';
-import { degradedSaveCopy, renderSaveRefusal, saveCardComputeState } from './save-refusal-copy';
+import {
+  degradedSaveCopy,
+  renderBoundaryCaptureRefusal,
+  renderSaveRefusal,
+  saveCardComputeState,
+} from './save-refusal-copy';
 import { createCandidateSubmitter } from './candidate-submit';
 import { initialSaveGestureState, saveGestureReducer } from './save-gesture-state';
 import './save-card.css';
@@ -291,7 +296,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
           packageId,
           refusal: {
             stage: 'boundary-capture', code: 'boundary-capture-failed',
-            message: `Boundary-capture stage failed for package ${packageId}: ${errorMessage(result.reason)}`,
+            message: errorMessage(result.reason),
             paths: [packageId],
           },
         });
@@ -452,8 +457,17 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   };
   const submitting = gesture.status === 'reviewing' || gesture.status === 'sweeping';
   const submitLocked = submitting || gesture.status === 'uncertain' || gesture.status === 'completed';
+  const typedBoundaryCaptureCopy = gesture.status === 'refused'
+    && gesture.refusal.stage === 'boundary-capture'
+    ? renderBoundaryCaptureRefusal(gesture.refusal.code)
+    : null;
+  const unexpectedBoundaryCaptureDetail = gesture.status === 'refused'
+    && gesture.refusal.stage === 'boundary-capture'
+    && typedBoundaryCaptureCopy === null
+    ? gesture.refusal.message
+    : null;
   const gestureError = gesture.status === 'refused'
-    ? renderSaveRefusal(gesture.refusal)
+    ? typedBoundaryCaptureCopy ?? renderSaveRefusal(gesture.refusal)
     : gesture.status === 'uncertain' ? 'Lares could not confirm whether this package was saved.' : null;
   const movedPaths = gesture.status === 'refused' ? gesture.refusal.paths ?? [] : [];
   const recover = () => {
@@ -501,7 +515,8 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
       )}
       {gestureError && (
         <div className="sc-save-refusal" role="alert" data-testid="save-gesture-refusal">
-          {gestureError}
+          <div>{gestureError}</div>
+          {unexpectedBoundaryCaptureDetail && <div>{unexpectedBoundaryCaptureDetail}</div>}
           {movedPaths.length > 0 && (
             <div className="sc-save-diff" data-testid="save-gesture-diff">
               <strong>Changed work</strong>

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SaveRefusal } from '../../../shared/commit-candidates';
-import { degradedSaveCopy, renderSaveRefusal, saveCardComputeState } from './save-refusal-copy';
+import {
+  degradedSaveCopy,
+  renderBoundaryCaptureRefusal,
+  renderSaveRefusal,
+  saveCardComputeState,
+} from './save-refusal-copy';
 
 const refusalVectors: SaveRefusal[] = [
   { stage: 'saveability', code: 'save-card-no-repository', message: 'Mint stage rejected a candidate token.' },
@@ -20,6 +25,31 @@ const refusalVectors: SaveRefusal[] = [
 ];
 
 describe('save refusal copy', () => {
+  it('REACHABILITY:refusal-copy renders each typed boundary-capture refusal specifically', () => {
+    expect(renderBoundaryCaptureRefusal('boundary-capture-unavailable')).toBe(
+      'Lares cannot prepare this package because checkpoint capture is unavailable.',
+    );
+    expect(renderBoundaryCaptureRefusal('boundary-package-unknown')).toBe(
+      'Lares cannot prepare this package because this save unit is no longer known.',
+    );
+    expect(renderBoundaryCaptureRefusal('boundary-package-empty')).toBe(
+      'Lares cannot prepare this package because it has no changed files to save.',
+    );
+  });
+
+  it('leaves unexpected boundary-capture rejections available for verbatim detail', () => {
+    const underlyingMessage = 'spawn git ENOENT';
+    const refusal: SaveRefusal = {
+      stage: 'boundary-capture',
+      code: 'boundary-capture-failed',
+      message: underlyingMessage,
+    };
+
+    expect(renderBoundaryCaptureRefusal(refusal.code)).toBeNull();
+    expect(refusal.message).toBe(underlyingMessage);
+    expect(renderSaveRefusal(refusal)).toBe("Lares could not gather this package's current work.");
+  });
+
   it('renders every real refusal shape as one plain sentence without internal vocabulary', () => {
     for (const refusal of refusalVectors) {
       const copy = renderSaveRefusal(refusal);
