@@ -46,6 +46,8 @@ import {
 } from '../git-checkpoints/finalization-refs';
 import type { RunGitLike } from '../git-checkpoints/checkpoint-service';
 import { runGitBytes as realRunGitBytes } from '../git-checkpoints/git-command';
+import { runGit as realRunGit } from '../git-checkpoints/git-command';
+import { freezeMembersFromBoundary } from '../git-checkpoints/boundary-filter-replay';
 import {
   getDb,
   getActivePackageFinalization as dbGetActive,
@@ -404,12 +406,26 @@ export async function finalizeSaveUnit(
     repoRoot: request.repoRoot, gitExe: request.gitExe, deadlineAt: request.deadlineAt,
     runGit: request.runGit, ref, oid,
   }));
-  const freeze = deps.freeze ?? ((entry: CommitRepresentationEntry) => readCurrentCommitRepresentation({
-    repoRoot: request.repoRoot, pinnedHeadOid: request.pinnedHeadOid, entry,
-    gitExe: request.gitExe, deadlineAt: request.deadlineAt, runGit: request.runGit,
-    runGitBytes: request.runGitBytes, queue: request.queue,
-    commonDirQueueKey: request.commonDirQueueKey,
-  }));
+  const freeze = deps.freeze ?? (() => {
+    let frozen: Map<string, CommitRepresentation> | undefined;
+    return async (entry: CommitRepresentationEntry): Promise<CommitRepresentation> => {
+      frozen ??= await freezeMembersFromBoundary({
+        boundaryOid: request.boundaryOid,
+        pinnedHeadOid: request.pinnedHeadOid,
+        members: request.members,
+        repoRuntime: {
+          repoRoot: request.repoRoot,
+          gitExe: request.gitExe,
+          deadlineAt: request.deadlineAt,
+          runGit: request.runGit ?? realRunGit,
+          runGitBytes: request.runGitBytes ?? realRunGitBytes,
+        },
+      });
+      const representation = frozen.get(entry.path.pathBytesBase64);
+      if (!representation) throw new Error(`Boundary freeze produced no representation for ${entry.path.pathBytesBase64}.`);
+      return representation;
+    };
+  })();
   const memberManifestJson = await freezeManifest(request, freeze);
   const identity = boundaryIdentity(request.boundaryOid, memberManifestJson);
   const latest = store.getActive(request.saveUnitId);
