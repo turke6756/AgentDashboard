@@ -61,6 +61,7 @@ import type { RunGit } from '../git/git-runtime';
 import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { discoverFirstContactRoots, recordOnboardingDecision, type FirstContactDiscovery } from './onboarding-discovery';
 import type { ScratchPolicyStore } from './scratch-policy-store';
+import { assessSaveUnitReadiness } from './save-card-readiness';
 
 type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'sessionId' | 'startedAt' | 'endedAt'>;
 
@@ -418,6 +419,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         ? (deps.getPlanItem ?? dbGetPlanWorkPackage)(unit.intent.planItemId) : null;
       const componentHealth = unit.topologyComponentIds.flatMap((id) =>
         read.captureHealthByComponentId[id] ? [read.captureHealthByComponentId[id]] : []);
+      const unitEntries = unit.memberEntryIds.map((entryId) => entriesById.get(entryId)!);
       return {
         intentId: unit.intent.id,
         kind: unit.intent.kind,
@@ -427,9 +429,9 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         state: unit.intent.state,
         plan: plan ? { id: plan.id, title: plan.slug ?? plan.path } : null,
         planItem: planItem ? { id: planItem.id, title: planItem.title } : null,
-        members: unit.memberEntryIds.map((entryId) => ({
-          entry: entriesById.get(entryId)!,
-          ...protectionFields(read.protectionAssessmentByEntryId?.[entryId]),
+        members: unitEntries.map((entry) => ({
+          entry,
+          ...protectionFields(read.protectionAssessmentByEntryId?.[entry.entryId]),
         })),
         contributors: unit.contributingAgentIds.flatMap((id) => {
           const worker = workerByAgentId.get(id);
@@ -447,6 +449,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         },
         concurrencyCases: [],
         saveability,
+        saveGate: assessSaveUnitReadiness(unitEntries),
         membershipStale: assembly.staleNamedSaveSetIds.includes(unit.intent.id),
       };
     });
@@ -465,6 +468,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       const componentHealth = componentIds.flatMap((id) =>
         read.captureHealthByComponentId[id] ? [read.captureHealthByComponentId[id]] : []);
       const worker = workerByAgentId.get(unit.identityAssessment.agentId);
+      const unitEntries = unit.memberEntryIds.map((entryId) => entriesById.get(entryId)!);
       return {
         intentId: unit.saveUnitId,
         kind: unit.saveUnitKind,
@@ -474,7 +478,10 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         state: 'open',
         plan: null,
         planItem: null,
-        members: members(unit.memberEntryIds),
+        members: unitEntries.map((entry) => ({
+          entry,
+          ...protectionFields(read.protectionAssessmentByEntryId?.[entry.entryId]),
+        })),
         contributors: worker ? [worker] : [],
         topologyEvidence: {
           componentIds,
@@ -488,6 +495,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         },
         concurrencyCases: [],
         saveability,
+        saveGate: assessSaveUnitReadiness(unitEntries),
         identityAssessment: {
           evaluation: 'complete',
           agentTitle: unit.identityAssessment.agentTitle,

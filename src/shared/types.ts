@@ -1988,6 +1988,18 @@ export interface WorkspaceSecurityNotice {
   inertBackups: string[];
 }
 
+export interface GitignoreSuggestionNotice {
+  kind: 'gitignore-additions-suggested';
+  workspaceId: string;
+  workspaceRoot: string;
+  gitignorePath: string;
+  missingRules: readonly string[];
+}
+
+export type GitignoreSuggestionAcceptance =
+  | { accepted: true; appendedRules: readonly string[] }
+  | { accepted: false; reason: 'suggestion-expired' };
+
 // ── Git-Native WP-G2.2: renderer checkpoint IPC contract ────────────────────────
 // Wire DTOs for the HUMAN renderer's checkpoint recovery surface. They mirror the
 // main-process shapes (TurnCheckpointSummary in api-server.ts; DiffResult /
@@ -2227,6 +2239,15 @@ export interface ConcurrencyCaseDto {
   classification: 'evidence-incomplete' | 'same-intent' | 'cross-intent';
 }
 
+export type SaveUnitReadiness =
+  | { ready: true }
+  | {
+      ready: false;
+      reason: 'members-unhashed';
+      unhashedMemberCount: number;
+      sampleDisplayPaths: string[];
+    };
+
 export interface SaveIntentUnitDto {
   intentId: string;
   kind: import('./commit-candidates').ProjectedSaveUnitKind;
@@ -2247,6 +2268,8 @@ export interface SaveIntentUnitDto {
   };
   concurrencyCases: ConcurrencyCaseDto[];
   saveability: SaveCardPackageSaveability;
+  /** Per-unit raw-worktree evidence gate. Absent only for legacy/test providers. */
+  saveGate?: SaveUnitReadiness;
   /** Named membership no longer matches this authoritative inventory digest. */
   membershipStale?: boolean;
   /** Unit-layer identity assessment; deliberately independent of computeState. */
@@ -3011,6 +3034,9 @@ export interface IpcApi {
       filePath: string
     ) => Promise<{ removed: boolean; sha256?: string; reason?: string }>;
     onSecurityNotice: (callback: (notice: WorkspaceSecurityNotice) => void) => () => void;
+    suggestGitignore: (workspaceId: string) => Promise<GitignoreSuggestionNotice | null>;
+    acceptGitignore: (workspaceId: string) => Promise<GitignoreSuggestionAcceptance>;
+    onGitignoreSuggestion: (callback: (notice: GitignoreSuggestionNotice) => void) => () => void;
   };
   agents: {
     list: (workspaceId: string) => Promise<Agent[]>;
