@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
+
 import type { BundleCaptureHealth, DirtyInventory, ProtectionRung } from '../../shared/commit-candidates';
 import type { SaveIntent } from '../database';
 import type { ComponentAssembly } from './component-assembler';
 import type { ProjectedWitness } from './witness-projection';
+import { canonicalize } from './jcs';
 
 export interface NamedSaveSetMember {
   intentId: string;
@@ -25,6 +28,26 @@ export interface SaveIntentUnit {
   weakestProtection: ProtectionRung | null;
 }
 
+export type FallbackUnitIdentityAssessment =
+  | {
+      evaluation: 'complete';
+      agentId: string;
+      sessionId: string | null;
+      workspaceId: string;
+      agentTitle: string;
+    }
+  | { evaluation: 'incomplete' };
+
+export interface AgentSessionFallbackUnit {
+  saveUnitId: string;
+  saveUnitKind: 'agent-session-fallback';
+  title: string;
+  memberEntryIds: string[];
+  contributingTurnIds: string[];
+  identityAssessment: Extract<FallbackUnitIdentityAssessment, { evaluation: 'complete' }>;
+  coarseIdentityWarning: boolean;
+}
+
 export interface IntentAssemblyInput {
   inventory: DirtyInventory;
   witnesses: ProjectedWitness[];
@@ -35,8 +58,10 @@ export interface IntentAssemblyInput {
 
 export interface IntentAssembly {
   intentUnits: SaveIntentUnit[];
+  fallbackUnits: AgentSessionFallbackUnit[];
   unwitnessedEntryIds: string[];
   legacyTaskIdentityUnavailableEntryIds: string[];
+  witnessedUngroupableEntryIds: string[];
   staleNamedSaveSetIds: string[];
 }
 
@@ -46,6 +71,38 @@ const emptyHealth = (): BundleCaptureHealth => ({
 
 function uniqueSorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort();
+}
+
+/** A2.4: app-owned agent/planning churn is outside fallback save tracking.
+ * Explicit intent and named-set membership remain authoritative; this filter
+ * only prevents legacy evidence from turning Lares' own machinery into units. */
+function fallbackScopeEligible(displayPath: string): boolean {
+  const normalized = displayPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  const internalSegments = [
+    '.lares/supervisor/',
+    '.lares/workers/',
+    '.lares/research/scratch/',
+    '.lares/plans/',
+    '.claude/skills/',
+    '.agents/skills/',
+  ];
+  return !internalSegments.some((segment) =>
+    normalized.startsWith(segment) || normalized.includes(`/${segment}`));
+}
+
+function fallbackUnitId(input: {
+  repositoryKey: string;
+  workspaceId: string;
+  agentId: string;
+  sessionId: string | null;
+}): string {
+  const digest = createHash('sha256').update(canonicalize({
+    workspaceId: input.workspaceId,
+    repositoryKey: input.repositoryKey,
+    agentId: input.agentId,
+    sessionKey: input.sessionId ?? 'legacy-null-session',
+  })).digest('hex').slice(0, 16);
+  return `agent-fallback:${input.repositoryKey}:${digest}`;
 }
 
 /** Pure intent projector: immutable witness and byte-addressed named membership
@@ -121,10 +178,84 @@ export function projectIntentUnits(input: IntentAssemblyInput): IntentAssembly {
       legacyTaskIdentityUnavailableEntryIds.push(entry.entryId);
     }
   }
+  const legacyIds = new Set(legacyTaskIdentityUnavailableEntryIds);
+  const witnessedUngroupableEntryIds = new Set<string>();
+  const fallbackGroups = new Map<string, {
+    workspaceId: string;
+    agentId: string;
+    sessionId: string | null;
+    agentTitle: string;
+    entryIds: Set<string>;
+    turnIds: Set<string>;
+  }>();
+  for (const [entryId, witnesses] of witnessesByEntry) {
+    if (!legacyIds.has(entryId)) continue;
+    const entry = entries.get(entryId);
+    if (!entry || !fallbackScopeEligible(entry.path.displayPath)) {
+      witnessedUngroupableEntryIds.add(entryId);
+      continue;
+    }
+    for (const witness of witnesses) {
+      const agentTitle = witness.agentTitle?.trim() ?? '';
+      if (!witness.agentId || witness.agentIdentityResolved !== true || !agentTitle
+          || witness.sessionId === undefined) {
+        witnessedUngroupableEntryIds.add(entryId);
+        continue;
+      }
+      const key = `${witness.agentId}\0${witness.sessionId ?? 'legacy-null-session'}`;
+      const existing = fallbackGroups.get(key);
+      if (existing && existing.workspaceId !== witness.workspaceId) {
+        witnessedUngroupableEntryIds.add(entryId);
+        continue;
+      }
+      const group = existing ?? {
+        workspaceId: witness.workspaceId,
+        agentId: witness.agentId,
+        sessionId: witness.sessionId,
+        agentTitle,
+        entryIds: new Set<string>(),
+        turnIds: new Set<string>(),
+      };
+      group.entryIds.add(entryId);
+      group.turnIds.add(witness.turnId);
+      fallbackGroups.set(key, group);
+    }
+  }
+  // A resolvable group wins over an unresolvable sibling witness. This keeps the
+  // visible inventory a category partition while still allowing one entry to be
+  // disclosed in multiple valid fallback units.
+  for (const group of fallbackGroups.values()) {
+    for (const entryId of group.entryIds) witnessedUngroupableEntryIds.delete(entryId);
+  }
+  const fallbackUnits = [...fallbackGroups.values()].map((group): AgentSessionFallbackUnit => {
+    const coarseIdentityWarning = group.sessionId === null;
+    return {
+      saveUnitId: fallbackUnitId({
+        repositoryKey: input.inventory.repository.repositoryKey,
+        workspaceId: group.workspaceId,
+        agentId: group.agentId,
+        sessionId: group.sessionId,
+      }),
+      saveUnitKind: 'agent-session-fallback',
+      title: `${group.agentTitle} — ${coarseIdentityWarning ? 'legacy agent-lifetime work' : 'mixed session work'}`,
+      memberEntryIds: uniqueSorted(group.entryIds),
+      contributingTurnIds: uniqueSorted(group.turnIds),
+      identityAssessment: {
+        evaluation: 'complete',
+        agentId: group.agentId,
+        sessionId: group.sessionId,
+        workspaceId: group.workspaceId,
+        agentTitle: group.agentTitle,
+      },
+      coarseIdentityWarning,
+    };
+  }).sort((left, right) => left.saveUnitId.localeCompare(right.saveUnitId));
   return {
     intentUnits,
+    fallbackUnits,
     unwitnessedEntryIds: uniqueSorted(unwitnessedEntryIds),
     legacyTaskIdentityUnavailableEntryIds: uniqueSorted(legacyTaskIdentityUnavailableEntryIds),
+    witnessedUngroupableEntryIds: uniqueSorted(witnessedUngroupableEntryIds),
     staleNamedSaveSetIds: uniqueSorted(staleNamedSaveSetIds),
   };
 }

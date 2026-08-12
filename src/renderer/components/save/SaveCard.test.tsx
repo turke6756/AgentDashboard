@@ -45,7 +45,8 @@ function unit(over: Partial<SaveIntentUnitDto> = {}): SaveIntentUnitDto {
 
 function inventory(over: Partial<SaveCardInventoryResponse> = {}): SaveCardInventoryResponse {
   return {
-    intentUnits: [unit()], unwitnessed: [], legacyTaskIdentityUnavailable: [],
+    intentUnits: [unit()], fallbackUnits: [], unwitnessed: [],
+    legacyTaskIdentityUnavailable: [], witnessedUngroupable: [],
     legacyFinalizations: [], planningActivities: [], quotaWeakening: null, ...over,
   };
 }
@@ -158,16 +159,64 @@ describe('SaveCard intent-first rendering', () => {
     await renderCard(inventory({
       intentUnits: [unit({ state: 'committed' })],
       legacyTaskIdentityUnavailable: [member('legacy-entry', 'legacy.ts')],
+      witnessedUngroupable: [member('legacy-entry', 'legacy.ts')],
       legacyFinalizations: [{ finalizationId: 'legacy-fin', packageId: 'legacy-package',
         packageRevision: 2, finalizationKind: 'plan-package', boundaryStatus: 'ready', finalizedAt: 1 }],
     }));
 
-    expect(container.querySelector('[data-testid="legacy-task-identity-unavailable"]')?.textContent)
-      .toContain('1 witnessed file');
+    expect(container.querySelector('[data-testid="witnessed-ungroupable"]')?.textContent)
+      .toContain('need manual grouping');
     expect(container.querySelector('[data-testid="legacy-package-finalizations"]')?.textContent)
       .toContain('Read-only legacy history');
     expect(container.querySelector('[data-testid="save-bundle-pin"]')).toBeNull();
     expect(container.querySelector('[data-testid="save-bundle-submit"]')).toBeNull();
+  });
+
+  it('renders a fallback unit as a save gesture and sends only the main-owned unit identity', async () => {
+    const fallback = unit({
+      intentId: 'agent-fallback:repo:stable',
+      kind: 'agent-session-fallback',
+      saveUnitId: 'agent-fallback:repo:stable',
+      saveUnitKind: 'agent-session-fallback',
+      title: 'Build worker — mixed session work',
+      plan: null,
+      planItem: null,
+      topologyEvidence: {
+        componentIds: [], pathsWithMultipleTurns: [],
+        captureHealth: { turns: [], captureOutage: false, pathsWithoutFinalizationEdge: [] },
+      },
+    });
+    vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
+      finalizationId: 'finalization', packageId: fallback.intentId, finalizationKind: 'fleet-adhoc',
+      outcome: 'created', boundaryRef: 'refs/lares/test', boundaryStatus: 'ready', packageRevision: 1,
+      pinnedSelection: { selectedComponentIds: [], selectedUnattributedEntryIds: ['entry-1'] },
+    } as never);
+    await renderCard(inventory({ intentUnits: [], fallbackUnits: [fallback] }));
+    expect(container.querySelector('[data-testid="fallback-save-unit"]')?.textContent)
+      .toContain('Build worker — mixed session work');
+    const prepare = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
+    await act(async () => { prepare.click(); await Promise.resolve(); });
+    expect(window.api.saveCard.markDone).toHaveBeenCalledWith({
+      saveUnitId: 'agent-fallback:repo:stable',
+      saveUnitKind: 'agent-session-fallback',
+      targetWorkspaceId: 'ws-1',
+    });
+    const request = vi.mocked(window.api.saveCard.markDone).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(request).not.toHaveProperty('memberEntryIds');
+    expect(request).not.toHaveProperty('packageId');
+  });
+
+  it('shows a visible warning for a null-session coarse fallback unit', async () => {
+    await renderCard(inventory({
+      intentUnits: [],
+      fallbackUnits: [unit({
+        intentId: 'agent-fallback:repo:coarse', kind: 'agent-session-fallback',
+        saveUnitId: 'agent-fallback:repo:coarse', saveUnitKind: 'agent-session-fallback',
+        coarseIdentityWarning: true, plan: null, planItem: null,
+      })],
+    }));
+    expect(container.querySelector('[data-testid="fallback-coarse-warning"]')?.textContent)
+      .toContain('agent\'s lifetime');
   });
 
   it('keeps human edits unwitnessed and offers the single baseline-adoption gesture', async () => {
@@ -223,7 +272,7 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')?.disabled).toBe(false);
   });
 
-  it('shows approved zero-changed protection-incomplete copy from the aggregate assessment', async () => {
+  it('gives could-not-assess precedence when protection degradation and no unit co-occur', async () => {
     await renderCard(inventory({
       intentUnits: [],
       computeState: {
@@ -236,9 +285,48 @@ describe('SaveCard intent-first rendering', () => {
       },
     }));
     const banner = container.querySelector('[data-testid="save-card-degraded"]') as HTMLElement;
-    expect(banner.dataset.computeState).toBe('protection-incomplete');
-    expect(banner.textContent).toContain('Lares did not modify any files, but it could not finish checking checkpoint coverage.');
-    expect(banner.textContent).toContain('checkpoint membership-pair budget');
+    expect(banner.dataset.computeState).toBe('assessment-unavailable');
+    expect(banner.textContent).toContain('Save status could not be assessed');
+    expect(banner.textContent).toContain('Nothing here is being reported as already saved.');
+    expect(container.querySelector('[data-testid="save-card-none-loud"]')).toBeNull();
+  });
+
+  it('renders the all-clear when every unresolved bucket is empty and protection is complete', async () => {
+    await renderCard(inventory({
+      intentUnits: [unit({ state: 'committed' })],
+      legacyFinalizations: [{ finalizationId: 'history', packageId: 'legacy-package', packageRevision: 1,
+        finalizationKind: 'fleet-adhoc', boundaryStatus: 'ready', finalizedAt: 1 }],
+    }));
+    expect(container.querySelector('[data-testid="save-card-none-loud"]')?.textContent)
+      .toContain('everything witnessed is already protected');
+  });
+
+  it('never renders the all-clear for unresolved buckets even when ordinary degradation co-occurs', async () => {
+    await renderCard(inventory({
+      intentUnits: [],
+      unwitnessed: [member('no-witness', 'human.ts')],
+      computeState: {
+        scope: 'global',
+        inventory: { completeness: 'partial', dirtyCorpusStopReasons: ['deadline'], observedEntries: 1,
+          observedStatusBytes: 1, observedPathBytes: 1, totalsExact: false },
+        protection: { assessment: { evaluation: 'incomplete' }, checkpointStopReasons: ['deadline'] },
+      },
+    }));
+    expect(container.querySelector('[data-testid="save-card-none-loud"]')).toBeNull();
+    expect(container.querySelector('[data-testid="save-card-degraded"]')?.getAttribute('data-compute-state'))
+      .toBe('assessment-unavailable');
+  });
+
+  it('keeps scope-excluded witnessed work visible and off the all-clear', async () => {
+    const excluded = member('excluded-plan', '.lares/plans/active/plan.md');
+    await renderCard(inventory({
+      intentUnits: [], fallbackUnits: [], unwitnessed: [],
+      legacyTaskIdentityUnavailable: [excluded],
+      witnessedUngroupable: [excluded],
+    }));
+    expect(container.querySelector('[data-testid="witnessed-ungroupable"]')?.textContent)
+      .toContain('need manual grouping');
+    expect(container.querySelector('[data-testid="save-card-none-loud"]')).toBeNull();
   });
 
   it('renders unresolved protection as unknown while preserving proven lower rungs', async () => {

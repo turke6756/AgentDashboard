@@ -52,8 +52,10 @@ describe('save refusal copy', () => {
       protection: { assessment: { evaluation: 'incomplete' as const }, checkpointStopReasons: [] },
     };
     const recommendation = [{ pathBytesBase64: 'eA==', displayPath: 'x', countLabel: '>=10,000' }];
-    const first = { computeState, onboarding: { presentation: 'first-contact' as const, recommendations: recommendation } };
-    const established = { computeState, onboarding: { presentation: 'established' as const, recommendations: recommendation } };
+    const first = { computeState, onboarding: { presentation: 'first-contact' as const, recommendations: recommendation },
+      intentUnits: [{ state: 'open' } as never] };
+    const established = { computeState, onboarding: { presentation: 'established' as const, recommendations: recommendation },
+      intentUnits: [{ state: 'open' } as never] };
     expect(saveCardComputeState(first)).toBe('partial');
     expect(saveCardComputeState(established)).toBe('partial');
     expect(degradedSaveCopy(first, 1)?.title).not.toBe(degradedSaveCopy(established, 1)?.title);
@@ -69,8 +71,26 @@ describe('save refusal copy', () => {
         protection: { assessment: { evaluation: 'incomplete' }, checkpointStopReasons: [] },
       },
       onboarding: null,
+      intentUnits: [{ state: 'open' } as never],
     }, 0)?.body;
     expect(copy).toBe('Lares did not modify any files, but it could not finish checking checkpoint coverage. Review a smaller scope or exclude directories you do not want included in save tracking.');
     expect(copy).toMatch(/^[\x00-\x7F]+$/);
+  });
+
+  it('classifies unresolved work before everyday partial/protection degradation', () => {
+    const response = {
+      computeState: {
+        scope: 'global' as const,
+        inventory: { completeness: 'partial' as const, dirtyCorpusStopReasons: ['deadline' as const],
+          observedEntries: 1, observedStatusBytes: 1, observedPathBytes: 1, totalsExact: false },
+        protection: { assessment: { evaluation: 'incomplete' as const },
+          checkpointStopReasons: ['deadline' as const] },
+      },
+      onboarding: null,
+      intentUnits: [], fallbackUnits: [],
+      unwitnessed: [{} as never], witnessedUngroupable: [],
+    };
+    expect(saveCardComputeState(response)).toBe('assessment-unavailable');
+    expect(degradedSaveCopy(response, 1)?.title).toBe('Save status could not be assessed');
   });
 });

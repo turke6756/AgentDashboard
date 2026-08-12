@@ -62,7 +62,7 @@ import type { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { discoverFirstContactRoots, recordOnboardingDecision, type FirstContactDiscovery } from './onboarding-discovery';
 import type { ScratchPolicyStore } from './scratch-policy-store';
 
-type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'startedAt' | 'endedAt'>;
+type BundleTurn = Pick<TurnRecord, 'id' | 'agentId' | 'agentTitle' | 'sessionId' | 'startedAt' | 'endedAt'>;
 
 function protectionFields(assessment: ProtectionAssessment | undefined): {
   protectionAssessment: ProtectionAssessment;
@@ -85,6 +85,7 @@ export interface SaveCardRoutesDeps {
   probeWorkspaceGit?: (canonicalWorkspaceDir: string) => Promise<GitCapability>;
   readTurnWitnesses?: TurnWitnessReader;
   readTurnRecord?: TurnStampRecordReader;
+  readFallbackTurnIdentity?: (turnId: string) => Pick<TurnRecord, 'id' | 'agentId' | 'sessionId'> | null;
   readCaptureTurns?: CaptureTurnReader;
   readCommitPathLinks?: CommitPathLinkReader;
   readActiveFinalizations?: (repositoryKey: string) => readonly import('../database').PackageFinalization[];
@@ -213,6 +214,8 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     runGitBytes,
     readTurnWitnesses,
     stampSource: createTurnStampSource(readTurnRecord),
+    readFallbackTurnIdentity: deps.readFallbackTurnIdentity ?? dbGetTurnRecord,
+    readFallbackAgent: getAgent,
     readCaptureTurns,
     readCommitPathLinks,
     readActiveFinalizations: deps.readActiveFinalizations ?? dbListActivePackageFinalizationsForRepository,
@@ -353,7 +356,18 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       read.inventory.entries,
       readTurnWitnesses,
       createTurnStampSource(readTurnRecord),
-    );
+    ).map((witness) => {
+      const turn = turns.get(witness.turnId);
+      const agent = witness.agentId ? agents.get(witness.agentId) : null;
+      return {
+        ...witness,
+        sessionId: turn?.sessionId,
+        agentTitle: agent
+          ? rendererSafeText(nonEmpty(agent.title, turn?.agentTitle || 'Unknown agent'))
+          : null,
+        agentIdentityResolved: Boolean(agent && turn && turn.agentId === witness.agentId),
+      };
+    });
     const workspaceIds = read.inventory.repository.workspaces.map((workspace) => workspace.workspaceId);
     const intents = (deps.listSaveIntents ?? dbListSaveIntentsForRepository)(
       read.inventory.repository.repositoryKey,
@@ -407,6 +421,8 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
       return {
         intentId: unit.intent.id,
         kind: unit.intent.kind,
+        saveUnitId: unit.intent.id,
+        saveUnitKind: unit.intent.kind,
         title: unit.intent.title,
         state: unit.intent.state,
         plan: plan ? { id: plan.id, title: plan.slug ?? plan.path } : null,
@@ -442,6 +458,44 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     const legacyTaskIdentityUnavailable = members(
       assembly.legacyTaskIdentityUnavailableEntryIds,
     );
+    const fallbackUnits = assembly.fallbackUnits.map((unit): SaveIntentUnitDto => {
+      const componentIds = [...new Set(unit.memberEntryIds.flatMap((entryId) =>
+        read.components.filter((component) => component.dirtyEntryIds.includes(entryId))
+          .map((component) => component.componentId)))].sort();
+      const componentHealth = componentIds.flatMap((id) =>
+        read.captureHealthByComponentId[id] ? [read.captureHealthByComponentId[id]] : []);
+      const worker = workerByAgentId.get(unit.identityAssessment.agentId);
+      return {
+        intentId: unit.saveUnitId,
+        kind: unit.saveUnitKind,
+        saveUnitId: unit.saveUnitId,
+        saveUnitKind: unit.saveUnitKind,
+        title: unit.title,
+        state: 'open',
+        plan: null,
+        planItem: null,
+        members: members(unit.memberEntryIds),
+        contributors: worker ? [worker] : [],
+        topologyEvidence: {
+          componentIds,
+          pathsWithMultipleTurns: [],
+          captureHealth: {
+            turns: componentHealth.flatMap((health) => health.turns),
+            captureOutage: componentHealth.some((health) => health.captureOutage),
+            pathsWithoutFinalizationEdge: [...new Set(componentHealth.flatMap(
+              (health) => health.pathsWithoutFinalizationEdge))],
+          },
+        },
+        concurrencyCases: [],
+        saveability,
+        identityAssessment: {
+          evaluation: 'complete',
+          agentTitle: unit.identityAssessment.agentTitle,
+        },
+        coarseIdentityWarning: unit.coarseIdentityWarning,
+      };
+    });
+    const witnessedUngroupable = members(assembly.witnessedUngroupableEntryIds);
     const planningActivities = (deps.listPlanningActivities ?? dbListPlanningActivityWorktrees)()
       .filter((activity) => activity.logicalWorkspaceId === req.workspaceId)
       .map((activity) => {
@@ -485,8 +539,10 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
     }));
     return {
       intentUnits,
+      fallbackUnits,
       unwitnessed,
       legacyTaskIdentityUnavailable,
+      witnessedUngroupable,
       legacyFinalizations,
       planningActivities,
       quotaWeakening,

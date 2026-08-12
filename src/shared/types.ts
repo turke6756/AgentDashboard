@@ -2229,7 +2229,11 @@ export interface ConcurrencyCaseDto {
 
 export interface SaveIntentUnitDto {
   intentId: string;
-  kind: 'task' | 'named-save-set';
+  kind: import('./commit-candidates').ProjectedSaveUnitKind;
+  /** Canonical main-owned identity. Optional only for pre-fallback providers. */
+  saveUnitId?: string;
+  /** Canonical main-owned kind. Optional only for pre-fallback providers. */
+  saveUnitKind?: import('./commit-candidates').ProjectedSaveUnitKind;
   title: string;
   state: SaveIntentState;
   plan: { id: string; title: string } | null;
@@ -2245,6 +2249,12 @@ export interface SaveIntentUnitDto {
   saveability: SaveCardPackageSaveability;
   /** Named membership no longer matches this authoritative inventory digest. */
   membershipStale?: boolean;
+  /** Unit-layer identity assessment; deliberately independent of computeState. */
+  identityAssessment?:
+    | { evaluation: 'complete'; agentTitle: string }
+    | { evaluation: 'incomplete' };
+  /** Null-session fallback units intentionally span the agent lifetime. */
+  coarseIdentityWarning?: boolean;
 }
 
 export type PlanningActivityPromotionStatus =
@@ -2286,8 +2296,12 @@ export interface SaveCardLegacyFinalizationDto {
  */
 export interface SaveCardInventoryResponse {
   intentUnits: SaveIntentUnitDto[];
+  /** Main-owned fallback projection. Absent only for legacy/test providers. */
+  fallbackUnits?: SaveIntentUnitDto[];
   unwitnessed: SaveCardMemberDto[];
   legacyTaskIdentityUnavailable: SaveCardMemberDto[];
+  /** Witnessed entries whose agent/session identity could not be resolved safely. */
+  witnessedUngroupable?: SaveCardMemberDto[];
   legacyFinalizations: SaveCardLegacyFinalizationDto[];
   planningActivities: SaveCardPlanningActivityDto[];
   quotaWeakening: import('./commit-candidates').SaveCardQuotaWeakening | null;
@@ -2570,6 +2584,14 @@ export interface SaveCardFleetAdhocMarkDoneSuccess {
   pinnedSelection: SaveCardPinnedSelection;
   /** Present only when the freeze transition could not make the boundary live. */
   refusal?: import('./commit-candidates').SaveRefusal;
+}
+
+/** Future-proof unit-shaped request used by fallback gestures. WP-F2 teaches
+ * the finalization handler to resolve this shape; it never carries members. */
+export interface SaveCardSaveUnitMarkDoneRequest {
+  saveUnitId: string;
+  saveUnitKind: import('./commit-candidates').ProjectedSaveUnitKind;
+  targetWorkspaceId: string;
 }
 
 export type SaveCardFleetAdhocRefusalCode =
@@ -3665,7 +3687,7 @@ export interface IpcApi {
     ) => Promise<SaveCardAttributionResolutionResponse>;
     /** Explicitly freeze and pin a fleet-adhoc package boundary. */
     markDone: (
-      req: SaveCardFleetAdhocMarkDoneRequest,
+      req: SaveCardFleetAdhocMarkDoneRequest | SaveCardSaveUnitMarkDoneRequest,
     ) => Promise<SaveCardFleetAdhocMarkDoneResponse>;
     /** One reviewed, durable multi-package Save gesture. Main refreshes and
      *  re-verifies every intent immediately before its just-in-time mint. */

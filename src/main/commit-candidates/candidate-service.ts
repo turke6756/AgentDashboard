@@ -58,8 +58,11 @@ import {
   listNamedSaveSetMembers,
   getPlan,
   getPlanWorkPackage,
+  getTurnRecord,
+  getAgent,
   type PackageFinalization,
   type PlanningActivityWorktree,
+  type TurnRecord,
 } from '../database';
 import { projectIntentUnits } from './intent-assembler';
 import type { GitCapability } from '../../shared/types';
@@ -184,6 +187,10 @@ export interface CandidateServiceDeps {
   readTurnWitnesses: TurnWitnessReader;
   /** Immutable turn-row attribution. Null/omitted preserves Stage ① behavior. */
   stampSource?: WitnessStampSource | null;
+  /** Immutable session identity for fallback projection. */
+  readFallbackTurnIdentity?: (turnId: string) => Pick<TurnRecord, 'id' | 'agentId' | 'sessionId'> | null;
+  /** Agent-record resolution is required before a witness can form a fallback unit. */
+  readFallbackAgent?: typeof getAgent;
   readCaptureTurns: CaptureTurnReader;
   /** UUID-free attribution and local checkpoint refs resolved from the immutable
    * turn row. Missing evidence yields no public attribution. */
@@ -245,6 +252,7 @@ export interface CandidateInventoryRead {
   /** SC-WP-2L — retention quota-weakening warning; null unless a still-dirty edge is released. */
   quotaWeakening: SaveCardQuotaWeakening | null;
   intentUnits?: CandidateIntentUnit[];
+  fallbackUnits?: CandidateFallbackUnit[];
   witnessedProvenanceByTurnId?: ReadonlyMap<string, Readonly<WitnessedCommitProvenance>>;
 }
 
@@ -712,12 +720,24 @@ export class CommitCandidateService {
       entries: dedupeEntries(drafts.flatMap((item) => item.entries)),
     };
 
+    const readFallbackTurnIdentity = this.deps.readFallbackTurnIdentity ?? getTurnRecord;
+    const readFallbackAgent = this.deps.readFallbackAgent ?? getAgent;
     const witnesses = projectWitnesses(
       repository,
       draft.entries,
       this.deps.readTurnWitnesses,
       this.deps.stampSource ?? null,
-    );
+    ).map((witness) => {
+      const turn = readFallbackTurnIdentity(witness.turnId);
+      const agent = witness.agentId ? readFallbackAgent(witness.agentId) : null;
+      return {
+        ...witness,
+        sessionId: turn?.sessionId,
+        agentTitle: agent?.title?.trim() || null,
+        agentIdentityResolved: Boolean(agent && turn && turn.id === witness.turnId
+          && turn.agentId === witness.agentId),
+      };
+    });
     const assembly = assembleConflictComponents(draft, witnesses);
     assembly.inventory.completeness = drafts.every((item) => item.completeness === 'complete')
       ? 'complete'
@@ -847,6 +867,12 @@ export class CommitCandidateService {
         memberEntryIds: unit.memberEntryIds,
         contributingTurnIds: unit.contributingTurnIds,
       }));
+    const fallbackUnits: CandidateFallbackUnit[] = intentAssembly.fallbackUnits.map((unit) => ({
+      saveUnitId: unit.saveUnitId,
+      saveUnitKind: unit.saveUnitKind,
+      memberEntryIds: unit.memberEntryIds,
+      contributingTurnIds: unit.contributingTurnIds,
+    }));
     const witnessedProvenanceByTurnId = new Map<string, Readonly<WitnessedCommitProvenance>>();
     if (this.deps.readWitnessedProvenance) {
       for (const witness of witnesses) {
@@ -868,6 +894,7 @@ export class CommitCandidateService {
       planAttributionUnavailableTurnIds,
       quotaWeakening: this.deps.readQuotaWeakening?.(repository.repositoryKey) ?? null,
       ...(intentUnits ? { intentUnits } : {}),
+      fallbackUnits,
       ...(witnessedProvenanceByTurnId.size > 0 ? { witnessedProvenanceByTurnId } : {}),
     };
   }
@@ -975,6 +1002,7 @@ export interface CandidateBuildContext {
   reviewChallengeAtoms?: readonly ReviewChallengeAtom[];
   /** Fresh intent-first selection documents. Required by v2 mint only. */
   intentUnits?: readonly CandidateIntentUnit[];
+  fallbackUnits?: readonly CandidateFallbackUnit[];
   witnessedProvenanceByTurnId?: ReadonlyMap<string, Readonly<WitnessedCommitProvenance>>;
   attributionResolutions?: readonly ReviewedAttributionResolution[];
   protectionByEntryId?: Readonly<Record<string, ProtectionRung>>;
@@ -995,6 +1023,23 @@ export interface CandidateIntentUnit {
   planItemTitle?: string | null;
   memberEntryIds: string[];
   contributingTurnIds?: string[];
+}
+
+export interface CandidateFallbackUnit {
+  saveUnitId: string;
+  saveUnitKind: 'agent-session-fallback';
+  memberEntryIds: string[];
+  contributingTurnIds: string[];
+}
+
+/** Main-owned acknowledgement classifier. Renderer-selected members never
+ * assert fallback attribution; they are subtracted only from the projector. */
+export function unattributedChallengeEntryIds(
+  selectedEntryIds: readonly string[],
+  fallbackUnits: readonly CandidateFallbackUnit[] = [],
+): string[] {
+  const attributed = new Set(fallbackUnits.flatMap((unit) => unit.memberEntryIds));
+  return [...new Set(selectedEntryIds.filter((entryId) => !attributed.has(entryId)))].sort();
 }
 
 function compareBase64(left: string, right: string): number {
@@ -1169,8 +1214,16 @@ export function buildReviewedSemanticManifest(
   const unattributedPaths = new Set(
     topologyEvidence.topology.selectedUnattributedPathBytesBase64,
   );
+  const challengeEntryIds = new Set(unattributedChallengeEntryIds(
+    [...entryById.values()]
+      .filter((entry) => unattributedPaths.has(entry.path.pathBytesBase64))
+      .map((entry) => entry.entryId),
+    context.fallbackUnits,
+  ));
   const unattributedAtoms: ReviewChallengeAtom[] = members
-    .filter((member) => unattributedPaths.has(member.finalPathBytesBase64))
+    .filter((member) => unattributedPaths.has(member.finalPathBytesBase64)
+      && [...challengeEntryIds].some((entryId) =>
+        entryById.get(entryId)?.path.pathBytesBase64 === member.finalPathBytesBase64))
     .map((member) => {
       const memberEffectDigest = sha256Hex(canonicalize(member));
       const body = { pathBytesBase64: member.finalPathBytesBase64, memberEffectDigest };

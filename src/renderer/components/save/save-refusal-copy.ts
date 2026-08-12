@@ -6,13 +6,25 @@ import type {
 } from '../../../shared/types';
 
 export type SaveCardComputeState =
-  | 'complete' | 'complete-summarized' | 'partial' | 'protection-incomplete';
+  | 'complete' | 'complete-summarized' | 'partial' | 'protection-incomplete'
+  | 'assessment-unavailable';
 
 export function saveCardComputeState(
-  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>,
+  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>
+    & Partial<Pick<SaveCardInventoryResponse,
+      'intentUnits' | 'fallbackUnits' | 'unwitnessed' | 'witnessedUngroupable'>>,
 ): SaveCardComputeState {
   const compute = response.computeState;
   if (!compute) return 'complete';
+  const hasActiveUnit = (response.intentUnits ?? []).some((unit) =>
+    unit.state !== 'committed' && unit.state !== 'superseded')
+    || (response.fallbackUnits?.length ?? 0) > 0;
+  const hasUnassessedWork = (response.unwitnessed?.length ?? 0) > 0
+    || (response.witnessedUngroupable?.length ?? 0) > 0;
+  if (!hasActiveUnit && (hasUnassessedWork
+      || compute.protection.assessment.evaluation === 'incomplete')) {
+    return 'assessment-unavailable';
+  }
   if (compute.inventory.completeness === 'partial') return 'partial';
   if (compute.protection.assessment.evaluation === 'incomplete') return 'protection-incomplete';
   return response.onboarding?.recommendations.length ? 'complete-summarized' : 'complete';
@@ -31,12 +43,21 @@ const PROTECTION_BUDGET_COPY: Record<string, string> = {
 };
 
 export function degradedSaveCopy(
-  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>,
+  response: Pick<SaveCardInventoryResponse, 'computeState' | 'onboarding'>
+    & Partial<Pick<SaveCardInventoryResponse,
+      'intentUnits' | 'fallbackUnits' | 'unwitnessed' | 'witnessedUngroupable'>>,
   changedCount: number,
 ): { title: string; body: string; budgetLine: string | null } | null {
   const state = saveCardComputeState(response);
   const firstContact = response.onboarding?.presentation === 'first-contact';
   if (state === 'complete') return null;
+  if (state === 'assessment-unavailable') {
+    return {
+      title: 'Save status could not be assessed',
+      body: 'Lares found work that it could not place in a save unit, or it could not finish checking protection. Nothing here is being reported as already saved.',
+      budgetLine: null,
+    };
+  }
   if (state === 'complete-summarized') {
     return {
       title: firstContact ? 'Save tracking setup is summarized' : 'Large directories are summarized',

@@ -48,11 +48,18 @@ function intent(id: string, kind: SaveIntent['kind'] = 'task'): SaveIntent {
   };
 }
 
-function witness(entryId: string, intentId: string | null, turnId = `${entryId}-${intentId}`): ProjectedWitness {
+function witness(
+  entryId: string,
+  intentId: string | null,
+  turnId = `${entryId}-${intentId}`,
+  overrides: Partial<ProjectedWitness> = {},
+): ProjectedWitness {
   return {
     entryId, workspaceId: 'ws', turnId, agentId: 'agent', ownerAgentId: null,
     ownerBrickGeneration: null, planId: intentId ? 'plan' : null,
     planItemId: intentId ? 'item' : null, intentId, planAttributionAvailable: intentId !== null,
+    sessionId: 'session-a', agentTitle: 'Build worker', agentIdentityResolved: true,
+    ...overrides,
   };
 }
 
@@ -94,6 +101,125 @@ test('separates truly unwitnessed work from honest legacy identity-unavailable w
   });
   assert.deepEqual(result.unwitnessedEntryIds, ['loose']);
   assert.deepEqual(result.legacyTaskIdentityUnavailableEntryIds, ['legacy']);
+});
+
+test('fallback units group only witnessed legacy identity by agent session and keep ids membership-independent', () => {
+  const first = projectIntentUnits({
+    inventory, topology,
+    witnesses: [witness('a', null, 'turn-a'), witness('b', null, 'turn-b')],
+    intents: [], namedMembers: [],
+  });
+  const unit = first.fallbackUnits.find((candidate) => candidate.memberEntryIds.includes('a'))!;
+  assert.deepEqual(unit.memberEntryIds, ['a', 'b']);
+  assert.equal(unit.saveUnitKind, 'agent-session-fallback');
+  assert.match(unit.title, /Build worker.*mixed session work/);
+  const drifted = projectIntentUnits({
+    inventory, topology, witnesses: [witness('a', null, 'turn-a')], intents: [], namedMembers: [],
+  });
+  assert.equal(drifted.fallbackUnits[0].saveUnitId, unit.saveUnitId,
+    'membership drift must not rename the group-derived unit');
+  assert.ok(first.unwitnessedEntryIds.includes('loose'), 'the disjoint no-witness pool is not grouped');
+});
+
+test('session identity controls grouping while null session stays coarse and visibly warned', () => {
+  const result = projectIntentUnits({
+    inventory, topology,
+    witnesses: [
+      witness('a', null, 'turn-a', { sessionId: 'session-a' }),
+      witness('b', null, 'turn-b', { sessionId: 'session-b' }),
+      witness('legacy', null, 'turn-legacy', { sessionId: null }),
+    ],
+    intents: [], namedMembers: [],
+  });
+  const idsByMember = new Map(result.fallbackUnits.flatMap((unit) =>
+    unit.memberEntryIds.map((entryId) => [entryId, unit.saveUnitId] as const)));
+  assert.notEqual(idsByMember.get('a'), idsByMember.get('b'));
+  const coarse = result.fallbackUnits.find((unit) => unit.memberEntryIds.includes('legacy'))!;
+  assert.equal(coarse.coarseIdentityWarning, true);
+  assert.match(coarse.title, /agent-lifetime/);
+});
+
+test('real intent precedence excludes the whole entry while multiple null-intent sessions may share it', () => {
+  const withIntent = projectIntentUnits({
+    inventory, topology,
+    witnesses: [
+      witness('shared', null, 'turn-null'),
+      witness('shared', 'intent-two', 'turn-intent'),
+    ],
+    intents: [intent('intent-two')], namedMembers: [],
+  });
+  assert.ok(withIntent.fallbackUnits.every((unit) => !unit.memberEntryIds.includes('shared')));
+
+  const sharedFallback = projectIntentUnits({
+    inventory, topology,
+    witnesses: [
+      witness('shared', null, 'turn-a', { sessionId: 'session-a' }),
+      witness('shared', null, 'turn-b', { sessionId: 'session-b' }),
+    ],
+    intents: [], namedMembers: [],
+  });
+  const containingIds = sharedFallback.fallbackUnits
+    .filter((unit) => unit.memberEntryIds.includes('shared'))
+    .map((unit) => unit.saveUnitId);
+  assert.ok(new Set(containingIds).size > 1, 'concurrent session evidence is disclosed in each unit');
+});
+
+test('unresolved agent identity remains witnessed and explicitly ungroupable', () => {
+  const result = projectIntentUnits({
+    inventory, topology,
+    witnesses: [witness('legacy', null, 'turn-legacy', {
+      agentIdentityResolved: false, agentTitle: null,
+    })],
+    intents: [], namedMembers: [],
+  });
+  assert.deepEqual(result.fallbackUnits, []);
+  assert.ok(result.witnessedUngroupableEntryIds.includes('legacy'));
+  assert.ok(result.legacyTaskIdentityUnavailableEntryIds.includes('legacy'));
+});
+
+test('honest inventory partitions excluded witnessed work without hiding it', () => {
+  const intended = entry('intended');
+  const fallback = entry('fallback');
+  const excluded = entry('excluded');
+  excluded.path = {
+    pathBytesBase64: Buffer.from('.lares/plans/active/plan.md').toString('base64'),
+    displayPath: '.lares/plans/active/plan.md',
+    utf8Clean: true,
+  };
+  excluded.commitPathspecs = [excluded.path];
+  const noWitness = entry('no-witness');
+  const partitionInventory: DirtyInventory = {
+    ...inventory,
+    entries: [intended, fallback, excluded, noWitness],
+    unattributedEntryIds: [noWitness.entryId],
+  };
+  const result = projectIntentUnits({
+    inventory: partitionInventory,
+    topology,
+    witnesses: [
+      witness(intended.entryId, 'intent-one', 'turn-intended'),
+      witness(fallback.entryId, null, 'turn-fallback'),
+      witness(excluded.entryId, null, 'turn-excluded'),
+    ],
+    intents: [intent('intent-one')],
+    namedMembers: [],
+  });
+
+  assert.ok(result.witnessedUngroupableEntryIds.includes(excluded.entryId));
+  assert.ok(result.fallbackUnits.every((unit) => !unit.memberEntryIds.includes(excluded.entryId)));
+
+  const categories = [
+    new Set([
+      ...result.intentUnits.flatMap((unit) => unit.memberEntryIds),
+      ...result.fallbackUnits.flatMap((unit) => unit.memberEntryIds),
+    ]),
+    new Set(result.unwitnessedEntryIds),
+    new Set(result.witnessedUngroupableEntryIds),
+  ];
+  for (const dirtyEntry of partitionInventory.entries) {
+    assert.equal(categories.filter((category) => category.has(dirtyEntry.entryId)).length, 1,
+      `${dirtyEntry.entryId} must remain reachable in exactly one visible category`);
+  }
 });
 
 test('named membership is byte addressed and becomes stale on inventory digest change', () => {

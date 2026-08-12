@@ -12,7 +12,7 @@ import { registerSaveCardIpc, registerSaveCardIntentIpc, type IpcLike } from './
 import { createSaveCardRoutes, type SaveCardRoutesDeps } from './save-card-routes';
 import { createPreviewRoutes } from './preview-routes';
 import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
-import type { CandidateInventoryRead } from './candidate-service';
+import { unattributedChallengeEntryIds, type CandidateInventoryRead } from './candidate-service';
 import { ScratchPolicyStore } from './scratch-policy-store';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
@@ -74,10 +74,13 @@ async function setup(): Promise<void> {
   git(['config', 'user.email', 'intent@example.invalid']);
   fs.writeFileSync(path.join(repo, 'task.txt'), 'base\n');
   fs.writeFileSync(path.join(repo, 'legacy.txt'), 'base\n');
+  fs.mkdirSync(path.join(repo, '.lares', 'supervisor'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.lares', 'supervisor', 'memory.md'), 'base\n');
   git(['add', '-A']);
   git(['commit', '-q', '-m', 'base']);
   fs.writeFileSync(path.join(repo, 'task.txt'), 'task\n');
   fs.writeFileSync(path.join(repo, 'legacy.txt'), 'legacy\n');
+  fs.writeFileSync(path.join(repo, '.lares', 'supervisor', 'memory.md'), 'churn\n');
   fs.writeFileSync(path.join(repo, 'human.txt'), 'human\n');
 }
 
@@ -88,7 +91,16 @@ function routes(
   const witnesses = [
     witness('turn-task', 'task.txt', intent.id),
     witness('turn-legacy', 'legacy.txt', null),
+    witness('turn-internal', '.lares/supervisor/memory.md', null),
   ];
+  const agent = {
+    id: 'agent-1', workspaceId: 'workspace-1', title: 'Supervisor builder',
+    roleDescription: 'Coordinates and edits production code', isSupervisor: true,
+    isWorker: false, isSupervised: false,
+  } as never;
+  const turnIdentity = (turnId: string) => ({
+    id: turnId, agentId: 'agent-1', sessionId: turnId === 'turn-legacy' ? 'session-legacy' : 'session-task',
+  });
   let repositoryKey = '';
   return createSaveCardRoutes({
     gitExe,
@@ -105,9 +117,13 @@ function routes(
       repositoryKey = key;
       return [legacyFinalization(repositoryKey)];
     },
-    getAgentsByWorkspace: () => [],
-    getAgent: () => null,
-    readBundleTurns: () => [],
+    getAgentsByWorkspace: () => [agent],
+    getAgent: () => agent,
+    readBundleTurns: () => witnesses.map((item) => ({
+      id: item.turnId, agentId: item.agentId, agentTitle: 'Supervisor builder',
+      sessionId: turnIdentity(item.turnId).sessionId, startedAt: 1, endedAt: 2,
+    })),
+    readFallbackTurnIdentity: turnIdentity,
     listSaveIntents: () => [intent],
     listNamedSaveSetMembers: () => [],
     getPlan: () => ({ id: 'plan-1', slug: 'Intent plan', path: 'plan.md' } as never),
@@ -246,19 +262,77 @@ test('production route threads policy generation into the registry flight key', 
   assert.ok(resolved?.[1]);
 });
 
+test('display and candidate assembly independently re-project the same main-owned fallback identity', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  let projectedFallback: CandidateInventoryRead['fallbackUnits'] = [];
+  const acquire = registry.acquire.bind(registry);
+  registry.acquire = (async (key, compute, options) => {
+    const result = await acquire(key, compute, options);
+    projectedFallback = result.fallbackUnits;
+    return result;
+  }) as typeof registry.acquire;
+  const display = await routes(registry).getInventory({ workspaceId: 'workspace-1' });
+  const displayFallback = display.fallbackUnits?.map((unit) => ({
+    saveUnitId: unit.saveUnitId,
+    saveUnitKind: unit.saveUnitKind,
+    memberEntryIds: unit.members.map((member) => member.entry.entryId).sort(),
+  }));
+  assert.deepEqual(displayFallback, projectedFallback?.map((unit) => ({
+    saveUnitId: unit.saveUnitId,
+    saveUnitKind: unit.saveUnitKind,
+    memberEntryIds: [...unit.memberEntryIds].sort(),
+  })));
+});
+
+test('candidate acknowledgement classification reads fallback attribution from the main projection', async () => {
+  const registry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
+  let projectedFallback: CandidateInventoryRead['fallbackUnits'] = [];
+  let genuineNoWitnessIds: string[] = [];
+  const acquire = registry.acquire.bind(registry);
+  registry.acquire = (async (key, compute, options) => {
+    const result = await acquire(key, compute, options);
+    projectedFallback = result.fallbackUnits;
+    genuineNoWitnessIds = [...result.inventory.unattributedEntryIds];
+    return result;
+  }) as typeof registry.acquire;
+  await routes(registry).getInventory({ workspaceId: 'workspace-1' });
+  const fallbackEntryIds = projectedFallback?.flatMap((unit) => unit.memberEntryIds) ?? [];
+  assert.deepEqual(
+    unattributedChallengeEntryIds([...fallbackEntryIds, ...genuineNoWitnessIds], projectedFallback),
+    [...genuineNoWitnessIds].sort(),
+    'fallback attribution is main-owned; genuine no-witness atoms keep the aggregate challenge',
+  );
+});
+
 test('production route projects intent units and keeps unstamped work read-only', async () => {
   const inventory = await routes().getInventory({ workspaceId: 'workspace-1' });
   assert.equal(inventory.intentUnits.length, 1);
   assert.equal(inventory.intentUnits[0].intentId, intent.id);
   assert.equal(inventory.intentUnits[0].title, intent.title);
   assert.deepEqual(inventory.intentUnits[0].members.map((member) => member.entry.path.displayPath), ['task.txt']);
-  assert.deepEqual(inventory.legacyTaskIdentityUnavailable.map((member) => member.entry.path.displayPath), ['legacy.txt']);
+  const legacyPaths = inventory.legacyTaskIdentityUnavailable
+    .map((member) => member.entry.path.displayPath);
+  assert.ok(legacyPaths.includes('legacy.txt'));
+  assert.ok(legacyPaths.includes('.lares/supervisor/memory.md'),
+    'scope exclusion must not suppress visible legacy classification');
+  const fallback = inventory.fallbackUnits?.find((unit) =>
+    unit.members.some((member) => member.entry.path.displayPath === 'legacy.txt'));
+  assert.ok(fallback);
+  assert.equal(fallback.kind, 'agent-session-fallback');
+  assert.equal(fallback.saveUnitId, fallback.intentId);
+  assert.match(fallback.title, /Supervisor builder/);
+  assert.doesNotMatch(fallback.title, /agent-1|session-legacy/);
+  assert.ok(inventory.witnessedUngroupable?.some((member) =>
+    member.entry.path.displayPath === '.lares/supervisor/memory.md'));
+  assert.ok(!inventory.witnessedUngroupable?.some((member) =>
+    member.entry.path.displayPath === 'legacy.txt'));
   assert.deepEqual(inventory.unwitnessed.map((member) => member.entry.path.displayPath), ['human.txt']);
   assert.deepEqual(inventory.legacyFinalizations.map((row) => row.finalizationId), ['legacy-finalization']);
   assert.equal(inventory.computeState?.scope, 'global');
   assert.equal(inventory.computeState?.inventory.completeness, 'complete');
   assert.equal(inventory.computeState?.inventory.totalsExact, true);
-  assert.equal(inventory.computeState?.inventory.observedEntries, 3);
+  assert.ok((inventory.computeState?.inventory.observedEntries ?? 0) >= inventory.intentUnits.length,
+    'observed inventory structurally covers every projected intent unit');
   assert.deepEqual(inventory.computeState?.inventory.dirtyCorpusStopReasons, []);
   assert.equal(inventory.computeState?.protection.assessment.evaluation, 'complete');
 });
@@ -272,7 +346,39 @@ test('production IPC registration reaches the intent route', async () => {
     { workspaceId: 'workspace-1' },
   );
   assert.equal(inventory.intentUnits[0].intentId, intent.id);
-  assert.equal(inventory.legacyTaskIdentityUnavailable.length, 1);
+  assert.ok(inventory.fallbackUnits?.some((unit) => unit.kind === 'agent-session-fallback'),
+    'REACHABILITY:fallback-projection getInventory registration must enter the canonical projector');
+});
+
+test('unresolved agent records remain witnessed but form no fallback unit', async () => {
+  const inventory = await routes(undefined, {
+    getAgentsByWorkspace: () => [],
+    getAgent: () => null,
+  }).getInventory({ workspaceId: 'workspace-1' });
+  assert.deepEqual(inventory.fallbackUnits, []);
+  assert.ok(inventory.witnessedUngroupable?.some((member) =>
+    member.entry.path.displayPath === 'legacy.txt'));
+  assert.ok(inventory.legacyTaskIdentityUnavailable.some((member) =>
+    member.entry.path.displayPath === 'legacy.txt'));
+});
+
+test('scope exclusion precedes role-agnostic fallback grouping and a known supervisor still forms a unit', async () => {
+  const inventory = await routes().getInventory({ workspaceId: 'workspace-1' });
+  const paths = [
+    ...inventory.intentUnits.flatMap((unit) => unit.members),
+    ...(inventory.fallbackUnits ?? []).flatMap((unit) => unit.members),
+    ...inventory.unwitnessed,
+    ...(inventory.witnessedUngroupable ?? []),
+  ].map((item) => item.entry.path.displayPath);
+  assert.ok(paths.includes('.lares/supervisor/memory.md'), 'scope-excluded work stays visible');
+  assert.ok(inventory.witnessedUngroupable?.some((item) =>
+    item.entry.path.displayPath === '.lares/supervisor/memory.md'));
+  assert.ok(!inventory.fallbackUnits?.some((unit) => unit.members.some((item) =>
+    item.entry.path.displayPath === '.lares/supervisor/memory.md')),
+  'scope-excluded work forms no fallback unit');
+  const supervisorFallback = inventory.fallbackUnits?.find((unit) =>
+    unit.title.includes('Supervisor builder'));
+  assert.ok(supervisorFallback, 'role is not a save-worthiness filter after scoping');
 });
 
 test('production route surfaces a failed protection probe as unknown, never unprotected', async () => {

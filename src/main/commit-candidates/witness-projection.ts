@@ -42,6 +42,12 @@ export interface ProjectedWitness {
   planId: string | null;
   planItemId: string | null;
   intentId: string | null;
+  /** Immutable turn session used only for legacy fallback grouping. */
+  sessionId?: string | null;
+  /** Main-resolved, renderer-safe label. Raw ids are never display fallbacks. */
+  agentTitle?: string | null;
+  /** False when the referenced agent row cannot be resolved safely. */
+  agentIdentityResolved?: boolean;
   /** Internal presentation signal; deliberately excluded from topology identity. */
   planAttributionAvailable: boolean;
 }

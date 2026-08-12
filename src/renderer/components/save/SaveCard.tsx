@@ -144,7 +144,7 @@ function selectionForIntent(
 ): CandidatePreviewSelection {
   return {
     selectedComponentIds: [...unit.topologyEvidence.componentIds],
-    selectedUnattributedEntryIds: unit.kind === 'named-save-set'
+    selectedUnattributedEntryIds: unit.kind === 'named-save-set' || unit.kind === 'agent-session-fallback'
       ? unit.members.map((member) => member.entry.entryId)
       : [],
     finalizationIds,
@@ -274,7 +274,13 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
     pinInFlightRef.current = true;
     dispatch({ type: 'pin-started' });
     const settled = await Promise.allSettled(missing.map((bundle) =>
-      window.api.saveCard.markDone({ packageId: bundle.intentId, targetWorkspaceId: workspaceId }),
+      bundle.kind === 'agent-session-fallback'
+        ? window.api.saveCard.markDone({
+            saveUnitId: bundle.saveUnitId ?? bundle.intentId,
+            saveUnitKind: 'agent-session-fallback',
+            targetWorkspaceId: workspaceId,
+          })
+        : window.api.saveCard.markDone({ packageId: bundle.intentId, targetWorkspaceId: workspaceId }),
     ));
     const nextPins = [...retained];
     const failures: Array<{ packageId: string; refusal: SaveRefusal }> = [];
@@ -607,8 +613,10 @@ type LoadState =
   | {
       status: 'ready';
       intentUnits: SaveIntentUnitDto[];
+      fallbackUnits: SaveCardInventoryResponse['fallbackUnits'];
       unwitnessed: SaveCardInventoryResponse['unwitnessed'];
       legacyTaskIdentityUnavailable: SaveCardInventoryResponse['legacyTaskIdentityUnavailable'];
+      witnessedUngroupable: SaveCardInventoryResponse['witnessedUngroupable'];
       legacyFinalizations: SaveCardInventoryResponse['legacyFinalizations'];
       planningActivities: SaveCardInventoryResponse['planningActivities'];
       quotaWeakening: SaveCardQuotaWeakening | null;
@@ -620,8 +628,10 @@ function readyState(response: SaveCardInventoryResponse): Extract<LoadState, { s
   return {
     status: 'ready',
     intentUnits: response.intentUnits,
+    fallbackUnits: response.fallbackUnits,
     unwitnessed: response.unwitnessed,
     legacyTaskIdentityUnavailable: response.legacyTaskIdentityUnavailable,
+    witnessedUngroupable: response.witnessedUngroupable,
     legacyFinalizations: response.legacyFinalizations,
     planningActivities: response.planningActivities,
     quotaWeakening: response.quotaWeakening,
@@ -894,18 +904,31 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
 
   const { intentUnits, unwitnessed, legacyTaskIdentityUnavailable, legacyFinalizations,
     planningActivities, quotaWeakening, computeState } = state;
-  const loud = intentUnits.filter((unit) => unit.state !== 'committed' && unit.state !== 'superseded');
+  const fallbackUnits = state.fallbackUnits ?? [];
+  const witnessedUngroupable = state.witnessedUngroupable ?? legacyTaskIdentityUnavailable;
+  const loud = [
+    ...intentUnits.filter((unit) => unit.state !== 'committed' && unit.state !== 'superseded'),
+    ...fallbackUnits,
+  ];
   const loudFileCount = loud.reduce((n, unit) => n + unit.members.length, 0);
   const saveableUnits = loud.filter((unit) => unit.saveability.saveable);
   const allMembers = [
     ...intentUnits.flatMap((unit) => unit.members),
+    ...fallbackUnits.flatMap((unit) => unit.members),
     ...unwitnessed,
-    ...legacyTaskIdentityUnavailable,
+    ...witnessedUngroupable,
   ];
   const uniqueChangedEntries = new Set(allMembers.map((member) => member.entry.entryId)).size;
-  const computeProjection = { computeState, onboarding: suppliedOnboarding };
+  const computeProjection = {
+    computeState,
+    onboarding: suppliedOnboarding,
+    intentUnits,
+    fallbackUnits,
+    unwitnessed,
+    witnessedUngroupable,
+  };
   const snapshotState = saveCardComputeState(computeProjection);
-  const mintUiDisabled = snapshotState === 'partial';
+  const mintUiDisabled = snapshotState === 'partial' || snapshotState === 'assessment-unavailable';
   const degradedCopy = degradedSaveCopy(computeProjection, uniqueChangedEntries);
   const scopeOptions = [...new Map<string, {
     pathBytesBase64: string; displayPath: string; countLabel: string | null;
@@ -1070,9 +1093,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     }
   };
 
-  if (intentUnits.length === 0 && planningActivities.length === 0
-      && unwitnessed.length === 0 && legacyTaskIdentityUnavailable.length === 0
-      && legacyFinalizations.length === 0) {
+  const protectionComplete = computeState?.protection.assessment.evaluation !== 'incomplete';
+  const allClear = loud.length === 0 && fallbackUnits.length === 0
+    && unwitnessed.length === 0 && witnessedUngroupable.length === 0 && protectionComplete;
+  if (allClear && planningActivities.length === 0 && legacyFinalizations.length === 0) {
     return (
       <div className="sc-root" data-testid="save-card">
         {header}
@@ -1166,10 +1190,34 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
               </section>
             );
           })}
-          {(legacyTaskIdentityUnavailable?.length ?? 0) > 0 && (
-            <section className="sc-sect" data-testid="legacy-task-identity-unavailable">
-              <h2>Legacy task identity unavailable</h2>
-              <span>{legacyTaskIdentityUnavailable!.length} witnessed file{legacyTaskIdentityUnavailable!.length === 1 ? '' : 's'}</span>
+          {witnessedUngroupable.length > 0 && (
+            <section className="sc-sect" data-testid="witnessed-ungroupable">
+              <h2>Witnessed work — automatic unit unavailable</h2>
+              <span>{witnessedUngroupable.length} file{witnessedUngroupable.length === 1 ? '' : 's'} need manual grouping</span>
+            </section>
+          )}
+          {fallbackUnits.length > 0 && (
+            <section className="sc-sect" data-testid="fallback-save-units">
+              <h2>Agent session work</h2>
+              {fallbackUnits.map((unit) => (
+                <article key={unit.saveUnitId ?? unit.intentId} data-testid="fallback-save-unit">
+                  <PackageSaveGesture
+                    saveDisabled={mintUiDisabled}
+                    ref={(handle) => {
+                      const id = unit.saveUnitId ?? unit.intentId;
+                      if (handle) packageGestureRefs.current.set(id, handle);
+                      else packageGestureRefs.current.delete(id);
+                    }}
+                    unit={unit}
+                    workspaceId={workspaceId!}
+                  />
+                  {unit.coarseIdentityWarning && (
+                    <div className="sc-meta" data-testid="fallback-coarse-warning">
+                      Session identity is unavailable, so this unit may combine work from the agent's lifetime.
+                    </div>
+                  )}
+                </article>
+              ))}
             </section>
           )}
           {legacyFinalizations.length > 0 && (
@@ -1259,7 +1307,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
           Saved 0 confirmed · already saved 0 confirmed · needs attention {saveAll.localNeedsAttention} · halted yes. The outcome while saving {saveAll.currentPackage} is uncertain; a commit may have been created, so Lares will not retry automatically.
         </div>
       )}
-      {loud.length === 0 && (
+      {allClear && (
         <p className="sc-meta" data-testid="save-card-none-loud" style={{ marginBottom: 30 }}>
           No unsaved packages — everything witnessed is already protected below.
         </p>
