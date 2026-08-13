@@ -155,24 +155,6 @@ describe('production researcher lifecycle entry', () => {
     );
   });
 
-  test('Windows redirect payload is merged into extraEnv before restricted bootstrap encoding', () => {
-    assert.match(
-      supervisorSource,
-      /const preparedResearcherHome = prepareResearcherSandboxHome\(\{[\s\S]*?Object\.assign\(extraEnv, preparedResearcherHome\.extraEnv\);[\s\S]*?prepareRestrictedOutboxLaunch\(\{[\s\S]*?env: \{ \.\.\.process\.env, \.\.\.extraEnv \}/,
-      'REACHABILITY:wp3-extra-env redirect must ride extraEnv into the null-environment bootstrap',
-    );
-    assert.doesNotMatch(
-      supervisorSource,
-      /prepareRestrictedOutboxLaunch\(\{[\s\S]{0,500}env: preparedResearcherHome\.extraEnv/,
-      'lifecycle redirects must not be passed as a discarded options.env replacement',
-    );
-    assert.match(
-      supervisorSource,
-      /researcherHomeGrantRoot = preparedResearcherHome\.filesystemHomePath;[\s\S]*?grantRoots: \[researchInbox, researcherHomeGrantRoot\]/,
-      'REACHABILITY:wp3-home-grant the lifecycle-created home must enter the explicit multi-root launch',
-    );
-  });
-
   test('WSL and fork launch paths consume the prepared extraEnv payload', () => {
     assert.match(
       supervisorSource,

@@ -224,15 +224,47 @@ test('stale restricted-launch bootstrap files are removed before setup', () => {
   }
 });
 
-test('shipping Windows researcher seam calls the restricted outbox launcher', () => {
-  const supervisorSource = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'supervisor', 'index.ts'), 'utf8');
-  assert.match(supervisorSource, /roleLaneOf\(agent\) === 'researcher'[\s\S]*prepareRestrictedOutboxLaunch\(\{/,
-    'the production researcher branch must invoke restricted-token preparation');
-  assert.match(supervisorSource,
-    /prepareResearcherSandboxHome\(\{[\s\S]*Object\.assign\(extraEnv, preparedResearcherHome\.extraEnv\)[\s\S]*prepareRestrictedOutboxLaunch\(\{[\s\S]*env: \{ \.\.\.process\.env, \.\.\.extraEnv \}/,
-    'the production seam must pass the prepared Claude home redirect into multi-root preparation');
-  assert.match(supervisorSource, /runner\.launch\(agent\.workingDirectory, runnerCommand, runnerArgs/,
-    'the prepared wrapper command must reach the production runner');
+function resolveRelativeModule(from: string, specifier: string): string | undefined {
+  if (!specifier.startsWith('.')) return undefined;
+  const base = path.resolve(path.dirname(from), specifier);
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function reachableSourceModules(entry: string): Set<string> {
+  const seen = new Set<string>();
+  const visit = (file: string) => {
+    const resolved = path.resolve(file);
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    const source = fs.readFileSync(resolved, 'utf8');
+    const imports = source.matchAll(/(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]/g);
+    for (const match of imports) {
+      const child = resolveRelativeModule(resolved, match[1]);
+      if (child) visit(child);
+    }
+  };
+  visit(entry);
+  return seen;
+}
+
+test('no live launch path resolves the restricted outbox launcher', () => {
+  const supervisor = path.join(process.cwd(), 'src', 'main', 'supervisor', 'index.ts');
+  const reachable = reachableSourceModules(supervisor);
+  assert.equal(
+    [...reachable].some((file) => path.basename(file) === 'outbox-launcher.ts'),
+    false,
+    'REACHABILITY:restricted-launch-unreferenced: live Windows, WSL, resume/revive, and fork graph must not reach outbox-launcher',
+  );
+  for (const file of reachable) {
+    assert.doesNotMatch(
+      fs.readFileSync(file, 'utf8'),
+      /(?:import|export)\s+[^;\n]*\bprepareRestrictedOutboxLaunch\b/,
+      `REACHABILITY:restricted-launch-unreferenced: ${file} must not resolve restricted launch symbol`,
+    );
+  }
 });
 
 test('main runner registers this suite ahead of the known fail-fast boundary', () => {

@@ -75,7 +75,6 @@ import { removeGlobalAgyStatusHook } from './agy-hooks';
 import { ensureAgyPermissions, ensureAgyTrust } from './agy-settings';
 import { addProviderAutoApproveFlag } from './provider-auto-approve';
 import { ensureNodeShimDir } from '../node-shim';
-import { prepareRestrictedOutboxLaunch } from '../sandbox/outbox-launcher';
 import { resolveResearcherSandboxHome } from '../sandbox/researcher-home-factory';
 import { refuseUnrestrictedLaunchProviderHomes } from '../sandbox/researcher-home-untrusted';
 import {
@@ -5319,12 +5318,8 @@ export class AgentSupervisor extends EventEmitter {
     // give a false impression of per-researcher action scoping. Browser actions
     // for the live test are enabled by the dashboard's GLOBAL toggle; true
     // per-researcher scoping waits on WP-D (scoped tokens).
-    let runnerCommand = launchCmd;
-    let runnerArgs = args;
-    let runnerDirectSpawn = useDirectSpawn;
     if (roleLaneOf(agent) === 'researcher') {
       const workspaceRoot = getEffectiveWorkspaceRoot(agent);
-      let researcherHomeGrantRoot: string;
       // Forks supply overrideArgs and enter the factory explicitly at the AU-7
       // bypass seam. Normal and resume launches enter here.
       if (!overrideArgs) {
@@ -5348,30 +5343,14 @@ export class AgentSupervisor extends EventEmitter {
           accountTempPath: process.env.TEMP || process.env.TMP,
         });
         Object.assign(extraEnv, preparedResearcherHome.extraEnv);
-        researcherHomeGrantRoot = preparedResearcherHome.filesystemHomePath;
         codexStateRoot = preparedResearcherHome.filesystemHomePath;
       } else {
         if (!prePreparedResearcherHome) {
           throw new Error(`Forked researcher sandbox was not prepared for agent ${agent.id}`);
         }
         Object.assign(extraEnv, prePreparedResearcherHome.extraEnv);
-        researcherHomeGrantRoot = prePreparedResearcherHome.filesystemHomePath;
         codexStateRoot = prePreparedResearcherHome.filesystemHomePath;
       }
-      const stateDir = workspaceStateDirName(workspaceRoot);
-      const researchInbox = path.join(workspaceRoot, stateDir, 'research', 'inbox');
-      const restricted = prepareRestrictedOutboxLaunch({
-        command: launchCmd,
-        args,
-        cwd: agent.workingDirectory,
-        grantRoots: [researchInbox, researcherHomeGrantRoot],
-        auditRoots: [workspaceRoot],
-        env: { ...process.env, ...extraEnv },
-      });
-      runnerCommand = restricted.command;
-      runnerArgs = restricted.args;
-      runnerDirectSpawn = true;
-      Object.assign(extraEnv, restricted.env);
     }
     // Load-bearing order: derive + reset the per-agent home above, then take
     // the snapshot and begin DB discovery against that same root.
@@ -5396,7 +5375,7 @@ export class AgentSupervisor extends EventEmitter {
         extraEnv.GROK_HOME ?? process.env.GROK_HOME,
       ]);
     }
-    runner.launch(agent.workingDirectory, runnerCommand, runnerArgs, agent.logPath || '', runnerDirectSpawn, extraEnvArg);
+    runner.launch(agent.workingDirectory, launchCmd, args, agent.logPath || '', useDirectSpawn, extraEnvArg);
     updateAgentPid(agent.id, runner.pid);
     // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle
     // timer. `StatusMonitor.poll()` will promote `'launching' → 'idle'` once
