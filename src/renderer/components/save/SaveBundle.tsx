@@ -27,12 +27,15 @@ export default function SaveBundle({
 }) {
   const [expanded, setExpanded] = useState(false);
   const health = unit.topologyEvidence.captureHealth;
+  const isLoose = unit.presentation === 'loose';
   return (
-    <div className="sc-bundle" data-testid="save-bundle" data-intent-id={unit.intentId}>
+    <div className={isLoose ? 'sc-bundle sc-loose-change' : 'sc-bundle'}
+      data-testid={isLoose ? 'save-loose-change' : 'save-bundle'}
+      data-intent-id={unit.intentId} data-presentation={unit.presentation}>
       <div className="sc-bundle-head">
         <div>
-          <strong>{unit.title}</strong>
-          <span> · {unit.members.length} file{unit.members.length === 1 ? '' : 's'}</span>
+          <strong>{isLoose ? 'Loose changes' : unit.title}</strong>
+          <span> · {isLoose ? `${unit.title} · ` : ''}{unit.members.length} file{unit.members.length === 1 ? '' : 's'}</span>
         </div>
         {onPin && (
           <>

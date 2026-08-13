@@ -182,6 +182,50 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelectorAll('[data-testid="save-bundle"]')).toHaveLength(2);
   });
 
+  it('renders loose changes and packages as visibly different cards', async () => {
+    await renderCard(inventory({ intentUnits: [
+      unit({ intentId: 'loose-1', title: 'Update one file', presentation: 'loose' }),
+      unit({ intentId: 'package-1', title: 'Update a package', presentation: 'package' }),
+    ] }));
+
+    expect(container.querySelector('[data-testid="save-loose-change"]')?.textContent)
+      .toContain('Loose changes');
+    expect(container.querySelector('[data-testid="save-bundle"]')?.textContent)
+      .toContain('Update a package');
+    expect(container.querySelectorAll('[data-testid="save-loose-change"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="save-bundle"]')).toHaveLength(1);
+  });
+
+  it('keeps loose changes saveable', async () => {
+    vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
+      finalizationId: 'finalization-loose', packageId: 'loose-1', finalizationKind: 'plan-package',
+      outcome: 'created', boundaryRef: 'refs/lares/test', boundaryStatus: 'ready', packageRevision: 1,
+      pinnedSelection: { selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [] },
+    } as never);
+    await renderCard(inventory({ intentUnits: [unit({ intentId: 'loose-1', presentation: 'loose' })] }));
+
+    const prepare = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
+    await act(async () => { prepare.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(window.api.saveCard.markDone).toHaveBeenCalledWith(expect.objectContaining({
+      packageId: 'loose-1', targetWorkspaceId: 'ws-1',
+    }));
+  });
+
+  it('renders the contributor roster on both loose and package cards', async () => {
+    const contributor = (agentId: string, name: string): SaveCardWorkerUnit => ({
+      agentId, name, roleDescription: 'editor', kind: 'supervisor', startedAt: null, endedAt: null,
+      turnCount: 1, memberEntryIds: [], fileCount: 1, fileSharePercent: 100,
+    });
+    await renderCard(inventory({ intentUnits: [
+      unit({ intentId: 'loose-1', presentation: 'loose', contributors: [contributor('a', 'Loose author')] }),
+      unit({ intentId: 'package-1', presentation: 'package', contributors: [contributor('b', 'Package author')] }),
+    ] }));
+
+    expect(container.querySelectorAll('[data-testid="save-contributor-roster"]')).toHaveLength(2);
+    expect(container.textContent).toContain('Loose author');
+    expect(container.textContent).toContain('Package author');
+  });
+
   it('renders a reachable inventory refresh control with populated packages', async () => {
     await renderCard(inventory());
     const refresh = container.querySelector<HTMLButtonElement>('[data-testid="save-card-refresh"]');

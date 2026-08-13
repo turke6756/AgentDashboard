@@ -445,6 +445,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   };
 
   const packageName = unit.title;
+  const saveLabel = unit.presentation === 'loose' ? 'loose changes' : 'package';
 
   useImperativeHandle(ref, () => ({
     prepareForSweep: () => {
@@ -595,7 +596,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
           ? 'Verifying…'
           : gesture.status === 'sweeping'
             ? `Saving ${packageName}…`
-            : 'Save package'}
+            : `Save ${saveLabel}`}
       </button>
       <button
         type="button"
