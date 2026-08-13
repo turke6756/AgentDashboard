@@ -155,6 +155,35 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelectorAll('[data-testid="save-bundle"]')).toHaveLength(2);
   });
 
+  it('sends the projected repository key when pinning a real-shaped inventory snapshot', async () => {
+    vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
+      finalizationId: 'finalization-1', packageId: 'intent-1', finalizationKind: 'plan-package',
+      outcome: 'created', boundaryRef: 'refs/lares/test', boundaryStatus: 'ready', packageRevision: 1,
+      pinnedSelection: { selectedComponentIds: [], selectedUnattributedEntryIds: [] },
+    } as never);
+    await renderCard(inventory({
+      computeState: {
+        scope: 'global',
+        inventory: {
+          completeness: 'complete', dirtyCorpusStopReasons: [], observedEntries: 1,
+          observedStatusBytes: 1, observedPathBytes: 1, totalsExact: true,
+        },
+        protection: { assessment: { evaluation: 'complete', rung: 'unprotected' }, checkpointStopReasons: [] },
+        snapshot: {
+          snapshotId: 'snapshot-1', boundaryInputFingerprint: 'fingerprint-1',
+          repositoryKey: 'repo-1', stability: 'stable',
+        },
+      },
+    }));
+    const pin = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
+    await act(async () => { pin.click(); await Promise.resolve(); });
+    expect(window.api.saveCard.markDone).toHaveBeenCalledWith(expect.objectContaining({
+      packageId: 'intent-1', targetWorkspaceId: 'ws-1',
+      pinnedSnapshotId: 'snapshot-1', pinnedSnapshotFingerprint: 'fingerprint-1',
+      repositoryKey: 'repo-1',
+    }));
+  });
+
   it('keeps committed intents, unstamped turns, and legacy finalizations read-only', async () => {
     await renderCard(inventory({
       intentUnits: [unit({ state: 'committed' })],

@@ -303,6 +303,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   saveDisabled?: boolean;
   snapshotId?: string;
   snapshotFingerprint?: string;
+  snapshotRepositoryKey?: string;
   snapshotStable?: boolean;
   onNonFreshMarkDone?: () => void;
 }>(({
@@ -311,6 +312,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   saveDisabled = false,
   snapshotId,
   snapshotFingerprint,
+  snapshotRepositoryKey,
   snapshotStable = true,
   onNonFreshMarkDone,
 }, ref) => {
@@ -372,9 +374,11 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
             targetWorkspaceId: workspaceId,
             pinnedSnapshotId: snapshotId,
             pinnedSnapshotFingerprint: snapshotFingerprint,
+            repositoryKey: snapshotRepositoryKey,
           })
         : window.api.saveCard.markDone({ packageId: bundle.intentId, targetWorkspaceId: workspaceId,
-          pinnedSnapshotId: snapshotId, pinnedSnapshotFingerprint: snapshotFingerprint }),
+          pinnedSnapshotId: snapshotId, pinnedSnapshotFingerprint: snapshotFingerprint,
+          repositoryKey: snapshotRepositoryKey }),
     ));
     const nextPins = [...retained];
     const failures: Array<{ packageId: string; refusal: SaveRefusal }> = [];
@@ -1044,6 +1048,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   const snapshotStable = computeState?.snapshot?.stability !== 'unstable';
   const snapshotId = computeState?.snapshot?.snapshotId;
   const snapshotFingerprint = computeState?.snapshot?.boundaryInputFingerprint;
+  const snapshotRepositoryKey = computeState?.snapshot?.repositoryKey;
   const saveAllReason = !snapshotStable
     ? 'Save all is unavailable because the inventory snapshot is unstable. Refresh first.'
     : saveableUnits.length === 0
@@ -1316,6 +1321,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                               <PackageSaveGesture
                                 snapshotId={snapshotId}
                                 snapshotFingerprint={snapshotFingerprint}
+                                snapshotRepositoryKey={snapshotRepositoryKey}
                                 snapshotStable={snapshotStable}
                                 onNonFreshMarkDone={() => { void refresh(); }}
                                 ref={(handle) => {
@@ -1349,6 +1355,7 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
                   <PackageSaveGesture
                     snapshotId={snapshotId}
                     snapshotFingerprint={snapshotFingerprint}
+                    snapshotRepositoryKey={snapshotRepositoryKey}
                     snapshotStable={snapshotStable}
                     onNonFreshMarkDone={() => { void refresh(); }}
                     ref={(handle) => {

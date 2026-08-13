@@ -12,6 +12,8 @@ import { registerSaveCardIpc, registerSaveCardIntentIpc, type IpcLike } from './
 import { createSaveCardRoutes, type SaveCardRoutesDeps } from './save-card-routes';
 import { createPreviewRoutes } from './preview-routes';
 import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
+import { computeIndexFingerprint } from './index-fingerprint';
+import { PinnedSnapshotStore } from './pinned-snapshot-store';
 import { unattributedChallengeEntryIds, type CandidateInventoryRead } from './candidate-service';
 import { ScratchPolicyStore } from './scratch-policy-store';
 
@@ -44,6 +46,16 @@ const intent: SaveIntent = {
   createdBy: 'task-dispatch', createdById: null, state: 'open', revision: 1,
   createdAt: 1, readyAt: null, committedAt: null,
 };
+
+class InventoryPinnedSnapshotStore extends PinnedSnapshotStore {
+  correctedIndexFingerprint = '';
+  override resolve(snapshotId: string) {
+    const descriptor = super.resolve(snapshotId);
+    return descriptor && this.correctedIndexFingerprint
+      ? { ...descriptor, indexFingerprint: this.correctedIndexFingerprint }
+      : descriptor;
+  }
+}
 
 function witness(turnId: string, touchedPath: string, intentId: string | null): TurnWitnessRead {
   return {
@@ -144,10 +156,15 @@ function routes(
 /** A preview-route set over the SAME real temp repo, with every DB seam faked to
  *  empty so the real `CommitCandidateService.assembleInventory` pipeline runs
  *  without a live SQLite database. Used only by the cross-constructor WP-G tests. */
-function preview(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>) {
+function preview(
+  registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRead>,
+  pinnedSnapshotStore?: import('./pinned-snapshot-store').PinnedSnapshotStore,
+  capturedEntries: readonly import('../../shared/commit-candidates').DirtyEntry[] = [],
+) {
   return createPreviewRoutes({
     gitExe,
     ...(registry ? { snapshotRegistry: registry } : {}),
+    ...(pinnedSnapshotStore ? { pinnedSnapshotStore } : {}),
     getWorkspaces: () => [{ id: 'workspace-1', path: repo, title: 'Repository' }],
     readTurnWitnesses: () => [],
     readTurnRecord: () => null,
@@ -164,7 +181,16 @@ function preview(registry?: CommitCandidateSnapshotRegistry<CandidateInventoryRe
     getPlan: () => null,
     readActivePlanningWorktrees: () => [],
     runGit: async (cwd, args, options) => runGit(cwd, args, { ...options, gitExe }),
-    runGitBytes: async (cwd, args, options) => runGitBytes(cwd, args, { ...options, gitExe }),
+    runGitBytes: async (cwd, args, options) => args[0] === 'ls-tree' && capturedEntries.length > 0
+      ? { code: 0, stdout: Buffer.concat(capturedEntries.map((entry) => Buffer.concat([
+          Buffer.from(`${entry.worktreeMode ?? '100644'} blob ${entry.rawWorktreeBlobOid}\t`, 'ascii'),
+          Buffer.from(entry.path.displayPath), Buffer.from([0]),
+        ]))), stderr: '' }
+      : runGitBytes(cwd, args, { ...options, gitExe }),
+    captureFinalizationBoundary: async () => {
+      const tree = execFileSync(gitExe, ['rev-parse', 'HEAD^{tree}'], { cwd: repo, encoding: 'utf8' }).trim();
+      return { oid: '5'.repeat(40), treeOid: capturedEntries.length > 0 ? 'captured-tree' : tree };
+    },
   });
 }
 
@@ -335,6 +361,30 @@ test('production route projects intent units and keeps unstamped work read-only'
     'observed inventory structurally covers every projected intent unit');
   assert.deepEqual(inventory.computeState?.inventory.dirtyCorpusStopReasons, []);
   assert.equal(inventory.computeState?.protection.assessment.evaluation, 'complete');
+});
+
+test('REACHABILITY:pinned-repository-key inventory projection reaches the pinned boundary', async () => {
+  const pinnedSnapshotStore = new InventoryPinnedSnapshotStore();
+  const inventory = await routes(undefined, { pinnedSnapshotStore }).getInventory({ workspaceId: 'workspace-1' });
+  pinnedSnapshotStore.correctedIndexFingerprint = (await computeIndexFingerprint({
+    repoRoot: repo, runGitBytes: async (cwd, args, options) => runGitBytes(cwd, args, { ...options, gitExe }),
+    withWriteTree: false,
+  })).fingerprint;
+  const snapshot = inventory.computeState?.snapshot;
+  assert.ok(snapshot?.repositoryKey, 'real buildInventory must project repository identity');
+  const unit = inventory.intentUnits[0];
+  assert.ok(unit);
+  const previewRoutes = preview(undefined, pinnedSnapshotStore,
+    inventory.intentUnits.flatMap((item) => item.members.map((member) => member.entry)));
+  const context = await previewRoutes.saveCardFinalizeRoutes.resolveBoundary({
+    saveUnitId: unit.intentId,
+    saveUnitKind: unit.kind,
+    targetWorkspaceId: 'workspace-1',
+    pinnedSnapshotId: snapshot.snapshotId,
+    pinnedSnapshotFingerprint: snapshot.boundaryInputFingerprint,
+    repositoryKey: snapshot.repositoryKey,
+  });
+  assert.equal(context.repositoryKey, snapshot.repositoryKey);
 });
 
 test('REACHABILITY: adopt-all refuses partial inventory before createNamedSaveSet', async () => {

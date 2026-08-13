@@ -630,6 +630,7 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         snapshot: {
           snapshotId: snapshot.snapshotId,
           boundaryInputFingerprint: snapshot.boundaryInputFingerprint,
+          repositoryKey: snapshot.repositoryKey,
           stability: snapshot.stability,
         },
       },

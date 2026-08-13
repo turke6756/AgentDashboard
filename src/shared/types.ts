@@ -2361,6 +2361,7 @@ export interface SaveCardInventoryResponse {
     snapshot?: {
       snapshotId: string;
       boundaryInputFingerprint: string;
+      repositoryKey: string;
       stability: 'stable' | 'unstable';
     };
   };
