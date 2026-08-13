@@ -373,13 +373,22 @@ export const LAUNCH_SETTLE_OVERRUN_GRACE_MS = 5_000;
 /** Default CLI commands per provider and environment */
 export const PROVIDER_COMMANDS: Record<LaunchableAgentProvider, { windows: string; wsl: string }> = {
   claude: { windows: 'claude --dangerously-skip-permissions', wsl: 'ccode --dangerously-skip-permissions' },
-  // Keep the native Windows workspace-write sandbox active so the per-lane
-  // trusted-project config can grant the declared workspace root. WSL still
-  // rides the shared CODEX_HOME profile (the project config is unverified there),
-  // so retain its prior bypass until that transport has a per-workspace grant.
-  // Any custom bypass command intentionally disables native write scoping.
+  // Native Windows must ride the bypass, not `--sandbox workspace-write`.
+  // On codex 0.146.0 workspace-write is broken on Windows in BOTH shapes: with
+  // the global `[windows] sandbox` gate present it hangs PowerShell, and without
+  // it (the gate was deliberately removed at ~/.codex/config.toml:45 on
+  // 2026-08-09) it is read-only outside the process cwd. A codex worker's cwd is
+  // `.lares/workers/codex`, so the workspace root (`src/`, …) sits OUTSIDE cwd and
+  // every write is denied — the observed "workspace is read only" failure. The
+  // earlier rationale that a trusted-project config grants the workspace root is
+  // false: `trust_level = "trusted"` only suppresses the folder-trust prompt, it
+  // is NOT a writable-roots grant (there is no `[sandbox]`/`writable_roots` stanza
+  // at all). This matches the win32 intent already codified in normalizeCodexArgs
+  // (`--full-auto` → bypass on win32). WSL keeps its own bypass form. Hook-trust
+  // and profile flags are injected at launch by instrumentCodexWorkerCommand, so
+  // they are intentionally NOT baked into these defaults.
   codex:  {
-    windows: 'codex --sandbox workspace-write --ask-for-approval never',
+    windows: 'codex --dangerously-bypass-approvals-and-sandbox',
     wsl: 'ccodex --dangerously-bypass-approvals-and-sandbox',
   },
   // Plain `grok` — the CLI has no `--dangerously-*`/bypass flag; the trust

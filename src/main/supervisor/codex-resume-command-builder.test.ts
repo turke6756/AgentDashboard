@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { buildCodexResumeCommand, normalizeCodexArgs } from './index';
+import { PROVIDER_COMMANDS } from '../../shared/constants';
 
 interface TestCase { name: string; run(): void; }
 const tests: TestCase[] = [];
@@ -30,6 +31,22 @@ test('normalizeCodexArgs maps --full-auto to bypass mode on native Windows', () 
   assert.deepEqual(
     normalizeCodexArgs(['--full-auto'], 'win32'),
     ['--dangerously-bypass-approvals-and-sandbox'],
+  );
+});
+
+test('Windows default codex command resolves to bypass, not workspace-write', () => {
+  // Regression: a fresh Windows codex launch must NOT run under
+  // `--sandbox workspace-write`, which is read-only outside the worker cwd on
+  // codex 0.146.0 and produces the "workspace is read only" failure. The default
+  // must be the bypass form (matching the win32 intent in normalizeCodexArgs).
+  const win = PROVIDER_COMMANDS.codex.windows;
+  assert.ok(
+    win.includes('--dangerously-bypass-approvals-and-sandbox'),
+    `Windows codex default must use the bypass form; got: ${win}`,
+  );
+  assert.ok(
+    !/--sandbox\s+workspace-write/.test(win),
+    `Windows codex default must NOT use workspace-write; got: ${win}`,
   );
 });
 
@@ -66,6 +83,15 @@ test('bare ccodex command: builds resume <args> <sid> with single-quoted tokens'
     `'ccodex' 'resume' '--dangerously-bypass-approvals-and-sandbox' '${SID}'`,
     `unexpected rendered command: ${out}`,
   );
+});
+
+test('resume path composes with the Windows default without doubling the bypass token', () => {
+  // The new Windows default already carries the bypass flag; the resume builder
+  // must pass it through exactly once (no --full-auto re-mapping, no duplicate).
+  const out = buildCodexResumeCommand(PROVIDER_COMMANDS.codex.windows, SID, 'win32');
+  const bypassCount = (out.match(/--dangerously-bypass-approvals-and-sandbox/g) || []).length;
+  assert.equal(bypassCount, 1, `bypass token must appear exactly once; got: ${out}`);
+  assert.ok(!/workspace-write/.test(out), `resume must not reintroduce workspace-write; got: ${out}`);
 });
 
 test('bare command default-codex fallback when empty', () => {
