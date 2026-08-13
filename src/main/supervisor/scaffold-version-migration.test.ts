@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { GUARD_GIT_DISCARD_MJS_V3 } from './guard-script-old-body-fixtures';
 import {
   AgentSupervisor,
   DASHBOARD_STATUS_SCRIPT_V1_HASH,
@@ -44,6 +45,7 @@ import {
   WORKER_CODEX_AGENTS_MD_V1_HASH,
   GUARD_GIT_DISCARD_MJS_V1_HASH,
   GUARD_GIT_DISCARD_MJS_V2_HASH,
+  GUARD_GIT_DISCARD_MJS_V3_HASH,
   RESEARCH_WRITE_GUARD_MJS_V3_HASH,
   RESEARCH_WRITE_GUARD_MJS_V4_HASH,
   RESEARCH_WRITE_GUARD_MJS_V5_HASH,
@@ -1222,13 +1224,13 @@ test('precondition: frozen v1 git-discard-guard body hashes to GUARD_GIT_DISCARD
   );
 });
 
-test('precondition: frozen v2 git-discard-guard body hashes to GUARD_GIT_DISCARD_MJS_V2_HASH and differs from the live v3 body', () => {
+test('precondition: frozen v2 git-discard-guard body hashes to GUARD_GIT_DISCARD_MJS_V2_HASH and differs from the live v4 body', () => {
   assert.equal(
     sha256Hex(GUARD_GIT_DISCARD_MJS_V2), GUARD_GIT_DISCARD_MJS_V2_HASH,
     'the frozen v2 fixture must hash to the shipped previousHashes[2] literal, or a pristine v2 workspace (exit-0 deny) cannot silently upgrade to v3',
   );
   assert.notEqual(
-    sha256Hex(GUARD_GIT_DISCARD_MJS), GUARD_GIT_DISCARD_MJS_V2_HASH,
+    sha256Hex(GUARD_GIT_DISCARD_MJS), GUARD_GIT_DISCARD_MJS_V3_HASH,
     'the live (v3) body must differ from the v2 hash — otherwise the exit-0 -> per-provider exit(codex?0:2) rewrite was never applied',
   );
 });
@@ -1276,8 +1278,8 @@ test('guard-git-discard.mjs v1 + sidecar v1 → silent upgrade to v3, no .bak', 
     );
     assert.equal(listGuardBackups(workDir).length, 0, 'known v1-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 3,
-      `sidecar must record guard v3; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 4,
+      `sidecar must record guard v4; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1306,8 +1308,8 @@ test('guard-git-discard.mjs v2 (exit-0 unenforcing) + sidecar v2 → silent upgr
     );
     assert.equal(listGuardBackups(workDir).length, 0, 'known v2-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 3,
-      `sidecar must record guard v3; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 4,
+      `sidecar must record guard v4; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1335,7 +1337,7 @@ test('guard-git-discard.mjs locally-edited (unknown-hash) + no sidecar → .bak 
       fs.readFileSync(path.join(workDir, '.lares', 'scripts', backups[0]), 'utf-8'), edited,
       'backup must hold the locally-edited guard content verbatim',
     );
-    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 3, 'sidecar must record guard v3');
+    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 4, 'sidecar must record guard v4');
   } finally {
     cleanup();
     rmrf(workDir);
@@ -4337,6 +4339,21 @@ test('WP-1-PRECONDITION. frozen write-proposal v1 hashes to its literal and diff
   assert.notEqual(
     sha256Hex(WRITE_PROPOSAL_SKILL_MD), WRITE_PROPOSAL_SKILL_MD_V1_HASH,
     'the live v2 body must differ from the frozen v1 hash',
+  );
+  assert.notEqual(
+    sha256Hex(GUARD_GIT_DISCARD_MJS), GUARD_GIT_DISCARD_MJS_V2_HASH,
+    'the live v4 body must differ from the frozen v2 body',
+  );
+});
+
+test('precondition: frozen v3 git-discard-guard body is LF-normalized and hashes to GUARD_GIT_DISCARD_MJS_V3_HASH', () => {
+  assert.equal(
+    Buffer.byteLength(GUARD_GIT_DISCARD_MJS_V3, 'utf8'), 11644,
+    'the frozen deployed v3 guard body must remain 11644 UTF-8 bytes with LF endings',
+  );
+  assert.equal(
+    sha256Hex(GUARD_GIT_DISCARD_MJS_V3), GUARD_GIT_DISCARD_MJS_V3_HASH,
+    'the frozen v3 fixture must hash to the shipped previousHashes[3] literal',
   );
 });
 

@@ -1579,6 +1579,7 @@ export const GUARD_GIT_DISCARD_MJS_V1_HASH = '58812d363f4119c684c236652279ce7fe4
  *  guard-script-old-body-fixtures.ts (GUARD_GIT_DISCARD_MJS_V2; LF, 11143 bytes,
  *  byte-identical to the deployed v2 copy), NOT from the live constant. */
 export const GUARD_GIT_DISCARD_MJS_V2_HASH = 'e40b761d4997b2f9d0c8a3becd87e35dce7d0a944394e5296920513b890a14b0';
+export const GUARD_GIT_DISCARD_MJS_V3_HASH = 'dfd21376689a2b7d63c3707f0cedfbcf2fefb3c68ffeb57230eea6292a338ae0';
 
 // PERSONA_CREATE_PERSONA_SKILL_V3_HASH lives in shared/constants.ts (imported
 // above) so persona-scanner can use it without an import cycle through here.
@@ -3779,7 +3780,7 @@ export class AgentSupervisor extends EventEmitter {
     // providers; blocks git commands that discard uncommitted work in the shared
     // working tree. Written on every workspace-script scaffold pass, like
     // dashboard-status.mjs.
-    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 3, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH } }, // v3: PER-PROVIDER exit — process.exit(codex ? 0 : 2). v2 exited 0 for everyone, which left the Claude lane UNENFORCING (Claude 2.1.220 does not honor an exit-0 hookSpecificOutput deny for Bash); Codex still needs exit 0 (fails OPEN on nonzero). v2: per-provider deny JSON; v1: one deny shape for everyone.
+    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 4, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH, 3: GUARD_GIT_DISCARD_MJS_V3_HASH } }, // v4: Codex researcher exact-name tool deny (weaker than Claude native allowlist; unknown/future and arbitrary MCP routes remain uncovered). v3: per-provider exit.
     // Memory-index v2 CLI (WP-A1). Self-contained ESM bundled from
     // scripts/memory-index-cli-entry.ts + src/shared/memory-index-core.ts (one
     // source of logic; main imports the same core in-process). The `remember`

@@ -2373,6 +2373,40 @@ import { spawnSync } from 'node:child_process';
 
 const MAX_STDIN_BYTES = 5 * 1024 * 1024;
 
+// Codex researcher capability boundary (WP-C). This is intentionally an
+// exact-name deny, not command-string inspection: Codex researchers cannot use
+// the currently enumerated execution/file-mutation tools. This hook is weaker
+// than Claude's native tool allowlist: unknown/future tool names and arbitrary
+// MCP tools are not covered, so a newly exposed execution route must be added
+// here and to the acceptance fixture before it can be considered blocked.
+export const CODEX_RESEARCHER_TOOL_SURFACE = Object.freeze([
+  'shell_command', // execution and shell-mediated file mutation
+  'apply_patch',   // direct project-file mutation
+]);
+
+function isCodexResearcherPayload(payload) {
+  if (!isCodexPayload(payload)) return false;
+  const cwd = [payload.cwd, payload.workdir, payload.tool_input?.workdir, payload.toolInput?.workdir]
+    .find((value) => typeof value === 'string');
+  return typeof cwd === 'string' && /(?:^|[\\/])(?:\.lares|\.dashboard)[\\/]researcher[\\/]codex(?:[\\/]|$)/i.test(cwd);
+}
+
+function codexToolName(payload) {
+  for (const value of [payload?.tool_name, payload?.toolName, payload?.name]) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+function denyCodexResearcherTool(payload) {
+  if (!isCodexResearcherPayload(payload)) return null;
+  const name = codexToolName(payload);
+  if (!CODEX_RESEARCHER_TOOL_SURFACE.includes(name)) return null;
+  return 'Blocked: Codex researchers may not use ' + name +
+    '. This hook-based deny is weaker than Claude\'s native tool allowlist; ' +
+    'unknown/future tool names and arbitrary MCP tools remain uncovered.';
+}
+
 export const DENY_REASON =
   'Blocked: this git command discards uncommitted work. This working tree is ' +
   'SHARED by many agents and routinely holds hours of uncommitted work from ' +
@@ -2554,6 +2588,20 @@ function main() {
   if (raw === null || raw === '') process.exit(0);
   let payload;
   try { payload = JSON.parse(raw); } catch { process.exit(0); }
+  const researcherReason = denyCodexResearcherTool(payload);
+  if (researcherReason) {
+    const out = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: researcherReason,
+      },
+    };
+    // Codex strictly validates this exact top-level shape and fails open on a
+    // nonzero exit or extra keys. Exit 0 is therefore load-bearing here.
+    try { process.stdout.write(JSON.stringify(out)); } catch {}
+    process.exit(0);
+  }
   let command = null;
   try { command = extractCandidateCommand(payload); } catch { process.exit(0); }
   if (!command) process.exit(0);
@@ -2611,6 +2659,16 @@ try {
 }
 if (invokedDirectly) main();
 `;
+
+/** Codex researcher PreToolUse deny source (WP-C).
+ *
+ * Delivered through the existing Codex profile's live guard path. This is a
+ * hook-based exact-name deny and is weaker than Claude's native tool allowlist:
+ * unknown/future tool names and arbitrary MCP tools remain uncovered. The
+ * enumerated surface and non-execution proof live in
+ * codex-researcher-guard.test.ts; keep them in lockstep when Codex grows.
+ */
+export const CODEX_RESEARCHER_TOOL_DENY_HOOK = GUARD_GIT_DISCARD_MJS;
 
 /** Pre-`.lares` Codex worker config (v3) — byte-exact derivation: the v3 → v4
  *  bump ONLY renamed the state folder in the three hook command paths, so the
