@@ -155,6 +155,14 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelectorAll('[data-testid="save-bundle"]')).toHaveLength(2);
   });
 
+  it('renders a reachable inventory refresh control with populated packages', async () => {
+    await renderCard(inventory());
+    const refresh = container.querySelector<HTMLButtonElement>('[data-testid="save-card-refresh"]');
+    expect(refresh).not.toBeNull();
+    await act(async () => { refresh!.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(getInventory).toHaveBeenCalledTimes(2);
+  });
+
   it('sends the projected repository key when pinning a real-shaped inventory snapshot', async () => {
     vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
       finalizationId: 'finalization-1', packageId: 'intent-1', finalizationKind: 'plan-package',

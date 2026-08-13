@@ -78,6 +78,21 @@ test('snapshot-gone refuses before old-ID resolution or capture', async () => {
   assert.equal(h.captures(), 0);
 });
 
+test('missing repository identity refuses with an honest distinct code', async () => {
+  const h = await harness();
+  await assert.rejects(() => h.routes.saveCardFinalizeRoutes.resolveBoundary({
+    saveUnitId: 'component:c1', saveUnitKind: 'named-save-set', targetWorkspaceId: 'ws',
+    pinnedSnapshotId: h.pinned.snapshotId, pinnedSnapshotFingerprint: h.pinned.boundaryInputFingerprint,
+  }), (error: unknown) => {
+    const refusal = error as { code?: string; message?: string };
+    assert.equal(refusal.code, 'snapshot-repository-missing');
+    assert.match(refusal.message ?? '', /repository identity is missing/i);
+    assert.doesNotMatch(refusal.message ?? '', /refresh/i);
+    return true;
+  });
+  assert.equal(h.captures(), 0);
+});
+
 test('wrong repository is rejected before capture', async () => {
   const h = await harness();
   await assert.rejects(() => h.routes.saveCardFinalizeRoutes.resolveBoundary({

@@ -41,6 +41,8 @@ describe('Save-card gating', () => {
     expect(composeSaveDisabledReason({ snapshotStable: true, saveable: false, saveGate: hash, snapshotRefusal: 'snapshot-stale', transient: true })).toMatch(/cannot be saved/);
     expect(composeSaveDisabledReason({ snapshotStable: true, saveable: true, saveGate: hash, snapshotRefusal: 'snapshot-stale', transient: true })).toMatch(/scanned or hashed/);
     expect(composeSaveDisabledReason({ snapshotStable: true, saveable: true, saveGate: { ready: true }, snapshotRefusal: 'snapshot-stale', transient: true })).toMatch(/stale/);
+    expect(composeSaveDisabledReason({ snapshotStable: true, saveable: true, saveGate: { ready: true }, snapshotRefusal: 'snapshot-repository-missing' })).toMatch(/repository identity is missing/);
+    expect(composeSaveDisabledReason({ snapshotStable: true, saveable: true, saveGate: { ready: true }, snapshotRefusal: 'snapshot-repository-missing' })).not.toMatch(/refresh/i);
     expect(composeSaveDisabledReason({ snapshotStable: true, saveable: true, saveGate: { ready: true }, snapshotRefusal: null, transient: true })).toMatch(/busy/);
   });
 

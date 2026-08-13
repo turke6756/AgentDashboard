@@ -1082,11 +1082,11 @@ export function createPreviewRoutes(deps: PreviewRoutesDeps): {
     const saveUnitKind = 'saveUnitKind' in request ? request.saveUnitKind : 'named-save-set';
     const pinnedSnapshotId = request.pinnedSnapshotId;
     if (pinnedSnapshotId !== undefined || request.pinnedSnapshotFingerprint !== undefined) {
-      const refuse = (message: string, code: 'snapshot-stale' | 'snapshot-gone'): never => {
+      const refuse = (message: string, code: 'snapshot-stale' | 'snapshot-repository-missing' | 'snapshot-gone'): never => {
         throw new SaveCardFinalizeRefusalError(message, code, targetWorkspaceId, targetWorkspaceId);
       };
       const validatedSnapshotId: string = pinnedSnapshotId ?? refuse('The save card snapshot handle is missing; refresh the inventory.', 'snapshot-gone');
-      if (request.repositoryKey === undefined) refuse('The save card repository identity is missing; refresh the inventory.', 'snapshot-stale');
+      if (request.repositoryKey === undefined) refuse('The save card repository identity is missing.', 'snapshot-repository-missing');
       const descriptor = (pinnedSnapshotStore?.resolve(validatedSnapshotId) as PinnedSnapshotDescriptor | null | undefined)
         ?? refuse('The save card snapshot is no longer retained; refresh the inventory.', 'snapshot-gone');
       if (descriptor.stability !== 'stable') refuse('The save card snapshot became unstable; refresh the inventory.', 'snapshot-stale');

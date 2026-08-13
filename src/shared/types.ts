@@ -2651,6 +2651,7 @@ export type SaveCardFleetAdhocRefusalCode =
   | 'boundary-package-empty'
   | 'boundary-package-unknown'
   | 'snapshot-stale'
+  | 'snapshot-repository-missing'
   | 'snapshot-gone';
 
 export interface SaveCardFleetAdhocMarkDoneRefusal {

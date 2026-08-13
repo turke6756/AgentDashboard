@@ -274,13 +274,14 @@ export function composeSaveDisabledReason(options: {
   snapshotStable: boolean;
   saveable: boolean;
   saveGate?: SaveIntentUnitDto['saveGate'];
-  snapshotRefusal?: 'snapshot-stale' | 'snapshot-gone' | null;
+  snapshotRefusal?: 'snapshot-stale' | 'snapshot-repository-missing' | 'snapshot-gone' | null;
   transient?: boolean;
 }): string | null {
   if (!options.snapshotStable) return 'This save is unavailable because the inventory snapshot is unstable. Refresh to review a stable snapshot.';
   if (!options.saveable) return 'This package cannot be saved from its current workspace.';
   if (options.saveGate && !options.saveGate.ready) return `This package is not ready to save because ${options.saveGate.unhashedMemberCount} member${options.saveGate.unhashedMemberCount === 1 ? '' : 's'} has not been scanned or hashed yet.`;
   if (options.snapshotRefusal === 'snapshot-stale') return 'This inventory snapshot is stale. Refresh before preparing or saving.';
+  if (options.snapshotRefusal === 'snapshot-repository-missing') return 'This save is unavailable because the repository identity is missing from the inventory snapshot.';
   if (options.snapshotRefusal === 'snapshot-gone') return 'This inventory snapshot is no longer available. Refresh before preparing or saving.';
   if (options.transient) return 'This package is busy; wait for the current operation to finish.';
   return null;
@@ -568,7 +569,7 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
     void pinPackage(true);
   };
   const snapshotRefusal = gesture.status === 'refused'
-    && (gesture.refusal.code === 'snapshot-stale' || gesture.refusal.code === 'snapshot-gone')
+    && (gesture.refusal.code === 'snapshot-stale' || gesture.refusal.code === 'snapshot-repository-missing' || gesture.refusal.code === 'snapshot-gone')
     ? gesture.refusal.code : null;
   const disabledReason = composeSaveDisabledReason({ snapshotStable, saveable: unit.saveability.saveable,
     saveGate: unit.saveGate, snapshotRefusal, transient: submitting });
@@ -1276,6 +1277,15 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
       {firstContactPrompt}
 
       {degradedBanner}
+
+      <button
+        type="button"
+        className="ui-btn ui-btn-outline px-3 py-1 text-[12.5px]"
+        data-testid="save-card-refresh"
+        onClick={() => refresh()}
+      >
+        Refresh
+      </button>
 
       <QuotaWeakeningBanner warning={quotaWeakening} />
 
