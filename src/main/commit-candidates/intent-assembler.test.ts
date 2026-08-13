@@ -82,15 +82,55 @@ function project() {
 }
 
 test('one intent spanning disconnected topology components remains one task unit', () => {
-  const unit = project().intentUnits.find((candidate) => candidate.intent.id === 'intent-one')!;
-  assert.deepEqual(unit.memberEntryIds, ['a', 'b']);
-  assert.deepEqual(unit.topologyComponentIds, ['ca', 'cb']);
+  const unit = project().intentUnits.find((candidate) => candidate.memberEntryIds.includes('a'))!;
+  assert.deepEqual(unit.memberEntryIds, ['a', 'b', 'shared']);
+  assert.deepEqual(unit.topologyComponentIds, ['ca', 'cb', 'cs']);
 });
 
 test('one topology component carrying two intents projects two task cards', () => {
   const projected = project().intentUnits.filter((unit) => unit.memberEntryIds.includes('shared'));
-  assert.deepEqual(projected.map((unit) => unit.intent.id), ['intent-three', 'intent-two']);
-  assert.ok(projected.every((unit) => unit.topologyComponentIds[0] === 'cs'));
+  assert.equal(projected.length, 1, 'a dirty path must appear in exactly one row');
+  assert.deepEqual(projected[0].memberEntryIds, ['a', 'b', 'shared']);
+  assert.ok(projected[0].topologyComponentIds.includes('cs'));
+});
+
+test('REACHABILITY:dirty-tree-row-source historical intents with no dirty path produce no row and file count is distinct', () => {
+  const result = project();
+  const paths = result.intentUnits.flatMap((unit) => unit.memberEntryIds);
+  assert.equal(paths.filter((entryId) => entryId === 'shared').length, 1);
+  assert.ok(!paths.includes('legacy'), 'legacy-only historical work is not an intent row');
+  assert.equal(new Set(paths).size, paths.length, 'row membership is path-distinct');
+});
+
+test('contested path merges supervisors into one package', () => {
+  const result = projectIntentUnits({
+    inventory: { ...inventory, entries: [entries.find((item) => item.entryId === 'shared')!] },
+    topology: { components: [component('cs', ['shared'])] } as ComponentAssembly,
+    witnesses: [
+      witness('shared', 'intent-two', 'turn-a', { ownerAgentId: 'sup-a', agentId: 'worker-a' }),
+      witness('shared', 'intent-three', 'turn-b', { ownerAgentId: 'sup-b', agentId: 'worker-b' }),
+    ],
+    intents: [intent('intent-two'), intent('intent-three')], namedMembers: [],
+  });
+  assert.equal(result.intentUnits.length, 1);
+  assert.deepEqual(result.intentUnits[0].memberEntryIds, ['shared']);
+  assert.deepEqual(result.intentUnits[0].supervisorIds, ['sup-a', 'sup-b']);
+  assert.match(result.intentUnits[0].mergeReason ?? '', /multiple supervisors/);
+});
+
+test('promotion threshold keeps one dirty path loose and two as a package', () => {
+  const one = projectIntentUnits({
+    inventory: { ...inventory, entries: [entries.find((item) => item.entryId === 'a')!] },
+    topology: { components: [component('ca', ['a'])] } as ComponentAssembly,
+    witnesses: [witness('a', 'intent-one')], intents: [intent('intent-one')], namedMembers: [],
+  });
+  assert.equal(one.intentUnits[0].presentation, 'loose');
+  const two = projectIntentUnits({
+    inventory: { ...inventory, entries: entries.filter((item) => item.entryId === 'a' || item.entryId === 'b') },
+    topology: { components: [component('ca', ['a', 'b'])] } as ComponentAssembly,
+    witnesses: [witness('a', 'intent-one'), witness('b', 'intent-one')], intents: [intent('intent-one')], namedMembers: [],
+  });
+  assert.equal(two.intentUnits[0].presentation, 'package');
 });
 
 test('separates truly unwitnessed work from honest legacy identity-unavailable work', () => {
@@ -224,14 +264,14 @@ test('honest inventory partitions excluded witnessed work without hiding it', ()
 
 test('named membership is byte addressed and becomes stale on inventory digest change', () => {
   const valid = project();
-  assert.deepEqual(valid.intentUnits.find((unit) => unit.intent.id === 'manual')!.memberEntryIds, ['loose']);
+  assert.deepEqual(valid.intentUnits.find((unit) => unit.memberEntryIds.includes('loose'))!.memberEntryIds, ['loose']);
   assert.deepEqual(valid.unwitnessedEntryIds, [], 'valid named membership removes the entry from Unwitnessed');
   const stale = projectIntentUnits({
     inventory: { ...inventory, topologyDigest: 'digest-2' }, topology, witnesses, intents: [intent('manual', 'named-save-set')],
     namedMembers: [{ intentId: 'manual', entryId: 'loose', pathBytesBase64: entries[4].path.pathBytesBase64, inventoryDigest: 'digest-1' }],
   });
-  assert.equal(stale.intentUnits[0].intent.id, 'manual');
-  assert.deepEqual(stale.intentUnits[0].memberEntryIds, []);
+  assert.ok(stale.intentUnits.every((unit) => !unit.memberEntryIds.includes('loose')),
+    'stale history cannot create a row for the named path');
   assert.deepEqual(stale.staleNamedSaveSetIds, ['manual']);
 });
 

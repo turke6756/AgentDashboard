@@ -333,7 +333,7 @@ test('candidate acknowledgement classification reads fallback attribution from t
 test('production route projects intent units and keeps unstamped work read-only', async () => {
   const inventory = await routes().getInventory({ workspaceId: 'workspace-1' });
   assert.equal(inventory.intentUnits.length, 1);
-  assert.equal(inventory.intentUnits[0].intentId, intent.id);
+  assert.match(inventory.intentUnits[0].intentId, /^dirty-tree:/);
   assert.equal(inventory.intentUnits[0].title, intent.title);
   assert.deepEqual(inventory.intentUnits[0].members.map((member) => member.entry.path.displayPath), ['task.txt']);
   const legacyPaths = inventory.legacyTaskIdentityUnavailable
@@ -415,7 +415,7 @@ test('production IPC registration reaches the intent route', async () => {
     SAVECARD_CHANNELS.getInventory,
     { workspaceId: 'workspace-1' },
   );
-  assert.equal(inventory.intentUnits[0].intentId, intent.id);
+  assert.match(inventory.intentUnits[0].intentId, /^dirty-tree:/);
   assert.ok(inventory.fallbackUnits?.some((unit) => unit.kind === 'agent-session-fallback'),
     'REACHABILITY:fallback-projection getInventory registration must enter the canonical projector');
 });

@@ -26,6 +26,10 @@ export interface SaveIntentUnit {
   concurrency: IntentConcurrencyEvidence;
   captureHealth: BundleCaptureHealth;
   weakestProtection: ProtectionRung | null;
+  /** Presentation is derived from the current dirty tree, never history. */
+  presentation: 'package' | 'loose';
+  supervisorIds: string[];
+  mergeReason: string | null;
 }
 
 export type FallbackUnitIdentityAssessment =
@@ -141,31 +145,76 @@ export function projectIntentUnits(input: IntentAssemblyInput): IntentAssembly {
     namedMemberEntryIds.add(member.entryId);
   }
 
-  const intentUnits = input.intents.map((intent): SaveIntentUnit => {
-    const intentWitnesses = input.witnesses.filter((witness) => witness.intentId === intent.id);
-    const memberEntryIds = uniqueSorted([
-      ...intentWitnesses.map((witness) => witness.entryId),
-      ...(namedByIntent.get(intent.id) ?? []),
+  // Dirty-tree row source. First assign each dirty path to the supervisor
+  // provenance that currently witnesses it, then union overlapping supervisor
+  // sets. This makes a contested path one indivisible save unit while ensuring
+  // a historical intent with no dirty path cannot resurrect a row.
+  const dirtyGroups: Array<{ entryIds: Set<string>; supervisors: Set<string> }> = [];
+  const supervisorGroup = new Map<string, { entryIds: Set<string>; supervisors: Set<string> }>();
+  for (const entry of input.inventory.entries) {
+    const entryWitnesses = witnessesByEntry.get(entry.entryId) ?? [];
+    const labels = uniqueSorted([
+      ...entryWitnesses.filter((witness) => witness.intentId !== null)
+        .map((witness) => witness.ownerAgentId ?? witness.agentId ?? `entry:${entry.entryId}`),
+      ...[...namedByIntent.entries()].filter(([, ids]) => ids.includes(entry.entryId))
+        .map(([intentId]) => `named:${intentId}`),
     ]);
+    if (labels.length === 0) continue;
+    let group = labels.map((label) => supervisorGroup.get(label)).find(Boolean);
+    if (!group) {
+      group = { entryIds: new Set(), supervisors: new Set() };
+      dirtyGroups.push(group);
+    }
+    for (const label of labels) {
+      const existing = supervisorGroup.get(label);
+      if (existing && existing !== group) {
+        for (const entryId of existing.entryIds) group.entryIds.add(entryId);
+        for (const supervisor of existing.supervisors) group.supervisors.add(supervisor);
+        const index = dirtyGroups.indexOf(existing);
+        if (index >= 0) dirtyGroups.splice(index, 1);
+        for (const [key, value] of supervisorGroup) if (value === existing) supervisorGroup.set(key, group);
+      }
+      supervisorGroup.set(label, group);
+      group.supervisors.add(label);
+    }
+    group.entryIds.add(entry.entryId);
+  }
+
+  const intentById = new Map(input.intents.map((candidate) => [candidate.id, candidate]));
+  const intentUnits = dirtyGroups.map((group): SaveIntentUnit => {
+    const memberEntryIds = uniqueSorted(group.entryIds);
+    const groupWitnesses = memberEntryIds.flatMap((entryId) => witnessesByEntry.get(entryId) ?? []);
+    const sourceIntentIds = uniqueSorted(groupWitnesses.flatMap((witness) =>
+      witness.intentId ? [witness.intentId] : []));
+    const namedIntentIds = uniqueSorted([...namedByIntent.entries()]
+      .filter(([, ids]) => ids.some((entryId) => group.entryIds.has(entryId)))
+      .map(([intentId]) => intentId));
+    const representative = intentById.get(sourceIntentIds[0] ?? namedIntentIds[0] ?? '')
+      ?? input.intents[0];
+    if (!representative) throw new Error('dirty-tree group has no historical label');
+    const supervisorIds = uniqueSorted(group.supervisors);
+    const contested = supervisorIds.length > 1;
+    const groupId = createHash('sha256').update(canonicalize({ memberEntryIds, supervisorIds })).digest('hex').slice(0, 16);
+    const intent = { ...representative, id: `dirty-tree:${groupId}`, title: contested
+      ? `${representative.title} (merged shared-path work)` : representative.title, state: 'open' as const };
     return {
       intent,
       memberEntryIds,
-      contributingTurnIds: uniqueSorted(intentWitnesses.map((witness) => witness.turnId)),
-      contributingAgentIds: uniqueSorted(intentWitnesses.flatMap((witness) =>
+      contributingTurnIds: uniqueSorted(groupWitnesses.map((witness) => witness.turnId)),
+      contributingAgentIds: uniqueSorted(groupWitnesses.flatMap((witness) =>
         witness.agentId === null ? [] : [witness.agentId])),
-      topologyComponentIds: uniqueSorted(memberEntryIds.flatMap((entryId) =>
-        componentsByEntry.get(entryId) ?? [])),
+      topologyComponentIds: uniqueSorted(memberEntryIds.flatMap((entryId) => componentsByEntry.get(entryId) ?? [])),
       concurrency: {
         pathsWithMultipleIntents: memberEntryIds.filter((entryId) => new Set(
-          (witnessesByEntry.get(entryId) ?? []).flatMap((witness) =>
-            witness.intentId === null ? [] : [witness.intentId]),
+          (witnessesByEntry.get(entryId) ?? []).flatMap((witness) => witness.intentId ? [witness.intentId] : []),
         ).size > 1),
       },
-      captureHealth: emptyHealth(),
-      weakestProtection: null,
+      captureHealth: emptyHealth(), weakestProtection: null,
+      presentation: memberEntryIds.length >= 2 ? 'package' : 'loose',
+      supervisorIds,
+      mergeReason: contested ? 'Shared dirty paths have contributors from multiple supervisors; committing disk state must merge them.' : null,
     };
-  }).filter((unit) => unit.memberEntryIds.length > 0 || staleNamedSaveSetIds.has(unit.intent.id))
-    .sort((left, right) => left.intent.id.localeCompare(right.intent.id));
+  }).sort((left, right) => left.intent.id.localeCompare(right.intent.id));
 
   const unwitnessedEntryIds: string[] = [];
   const legacyTaskIdentityUnavailableEntryIds: string[] = [];

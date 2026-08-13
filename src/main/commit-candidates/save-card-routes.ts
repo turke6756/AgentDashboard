@@ -463,6 +463,9 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         saveability,
         saveGate: assessSaveUnitReadiness(unitEntries),
         membershipStale: assembly.staleNamedSaveSetIds.includes(unit.intent.id),
+        presentation: unit.presentation,
+        supervisorIds: unit.supervisorIds,
+        mergeReason: unit.mergeReason,
       };
     });
     const members = (entryIds: readonly string[]) => entryIds.map((entryId) => ({

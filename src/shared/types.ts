@@ -2289,6 +2289,10 @@ export interface SaveIntentUnitDto {
     | { evaluation: 'incomplete' };
   /** Null-session fallback units intentionally span the agent lifetime. */
   coarseIdentityWarning?: boolean;
+  /** Dirty-tree presentation classification (WP-17). */
+  presentation?: 'package' | 'loose';
+  supervisorIds?: string[];
+  mergeReason?: string | null;
 }
 
 export type PlanningActivityPromotionStatus =

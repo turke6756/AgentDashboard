@@ -1028,7 +1028,10 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
     ...intentUnits.filter((unit) => unit.state !== 'committed' && unit.state !== 'superseded'),
     ...fallbackUnits,
   ];
-  const loudFileCount = loud.reduce((n, unit) => n + unit.members.length, 0);
+  // A path is one piece of disk state even when history mentions it many
+  // times or merged units carry it. Report distinct dirty paths only.
+  const loudFileCount = new Set(loud.flatMap((unit) =>
+    unit.members.map((member) => member.entry.path.pathBytesBase64))).size;
   const saveableUnits = loud.filter((unit) => unit.saveability.saveable);
   const allMembers = [
     ...intentUnits.flatMap((unit) => unit.members),
