@@ -16,7 +16,7 @@ import { computeTerminalAttachResult } from './terminal-attach-result';
 import { resolveAgentChatEvents } from './supervisor/agent-chat-history';
 import {
   getWorkspaces, createWorkspace, deleteWorkspace, getWorkspace, reorderWorkspaces,
-  getAgentsByWorkspace, getAllAgents, getAgent, getPlan, planItemInPlan, getFileActivities, getWorkspaceAgentSummary,
+  getAgentsByWorkspace, getAllAgents, getAgent, getPlan, getAgentPlanBadgeSummary, planItemInPlan, getFileActivities, getWorkspaceAgentSummary,
   checkAgentMdExists, updateAgentSupervised, updateAgentResumeSessionId, getAgentSessions,
   createTeam, getTeam, listTeams, updateTeamStatus, addTeamMember, removeTeamMember,
   createChannel, removeChannel, getTeamMessages, getTeamTasks, createTeamTask, updateTeamTask,
@@ -305,6 +305,7 @@ export function registerIpcHandlers(
 
   // Agent handlers
   ipcMain.handle('agent:list', (_e, workspaceId) => getAgentsByWorkspace(workspaceId));
+  ipcMain.handle('agents:planBadgeSummary', (_e, workspaceId: string) => getAgentPlanBadgeSummary(workspaceId));
   ipcMain.handle('agent:list-all', () => getAllAgents());
   ipcMain.handle('agent:launch', (_e, input) => supervisor.launchAgent(input));
   // Git-Native WP-G2.2 — human checkpoint recovery surface (list/diff/preview/

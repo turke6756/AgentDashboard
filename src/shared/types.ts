@@ -3044,6 +3044,11 @@ export interface TerminalDeadSnapshot {
   historyNotice?: HistoryNotice;
 }
 
+export interface AgentPlanBadge {
+  authored: string[];
+  carrying: string[];
+}
+
 export interface IpcApi {
   workspaces: {
     list: () => Promise<Workspace[]>;

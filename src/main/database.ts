@@ -4,7 +4,7 @@ import os from 'os';
 import fs from 'fs';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { AgentStopReason, deriveHookAvailability, isAgentStopReason, parseStopReason, PersistedAgentStatus, PLAN_TAB_KEYS } from '../shared/types';
+import { AgentStopReason, AgentPlanBadge, deriveHookAvailability, isAgentStopReason, parseStopReason, PersistedAgentStatus, PLAN_TAB_KEYS } from '../shared/types';
 import { Agent, AgentProvider, AgentSessionRow, AgentStatus, AgentTemplate, ContextStats, CreateAgentTemplateInput, CreateSelectionCommentInput, CreateSelectionCommentReplyInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, Plan, PlanFormat, PlanTabKey, PlanTabOverview, SelectionComment, SelectionCommentReply, SelectionCommentStatus, SupervisorFocus, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, UpdateSelectionCommentInput, Workspace } from '../shared/types';
 import { parsePdfSelectionAnchor, serializePdfSelectionAnchor, validatePdfSelectionAnchor, type PdfSelectionAnchorV1, type SelectionAnchorType } from '../shared/pdf-annotations';
 import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, SUPERVISOR_AGENT_MD } from '../shared/constants';
@@ -1899,6 +1899,20 @@ function initContextOptimizerSchema(): void {
       ON proposals(workspace_id, artifact_id) WHERE artifact_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_promoted_plan
       ON proposals(promoted_to_plan_id) WHERE promoted_to_plan_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS proposal_ingest_conflicts (
+      id INTEGER PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      klass TEXT NOT NULL,
+      old_artifact_id TEXT,
+      new_artifact_id TEXT,
+      attempted_artifact_id TEXT,
+      effective_artifact_id TEXT,
+      detail TEXT,
+      observed_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pic_ws_path_time
+      ON proposal_ingest_conflicts (workspace_id, path, observed_at);
   `);
 
   // FIVE guarded plans columns (exactly five — no more): the promotion + folder
@@ -3579,6 +3593,45 @@ export function getPlan(id: string): Plan | null {
 export function getPlanByWorkspacePath(workspaceId: string, planPath: string): Plan | null {
   const row = queryOne('SELECT * FROM plans WHERE workspace_id = ? AND path = ?', [workspaceId, planPath]);
   return row ? rowToPlan(row) : null;
+}
+
+/** Independent plan authorship and focus facts for the workspace. */
+export function getAgentPlanBadgeSummary(workspaceId: string): Record<string, AgentPlanBadge> {
+  const summary: Record<string, AgentPlanBadge> = {};
+  const ensure = (agentId: string): AgentPlanBadge => {
+    const existing = summary[agentId];
+    if (existing) return existing;
+    const created: AgentPlanBadge = { authored: [], carrying: [] };
+    summary[agentId] = created;
+    return created;
+  };
+
+  for (const row of queryAll(
+    `SELECT DISTINCT f.supervisor_id AS agent_id, p.artifact_id AS plan_artifact_id
+       FROM supervisor_focus f
+       JOIN plans p ON p.id = f.plan_id
+      WHERE p.workspace_id = ? AND p.deleted_at IS NULL AND p.artifact_id IS NOT NULL
+      ORDER BY f.supervisor_id, p.artifact_id`,
+    [workspaceId],
+  )) {
+    ensure(String(row.agent_id)).carrying.push(String(row.plan_artifact_id));
+  }
+
+  for (const row of queryAll(
+    `SELECT DISTINCT pr.author_agent_id AS agent_id, p.artifact_id AS plan_artifact_id
+       FROM plans p
+       JOIN proposals pr
+         ON pr.workspace_id = p.workspace_id
+        AND pr.id = p.source_proposal_id
+      WHERE p.workspace_id = ? AND p.deleted_at IS NULL AND p.artifact_id IS NOT NULL
+        AND pr.author_agent_id IS NOT NULL AND pr.deleted_at IS NULL
+      ORDER BY pr.author_agent_id, p.artifact_id`,
+    [workspaceId],
+  )) {
+    ensure(String(row.agent_id)).authored.push(String(row.plan_artifact_id));
+  }
+
+  return summary;
 }
 
 /** Idempotent on (workspace_id, path). INSERT mints a fresh uuid; ON CONFLICT keeps

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { IpcApi, DetachRequest, DetachedClosedPayload, ViewDetachRequest, ViewDetachedClosedPayload, FlushRequestPayload, FlushReplyPayload } from '../shared/types';
+import type { AgentPlanBadge, IpcApi, DetachRequest, DetachedClosedPayload, ViewDetachRequest, ViewDetachedClosedPayload, FlushRequestPayload, FlushReplyPayload } from '../shared/types';
 import { TAB_CHANNELS, VIEW_CHANNELS, CHECKPOINT_CHANNELS, SAVECARD_CHANNELS, SAVECARD_ADOPT_BASELINE_CHANNEL, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, SAVECARD_PREVIEW_CHANNEL, COMMIT_CANDIDATE_MINT_CHANNEL, SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL, SAVECARD_FINALIZE_CHANNEL, SAVECARD_ATTENTION_CHANNEL, SAVECARD_ATTENTION_CHANGED_CHANNEL, SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, COMMIT_COORDINATOR_CHANNEL } from '../shared/types';
 import { BROWSER_CHANNELS } from '../shared/browser';
 import type {
@@ -760,6 +760,10 @@ const api: IpcApi = {
     return () => ipcRenderer.removeListener('orchestration:active-changed', listener);
   },
 };
+
+(api.agents as IpcApi['agents'] & {
+  getAgentPlanBadgeSummary: (workspaceId: string) => Promise<Record<string, AgentPlanBadge>>;
+}).getAgentPlanBadgeSummary = (workspaceId) => ipcRenderer.invoke('agents:planBadgeSummary', workspaceId);
 
 // WP-P6C: read-only mission-board transport. The shared IpcApi declaration is
 // intentionally left untouched in this renderer-only package; the board narrows
