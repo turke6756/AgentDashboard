@@ -347,6 +347,7 @@ const TESTS = [
   'dist/main/main/supervisor/remember-provisioning.test.js',
   'dist/main/main/supervisor/codex-worker-parity.test.js',
   'dist/main/main/supervisor/role-lane.test.js',
+  'dist/main/main/supervisor/researcher-lane.test.js',
   'dist/main/main/supervisor/resolve-launch-command.test.js',
   'dist/main/main/persona-scanner.test.js',
   'dist/main/main/pasted-image-store.test.js',
