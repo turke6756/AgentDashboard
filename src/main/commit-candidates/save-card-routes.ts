@@ -152,6 +152,48 @@ function rendererSafeText(value: string): string {
     .replace(/\b[A-Za-z]:[\\/][^\s,;]+/g, '[local path]')
     .replace(/(^|\s)\/(?:Users|home|var|tmp|opt|mnt)\/[^\s,;]+/g, '$1[local path]');
 }
+
+function contributorFilesFor(
+  entryIds: readonly string[],
+  contributingAgentIds: readonly string[],
+  components: readonly { dirtyEntryIds: string[]; overlap: { perPathContributors: Record<string, { agentIds: string[] }> } }[],
+): Map<string, string[]> {
+  const known = [...new Set(contributingAgentIds)].sort();
+  const files = new Map(known.map((agentId) => [agentId, [] as string[]]));
+  const memberIds = new Set(entryIds);
+  for (const entryId of entryIds) {
+    const agents = [...new Set(components.flatMap((component) =>
+      component.dirtyEntryIds.includes(entryId)
+        ? component.overlap.perPathContributors[entryId]?.agentIds ?? [] : []))]
+      .filter((agentId) => files.has(agentId)).sort();
+    // A path is a distinct-file unit. When history says several contributors
+    // touched one path, assign that path once for a stable 100% total while
+    // retaining every contributor in the roster.
+    const owner = agents[0] ?? (known.length === 1 ? known[0] : undefined);
+    if (owner && memberIds.has(entryId)) files.get(owner)!.push(entryId);
+  }
+  return files;
+}
+
+function contributorsWithFileShares(
+  agentIds: readonly string[],
+  workers: Map<string, SaveCardWorkerUnit>,
+  entryIds: readonly string[],
+  components: readonly { dirtyEntryIds: string[]; overlap: { perPathContributors: Record<string, { agentIds: string[] }> } }[],
+): SaveCardWorkerUnit[] {
+  const files = contributorFilesFor(entryIds, agentIds, components);
+  const total = new Set(entryIds).size;
+  let assignedPercent = 0;
+  return [...files.entries()].flatMap(([agentId, memberEntryIds], index, all) => {
+    const worker = workers.get(agentId);
+    if (!worker) return [];
+    const fileSharePercent = total === 0 ? 0
+      : index === all.length - 1 ? 100 - assignedPercent
+        : Math.round(memberEntryIds.length * 100 / total);
+    assignedPercent += fileSharePercent;
+    return [{ ...worker, memberEntryIds, fileCount: memberEntryIds.length, fileSharePercent }];
+  });
+}
 /** Canonicalize a workspace directory best-effort, mirroring the checkpoint
  *  engine's `canonicalDir` so a probe keys off the same root the facade reads. */
 function canonicalDir(realpath: (p: string) => string, p: string): string {
@@ -409,6 +451,8 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
         endedAt: maxTime(agentTurns.map((turn) => turn.endedAt ?? turn.startedAt)),
         turnCount: new Set(agentTurns.map((turn) => turn.id)).size,
         memberEntryIds: [],
+        fileCount: 0,
+        fileSharePercent: 0,
       };
       return [agentId, worker] as const;
     }));
@@ -445,10 +489,8 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
           entry,
           ...protectionFields(read.protectionAssessmentByEntryId?.[entry.entryId]),
         })),
-        contributors: unit.contributingAgentIds.flatMap((id) => {
-          const worker = workerByAgentId.get(id);
-          return worker ? [worker] : [];
-        }),
+        contributors: contributorsWithFileShares(
+          unit.contributingAgentIds, workerByAgentId, unit.memberEntryIds, read.components),
         topologyEvidence: {
           componentIds: unit.topologyComponentIds,
           pathsWithMultipleTurns: unit.concurrency.pathsWithMultipleIntents,
@@ -497,7 +539,8 @@ export function createSaveCardRoutes(deps: SaveCardRoutesDeps): SaveCardRoutes {
           entry,
           ...protectionFields(read.protectionAssessmentByEntryId?.[entry.entryId]),
         })),
-        contributors: worker ? [worker] : [],
+        contributors: worker ? [{ ...worker, memberEntryIds: [...unit.memberEntryIds],
+          fileCount: unit.memberEntryIds.length, fileSharePercent: 100 }] : [],
         topologyEvidence: {
           componentIds,
           pathsWithMultipleTurns: [],

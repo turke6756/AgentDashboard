@@ -336,6 +336,12 @@ test('production route projects intent units and keeps unstamped work read-only'
   assert.match(inventory.intentUnits[0].intentId, /^dirty-tree:/);
   assert.equal(inventory.intentUnits[0].title, intent.title);
   assert.deepEqual(inventory.intentUnits[0].members.map((member) => member.entry.path.displayPath), ['task.txt']);
+  assert.deepEqual(inventory.intentUnits[0].contributors.map((contributor) => ({
+    name: contributor.name,
+    fileCount: contributor.fileCount,
+    fileSharePercent: contributor.fileSharePercent,
+  })), [{ name: 'Supervisor builder', fileCount: 1, fileSharePercent: 100 }],
+  'REACHABILITY:route projection preserves contributor attribution on the returned DTO');
   const legacyPaths = inventory.legacyTaskIdentityUnavailable
     .map((member) => member.entry.path.displayPath);
   assert.ok(legacyPaths.includes('legacy.txt'));

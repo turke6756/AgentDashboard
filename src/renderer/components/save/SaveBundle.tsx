@@ -50,6 +50,17 @@ export default function SaveBundle({
         {unit.planItem?.title ?? unit.plan?.title ?? 'Unplanned task'}
         {unit.membershipStale ? ' · Membership stale — review required' : ''}
       </div>
+      <div className="sc-meta" data-testid="save-contributor-roster">
+        <strong>Contributors</strong>
+        <ul>
+          {unit.contributors.length > 0 ? unit.contributors.map((contributor) => (
+            <li key={contributor.agentId ?? contributor.name}>
+              {contributor.name}: {contributor.fileCount} of {unit.members.length} files
+              ({contributor.fileSharePercent}%)
+            </li>
+          )) : <li>No agent identity recorded</li>}
+        </ul>
+      </div>
       {hasCaptureConcern(unit) && (
         <div className="sc-meta" data-testid="save-bundle-capture-concern">
           Capture evidence is incomplete; review before saving.

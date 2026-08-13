@@ -2218,6 +2218,10 @@ export interface SaveCardWorkerUnit {
   endedAt: number | null;
   turnCount: number;
   memberEntryIds: string[];
+  /** Distinct package files assigned to this contributor for display. */
+  fileCount: number;
+  /** Integer percentage of the package's distinct files. */
+  fileSharePercent: number;
 }
 
 /** Whether the package can be pinned/finalized from its attributed workspace.

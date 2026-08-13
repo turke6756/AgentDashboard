@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import type { DirtyEntry } from '../../../shared/commit-candidates';
-import type { SaveCardInventoryResponse, SaveCardMemberDto, SaveIntentUnitDto } from '../../../shared/types';
+import type { SaveCardInventoryResponse, SaveCardMemberDto, SaveCardWorkerUnit, SaveIntentUnitDto } from '../../../shared/types';
 import { useSaveCardStore } from '../../stores/save-card-store';
 import SaveCard, { type SaveCardProps } from './SaveCard';
 
@@ -88,6 +88,33 @@ afterEach(() => {
 });
 
 describe('SaveCard intent-first rendering', () => {
+  it('always renders every contributor and distinct-file shares', async () => {
+    const contributor = (agentId: string, name: string, fileCount: number, fileSharePercent: number): SaveCardWorkerUnit => ({
+      agentId, name, roleDescription: 'editor', kind: 'supervisor', startedAt: null, endedAt: null,
+      turnCount: 1, memberEntryIds: [], fileCount, fileSharePercent,
+    });
+    useSaveCardStore.getState().clearInventoryCache();
+    await renderCard(inventory({
+      intentUnits: [unit({
+        members: [member('entry-1', 'src/one.ts'), member('entry-2', 'src/two.ts'), member('entry-3', 'src/three.ts')],
+        contributors: [
+          contributor('supervisor-a', 'Supervisor A', 2, 67),
+          contributor('supervisor-b', 'Supervisor B', 1, 33),
+        ],
+      })],
+    }));
+    const roster = container.querySelector('[data-testid="save-contributor-roster"]')!;
+    expect(roster.textContent).toContain('Supervisor A: 2 of 3 files (67%)');
+    expect(roster.textContent).toContain('Supervisor B: 1 of 3 files (33%)');
+
+    useSaveCardStore.getState().clearInventoryCache();
+    await renderCard(inventory({
+      intentUnits: [unit({ contributors: [contributor('supervisor-a', 'Solo supervisor', 1, 100)] })],
+    }));
+    expect(container.querySelector('[data-testid="save-contributor-roster"]')?.textContent)
+      .toContain('Solo supervisor: 1 of 1 files (100%)');
+  });
+
   it('enters the production onboarding bridge from a main-issued inventory prompt', async () => {
     await renderCard(inventory({
       onboarding: {
