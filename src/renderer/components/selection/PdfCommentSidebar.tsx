@@ -217,6 +217,7 @@ export default function PdfCommentSidebar({
           onSendAll={(target) => sendAll(target)}
           onResolve={() => void resolveComment(expanded.id, filePath)}
           onDelete={() => void deleteComment(expanded.id, filePath)}
+          onUpdate={(body) => void window.api.comments.update(expanded.id, { body }).then(() => onExpandedChange(null))}
         />
       )}
     </div>

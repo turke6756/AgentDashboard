@@ -140,6 +140,10 @@ experiments/
 /.dashboard/research/scratch/
 /.lares/scratch/
 /.dashboard/scratch/
+/.lares/supervisor/scratch/
+/.dashboard/supervisor/scratch/
+/.lares/workers/*/scratch/
+/.dashboard/workers/*/scratch/
 /.lares/archive/
 /.dashboard/archive/
 /.lares/tmp/

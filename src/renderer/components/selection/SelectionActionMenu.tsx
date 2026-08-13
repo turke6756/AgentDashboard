@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Pencil, Copy } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import type { SelectionAgentTarget, SelectionContext } from '../../lib/selection/selection-types';
 import { positionFloating } from '../../lib/floating/positionFloating';
@@ -91,6 +92,12 @@ export default function SelectionActionMenu({
       onMouseDown={(e) => e.preventDefault()}
     >
       <div className="ui-menu-header">Selection</div>
+      {context.capabilities.comment && onAddComment && (
+        <button onClick={handleAddComment} className="ui-menu-item ui-menu-item-primary">
+          <span className="ui-menu-icon"><Pencil size={15} strokeWidth={1.8} /></span>
+          <span>Comment</span>
+        </button>
+      )}
       <button
         onClick={() => setPickerOpen((v) => !v)}
         className="ui-menu-item"
@@ -133,7 +140,8 @@ export default function SelectionActionMenu({
       )}
       <div className="ui-menu-divider" />
       <button onClick={handleCopy} className="ui-menu-item">
-        Copy
+        <span className="ui-menu-icon"><Copy size={14} strokeWidth={1.8} /></span>
+        <span>Copy</span>
       </button>
     </div>,
     document.body,

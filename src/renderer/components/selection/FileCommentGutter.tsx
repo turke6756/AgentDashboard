@@ -488,6 +488,7 @@ export default function FileCommentGutter({ tabId, filePath: explicitFilePath, w
           onSendAll={(target) => sendAll(target)}
           onResolve={() => void resolveComment(expanded.id, expanded.filePath ?? filePath).then(reload)}
           onDelete={() => void deleteComment(expanded.id, expanded.filePath ?? filePath).then(reload)}
+          onUpdate={(body) => void window.api.comments.update(expanded.id, { body }).then(reload)}
           replies={planThreads.get(expanded.id)?.replies}
           replyAgents={replyAgents}
           onReply={planDocument ? async (body, callerAgentId) => {

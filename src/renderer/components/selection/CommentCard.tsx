@@ -36,6 +36,7 @@ export interface CommentCardProps {
   onSendAll?: (target: SelectionAgentTarget) => void;
   onResolve: () => void;
   onDelete: () => void;
+  onUpdate?: (body: string) => void;
   replies?: SelectionCommentReply[];
   replyAgents?: Array<{ id: string; title: string }>;
   onReply?: (body: string, callerAgentId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -58,6 +59,7 @@ export default function CommentCard({
   onSendAll,
   onResolve,
   onDelete,
+  onUpdate,
   replies = [],
   replyAgents = [],
   onReply,
@@ -69,6 +71,8 @@ export default function CommentCard({
   const [replyAgentId, setReplyAgentId] = useState(replyAgents[0]?.id ?? '');
   const [replyBusy, setReplyBusy] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editBody, setEditBody] = useState(comment.body);
   const showSendAll = draftCount > 1 && !!onSendAll;
 
   return (
@@ -93,9 +97,19 @@ export default function CommentCard({
       {locationLabel && (
         <div className="text-[11px] text-gray-500 mb-1.5">{locationLabel}</div>
       )}
-      <div className="text-[13px] text-gray-200 whitespace-pre-wrap max-h-40 overflow-auto mb-2">
-        {comment.body}
-      </div>
+      {editing ? (
+        <textarea
+          value={editBody}
+          onChange={(event) => setEditBody(event.target.value)}
+          rows={3}
+          autoFocus
+          className="w-full resize-y rounded border border-white/15 bg-surface-0 px-2 py-1 text-[13px] text-gray-200 mb-2"
+        />
+      ) : (
+        <div className="text-[13px] text-gray-200 whitespace-pre-wrap max-h-40 overflow-auto mb-2">
+          {comment.body}
+        </div>
+      )}
       {replies.length > 0 && (
         <div className="mb-2 space-y-1 border-l border-white/10 pl-2" data-testid="plan-comment-replies">
           {replies.map((reply) => (
@@ -106,6 +120,15 @@ export default function CommentCard({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
+        {onUpdate && (editing ? (
+          <button className="ui-btn text-[12px]" disabled={!editBody.trim()} onClick={() => {
+            if (!editBody.trim()) return;
+            onUpdate(editBody.trim());
+            setEditing(false);
+          }}>Save</button>
+        ) : (
+          <button className="ui-btn text-[12px]" onClick={() => { setEditBody(comment.body); setEditing(true); }}>Edit</button>
+        ))}
         {sendable && (
           <button
             className="ui-btn text-[12px]"

@@ -55,6 +55,7 @@ interface OpenMenuState {
   context: SelectionContext;
   prefix: string;
   suffix: string;
+  selectionRange: Range;
 }
 
 interface OpenPopoverState extends OpenMenuState {
@@ -149,6 +150,7 @@ export function useSelectionActions({
         context: { ...getContextRef.current(), quotedText: text },
         prefix,
         suffix,
+        selectionRange: range.cloneRange(),
       });
     };
 
@@ -192,11 +194,27 @@ export function useSelectionActions({
   const openPopover = useCallback(
     (mode: 'draft' | 'send') => {
       if (!menu) return;
+      window.getSelection()?.removeAllRanges();
       setPopover({ ...menu, mode });
       closeMenu();
     },
     [menu, closeMenu],
   );
+
+  // The native blue selection is transient and disappears as soon as the
+  // composer receives focus. Keep the captured range painted as the same warm
+  // annotation yellow used by chat, Markdown, and PDF overlays.
+  useEffect(() => {
+    const registry = typeof CSS === 'undefined'
+      ? undefined
+      : (CSS as unknown as { highlights?: { set: Function; delete: Function } }).highlights;
+    const HighlightCtor = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (!registry || !HighlightCtor) return;
+    const name = 'selection-comment-compose';
+    if (popover) registry.set(name, new HighlightCtor(popover.selectionRange));
+    else registry.delete(name);
+    return () => registry.delete(name);
+  }, [popover]);
 
   const handleHighlight = useCallback(() => {
     if (!menu) return;
