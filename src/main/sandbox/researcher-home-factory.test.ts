@@ -91,8 +91,21 @@ describe('resolveResearcherSandboxHome', () => {
     }
   });
 
+  test('a codex researcher resolves its app-constructed CODEX_HOME redirect', () => {
+    const resolved = resolveResearcherSandboxHome({
+      roleLane: 'researcher', workspaceStateRoot: STATE_ROOT, agentId: 'codex-333', provider: 'codex',
+    });
+    assert.ok(resolved);
+    assert.equal(resolved.researcherSandboxHomePath, path.join(STATE_ROOT, 'agent-homes', 'codex-333'));
+    assert.deepStrictEqual(resolved.launchRedirect, {
+      kind: 'env',
+      name: 'CODEX_HOME',
+      value: resolved.researcherSandboxHomePath,
+    });
+  });
+
   test('inactive provider adapters cannot produce a researcher launch redirect', () => {
-    for (const provider of ['codex', 'grok', 'agy'] as const) {
+    for (const provider of ['grok', 'agy'] as const) {
       assert.throws(
         () => resolveResearcherSandboxHome({
           roleLane: 'researcher', workspaceStateRoot: STATE_ROOT, agentId: 'agent-333', provider,
@@ -120,7 +133,7 @@ describe('production researcher launch entry', () => {
   test('the Windows researcher branch calls the guarded factory', () => {
     assert.match(
       supervisorSource,
-      /if \(roleLaneOf\(agent\) === 'researcher'\) \{[\s\S]*?if \(!overrideArgs\) \{[\s\S]*?resolveResearcherSandboxHome\(\{[\s\S]*?roleLane: roleLaneOf\(agent\)[\s\S]*?prepareRestrictedOutboxLaunch/,
+      /private async launchWindowsAgent[\s\S]*?if \(roleLaneOf\(agent\) === 'researcher'\) \{[\s\S]*?if \(!overrideArgs\) \{[\s\S]*?resolveResearcherSandboxHome\(\{[\s\S]*?roleLane: roleLaneOf\(agent\)/,
       'REACHABILITY:researcher-home-factory production researcher launch must call the guarded factory',
     );
   });
@@ -136,7 +149,7 @@ describe('production researcher launch entry', () => {
   test('the fork path explicitly calls and consumes the guarded factory', () => {
     assert.match(
       supervisorSource,
-      /const forkResearcher = forkLane === 'researcher';[\s\S]*?if \(forkResearcher\) \{[\s\S]*?resolveResearcherSandboxHome\(\{[\s\S]*?roleLane: forkLane[\s\S]*?forkResearcherSandbox\.researcherSandboxHomePath/,
+      /const forkResearcher = forkLane === 'researcher' && newAgent\.provider === 'claude';[\s\S]*?if \(forkResearcher\) \{[\s\S]*?resolveResearcherSandboxHome\(\{[\s\S]*?roleLane: forkLane[\s\S]*?provider: newAgent\.provider/,
       'REACHABILITY:researcher-home-fork forked researchers must enter and consume the factory result',
     );
   });

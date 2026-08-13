@@ -124,9 +124,9 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
       pathPattern: 'sessions/YYYY/MM/DD/rollout-<ISO8601>-<uuid>.jsonl',
     },
     support: {
-      implementation: 'stub',
-      verdict: 'not-yet-activated',
-      gate: 'researcher-lane-provider-activation',
+      implementation: 'active',
+      verdict: 'degraded',
+      gate: null,
     },
   },
   grok: {

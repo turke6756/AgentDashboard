@@ -80,22 +80,20 @@ test('ordinary Claude discovery retains the account-wide state root', () => {
   }
 });
 
-test('non-Claude providers are not activated by the shared resolver', () => {
+test('worker codex remains account-unresolved while researcher codex uses its derived home', () => {
   assert.equal(resolveProviderStateHome({
     agentId: 'worker-2',
     provider: 'codex',
     roleLane: 'worker',
     workspaceStateRoot: path.resolve('C:\\fixture\\workspace\\.lares'),
   }), null);
-  assert.throws(
-    () => resolveProviderStateHome({
-      agentId: 'researcher-codex',
-      provider: 'codex',
-      roleLane: 'researcher',
-      workspaceStateRoot: path.resolve('C:\\fixture\\workspace\\.lares'),
-    }),
-    /not-yet-activated/,
-  );
+  const stateRoot = path.resolve('C:\\fixture\\workspace\\.lares');
+  assert.equal(resolveProviderStateHome({
+    agentId: 'researcher-codex',
+    provider: 'codex',
+    roleLane: 'researcher',
+    workspaceStateRoot: stateRoot,
+  }), path.join(stateRoot, 'agent-homes', 'researcher-codex'));
 });
 
 test('researcher status recovery and tailing resolve the per-agent spool', () => {

@@ -6,7 +6,7 @@ import {
 } from './provider-redirect-adapters';
 
 describe('provider redirect adapter facts', () => {
-  test('Claude is the only active adapter and retains its named acceptance gate', () => {
+  test('Claude and Codex are active, with Claude retaining its named acceptance gate', () => {
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.claude, {
       provider: 'claude',
       redirect: { kind: 'env', name: 'CLAUDE_CONFIG_DIR' },
@@ -36,7 +36,7 @@ describe('provider redirect adapter facts', () => {
       Object.values(PROVIDER_REDIRECT_ADAPTERS)
         .filter((adapter) => adapter.support.implementation === 'active')
         .map((adapter) => adapter.provider),
-      ['claude'],
+      ['claude', 'codex'],
     );
   });
 
@@ -67,14 +67,18 @@ describe('provider redirect adapter facts', () => {
     });
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.grok.durableSessionPaths, ['sessions/**', 'memory/**']);
 
-    for (const provider of ['codex', 'grok'] as const) {
-      assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS[provider].resetPaths, ['**/*']);
-      assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS[provider].support, {
-        implementation: 'stub',
-        verdict: 'not-yet-activated',
-        gate: 'researcher-lane-provider-activation',
-      });
-    }
+    assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.codex.resetPaths, ['**/*']);
+    assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.codex.support, {
+      implementation: 'active',
+      verdict: 'degraded',
+      gate: null,
+    });
+    assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.grok.resetPaths, ['**/*']);
+    assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.grok.support, {
+      implementation: 'stub',
+      verdict: 'not-yet-activated',
+      gate: 'researcher-lane-provider-activation',
+    });
   });
 
   test('Antigravity is an argv redirect with OS-keychain auth and no seedable file', () => {
@@ -108,11 +112,17 @@ describe('provider redirect adapter facts', () => {
 
 describe('support verdict resolution', () => {
   test('every adapter that has not been activated is explicit and never unsupported', () => {
-    for (const provider of ['codex', 'grok', 'agy'] as const) {
+    for (const provider of ['grok', 'agy'] as const) {
       const resolved = resolveProviderRedirectAdapter(provider);
       assert.equal(resolved.support.verdict, 'not-yet-activated');
       assert.notEqual(resolved.support.verdict, 'unsupported');
     }
+  });
+
+  test('codex resolves as an active degraded adapter', () => {
+    const resolved = resolveProviderRedirectAdapter('codex');
+    assert.equal(resolved.support.verdict, 'degraded');
+    assert.notEqual(resolved.support.verdict, 'unsupported');
   });
 
   test('an absent adapter resolves to an explicit unsupported verdict', () => {
