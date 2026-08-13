@@ -62,6 +62,7 @@ import { registerJupyterServerExitDisposal, shutdownJupyterServer } from './jupy
 import { disposeKernelClient } from './jupyter-kernel-client';
 import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
 import { startPlansWatcher, PlansWatcher } from './plans-watcher';
+import { runProposalScan } from './proposal-scan';
 import { LegacyPromotionDrain } from './plans/legacy-promotion-drain';
 import {
   PromotionDeliveryInspectorImpl,
@@ -786,6 +787,14 @@ app.whenReady().then(async () => {
       // pulls pending notices on mount (`workspace:security-notices`) and the
       // user decides on removal. Never throws (warn-and-continue inside).
       checkWorkspaceSecurityOnOpen(ws.path, ws.pathType);
+      // Run before LegacyPromotionDrain is constructed below: its awaited same-boot
+      // boot drain reaches reconcilePlanFolderProjections/source-proposal reconciliation.
+      try {
+        const report = runProposalScan(ws);
+        console.log(`[proposal-scan] ${ws.id}: discovered ${report.discovered}, parsed ${report.parsed}, failed ${report.parseFailed}`);
+      } catch (err) {
+        console.error(`[proposal-scan] startup scan failed for ${ws.id}:`, err);
+      }
     }
 
     // Boot lifecycle op, deliberately OUTSIDE initDatabase (which runs more than
