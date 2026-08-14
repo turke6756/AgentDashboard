@@ -37,6 +37,7 @@ import { AgentSupervisor, SubmitNotConfirmedError } from './index';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
 import { makeAgent } from './test-helpers/fake-bridge-deps';
+import { windowsToWslPath } from '../path-utils';
 import type { Agent, AgentStatus } from '../../shared/types';
 import {
   __resetProviderObservationsForTest,
@@ -1588,13 +1589,15 @@ test('WP5 matrix (UNIFIED summary): identical dead-hook evidence → both lanes 
 // ── Researcher role-lane launch arg-set (WP-B STEP 5) ────────────────
 // Inspect the exact flags the researcher launch builds: browser-only toolset,
 // --strict-mcp-config, --tools WITHOUT Bash/Edit/NotebookEdit, --disallowedTools
-// listing them, cwd = .lares/researcher, and --add-dir of the research store.
+// listing them, provider-specific cwd = .lares/researcher/claude, and --add-dir
+// of the research store.
 
 test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --tools/--disallowedTools, store --add-dir)', async () => {
-  // Real temp workspace so the --append-system-prompt-file write succeeds and is
-  // assertable, and nothing pollutes a fixed path.
-  const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cad-rsch-win-'));
-  const cwd = path.join(wsRoot, '.lares', 'researcher');
+  // The production researcher home is deliberately rejected under the account
+  // temp directory. Use a disposable workspace beside the repository instead,
+  // so this fixture exercises the launch contract rather than that guard.
+  const wsRoot = fs.mkdtempSync(path.join(process.cwd(), '.test-researcher-win-'));
+  const cwd = path.join(wsRoot, '.lares', 'researcher', 'claude');
   fs.mkdirSync(cwd, { recursive: true });
   const agent = makeAgent('rsch-win', {
     provider: 'claude',
@@ -1676,9 +1679,9 @@ test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --too
     assert.ok(capturedArgs.includes('--append-system-prompt-file'),
       'researcher must get the workspace-root/untrusted-store preamble');
 
-    // cwd is the researcher persona folder.
-    assert.ok(/\.lares[\\/]researcher$/.test(agent.workingDirectory),
-      `researcher cwd must be .lares/researcher; got: ${agent.workingDirectory}`);
+    // cwd is the Claude researcher persona folder, provider-specific since WP-B.
+    assert.ok(/\.lares[\\/]researcher[\\/]claude$/.test(agent.workingDirectory),
+      `researcher cwd must be .lares/researcher/claude; got: ${agent.workingDirectory}`);
   } finally {
     (WindowsRunner.prototype as { launch: unknown }).launch = origWinLaunch;
     h.cleanup();
@@ -1687,6 +1690,12 @@ test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --too
 });
 
 test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/--disallowedTools, store --add-dir)', async () => {
+  // /home/test is not writable by the WSL identity used by this host. Map the
+  // disposable WSL workspace onto the repository's writable NTFS mount; the
+  // production WSL path conversion then creates the researcher home there.
+  const hostWorkspaceRoot = path.join(process.cwd(), `.test-researcher-wsl-${process.pid}`);
+  const wslWorkspaceRoot = windowsToWslPath(hostWorkspaceRoot);
+  fs.mkdirSync(hostWorkspaceRoot, { recursive: true });
   const agent = makeAgent('rsch-wsl', {
     provider: 'claude',
     isSupervisor: false,
@@ -1694,7 +1703,7 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
     isWorker: false,
     isResearcher: true,
     command: 'ccode --dangerously-skip-permissions',
-    workingDirectory: '/home/test/.lares/researcher',
+    workingDirectory: `${wslWorkspaceRoot}/.lares/researcher/claude`,
     tmuxSessionName: 'agent-rsch-wsl',
   });
   const h = setup({ agent, injectRunner: 'none' });
@@ -1727,7 +1736,7 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
       `WSL researcher --disallowedTools must list the dangerous built-ins; got: ${rendered}`);
     assert.ok(rendered.includes('--model claude-sonnet-4-6'),
       `WSL researcher must be pinned to Sonnet; got: ${rendered}`);
-    assert.ok(rendered.includes("--add-dir '/home/test/.lares/research'"),
+    assert.ok(rendered.includes(`--add-dir '${wslWorkspaceRoot}/.lares/research'`),
       `WSL researcher --add-dir must target the research store; got: ${rendered}`);
     // Containment: the dangerous tools must not appear in the --tools allowlist.
     const toolsMatch = rendered.match(/--tools '([^']*)'/);
@@ -1738,6 +1747,7 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
   } finally {
     (WslRunner.prototype as { launch: unknown }).launch = setupStubLaunch;
     h.cleanup();
+    try { fs.rmSync(hostWorkspaceRoot, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 });
 
