@@ -23,7 +23,7 @@ import {
   WORKER_AGY_HOOKS_JSON_V1_HASH,
   WORKER_CODEX_CONFIG_TOML, WORKER_CODEX_CONFIG_TOML_V1, WORKER_CODEX_CONFIG_TOML_V2,
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
-  WORKER_CODEX_CONFIG_TOML_V6,
+  WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7,
   WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_BEHAVIORAL_MD,
   WORKER_GROK_AGENTS_MD, WORKER_AGY_AGENTS_MD,
   GUARD_GIT_DISCARD_MJS,
@@ -1513,7 +1513,6 @@ export function proveProductionEntryPointEntry(rootPrefix: string): Record<strin
 /** SHA-256 hex of the v5 `.dashboard/researcher/CLAUDE.md` (pre-`.lares`
  *  rename). Used in the v6 file's previousHashes. */
 export const RESEARCHER_AGENT_MD_V5_HASH = '90e26bca4b533513c0c59e0fffb7fad431ddff9695cdd327d29f54e15a0c7bad';
-
 /** SHA-256 hex of the v2 research-write-guard.mjs (single `.dashboard/research/`
  *  marker). v3 accepts BOTH markers (rename-failed fallback sessions still
  *  write under `.dashboard/`). Used in the v3 file's previousHashes. */
@@ -1550,6 +1549,8 @@ export const RESEARCH_WRITE_GUARD_MJS_V4_HASH = 'ee18176d996fa25e8e06c445b8f7d33
  *  bypassable Bash write-target recognizer; this frozen hash lets pristine v5
  *  workspace copies upgrade silently. */
 export const RESEARCH_WRITE_GUARD_MJS_V5_HASH = '37a7ccdbda2779ccb4d155dced9191643e0556c2037cdb5843914d09fc97c8ec';
+/** SHA-256 hex of the v6 guard before the honest non-containment wording bump. */
+export const RESEARCH_WRITE_GUARD_MJS_V6_HASH = '4cb10fec25f6345b555a33b2a1ecd768a34201121ea0083fc79c2b13b04db8ef';
 
 /** SHA-256 hex of the v1 `.lares/scripts/guard-git-discard.mjs` — the pre-
  *  per-provider body that emitted a single deny shape for every caller. v2
@@ -3651,8 +3652,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 22, // v22 documents Gemini's discontinuation while preserving historical reads. v21 added the planning-artifacts section.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH },
+      version: 23, // v23 states the provider-specific, non-uniform researcher posture.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd' },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -3851,7 +3852,7 @@ export class AgentSupervisor extends EventEmitter {
    *  fresh checkout. README is managed (version-migrated); the .gitkeeps are
    *  empty placeholders. */
   private static RESEARCH_STORE_FILES: Record<string, ScaffoldFile> = {
-    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 1 },
+    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 2, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1' } },
     [`.lares/research/inbox/.gitkeep`]:   { content: '', version: 1 },
     [`.lares/research/cleared/.gitkeep`]: { content: '', version: 1 },
   };
@@ -3866,7 +3867,7 @@ export class AgentSupervisor extends EventEmitter {
     ...readPlanningSurfaceEntry('.lares/researcher/claude/.claude/skills/read-planning-surface'),
     [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 6, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH } },
     [`.lares/researcher/claude/.claude/settings.json`]: { content: RESEARCHER_CLAUDE_SETTINGS_JSON, version: 3, previousHashes: { 1: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V2) } },
-    [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 6, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH }, executable: true },
+    [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 7, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH, 6: RESEARCH_WRITE_GUARD_MJS_V6_HASH }, executable: true },
     // Persona kit (§1.4) — default skills for the researcher lane.
     [`.lares/researcher/claude/.claude/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } }, // v4: `.lares` rename
     [`.lares/researcher/claude/.claude/skills/read-comments/SKILL.md`]:  { content: PERSONA_READ_COMMENTS_SKILL, version: 5, previousHashes: { 1: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V1), 2: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V2), 3: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V3), 4: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V4) } }, // v5: Python fallback removed (honest on a Python-free clean VM)
@@ -3972,8 +3973,9 @@ export class AgentSupervisor extends EventEmitter {
       // hooks = true` (so this file works as the sole hook carrier on native
       // Windows, with no profile layer to supply the gate) and rewrites the
       // now-stale INERT header; v7 enables workspace-write and grants the declared
-      // workspace through writable_roots. There is no Codex researcher lane, so
-      // this is workspace containment rather than a subdirectory-only outbox.
+      // workspace through writable_roots. The Codex researcher uses a separate
+      // exact-tool-name PreToolUse deny; this config is not researcher write
+      // containment.
       const codexConfigV1 = WORKER_CODEX_CONFIG_TOML_V1.replace(
         /\$\{WORKSPACE_ROOT\}/g,
         posixWorkspaceRoot,
@@ -3998,6 +4000,10 @@ export class AgentSupervisor extends EventEmitter {
         /\$\{WORKSPACE_ROOT\}/g,
         posixWorkspaceRoot,
       );
+      const codexConfigV7 = WORKER_CODEX_CONFIG_TOML_V7.replace(
+        /\$\{WORKSPACE_ROOT\}/g,
+        posixWorkspaceRoot,
+      );
       const codexFiles: Record<string, ScaffoldFile> = {
         ...proposalToPlanEntries('.lares/workers/codex/.agents/skills/proposal-to-plan'),
         ...writeProposalEntry('.lares/workers/codex/.agents/skills/write-proposal'),
@@ -4005,7 +4011,7 @@ export class AgentSupervisor extends EventEmitter {
         ...proveProductionEntryPointEntry('.lares/workers/codex/.agents/skills/prove-the-production-entry-point'),
         [`.lares/workers/codex/.codex/config.toml`]: {
           content: codexConfig,
-          version: 7,
+          version: 8,
           previousHashes: {
             1: sha256Hex(codexConfigV1),
             2: sha256Hex(codexConfigV2),
@@ -4013,6 +4019,7 @@ export class AgentSupervisor extends EventEmitter {
             4: sha256Hex(codexConfigV4),
             5: sha256Hex(codexConfigV5),
             6: sha256Hex(codexConfigV6),
+            7: sha256Hex(codexConfigV7),
           },
         },
         // Standing instructions for the Codex worker. AGENTS.md is the file the

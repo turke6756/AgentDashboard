@@ -793,6 +793,32 @@ export const SUPERVISOR_AGENT_MD_V21 = SUPERVISOR_AGENT_MD_V20
 export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V21.replace(
   'Supported providers: **claude, codex** (gemini is not session-addressable and is rejected).',
   'Supported providers: **claude, codex**. Historical Gemini agents remain readable, but Gemini is discontinued and cannot be launched or revived; use Antigravity (agy) for new work.',
+).replace(
+  'writes findings to \\`.lares/research/inbox/\\` (a sandboxed, untrusted tier);',
+  'writes findings to \\`.lares/research/inbox/\\` (an untrusted tier; this is not OS-enforced researcher write containment);',
+).replace(
+  'browsing**, go to the **researcher role-lane** (see Role lanes): a sandboxed',
+  'browsing**, go to the **researcher role-lane** (see Role lanes): a',
+).replace(
+  '## Decision Framework',
+  `## Researcher trust posture
+
+The researcher lane runs on three providers — Claude, Codex, and Antigravity
+(agy). Grok researchers are unsupported and refused. No OS-enforced researcher
+write containment remains: the per-provider researcher home is a default
+state-directory redirect, not a cage, sandbox, or containment boundary.
+
+Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
+enforcement and is strongest. Codex has a weaker PreToolUse deny matching exact
+tool names, so unknown or future tools and MCP routes are not covered. Agy has
+deny regexes plus \`write_file\` grants whose own comments record fail-open shell
+chaining; its terminal sandbox is not OS-enforced. Codex and agy are \`degraded\`
+configuration readings, never observed denials. No live researcher launch was
+performed during the plan, including no Codex \`CODEX_HOME\` check or agy
+inbox/outside-inbox mutation attempt. Inbox promotion and reader constraints
+protect downstream report consumption, not provider-home persistence.
+
+## Decision Framework`,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
@@ -2220,6 +2246,25 @@ export const WORKER_CODEX_CONFIG_TOML = WORKER_CODEX_CONFIG_TOML_V6.replace(
   '# Codex hooks are on by default in current Codex,',
   `# Provider-native write scope (Codex 0.146.0): workspace-write always includes
 # this lane's cwd; writable_roots adds the declared Lares workspace. This is
+# the provider-native workspace-write scope for this Codex lane. It is not
+# researcher write containment. The Codex researcher restriction is a separate
+# exact-tool-name PreToolUse deny, weaker than a native allowlist. Custom
+# --dangerously-bypass-approvals-and-sandbox commands disable this layer entirely.
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = ['\${WORKSPACE_ROOT}']
+
+# Codex hooks are on by default in current Codex,`,
+);
+
+/** FROZEN v7 Codex worker config body, recovered from the pre-WP-F template.
+ * Keep this snapshot separate from the live body: it is used only to recognize
+ * pristine v7 workspaces during the v8 migration. */
+export const WORKER_CODEX_CONFIG_TOML_V7 = WORKER_CODEX_CONFIG_TOML_V6.replace(
+  '# Codex hooks are on by default in current Codex,',
+  `# Provider-native write scope (Codex 0.146.0): workspace-write always includes
+# this lane's cwd; writable_roots adds the declared Lares workspace. This is
 # workspace containment for existing Codex lanes, NOT a researcher outbox — no
 # Codex researcher lane exists today. Custom --dangerously-bypass-approvals-and-
 # sandbox commands disable this layer entirely.
@@ -2563,7 +2608,8 @@ function analyzeSegment(segment, resolveRef) {
 // Pure predicate: does this command line contain a git-discard invocation?
 // Splits on shell separators AND command-substitution boundaries ($(...), \x60…\x60)
 // so a discard hiding inside "cd x && …", "a; b", "a | b", or a substitution is
-// still isolated. Not a full shell parser — just enough to find git segments.
+// still separated by lane identity. Not a full shell parser — just enough to
+// find git segments.
 export function analyzeGitDiscard(command, resolveRef = defaultResolveRef) {
   if (typeof command !== 'string' || !command.trim()) return { deny: false, reason: null };
   const segments = command.split(/\$\(|[|&;\x60\n()]/g);
@@ -4298,6 +4344,17 @@ export const RESEARCH_STORE_README_MD = `# Research store
 
 Workspace-local, trust-tiered storage for web-derived research artifacts.
 
+This store is a downstream trust boundary, not researcher write containment.
+No OS-enforced researcher write cage remains; the provider-specific researcher
+home is only a default state-directory redirect. The lane runs on Claude,
+Codex, and Antigravity (agy); Grok is unsupported and refused. Provider
+enforcement is uneven: Claude has native CLI tool allowlist/denylist controls;
+Codex has a weaker exact-tool-name PreToolUse deny; and agy has deny regexes
+plus \`write_file\` grants that fail open on shell chaining, with no OS-enforced
+terminal sandbox. Codex and agy are degraded configuration readings, not live
+observations. No live researcher launch or provider-home mutation attempt was
+performed during the plan.
+
 ## Tiers
 
 - **\`inbox/\`** — raw, **untrusted** research written by the researcher persona.
@@ -4330,7 +4387,7 @@ summary: One-line summary of what this artifact establishes.
 Body — findings, quotes (attributed to source_urls), and analysis.
 \`\`\`
 
-## Schema rules (enforced by the PreToolUse write hook)
+## Schema rules (checked by the Claude researcher PreToolUse write hook)
 
 - All six keys (\`id\`, \`topic\`, \`created\`, \`source_urls\`, \`trust\`, \`summary\`)
   are required.
@@ -4339,8 +4396,10 @@ Body — findings, quotes (attributed to source_urls), and analysis.
 - In \`inbox/\`, \`trust\` must be \`untrusted\`. Only the WP-F review gate may set
   \`trust: cleared\` (during promotion into \`cleared/\`).
 
-A write that violates any rule is **blocked with a self-correctable reason** so
-the writing agent can fix the artifact and retry.
+A Claude Write that violates a rule is intended to be blocked with a
+self-correctable reason so the writing agent can fix the artifact and retry.
+This hook and the inbox promotion/reader checks do not contain provider-home
+persistence or make the other providers' enforcement equivalent.
 `;
 
 /** PreToolUse(Write) guard for the researcher persona — scaffolded to
@@ -4352,7 +4411,10 @@ the writing agent can fix the artifact and retry.
  *  Authored with String.raw so regex backslashes survive verbatim — the script
  *  body contains no \${...} or backtick, so raw interpolation never triggers.
  *
- *  SECURITY-CONTROL STATUS: the block mechanism is now empirically verified.
+ *  SECURITY-CONTROL STATUS: Claude's native tool boundary is the strongest
+ *  provider mechanism. Codex and agy are degraded readings of deny
+ *  configuration, not observed live denials; no live researcher launch or
+ *  provider-home mutation attempt was performed during the plan.
  *  The script emits {hookSpecificOutput:{permissionDecision:"deny",…}} on stdout
  *  and exits 2. Claude 2.1.220 does NOT honor an exit-0 hookSpecificOutput deny
  *  (verified: the write still lands); only exit 2 blocks it. This researcher lane
@@ -4560,13 +4622,14 @@ let payload;
 try { payload = JSON.parse(raw); } catch { allow(); }
 if (!payload || typeof payload !== 'object') allow();
 
-// Shell writes are a second line of defense behind the researcher's native tool
-// restriction. This recognizer is intentionally incomplete and bypassable; it
-// raises the bar for common accidental writes but is not an enforcement boundary.
+// Shell writes are a heuristic restriction behind the researcher's native tool
+// surface. This recognizer is intentionally incomplete and bypassable (including
+// shell chaining); it raises the bar for common accidental writes but is not an
+// OS-enforced containment boundary.
 if (payload.tool_name === 'Bash') {
   const outside = inspectShellWrite(payload);
   if (outside) {
-    block('researcher shell write is confined to .lares/research/inbox/ (detected target: ' + outside + ')');
+    block('researcher shell write is intended for .lares/research/inbox/ (detected target: ' + outside + ')');
   }
   allow();
 }
@@ -4581,12 +4644,13 @@ if (!filePath || content === null) {
   block('Write hook could not inspect file path/content');
 }
 
-// Hard containment (default-deny): the researcher's Write TOOL may ONLY target
+// Claude Write-hook restriction (default-deny): the researcher's Write TOOL is
+// intended to target only
 // the research store. Any path outside .lares/research/ (or the legacy
 // .dashboard/research/ for an unmigrated session) is blocked outright
-// — this inverts the previous allow-by-default so arbitrary-location writes can
-// no longer slip through. (This gates the agent's Write tool, not internal
-// harness file ops, which is the intended containment boundary.)
+// — this inverts the previous allow-by-default for the Claude Write hook.
+// This is not OS-enforced containment and does not cover provider-home writes
+// or other providers' tools.
 const norm = filePath.replace(/\\/g, '/');
 let at = -1;
 let markerLen = 0;
@@ -4595,14 +4659,14 @@ for (const marker of RESEARCH_MARKERS) {
   if (idx !== -1) { at = idx; markerLen = marker.length; break; }
 }
 if (at === -1) {
-  block('researcher Write is confined to .lares/research/inbox/ (path is outside the research store)');
+  block('researcher Write is intended for .lares/research/inbox/ (path is outside the research store)');
 }
 const rel = norm.slice(at + markerLen);
 
 // Defense in depth behind WP-B's permission rule: researcher may only write
 // under inbox/.
 if (!rel.startsWith('inbox/')) {
-  block('researcher may only write under .lares/research/inbox/');
+  block('researcher Write should target .lares/research/inbox/');
 }
 
 // Naming: inbox/<topic-slug>/<timestamp>-<slug>.md
