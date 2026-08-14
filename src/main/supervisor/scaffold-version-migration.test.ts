@@ -352,7 +352,7 @@ interface SupervisorTestSurface {
   ensureWorkerScaffold(workDir: string, provider: string, pathType: string): void;
   ensureSupervisorScaffold(workDir: string, pathType: string): void;
   ensureResearchStoreScaffold(workDir: string, pathType: string): void;
-  ensureResearcherScaffold(workDir: string, pathType: string): void;
+  ensureResearcherScaffold(workDir: string, provider: string, pathType: string): void;
   // Lane-agnostic shared-script refresh run unconditionally at launch (Option B):
   // every lane — incl. supervisor & researcher, which used to skip it — calls
   // this BEFORE its lane-specific scaffold, so a stale shared dashboard-status.mjs
@@ -1085,14 +1085,14 @@ test('G3. research store: user-modified README is backed up + overwritten', () =
 // ── WP-B researcher persona scaffold ─────────────────────────────────
 
 function researcherPath(workDir: string, ...rel: string[]): string {
-  return path.join(workDir, '.lares', 'researcher', ...rel);
+  return path.join(workDir, '.lares', 'researcher', 'claude', ...rel);
 }
 
 test('WP-B. researcher scaffold: fresh workspace writes persona CLAUDE.md + settings + guard + store; idempotent', () => {
   const workDir = mktmp('researcher-fresh');
   const { supervisor, cleanup } = makeSupervisor();
   try {
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     const mdPath = researcherPath(workDir, 'CLAUDE.md');
     const settingsPath = researcherPath(workDir, '.claude', 'settings.json');
@@ -1121,12 +1121,12 @@ test('WP-B. researcher scaffold: fresh workspace writes persona CLAUDE.md + sett
     assert.ok(settings.includes('dashboard-statusline.mjs'), 'statusLine must point at dashboard-statusline.mjs');
 
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['researcher/CLAUDE.md'], 6, `sidecar must record researcher CLAUDE.md v6; got ${JSON.stringify(sidecar)}`);
-    assert.equal(sidecar['researcher/.claude/settings.json'], 3, 'sidecar must record settings v3 (Write|Bash guard delivery)');
+    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 6, `sidecar must record researcher CLAUDE.md v6; got ${JSON.stringify(sidecar)}`);
+    assert.equal(sidecar['researcher/claude/.claude/settings.json'], 3, 'sidecar must record settings v3 (Write|Bash guard delivery)');
 
     // Idempotent second pass — no rewrites, no backups.
     const beforeMtime = fs.statSync(mdPath).mtimeMs;
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
     assert.equal(fs.statSync(mdPath).mtimeMs, beforeMtime, 'second pass must not rewrite researcher CLAUDE.md');
     const backups = fs.readdirSync(researcherPath(workDir)).filter((n) => n.startsWith('CLAUDE.md.bak.'));
     assert.equal(backups.length, 0, 'no backups expected on idempotent re-run');
@@ -1144,7 +1144,7 @@ test('WP-B. researcher CLAUDE.md: user-modified persona is backed up + overwritt
     fs.mkdirSync(path.dirname(mdPath), { recursive: true });
     fs.writeFileSync(mdPath, '# my own researcher contract\n', 'utf-8');
 
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     assert.equal(fs.readFileSync(mdPath, 'utf-8'), RESEARCHER_AGENT_MD, 'researcher CLAUDE.md must be upgraded to bundled content');
     const backups = fs.readdirSync(researcherPath(workDir)).filter((n) => n.startsWith('CLAUDE.md.bak.'));
@@ -1225,6 +1225,10 @@ test('precondition: frozen v1 git-discard-guard body hashes to GUARD_GIT_DISCARD
 });
 
 test('precondition: frozen v2 git-discard-guard body hashes to GUARD_GIT_DISCARD_MJS_V2_HASH and differs from the live v4 body', () => {
+  assert.notEqual(
+    sha256Hex(GUARD_GIT_DISCARD_MJS), GUARD_GIT_DISCARD_MJS_V2_HASH,
+    'the live (v4) body must differ from the frozen v2 body',
+  );
   assert.equal(
     sha256Hex(GUARD_GIT_DISCARD_MJS_V2), GUARD_GIT_DISCARD_MJS_V2_HASH,
     'the frozen v2 fixture must hash to the shipped previousHashes[2] literal, or a pristine v2 workspace (exit-0 deny) cannot silently upgrade to v3',
@@ -1353,11 +1357,11 @@ test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to v5, no .bak
     fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
     fs.writeFileSync(
       sidecarPath(workDir),
-      JSON.stringify({ 'researcher/scripts/research-write-guard.mjs': 3 }, null, 2) + '\n',
+      JSON.stringify({ 'researcher/claude/scripts/research-write-guard.mjs': 3 }, null, 2) + '\n',
       'utf-8',
     );
 
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     assert.equal(
       fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS,
@@ -1365,7 +1369,7 @@ test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to v5, no .bak
     );
     assert.equal(listResearchGuardBackups(workDir).length, 0, 'known v3-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['researcher/scripts/research-write-guard.mjs'], 6,
+      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 6,
       `sidecar must record research-write-guard v6; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
@@ -1383,11 +1387,11 @@ test('research-write-guard.mjs v4 (exit-0 unenforcing) + sidecar v4 → silent u
     fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
     fs.writeFileSync(
       sidecarPath(workDir),
-      JSON.stringify({ 'researcher/scripts/research-write-guard.mjs': 4 }, null, 2) + '\n',
+      JSON.stringify({ 'researcher/claude/scripts/research-write-guard.mjs': 4 }, null, 2) + '\n',
       'utf-8',
     );
 
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     assert.equal(
       fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS,
@@ -1395,7 +1399,7 @@ test('research-write-guard.mjs v4 (exit-0 unenforcing) + sidecar v4 → silent u
     );
     assert.equal(listResearchGuardBackups(workDir).length, 0, 'known v4-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['researcher/scripts/research-write-guard.mjs'], 6,
+      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 6,
       `sidecar must record research-write-guard v6; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
@@ -1415,18 +1419,18 @@ test('C2A scaffold migrations preserve pristine researcher settings v2 and guard
     fs.writeFileSync(researchGuardPath(workDir), reconstructResearchWriteGuardV5(), 'utf-8');
     fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
     fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
-      'researcher/.claude/settings.json': 2,
-      'researcher/scripts/research-write-guard.mjs': 5,
+      'researcher/claude/.claude/settings.json': 2,
+      'researcher/claude/scripts/research-write-guard.mjs': 5,
     }, null, 2) + '\n', 'utf-8');
 
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     assert.equal(fs.readFileSync(settingsPath, 'utf-8'), RESEARCHER_CLAUDE_SETTINGS_JSON);
     assert.equal(fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS);
     assert.equal(fs.readdirSync(path.dirname(settingsPath)).filter(n => n.startsWith('settings.json.bak')).length, 0);
     assert.equal(listResearchGuardBackups(workDir).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/.claude/settings.json'], 3);
-    assert.equal(readSidecar(workDir)['researcher/scripts/research-write-guard.mjs'], 6);
+    assert.equal(readSidecar(workDir)['researcher/claude/.claude/settings.json'], 3);
+    assert.equal(readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 6);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1482,11 +1486,11 @@ test('P4-1. researcher CLAUDE.md: pristine v4 silently upgrades to v5 carrying t
     fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
     fs.writeFileSync(
       sidecarPath(workDir),
-      JSON.stringify({ 'researcher/CLAUDE.md': 4 }, null, 2) + '\n',
+      JSON.stringify({ 'researcher/claude/CLAUDE.md': 4 }, null, 2) + '\n',
       'utf-8',
     );
 
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     const content = fs.readFileSync(mdPath, 'utf-8');
     assert.equal(content, RESEARCHER_AGENT_MD, 'pristine v4 researcher CLAUDE.md must silently upgrade to v5 bundled content');
@@ -1495,7 +1499,7 @@ test('P4-1. researcher CLAUDE.md: pristine v4 silently upgrades to v5 carrying t
     const backups = fs.readdirSync(researcherPath(workDir)).filter((n) => n.startsWith('CLAUDE.md.bak.'));
     assert.equal(backups.length, 0, 'known-hash v4→v5 upgrade must NOT create a backup');
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['researcher/CLAUDE.md'], 6, `sidecar must record v5; got ${JSON.stringify(sidecar)}`);
+    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 6, `sidecar must record v5; got ${JSON.stringify(sidecar)}`);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1911,10 +1915,10 @@ test('context-analytics skill: scaffolded onto the SUPERVISOR lane only, idempot
     // researcher kits deliberately do NOT carry this skill — every lane that
     // gets it pays its frontmatter as resident context on every session.
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
     for (const lane of [
       path.join(workDir, '.lares', 'workers', 'claude', '.claude', 'skills', 'context-analytics'),
-      path.join(workDir, '.lares', 'researcher', '.claude', 'skills', 'context-analytics'),
+      path.join(workDir, '.lares', 'researcher', 'claude', '.claude', 'skills', 'context-analytics'),
     ]) {
       assert.equal(fs.existsSync(lane), false, `context-analytics must NOT be scaffolded at ${lane}`);
     }
@@ -2338,10 +2342,10 @@ test('CF-3. checkpoint-forensics skill: fresh scaffold writes exact bytes at the
     // researcher kits must NOT carry this skill (they would pay its frontmatter as
     // resident context for tools they cannot call).
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
     for (const lane of [
       path.join(workDir, '.lares', 'workers', 'claude', '.claude', 'skills', 'checkpoint-forensics'),
-      path.join(workDir, '.lares', 'researcher', '.claude', 'skills', 'checkpoint-forensics'),
+      path.join(workDir, '.lares', 'researcher', 'claude', '.claude', 'skills', 'checkpoint-forensics'),
     ]) {
       assert.equal(fs.existsSync(lane), false, `checkpoint-forensics must NOT be scaffolded at ${lane}`);
     }
@@ -4340,10 +4344,6 @@ test('WP-1-PRECONDITION. frozen write-proposal v1 hashes to its literal and diff
     sha256Hex(WRITE_PROPOSAL_SKILL_MD), WRITE_PROPOSAL_SKILL_MD_V1_HASH,
     'the live v2 body must differ from the frozen v1 hash',
   );
-  assert.notEqual(
-    sha256Hex(GUARD_GIT_DISCARD_MJS), GUARD_GIT_DISCARD_MJS_V2_HASH,
-    'the live v4 body must differ from the frozen v2 body',
-  );
 });
 
 test('precondition: frozen v3 git-discard-guard body is LF-normalized and hashes to GUARD_GIT_DISCARD_MJS_V3_HASH', () => {
@@ -4456,13 +4456,13 @@ test('WP-1-MIG. write-proposal is a managed v3 skill in every native lane', () =
     '.lares/supervisor/.agents/skills/write-proposal/SKILL.md',
     '.lares/workers/claude/.claude/skills/write-proposal/SKILL.md',
     '.lares/workers/codex/.agents/skills/write-proposal/SKILL.md',
-    '.lares/researcher/.claude/skills/write-proposal/SKILL.md',
+    '.lares/researcher/claude/.claude/skills/write-proposal/SKILL.md',
   ];
   try {
     supervisor.ensureSupervisorScaffold(workDir, 'windows');
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
     supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     const sidecar = readSidecar(workDir);
     for (const rel of paths) {
@@ -4609,13 +4609,13 @@ test('WP-3-MIG. read-planning-surface is a managed v2 skill in every native lane
     '.lares/supervisor/.agents/skills/read-planning-surface/SKILL.md',
     '.lares/workers/claude/.claude/skills/read-planning-surface/SKILL.md',
     '.lares/workers/codex/.agents/skills/read-planning-surface/SKILL.md',
-    '.lares/researcher/.claude/skills/read-planning-surface/SKILL.md',
+    '.lares/researcher/claude/.claude/skills/read-planning-surface/SKILL.md',
   ];
   try {
     supervisor.ensureSupervisorScaffold(workDir, 'windows');
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
     supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
-    supervisor.ensureResearcherScaffold(workDir, 'windows');
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     const sidecar = readSidecar(workDir);
     for (const rel of paths) {
