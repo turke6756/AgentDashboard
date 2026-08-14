@@ -98,6 +98,8 @@ const TESTS = [
   'dist/main/main/supervisor/event-payload-builder.test.js',
   'dist/main/main/supervisor/status-monitor.test.js',
   'dist/main/main/supervisor/terminal-screen-state.test.js',
+  // plan_486141e6 WP-H: keep ahead of the known foreign fail-fast point so this package always enters.
+  'dist/main/main/supervisor/agy-researcher-lane.test.js',
   'dist/main/main/supervisor/agent-supervisor.test.js',
   // Idle-agent lifecycle: §B2/§B3 migration + transition writer, §B5/§B6 stop engine.
   'dist/main/main/lifecycle-transition.test.js',

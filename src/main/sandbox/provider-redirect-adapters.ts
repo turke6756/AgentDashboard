@@ -178,9 +178,9 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
       ],
     },
     support: {
-      implementation: 'stub',
-      verdict: 'not-yet-activated',
-      gate: 'researcher-lane-provider-activation',
+      implementation: 'active',
+      verdict: 'degraded',
+      gate: null,
     },
   },
 } as const satisfies Record<LaunchableAgentProvider, ProviderRedirectAdapter>;

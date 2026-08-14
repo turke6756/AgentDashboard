@@ -25,6 +25,8 @@ export interface PreparedResearcherSandboxHome {
   spoolPath: string;
   /** The restricted child inherits the bootstrap environment, so this is the only injection surface. */
   extraEnv: Record<string, string>;
+  /** Native argv redirect, when the provider does not use an environment variable. */
+  extraArgs: string[];
 }
 
 const SPOOL_DIR = 'spool';
@@ -75,10 +77,11 @@ export function prepareResearcherSandboxHome(
   input: PrepareResearcherSandboxHomeInput,
 ): PreparedResearcherSandboxHome {
   const adapter = activeAdapter(input.provider);
-  if (input.sandboxHome.launchRedirect.kind !== 'env' || adapter.redirect.kind !== 'env') {
-    throw new Error(`Researcher sandbox provider '${input.provider}' has no active env redirect`);
+  if (input.sandboxHome.launchRedirect.kind !== adapter.redirect.kind) {
+    throw new Error(`Researcher sandbox redirect does not match the '${input.provider}' adapter`);
   }
-  if (input.sandboxHome.launchRedirect.name !== adapter.redirect.name) {
+  if (input.sandboxHome.launchRedirect.kind === 'env' && adapter.redirect.kind === 'env'
+    && input.sandboxHome.launchRedirect.name !== adapter.redirect.name) {
     throw new Error(`Researcher sandbox redirect does not match the '${input.provider}' adapter`);
   }
 
@@ -128,17 +131,23 @@ export function prepareResearcherSandboxHome(
 
   const logicalTmp = pathApi.join(logicalHome, 'tmp');
   const logicalSpool = pathApi.join(logicalHome, SPOOL_DIR, SPOOL_FILE);
+  const extraArgs = input.sandboxHome.launchRedirect.kind === 'argv'
+    ? [input.sandboxHome.launchRedirect.argument]
+    : [];
   return {
     researcherSandboxHomePath: logicalHome,
     filesystemHomePath: filesystemHome,
     tmpPath: logicalTmp,
     spoolPath: logicalSpool,
     extraEnv: {
-      [input.sandboxHome.launchRedirect.name]: input.sandboxHome.launchRedirect.value,
+      ...(input.sandboxHome.launchRedirect.kind === 'env'
+        ? { [input.sandboxHome.launchRedirect.name]: input.sandboxHome.launchRedirect.value }
+        : {}),
       TMP: logicalTmp,
       TEMP: logicalTmp,
       DASHBOARD_SPOOL_PATH: logicalSpool,
     },
+    extraArgs,
   };
 }
 

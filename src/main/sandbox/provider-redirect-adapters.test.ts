@@ -6,7 +6,7 @@ import {
 } from './provider-redirect-adapters';
 
 describe('provider redirect adapter facts', () => {
-  test('Claude and Codex are active, with Claude retaining its named acceptance gate', () => {
+  test('Claude, Codex, and Antigravity are active, with Claude retaining its named acceptance gate', () => {
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.claude, {
       provider: 'claude',
       redirect: { kind: 'env', name: 'CLAUDE_CONFIG_DIR' },
@@ -36,11 +36,11 @@ describe('provider redirect adapter facts', () => {
       Object.values(PROVIDER_REDIRECT_ADAPTERS)
         .filter((adapter) => adapter.support.implementation === 'active')
         .map((adapter) => adapter.provider),
-      ['claude', 'codex'],
+      ['claude', 'codex', 'agy'],
     );
   });
 
-  test('Codex and Grok preserve their probed env, auth, and discovery facts as inactive stubs', () => {
+  test('Codex and Grok preserve their probed env, auth, and discovery facts', () => {
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.codex.redirect, { kind: 'env', name: 'CODEX_HOME' });
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.codex.auth, {
       kind: 'redirected-home-files',
@@ -103,16 +103,16 @@ describe('provider redirect adapter facts', () => {
     assert.equal(agy.discovery.kind, 'antigravity-conversation-store');
     assert.deepStrictEqual(agy.resetPaths, ['**/*']);
     assert.deepStrictEqual(agy.support, {
-      implementation: 'stub',
-      verdict: 'not-yet-activated',
-      gate: 'researcher-lane-provider-activation',
+      implementation: 'active',
+      verdict: 'degraded',
+      gate: null,
     });
   });
 });
 
 describe('support verdict resolution', () => {
   test('every adapter that has not been activated is explicit and never unsupported', () => {
-    for (const provider of ['grok', 'agy'] as const) {
+    for (const provider of ['grok'] as const) {
       const resolved = resolveProviderRedirectAdapter(provider);
       assert.equal(resolved.support.verdict, 'not-yet-activated');
       assert.notEqual(resolved.support.verdict, 'unsupported');
@@ -121,6 +121,12 @@ describe('support verdict resolution', () => {
 
   test('codex resolves as an active degraded adapter', () => {
     const resolved = resolveProviderRedirectAdapter('codex');
+    assert.equal(resolved.support.verdict, 'degraded');
+    assert.notEqual(resolved.support.verdict, 'unsupported');
+  });
+
+  test('agy resolves as an active degraded adapter', () => {
+    const resolved = resolveProviderRedirectAdapter('agy');
     assert.equal(resolved.support.verdict, 'degraded');
     assert.notEqual(resolved.support.verdict, 'unsupported');
   });

@@ -105,7 +105,7 @@ describe('resolveResearcherSandboxHome', () => {
   });
 
   test('inactive provider adapters cannot produce a researcher launch redirect', () => {
-    for (const provider of ['grok', 'agy'] as const) {
+    for (const provider of ['grok'] as const) {
       assert.throws(
         () => resolveResearcherSandboxHome({
           roleLane: 'researcher', workspaceStateRoot: STATE_ROOT, agentId: 'agent-333', provider,
