@@ -1,3 +1,16 @@
+/**
+ * RETAINED-UNREFERENCED (2026-08-13): This launcher is intentionally dormant
+ * after plan_486141e6 WP-E, following the isolation review recorded in
+ * `.lares/plans/2026-08-12-retire-the-researcher-sandbox-treat-the-lane-lik-486141e6/deliberations/2026-08-13-removal-posture-and-true-scope.md`.
+ *
+ * WP-A's `outbox-launcher.test.ts` computes a transitive source-module graph
+ * from `src/main/supervisor/index.ts` and asserts this module is not in it.
+ * That is a bounded negative-reachability check, not a total guarantee: the
+ * walker follows only relative specifiers and only `.ts`, `.tsx`, and
+ * `index.ts` targets. It does not follow bare/aliased imports, dynamic
+ * `import()`, or `require()`. Those are missing edges that could hide a live
+ * path; the symbol scan is likewise limited to the modules the walker finds.
+ */
 import { execFileSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
