@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { AgentProvider } from '../../shared/types';
 import {
+  formatResearcherLaunchRefusal,
   resolveProviderRedirectAdapter,
   type ProviderRedirectAdapter,
 } from './provider-redirect-adapters';
@@ -38,7 +39,7 @@ function activeAdapter(provider: AgentProvider): ProviderRedirectAdapter {
     throw new Error(`Researcher sandbox provider '${provider}' is unsupported: no adapter entry`);
   }
   if (adapter.support.implementation !== 'active') {
-    throw new Error(`Researcher sandbox provider '${provider}' is ${adapter.support.verdict}`);
+    throw new Error(formatResearcherLaunchRefusal(provider, adapter.support));
   }
   return adapter;
 }

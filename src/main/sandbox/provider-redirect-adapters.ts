@@ -59,7 +59,16 @@ export type AdapterSupport =
       implementation: 'stub';
       verdict: 'not-yet-activated';
       gate: 'researcher-lane-provider-activation';
+      inactiveReason?: string;
     };
+
+export function formatResearcherLaunchRefusal(
+  provider: string,
+  support: Extract<AdapterSupport, { implementation: 'stub' }>,
+): string {
+  const reason = support.inactiveReason ? ` because ${support.inactiveReason}` : '';
+  return `Cannot launch ${provider} researcher: the researcher lane is ${support.verdict} for ${provider}${reason}`;
+}
 
 export interface ProviderRedirectAdapter {
   provider: LaunchableAgentProvider;
@@ -150,6 +159,7 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
       implementation: 'stub',
       verdict: 'not-yet-activated',
       gate: 'researcher-lane-provider-activation',
+      inactiveReason: 'no tool-restriction mechanism exists for this provider',
     },
   },
   agy: {

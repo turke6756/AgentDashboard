@@ -78,6 +78,7 @@ describe('provider redirect adapter facts', () => {
       implementation: 'stub',
       verdict: 'not-yet-activated',
       gate: 'researcher-lane-provider-activation',
+      inactiveReason: 'no tool-restriction mechanism exists for this provider',
     });
   });
 

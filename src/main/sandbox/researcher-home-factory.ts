@@ -1,6 +1,7 @@
 import path from 'path';
 import type { AgentProvider, AgentRoleLane } from '../../shared/types';
 import {
+  formatResearcherLaunchRefusal,
   resolveProviderRedirectAdapter,
   type DiscoveryResolverShape,
 } from './provider-redirect-adapters';
@@ -49,9 +50,7 @@ export function resolveResearcherSandboxHome(
     throw new Error(`Researcher sandbox provider '${input.provider}' is unsupported: no adapter entry`);
   }
   if (adapter.support.implementation !== 'active') {
-    throw new Error(
-      `Researcher sandbox provider '${input.provider}' is ${adapter.support.verdict}`,
-    );
+    throw new Error(formatResearcherLaunchRefusal(input.provider, adapter.support));
   }
 
   // On Windows, win32.isAbsolute('/home/...') is also true. Select by syntax

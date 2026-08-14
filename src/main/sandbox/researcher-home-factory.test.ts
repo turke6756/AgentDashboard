@@ -110,7 +110,7 @@ describe('resolveResearcherSandboxHome', () => {
         () => resolveResearcherSandboxHome({
           roleLane: 'researcher', workspaceStateRoot: STATE_ROOT, agentId: 'agent-333', provider,
         }),
-        new RegExp(`provider '${provider}' is not-yet-activated`),
+        new RegExp(`researcher lane is not-yet-activated for ${provider}.*no tool-restriction mechanism exists`),
       );
     }
   });
