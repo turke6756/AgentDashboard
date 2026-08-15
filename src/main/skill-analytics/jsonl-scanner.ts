@@ -15,7 +15,6 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { resolveWindowsHomeSubdir, resolveWslHomeSubdir } from '../supervisor/log-readers/types';
-import { refuseResearcherHomeConfig } from '../sandbox/researcher-home-untrusted';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stream metadata (pure)
@@ -166,7 +165,6 @@ export function resolveProjectsDirs(): string[] {
 
 /** Recurse a projects dir, returning stream metadata for every `*.jsonl`. */
 export function listJsonlStreams(projectsDir: string): StreamMeta[] {
-  refuseResearcherHomeConfig(projectsDir, 'transcript-scanner');
   const out: StreamMeta[] = [];
   const walk = (dir: string): void => {
     let entries: fs.Dirent[];
@@ -180,7 +178,6 @@ export function listJsonlStreams(projectsDir: string): StreamMeta[] {
       if (ent.isDirectory()) {
         walk(full);
       } else if (ent.isFile() && ent.name.toLowerCase().endsWith('.jsonl')) {
-        refuseResearcherHomeConfig(full, 'transcript-scanner');
         out.push(deriveStreamMeta(full, projectsDir));
       }
     }
@@ -191,7 +188,6 @@ export function listJsonlStreams(projectsDir: string): StreamMeta[] {
 
 /** Read the first complete line of a file (for the fingerprint) without reading it whole. */
 export function readFirstFingerprint(jsonlPath: string, probeBytes = 65536): string {
-  refuseResearcherHomeConfig(jsonlPath, 'transcript-scanner');
   let fd: number | null = null;
   try {
     fd = fs.openSync(jsonlPath, 'r');
@@ -228,7 +224,6 @@ export function readNewLines(
   byteOffset: number,
   maxReadBytes = JSONL_READ_MAX_BYTES,
 ): TailRead {
-  refuseResearcherHomeConfig(jsonlPath, 'transcript-scanner');
   const firstFingerprint = readFirstFingerprint(jsonlPath);
   let sizeBytes = 0;
   try {

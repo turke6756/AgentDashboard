@@ -22,7 +22,6 @@ import {
   type ChatLogReaderSession,
 } from './types';
 import { parseSqliteUtcMs } from '../sqlite-time';
-import { refuseResearcherHomeConfig } from '../../sandbox/researcher-home-untrusted';
 
 interface ToolResultLocation {
   jsonlPath: string;
@@ -128,27 +127,6 @@ export class ClaudeJsonlReader implements ChatLogReader {
     const dir = resolveWslHomeSubdir('.claude/projects');
     if (dir) this.wslProjectsUncDir = dir;
     return dir;
-  }
-
-  /** The live session projection supplies an agent-specific root. Legacy
-   * one-shot helpers without agent context retain the account-home fallback. */
-  private getProjectsDirs(session: ChatLogReaderSession): {
-    windowsDir: string | null;
-    wslDir: string | null;
-  } {
-    if (session.providerStateHome) {
-      const projects = refuseResearcherHomeConfig(
-        path.join(session.providerStateHome, 'projects'),
-        'chat-transcript',
-      );
-      return session.workingDirectory.startsWith('/')
-        ? { windowsDir: null, wslDir: projects }
-        : { windowsDir: projects, wslDir: null };
-    }
-    return {
-      windowsDir: this.getWindowsProjectsDir(),
-      wslDir: this.getWslProjectsDir(),
-    };
   }
 
   invalidatePath(agentId: string): void {
@@ -845,7 +823,8 @@ export class ClaudeJsonlReader implements ChatLogReader {
     const slug = this.makeSlug(workingDirectory);
     const fileName = `${sessionId}.jsonl`;
 
-    const { wslDir, windowsDir } = this.getProjectsDirs(session);
+    const wslDir = this.getWslProjectsDir();
+    const windowsDir = this.getWindowsProjectsDir();
 
     // Primary: the id-named file in the expected slug dir (session-id-exact).
     if (workingDirectory.startsWith('/') && wslDir) {

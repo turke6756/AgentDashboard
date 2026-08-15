@@ -1,26 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import type { AgentProvider, AgentRoleLane, ContextGaugeRoleKey } from '../../../shared/types';
+import type { AgentProvider, ContextGaugeRoleKey } from '../../../shared/types';
 import type { SessionEvent } from '../../../shared/session-events';
-import { resolveResearcherSandboxHome } from '../../sandbox/researcher-home-factory';
-import { wslToWindowsPath } from '../../path-utils';
-
-export interface ResolveProviderStateHomeInput {
-  agentId: string;
-  provider: AgentProvider;
-  roleLane: AgentRoleLane;
-  /** Current rename-aware `.lares`/`.dashboard` root. This value is derived, never persisted. */
-  workspaceStateRoot: string;
-}
 
 export interface ChatLogReaderSession {
   agentId: string;
   sessionId: string;
   workingDirectory: string;
   provider: AgentProvider;
-  /** Windows-visible provider state root derived for this agent. */
-  providerStateHome?: string | null;
   startedAt?: string;
   /** True when the chat pane is open for this agent — readers may use this to do aggressive path re-resolution after N empty ticks. */
   subscribed: boolean;
@@ -225,33 +213,6 @@ export function resolveWindowsHomeSubdir(subpath: string): string | null {
   if (!userProfile) return null;
   const candidate = path.join(userProfile, ...subpath.split('/').filter(Boolean));
   return fs.existsSync(candidate) ? candidate : null;
-}
-
-/**
- * Resolve the provider state root read by one agent's chat/session discovery.
- * Researcher homes follow the workspace state-dir rename in place, so this is
- * deliberately a projection-time derivation rather than stored agent state.
- * It is a usability routing change and does not add a security boundary.
- */
-export function resolveProviderStateHome(input: ResolveProviderStateHomeInput): string | null {
-  if (input.roleLane === 'researcher') {
-    const sandbox = resolveResearcherSandboxHome({
-      roleLane: input.roleLane,
-      workspaceStateRoot: input.workspaceStateRoot,
-      agentId: input.agentId,
-      provider: input.provider,
-    });
-    if (!sandbox) throw new Error(`Researcher provider state home refused agent ${input.agentId}`);
-    const root = sandbox.discoveryLocation.providerStateRoot;
-    return root.startsWith('/') ? wslToWindowsPath(root) : root;
-  }
-
-  // Amendment R1 activates only Claude discovery. Other provider readers keep
-  // their existing account-wide resolution until their adapters activate.
-  if (input.provider !== 'claude') return null;
-  return input.workspaceStateRoot.startsWith('/')
-    ? resolveWslHomeSubdir('.claude')
-    : resolveWindowsHomeSubdir('.claude');
 }
 
 /**

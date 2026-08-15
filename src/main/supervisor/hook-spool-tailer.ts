@@ -19,7 +19,6 @@ import fs from 'fs';
 import path from 'path';
 import { detectPathType, wslToWindowsPath } from '../path-utils';
 import { workspaceStateDir } from '../workspace-state-dir';
-import { refuseResearcherHomeConfig } from '../sandbox/researcher-home-untrusted';
 import type { ParsedHookEvent } from './index';
 
 /** Startup lookback window: at init the tailer seeks to
@@ -34,25 +33,11 @@ export const SPOOL_ROTATED_SUFFIX = '.rotated';
 const MAX_BYTES_PER_DRAIN = 1024 * 1024;
 const WARN_INTERVAL_MS = 30_000;
 
-/** Resolve the WINDOWS-SIDE read path of an agent's spool file. A redirected
- *  provider state home selects the researcher spool; otherwise WSL workspaces
- *  (posix or already-UNC roots) map to the \\wsl... UNC form via
+/** Resolve the WINDOWS-SIDE read path of a workspace's spool file. WSL
+ *  workspaces (posix or already-UNC roots) map to the \\wsl... UNC form via
  *  the same path mapping the scaffolder/launch diagnostics use; Windows roots
  *  pass through. This is the path the tailer actually opens. */
-export function resolveSpoolReadPath(workspaceRoot: string, providerStateHome?: string | null): string {
-  if (providerStateHome) {
-    // This helper is dashboard-reader-only. A caller may derive the researcher
-    // home from the logical WSL workspace root, so normalize that value to the
-    // Windows-visible filesystem form before Electron opens it. Child env must
-    // instead come from prepareResearcherSandboxHome().extraEnv.
-    const filesystemHome = providerStateHome.startsWith('/')
-      ? wslToWindowsPath(providerStateHome)
-      : providerStateHome;
-    return refuseResearcherHomeConfig(
-      path.join(filesystemHome, 'spool', 'pending-status.jsonl'),
-      'hook-spool',
-    );
-  }
+export function resolveSpoolReadPath(workspaceRoot: string): string {
   const winRoot = detectPathType(workspaceRoot) === 'wsl' && workspaceRoot.startsWith('/')
     ? wslToWindowsPath(workspaceRoot)
     : workspaceRoot;
