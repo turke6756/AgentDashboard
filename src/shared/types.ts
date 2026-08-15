@@ -3347,6 +3347,12 @@ export type PlanBadgeDestination = PromotedPlanBadgeDestination;
 /** One normalized ownership destination list per attached agent. */
 export type AgentPlanBadge = PlanBadgeDestination[];
 
+export const PLAN_BADGES_INVALIDATED = 'agents:plan-badges-invalidated' as const;
+
+export interface PlanBadgesInvalidatedPayload {
+  workspaceId: string;
+}
+
 export interface ResolveOpenableWorkspacePathRequest {
   workspaceId: string;
   path: string;
@@ -3427,6 +3433,7 @@ export interface IpcApi {
      *  in-memory map; this reads it on mount. */
     listContinuationPhases: () => Promise<ContinuationPhaseState[]>;
     onContinuationPhaseChanged: (callback: (signal: ContinuationPhaseSignal) => void) => () => void;
+    onPlanBadgesInvalidated: (callback: (payload: PlanBadgesInvalidatedPayload) => void) => () => void;
   };
   terminal: {
     // WP-3a: attach resolves to an atomic snapshot cutoff + epoch so the
