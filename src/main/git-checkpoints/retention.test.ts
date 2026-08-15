@@ -366,6 +366,8 @@ test('a pruned edge is refused by diff (live rev-parse + readiness)', async () =
       getTurnRecord: () => prunedRow,
       updateTurnRecord: () => prunedRow,
       listTurnRecords: () => [prunedRow],
+      listOpenTurnRecords: () => [],
+      listLaterTurnsWitnessingPath: () => [],
     },
   });
   const diffs = await svc.generateDiffs(T, repo);

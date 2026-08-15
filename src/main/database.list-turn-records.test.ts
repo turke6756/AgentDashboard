@@ -103,6 +103,7 @@ type DbModule = {
   updateTurnRecord(id: string, updates: Record<string, unknown>): TurnRecord | null;
   listTurnRecords(workspaceId: string, opts?: ListOpts): TurnRecord[];
   listOpenTurnRecords(workspaceId: string): TurnRecord[];
+  listLaterTurnsWitnessingPath(workspaceId: string, afterTurnSeq: number, path: string): TurnRecord[];
 };
 let dbm: DbModule;
 
@@ -180,6 +181,29 @@ test('listOpenTurnRecords is unbounded for startup reconciliation', () => {
   const open = dbm.listOpenTurnRecords(ws);
   assert.equal(open.length, 60, 'every dangling row is enumerated, including the oldest');
   assert.deepEqual(seqs(open).slice(0, 2), [1, 2]);
+});
+
+test('REACHABILITY:later-turns-unbounded returns every same-path later writer beyond the newest-200 window', () => {
+  const ws = freshWorkspace();
+  const witnessedPath = 'src/shared-path.txt';
+  seedTurn(ws, 1, [{ path: witnessedPath, op: 'write' }]); // target T1, seq 1
+  for (let seq = 2; seq <= 202; seq++) {
+    const op = seq % 2 === 0 ? 'write' : 'create';
+    seedTurn(ws, seq, [
+      { path: witnessedPath, op },
+      { path: witnessedPath, op }, // duplicate entries must not duplicate turns
+    ]);
+  }
+
+  const later = dbm.listLaterTurnsWitnessingPath(ws, 1, witnessedPath);
+  assert.equal(later.length, 201, 'all 201 later matching turns are returned');
+  assert.deepEqual(seqs(later), Array.from({ length: 201 }, (_, i) => i + 2),
+    'later turns are unique and ascending, including the oldest writer at seq 2');
+
+  const paged = dbm.listTurnRecords(ws, { file: witnessedPath, limit: 200 });
+  assert.equal(paged.length, 200, 'control: the documented maximum remains bounded to 200');
+  assert.equal(paged.some((row) => row.turnSeq === 2), false,
+    'control: the newest-200 window drops the oldest later writer');
 });
 
 // ── Runner ────────────────────────────────────────────────────────────────────

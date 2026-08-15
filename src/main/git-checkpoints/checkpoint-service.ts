@@ -65,6 +65,8 @@ import {
   getTurnRecord as dbGetTurnRecord,
   updateTurnRecord as dbUpdateTurnRecord,
   listTurnRecords as dbListTurnRecords,
+  listOpenTurnRecords as dbListOpenTurnRecords,
+  listLaterTurnsWitnessingPath as dbListLaterTurnsWitnessingPath,
   insertRecoveryOperation as dbInsertRecoveryOperation,
   getRecoveryOperation as dbGetRecoveryOperation,
   updateRecoveryOperation as dbUpdateRecoveryOperation,
@@ -107,12 +109,16 @@ export interface CheckpointTurnStore {
   getTurnRecord(id: string): TurnRecord | null;
   updateTurnRecord(id: string, updates: Record<string, unknown>): TurnRecord | null;
   listTurnRecords(workspaceId: string, opts?: { agentId?: string }): TurnRecord[];
+  listOpenTurnRecords(workspaceId: string): TurnRecord[];
+  listLaterTurnsWitnessingPath(workspaceId: string, afterTurnSeq: number, path: string): TurnRecord[];
 }
 
 const DEFAULT_TURN_STORE: CheckpointTurnStore = {
   getTurnRecord: dbGetTurnRecord,
   updateTurnRecord: (id, updates) => dbUpdateTurnRecord(id, updates as never),
   listTurnRecords: dbListTurnRecords,
+  listOpenTurnRecords: dbListOpenTurnRecords,
+  listLaterTurnsWitnessingPath: dbListLaterTurnsWitnessingPath,
 };
 
 /** The subset of the WP-A0 `recovery_operations` accessors the restore path needs.

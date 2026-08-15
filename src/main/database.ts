@@ -9719,6 +9719,28 @@ export function listOpenTurnRecords(workspaceId: string): TurnRecord[] {
   ).map(rowToTurnRecord);
 }
 
+/** Every later turn that witnessed a write/create on one path. Unlike the
+ * paged history accessor, this safety-critical read is intentionally unbounded. */
+export function listLaterTurnsWitnessingPath(
+  workspaceId: string,
+  afterTurnSeq: number,
+  path: string,
+): TurnRecord[] {
+  return queryAll(
+    `SELECT * FROM turn_records
+       WHERE workspace_id = ?
+         AND turn_seq > ?
+         AND touched IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM json_each(turn_records.touched) je
+            WHERE json_extract(je.value, '$.path') = ?
+              AND json_extract(je.value, '$.op') IN ('write', 'create')
+         )
+       ORDER BY turn_seq ASC`,
+    [workspaceId, afterTurnSeq, path],
+  ).map(rowToTurnRecord);
+}
+
 // ── SC-WP-1A: query-only turn witness reads (bundle contract §3) ─────────────
 //
 // An IMMUTABLE, read-only projection of `turn_records` for the Save-card

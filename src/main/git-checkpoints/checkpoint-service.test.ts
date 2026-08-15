@@ -126,6 +126,17 @@ class FakeStore implements CheckpointTurnStore {
       .filter((r) => r.workspaceId === workspaceId && (!opts?.agentId || r.agentId === opts.agentId))
       .map((r) => ({ ...r } as unknown as TurnRecord));
   }
+  listOpenTurnRecords(workspaceId: string): TurnRecord[] {
+    return this.listTurnRecords(workspaceId)
+      .filter((r) => r.status === 'open')
+      .sort((a, b) => a.turnSeq - b.turnSeq);
+  }
+  listLaterTurnsWitnessingPath(workspaceId: string, afterTurnSeq: number, path: string): TurnRecord[] {
+    return this.listTurnRecords(workspaceId)
+      .filter((r) => r.turnSeq > afterTurnSeq
+        && r.touched?.some((entry) => entry.path === path && (entry.op === 'write' || entry.op === 'create')))
+      .sort((a, b) => a.turnSeq - b.turnSeq);
+  }
 }
 
 function mkService(over: Partial<CheckpointServiceOptions> & { store: FakeStore }): CheckpointService {
