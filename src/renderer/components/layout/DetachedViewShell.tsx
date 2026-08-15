@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import type { DetachableView, PlanListItem } from '../../../shared/types';
-import { useDashboardStore } from '../../stores/dashboard-store';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { DetachableView, PlanDetachedRevealRequest, PlanListItem } from '../../../shared/types';
+import {
+  useDashboardStore,
+  waitForPlanNavigation,
+  type PlanDocumentNavigationRequest,
+} from '../../stores/dashboard-store';
 import AgentGrid from '../agent/AgentGrid';
 import FileViewerPanel from '../fileviewer/FileViewerPanel';
 import BrowserPanel from '../browser/BrowserPanel';
@@ -38,6 +42,8 @@ function DetachedPlansView({ workspaceId }: { workspaceId: string }) {
   const [plans, setPlans] = useState<PlanListItem[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [navigationRequest, setNavigationRequest] = useState<PlanDocumentNavigationRequest | undefined>();
+  const activeRevealIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,6 +58,87 @@ function DetachedPlansView({ workspaceId }: { workspaceId: string }) {
       })
       .catch(() => { if (!cancelled) setError('Could not load plans'); });
     return () => { cancelled = true; };
+  }, [workspaceId]);
+
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = window.api.plans.onRevealInDetached((request: PlanDetachedRevealRequest) => {
+      if (request.workspaceId !== workspaceId) return;
+      const supersededRequestId = activeRevealIdRef.current;
+      if (supersededRequestId && supersededRequestId !== request.requestId) {
+        window.api.plans.acknowledgeDetachedReveal({
+          requestId: supersededRequestId,
+          ok: false,
+          reason: 'superseded',
+        });
+        useDashboardStore.getState().resolvePlanNavigation(supersededRequestId, {
+          ok: false,
+          reason: 'superseded',
+        });
+      }
+      activeRevealIdRef.current = request.requestId;
+      void (async () => {
+        let model;
+        try {
+          // This is authoritative even while the gallery list is still loading;
+          // a null result here is a settled negative, not a transient empty list.
+          model = await window.api.plans.documents(request.planId);
+        } catch {
+          return; // main's bounded timeout owns transport/load failure recovery
+        }
+        if (!active || activeRevealIdRef.current !== request.requestId) return;
+        if (!model) {
+          window.api.plans.acknowledgeDetachedReveal({
+            requestId: request.requestId,
+            ok: false,
+            reason: 'plan-absent',
+          });
+          activeRevealIdRef.current = null;
+          return;
+        }
+        if (!model.tabs.some((tab) => tab.key === request.tab)) {
+          window.api.plans.acknowledgeDetachedReveal({
+            requestId: request.requestId,
+            ok: false,
+            reason: 'tab-absent',
+          });
+          activeRevealIdRef.current = null;
+          return;
+        }
+
+        const nextNavigation: PlanDocumentNavigationRequest = {
+          requestId: request.requestId,
+          planId: request.planId,
+          tab: request.tab,
+        };
+        const completion = waitForPlanNavigation(nextNavigation, () => {
+          if (!active) return;
+          setNavigationRequest((current) =>
+            current?.requestId === request.requestId ? undefined : current);
+        });
+        setSelected(request.planId);
+        setNavigationRequest(nextNavigation);
+
+        const outcome = await completion;
+        if (!active || activeRevealIdRef.current !== request.requestId) return;
+        if (outcome.kind === 'opened-main') {
+          // PlanDocumentTabs emits this outcome only from its committed effect
+          // after the requested tab is the active tab.
+          window.api.plans.acknowledgeDetachedReveal({ requestId: request.requestId, ok: true });
+        } else if (outcome.kind === 'failed' && outcome.reason === 'tab-absent') {
+          window.api.plans.acknowledgeDetachedReveal({
+            requestId: request.requestId,
+            ok: false,
+            reason: 'tab-absent',
+          });
+        }
+        activeRevealIdRef.current = null;
+      })();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [workspaceId]);
 
   return (
@@ -80,7 +167,7 @@ function DetachedPlansView({ workspaceId }: { workspaceId: string }) {
       </div>
       <div className="flex-1 min-w-0 overflow-hidden">
         {selected ? (
-          <PlanSurfaceContainer planId={selected} />
+          <PlanSurfaceContainer key={selected} planId={selected} navigationRequest={navigationRequest} />
         ) : (
           <div className="flex items-center justify-center h-full text-gray-400 text-sm">
             Select a plan surface

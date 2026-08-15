@@ -31,15 +31,18 @@ function deferred<T>() {
 let container: HTMLDivElement;
 let root: Root;
 let documents: ReturnType<typeof vi.fn>;
+let revealInDetached: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   documents = vi.fn(async () => planModel());
+  revealInDetached = vi.fn(async () => ({ ok: true as const }));
   (window as unknown as { api: unknown }).api = {
     plans: {
       documents,
+      revealInDetached,
       readDocument: vi.fn(),
       getOverview: vi.fn(async () => null),
       listIntents: vi.fn(async () => null),
@@ -99,7 +102,7 @@ describe('PlanDocumentTabs confirmed navigation', () => {
     const pending = deferred<PlanDocumentsModel>();
     documents.mockReturnValueOnce(pending.promise);
     const resolved = vi.fn();
-    renderTabs({ requestId, tab: 'proposal' }, resolved);
+    renderTabs({ requestId, planId: 'plan-1', tab: 'proposal' }, resolved);
 
     await flush();
     expect(resolved).not.toHaveBeenCalled();
@@ -114,16 +117,35 @@ describe('PlanDocumentTabs confirmed navigation', () => {
   it('reports tab-absent only after a settled projection commits', async () => {
     documents.mockResolvedValueOnce(planModel(false));
     const resolved = vi.fn();
-    renderTabs({ requestId, tab: 'proposal' }, resolved);
+    renderTabs({ requestId, planId: 'plan-1', tab: 'proposal' }, resolved);
 
     await flush();
     expect(resolved).toHaveBeenCalledOnce();
     expect(resolved).toHaveBeenCalledWith({ requestId, ok: false, reason: 'tab-absent' });
   });
 
+  it('does not resolve against a settled model belonging to a different requested plan', async () => {
+    const resolved = vi.fn();
+    renderTabs({ requestId, planId: 'plan-b', tab: 'overview' }, resolved);
+
+    await flush();
+    expect(resolved).not.toHaveBeenCalled();
+  });
+
+  it('refuses a mismatched settled model when request and component plan ids agree (pins model identity)', async () => {
+    documents.mockResolvedValueOnce({ ...planModel(), planId: 'plan-b' });
+    const resolved = vi.fn();
+    renderTabs({ requestId, planId: 'plan-1', tab: 'overview' }, resolved);
+
+    await flush();
+    expect(documents).toHaveBeenCalledWith('plan-1');
+    expect(container.querySelector('[data-tab-key="overview"]')).not.toBeNull();
+    expect(resolved).not.toHaveBeenCalled();
+  });
+
   it('honors a requestId once across re-entry and later tab changes', async () => {
     const resolved = vi.fn();
-    const request = { requestId, tab: 'proposal' as const };
+    const request = { requestId, planId: 'plan-1', tab: 'proposal' as const };
     renderTabs(request, resolved);
     await flush();
     expect(resolved).toHaveBeenCalledOnce();
@@ -150,12 +172,40 @@ describe('openPlanTab production entry and registry cleanup', () => {
     expect(useDashboardStore.getState().openTabs).toHaveLength(0);
   });
 
-  it('reports the pre-WP-8 detached state instead of silently returning', async () => {
+  it('targets the detached Plans window and reports its confirmed reveal', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(requestId);
     useDashboardStore.setState({ detachedViews: ['plans'] });
     await expect(useDashboardStore.getState().openPlanTab('plan-1', 'Plan one', 'ws-1'))
-      .resolves.toEqual({ kind: 'failed', reason: 'Plans is open in a detached window.' });
+      .resolves.toEqual({ kind: 'revealed-detached', tab: 'overview' });
+    expect(revealInDetached).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      planId: 'plan-1',
+      tab: 'overview',
+      requestId,
+    });
     expect(documents).not.toHaveBeenCalled();
     expect(useDashboardStore.getState().openTabs).toHaveLength(0);
+  });
+
+  it('recovers a timed-out detached window by undetaching and opening the main gallery', async () => {
+    revealInDetached.mockResolvedValueOnce({ ok: false, reason: 'timeout' });
+    useDashboardStore.setState({ detachedViews: ['plans'] });
+    await expect(useDashboardStore.getState().openPlanTab('plan-1', 'Plan one', 'ws-1'))
+      .resolves.toEqual({
+        kind: 'fallback-gallery',
+        reason: 'Detached plans window was gone; opened the gallery here.',
+      });
+    expect(useDashboardStore.getState().detachedViews).not.toContain('plans');
+    expect(useDashboardStore.getState().plansOpen).toBe(true);
+  });
+
+  it('keeps a found rejecting window detached and reports the typed destination failure', async () => {
+    revealInDetached.mockResolvedValueOnce({ ok: false, reason: 'plan-absent' });
+    useDashboardStore.setState({ detachedViews: ['plans'] });
+    await expect(useDashboardStore.getState().openPlanTab('plan-1', 'Plan one', 'ws-1'))
+      .resolves.toEqual({ kind: 'failed', reason: 'Plan no longer exists in the detached window.' });
+    expect(useDashboardStore.getState().detachedViews).toContain('plans');
+    expect(useDashboardStore.getState().plansOpen).toBe(false);
   });
 
   it('enters through openPlanTab and resolves only after the real document component commits', async () => {
@@ -165,7 +215,7 @@ describe('openPlanTab production entry and registry cleanup', () => {
     );
     await flush();
     const tab = useDashboardStore.getState().openTabs[0];
-    expect(tab.navigationRequest).toEqual({ requestId, tab: 'proposal' });
+    expect(tab.navigationRequest).toEqual({ requestId, planId: 'plan-1', tab: 'proposal' });
 
     renderTabs(tab.navigationRequest!, ({ requestId: completedId, ...result }) => {
       useDashboardStore.getState().resolvePlanNavigation(completedId, result);

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AgentPlanBadge, IpcApi, DetachRequest, DetachedClosedPayload, ViewDetachRequest, ViewDetachedClosedPayload, FlushRequestPayload, FlushReplyPayload, PlanBadgesInvalidatedPayload } from '../shared/types';
-import { ACTIVITY_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS, CHECKPOINT_CHANNELS, SAVECARD_CHANNELS, SAVECARD_ADOPT_BASELINE_CHANNEL, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, SAVECARD_PREVIEW_CHANNEL, COMMIT_CANDIDATE_MINT_CHANNEL, SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL, SAVECARD_FINALIZE_CHANNEL, SAVECARD_ATTENTION_CHANNEL, SAVECARD_ATTENTION_CHANGED_CHANNEL, SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, COMMIT_COORDINATOR_CHANNEL, PLAN_BADGES_INVALIDATED } from '../shared/types';
+import { ACTIVITY_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS, PLAN_DETACHED_REVEAL_CHANNELS, CHECKPOINT_CHANNELS, SAVECARD_CHANNELS, SAVECARD_ADOPT_BASELINE_CHANNEL, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, SAVECARD_PREVIEW_CHANNEL, COMMIT_CANDIDATE_MINT_CHANNEL, SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL, SAVECARD_FINALIZE_CHANNEL, SAVECARD_ATTENTION_CHANNEL, SAVECARD_ATTENTION_CHANGED_CHANNEL, SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, COMMIT_COORDINATOR_CHANNEL, PLAN_BADGES_INVALIDATED } from '../shared/types';
 import { BROWSER_CHANNELS } from '../shared/browser';
 import type {
   AccessRequestDecision,
@@ -256,6 +256,15 @@ const api: IpcApi = {
     readProposal: (proposalId) => ipcRenderer.invoke('proposal:read', proposalId),
     // WP-P4A: folder-native tab projection. Bodies use only main-issued handles.
     documents: (planId) => ipcRenderer.invoke('plan:documents', planId),
+    revealInDetached: (request) => ipcRenderer.invoke(PLAN_DETACHED_REVEAL_CHANNELS.request, request),
+    onRevealInDetached: (callback) => {
+      const listener = (_event: unknown, request: Parameters<typeof callback>[0]) => callback(request);
+      ipcRenderer.on(PLAN_DETACHED_REVEAL_CHANNELS.reveal, listener);
+      return () => ipcRenderer.removeListener(PLAN_DETACHED_REVEAL_CHANNELS.reveal, listener);
+    },
+    acknowledgeDetachedReveal: (payload) => {
+      ipcRenderer.send(PLAN_DETACHED_REVEAL_CHANNELS.acknowledgement, payload);
+    },
     readDocument: (planId, ref) => ipcRenderer.invoke('plan:document:read', planId, ref),
     listIntents: (planId) => ipcRenderer.invoke('plan:intents:list', planId),
     blameToIntent: (request) => ipcRenderer.invoke('plan:blameToIntent', request),

@@ -7,11 +7,11 @@
 // file is detached-owned, only the owning webContents may write it. Lifecycle
 // is keyed by window id.
 
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import { JUPYTER_BASE_PORT, JUPYTER_PORT_RETRIES } from './control-ports';
 import { normalizeFileKey } from '../shared/file-key';
-import { TAB_CHANNELS, VIEW_CHANNELS } from '../shared/types';
+import { PLAN_DETACHED_REVEAL_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS } from '../shared/types';
 import { installShellSpellcheckContextMenu } from './spellcheck-context-menu';
 import type {
   DetachRequest,
@@ -20,6 +20,9 @@ import type {
   DetachableView,
   ViewDetachRequest,
   ViewDetachedClosedPayload,
+  PlanDetachedRevealAck,
+  PlanDetachedRevealAckPayload,
+  PlanDetachedRevealRequest,
 } from '../shared/types';
 
 // ── Registries ──────────────────────────────────────────────────────────
@@ -34,6 +37,99 @@ const owners = new Map<string /* fileKey */, { winId: number; webContentsId: num
 // dirty-close state — a view has nothing to save.
 const detachedViews = new Map<number /* win.id */, { win: BrowserWindow; req: ViewDetachRequest }>();
 const viewOwners = new Map<DetachableView, number /* winId */>();
+
+export interface PlansRevealIpc {
+  handle(
+    channel: string,
+    listener: (event: Electron.IpcMainInvokeEvent, request: PlanDetachedRevealRequest) => Promise<PlanDetachedRevealAck>,
+  ): void;
+  on(
+    channel: string,
+    listener: (event: Electron.IpcMainEvent, payload: PlanDetachedRevealAckPayload) => void,
+  ): unknown;
+}
+
+export interface PlansRevealTimer {
+  set(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout>;
+  clear(timer: ReturnType<typeof setTimeout>): void;
+}
+
+interface PendingPlansReveal {
+  webContentsId: number;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (ack: PlanDetachedRevealAck) => void;
+  contents: Electron.WebContents;
+  onDestroyed: () => void;
+  timerApi: PlansRevealTimer;
+}
+
+const pendingPlansReveals = new Map<string, PendingPlansReveal>();
+const registeredPlansRevealIpc = new WeakSet<object>();
+const DEFAULT_PLANS_REVEAL_TIMEOUT_MS = 6_000;
+
+function completePlansReveal(requestId: string, ack: PlanDetachedRevealAck): void {
+  const pending = pendingPlansReveals.get(requestId);
+  if (!pending) return;
+  pending.timerApi.clear(pending.timer);
+  pending.contents.removeListener('destroyed', pending.onDestroyed);
+  pendingPlansReveals.delete(requestId);
+  pending.resolve(ack);
+}
+
+/** Register the production request/ack seam. createDetachedViewWindow calls this
+ * before the first Plans window is created; registration persists after close so
+ * a stale renderer registry receives a typed window-not-found result. */
+export function registerPlansRevealInDetached(
+  targetIpc: PlansRevealIpc,
+  timeoutMs = DEFAULT_PLANS_REVEAL_TIMEOUT_MS,
+  timerApi: PlansRevealTimer = { set: setTimeout, clear: clearTimeout },
+): void {
+  if (registeredPlansRevealIpc.has(targetIpc as object)) return;
+  registeredPlansRevealIpc.add(targetIpc as object);
+
+  targetIpc.on(PLAN_DETACHED_REVEAL_CHANNELS.acknowledgement, (event, payload) => {
+    const pending = pendingPlansReveals.get(payload?.requestId);
+    if (!pending || event.sender.id !== pending.webContentsId) return;
+    if (payload.ok) completePlansReveal(payload.requestId, { ok: true });
+    else if (payload.reason === 'plan-absent' || payload.reason === 'tab-absent' || payload.reason === 'superseded') {
+      completePlansReveal(payload.requestId, { ok: false, reason: payload.reason });
+    }
+  });
+
+  targetIpc.handle(PLAN_DETACHED_REVEAL_CHANNELS.request, async (_event, request) => {
+    if (pendingPlansReveals.has(request.requestId)) return { ok: false, reason: 'timeout' };
+    const target = [...detachedViews.values()].find(({ win, req }) =>
+      req.view === 'plans'
+      && req.workspaceId === request.workspaceId
+      && !win.isDestroyed()
+      && !win.webContents.isDestroyed());
+    if (!target) return { ok: false, reason: 'window-not-found' };
+
+    const contents = target.win.webContents;
+    return new Promise<PlanDetachedRevealAck>((resolve) => {
+      const onDestroyed = () => completePlansReveal(request.requestId, { ok: false, reason: 'window-not-found' });
+      const timer = timerApi.set(
+        () => completePlansReveal(request.requestId, { ok: false, reason: 'timeout' }),
+        timeoutMs,
+      );
+      pendingPlansReveals.set(request.requestId, {
+        webContentsId: contents.id,
+        timer,
+        resolve,
+        contents,
+        onDestroyed,
+        timerApi,
+      });
+      contents.once('destroyed', onDestroyed);
+      try {
+        target.win.focus();
+        contents.send(PLAN_DETACHED_REVEAL_CHANNELS.reveal, request);
+      } catch {
+        completePlansReveal(request.requestId, { ok: false, reason: 'window-not-found' });
+      }
+    });
+  });
+}
 
 // ── Phase 2: dirty-on-close protocol state ──────────────────────────────
 // Outstanding close-confirmation requests keyed by a deterministic requestId
@@ -189,6 +285,10 @@ export interface DetachedWindowDeps {
   // and any caller that doesn't own the managers can omit them.
   onViewWindowReady?: (view: DetachableView, win: BrowserWindow) => void;
   onViewWindowClosing?: (view: DetachableView) => void;
+  // Test seams for the targeted detached-Plans request/ack transport.
+  plansRevealIpc?: PlansRevealIpc;
+  plansRevealTimeoutMs?: number;
+  plansRevealTimer?: PlansRevealTimer;
 }
 
 export function createDetachedWindow(req: DetachRequest, deps: DetachedWindowDeps): DetachResult {
@@ -304,6 +404,19 @@ export function createDetachedWindow(req: DetachRequest, deps: DetachedWindowDep
 // view is read-only chrome, so the window closes immediately on user close and
 // main fires VIEW_CHANNELS.closed so the shell un-hollows the button.
 export function createDetachedViewWindow(req: ViewDetachRequest, deps: DetachedWindowDeps): DetachResult {
+  if (req.view === 'plans') {
+    const revealIpc = deps.plansRevealIpc ?? ipcMain;
+    // Plain-node unit tests load Electron as its executable path rather than an
+    // ipcMain object. Production Electron and the WP-8 entering test both supply
+    // the real-shaped registration seam.
+    if (revealIpc && (typeof revealIpc === 'object' || typeof revealIpc === 'function')) {
+      registerPlansRevealInDetached(
+        revealIpc,
+        deps.plansRevealTimeoutMs,
+        deps.plansRevealTimer,
+      );
+    }
+  }
   // Duplicate detach → focus the existing window, abort the new spawn.
   const existingWinId = viewOwners.get(req.view);
   if (existingWinId !== undefined) {
@@ -424,4 +537,11 @@ export function __resetDetachedRegistryForTest(): void {
   allowClose.clear();
   forceCloseAll = false;
   requestSeq = 0;
+  for (const requestId of [...pendingPlansReveals.keys()]) {
+    completePlansReveal(requestId, { ok: false, reason: 'window-not-found' });
+  }
+}
+
+export function __pendingPlansRevealCountForTest(): number {
+  return pendingPlansReveals.size;
 }

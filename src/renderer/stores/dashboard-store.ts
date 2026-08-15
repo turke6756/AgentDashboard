@@ -47,6 +47,7 @@ export interface TabFocusRange {
 // untouched because color never crosses the IPC boundary.
 export interface PlanDocumentNavigationRequest {
   requestId: string;
+  planId: string;
   tab: PlanTabKey;
 }
 
@@ -85,7 +86,7 @@ function finishPlanNavigation(requestId: string, outcome: PlanNavOutcome): void 
   pending.resolve(outcome);
 }
 
-function waitForPlanNavigation(
+export function waitForPlanNavigation(
   request: PlanDocumentNavigationRequest,
   clearRequest: () => void,
 ): Promise<PlanNavOutcome> {
@@ -747,10 +748,37 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // existing tab. The content is a sandboxed WebContentsView driven by the main
   // process; PlanSurfaceContainer owns the document and provenance rails.
   openPlanTab: async (planId, label, workspaceId, opts) => {
-    // WP-8 will replace this typed detached failure with request/ack transport.
     const requestedTab = opts?.tab ?? 'overview';
     if (get().detachedViews.includes('plans')) {
-      return { kind: 'failed', reason: 'Plans is open in a detached window.' };
+      const requestId = crypto.randomUUID();
+      let ack;
+      try {
+        ack = await window.api.plans.revealInDetached({
+          workspaceId: workspaceId ?? get().selectedWorkspaceId ?? '',
+          planId,
+          tab: requestedTab,
+          requestId,
+        });
+      } catch {
+        ack = { ok: false as const, reason: 'timeout' as const };
+      }
+      if (ack.ok) return { kind: 'revealed-detached', tab: requestedTab };
+      if (ack.reason === 'window-not-found' || ack.reason === 'timeout') {
+        get().undetachView('plans');
+        get().showPlans();
+        return {
+          kind: 'fallback-gallery',
+          reason: 'Detached plans window was gone; opened the gallery here.',
+        };
+      }
+      return {
+        kind: 'failed',
+        reason: ack.reason === 'plan-absent'
+          ? 'Plan no longer exists in the detached window.'
+          : ack.reason === 'superseded'
+            ? 'Detached plan navigation was superseded by a newer request.'
+            : `The plan has no ${requestedTab} tab.`,
+      };
     }
     let model;
     try {
@@ -769,6 +797,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const ws = workspaceId ?? selectedWorkspaceId ?? undefined;
     const navigationRequest: PlanDocumentNavigationRequest = {
       requestId: crypto.randomUUID(),
+      planId,
       tab: requestedTab,
     };
     const completion = waitForPlanNavigation(navigationRequest, () => {

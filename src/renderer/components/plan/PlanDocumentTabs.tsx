@@ -185,15 +185,17 @@ export default function PlanDocumentTabs({
   // render observes that selection before reporting success.
   useEffect(() => {
     if (modelLoading || !model || !navigationRequest) return;
+    if (navigationRequest.planId !== planId || model.planId !== navigationRequest.planId) return;
     if (completedNavigationIdsRef.current.has(navigationRequest.requestId)) return;
     if (orderedTabs.some((tab) => tab.key === navigationRequest.tab)
         && activeKey !== navigationRequest.tab) {
       setActiveKey(navigationRequest.tab);
     }
-  }, [activeKey, model, modelLoading, navigationRequest, orderedTabs]);
+  }, [activeKey, model, modelLoading, navigationRequest, orderedTabs, planId]);
 
   useEffect(() => {
     if (modelLoading || !model || !navigationRequest || !onNavigationResolved) return;
+    if (navigationRequest.planId !== planId || model.planId !== navigationRequest.planId) return;
     const { requestId, tab } = navigationRequest;
     if (completedNavigationIdsRef.current.has(requestId)) return;
     if (!orderedTabs.some((candidate) => candidate.key === tab)) {
@@ -205,7 +207,7 @@ export default function PlanDocumentTabs({
       rememberCompletedNavigation(requestId);
       onNavigationResolved({ requestId, ok: true, tab });
     }
-  }, [activeKey, model, modelLoading, navigationRequest, onNavigationResolved, orderedTabs, rememberCompletedNavigation]);
+  }, [activeKey, model, modelLoading, navigationRequest, onNavigationResolved, orderedTabs, planId, rememberCompletedNavigation]);
 
   // A request superseded before completion or abandoned by an unmount must also
   // settle its store promise. Completed ids make the cleanup a no-op after either

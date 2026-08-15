@@ -1557,6 +1557,28 @@ export const VIEW_CHANNELS = {
   closed: 'view:closed',   // main → shell when the detached view window closes
 } as const;
 
+// Targeted plan navigation for a torn-off Plans view. The request is invoked by
+// the shell, forwarded to exactly one detached renderer, and correlated back to
+// main by the opaque requestId plus the acknowledging webContents id.
+export const PLAN_DETACHED_REVEAL_CHANNELS = {
+  request: 'plans:revealInDetached', // shell → main (invoke)
+  reveal: 'plans:reveal',            // main → one detached Plans renderer
+  acknowledgement: 'plans:revealAck', // detached Plans renderer → main (send)
+} as const;
+
+export interface PlanDetachedRevealRequest {
+  workspaceId: string;
+  planId: string;
+  tab: PlanTabKey;
+  requestId: string;
+}
+
+export type PlanDetachedRevealAck =
+  | { ok: true }
+  | { ok: false; reason: 'window-not-found' | 'plan-absent' | 'tab-absent' | 'timeout' | 'superseded' };
+
+export type PlanDetachedRevealAckPayload = PlanDetachedRevealAck & { requestId: string };
+
 // ── Selection comments (WP-P5) ──────────────────────────────────────────
 // plans/selection-to-agent-primitive-plan.md §5 (schema) / §7 WP-P5-A.
 // Persisted file-target comments; chat/note targets keep the discriminator
@@ -3890,6 +3912,9 @@ export interface IpcApi {
     readProposal: (proposalId: string) => Promise<ProposalReadResult | { error: string }>;
     /** WP-P4A — live folder-native tab projection and guarded body read. */
     documents: (planId: string) => Promise<PlanDocumentsModel | null>;
+    revealInDetached: (request: PlanDetachedRevealRequest) => Promise<PlanDetachedRevealAck>;
+    onRevealInDetached: (callback: (request: PlanDetachedRevealRequest) => void) => () => void;
+    acknowledgeDetachedReveal: (payload: PlanDetachedRevealAckPayload) => void;
     readDocument: (
       planId: string,
       ref: PlanDocumentRef,
