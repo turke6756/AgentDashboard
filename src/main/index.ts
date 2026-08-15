@@ -85,6 +85,7 @@ import { HeapTelemetry, createHeapTelemetry, readV8Heap, readProcessMetrics } fr
 import { createCommitReader, type NativeCommitProvider } from './watchdog/commit-reader';
 import { RenderRecoveryPolicy } from './watchdog/render-recovery';
 import type { MemorySnapshot, AdmissionDecision } from './watchdog/types';
+import type { ResolveOpenableWorkspacePathRequest, ResolveOpenableWorkspacePathResult } from '../shared/types';
 // WAVE-4 full-D5: per-agent attribution + budgets service (owns the periodic
 // process-memory snapshot, the cached rollup, and the budget/owned-cap admission
 // helpers). Constructed at ready alongside the sampler.
@@ -114,6 +115,63 @@ if (strippedClaudeEnvKeys.length > 0) {
 }
 
 registerJupyterServerExitDisposal(disposeKernelClient);
+
+type ResolveOpenableWorkspacePathDeps = {
+  getWorkspaceById: typeof getWorkspace;
+  realpath: (candidate: string) => Promise<string>;
+};
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+// WP9_RESOLVER_START -- kept bounded so the production implementation can be
+// exercised without booting Electron's process-wide main entry point.
+export async function resolveOpenableWorkspacePath(
+  request: ResolveOpenableWorkspacePathRequest,
+  deps: ResolveOpenableWorkspacePathDeps = {
+    getWorkspaceById: getWorkspace,
+    realpath: fs.promises.realpath,
+  },
+): Promise<ResolveOpenableWorkspacePathResult> {
+  try {
+    const workspace = deps.getWorkspaceById(request.workspaceId);
+    if (!workspace) return { ok: false, reason: 'missing' };
+
+    const workspaceRoot = workspace.pathType === 'wsl'
+      ? wslToWindowsPath(workspace.path)
+      : workspace.path;
+
+    const canonicalRoot = await deps.realpath(path.resolve(workspaceRoot));
+    const unresolvedCandidate = path.isAbsolute(request.path)
+      ? request.path
+      : path.resolve(canonicalRoot, request.path);
+    const canonicalPath = await deps.realpath(unresolvedCandidate);
+    const relative = path.win32.relative(canonicalRoot, canonicalPath);
+    const outside = path.win32.isAbsolute(relative)
+      || relative === '..'
+      || relative.startsWith(`..${path.win32.sep}`);
+    return outside
+      ? { ok: false, reason: 'outside-workspace' }
+      : { ok: true, canonicalPath };
+  } catch (error) {
+    return { ok: false, reason: isMissingPathError(error) ? 'missing' : 'unreadable' };
+  }
+}
+// WP9_RESOLVER_END
+
+type ResolveOpenableWorkspacePathIpc = Pick<typeof ipcMain, 'handle'>;
+
+export function registerResolveOpenableWorkspacePathIpc(
+  registrar: ResolveOpenableWorkspacePathIpc = ipcMain,
+  resolver: typeof resolveOpenableWorkspacePath = resolveOpenableWorkspacePath,
+): void {
+  registrar.handle(
+    'files:resolveOpenableWorkspacePath',
+    (_event, request: ResolveOpenableWorkspacePathRequest) => resolver(request),
+  );
+}
 
 // Crash visibility (2026-06-12): the main process died abruptly twice with no
 // stack in the launch terminal, no Crashpad dump, and no WER entry — i.e. a
@@ -1019,6 +1077,7 @@ app.whenReady().then(async () => {
       },
     };
     registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps);
+    registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE
     // orchestration.start() / supervisor.reconcile() can respawn the claude

@@ -3354,6 +3354,15 @@ export type AgentPlanBadge = PlanBadgeDestination[] & {
   readonly carrying: string[];
 };
 
+export interface ResolveOpenableWorkspacePathRequest {
+  workspaceId: string;
+  path: string;
+}
+
+export type ResolveOpenableWorkspacePathResult =
+  | { ok: true; canonicalPath: string }
+  | { ok: false; reason: 'missing' | 'outside-workspace' | 'unreadable' };
+
 export interface IpcApi {
   workspaces: {
     list: () => Promise<Workspace[]>;
@@ -3466,6 +3475,7 @@ export interface IpcApi {
     onRebound: (callback: (agentId: string) => void) => () => void;
   };
   files: {
+    resolveOpenableWorkspacePath: (request: ResolveOpenableWorkspacePathRequest) => Promise<ResolveOpenableWorkspacePathResult>;
     readFile: (filePath: string, pathType: PathType) => Promise<FileContent>;
     convertDocxToMarkdown: (
       filePath: string,

@@ -15,6 +15,7 @@ const TESTS = [
   'dist/main/main/proposal-scan.test.js',
   'dist/main/main/repair-invalid-plan-links.test.js',
   'dist/main/main/agent-plan-badge.test.js',
+  'dist/main/main/resolve-openable-workspace-path.test.js',
   'dist/main/main/commit-candidates/pinned-snapshot-build.test.js',
   'dist/main/main/commit-candidates/pinned-snapshot-store.test.js',
   'dist/main/shared/notification-classify.test.js',

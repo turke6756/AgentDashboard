@@ -345,6 +345,8 @@ const api: IpcApi = {
     signDerivation: (req) => ipcRenderer.invoke('context-optimizer:sign-derivation', req),
   },
   files: {
+    resolveOpenableWorkspacePath: (request) =>
+      ipcRenderer.invoke('files:resolveOpenableWorkspacePath', request),
     readFile: (filePath, pathType) => ipcRenderer.invoke('files:read', filePath, pathType),
     convertDocxToMarkdown: (filePath, rootDirectory, pathType) =>
       ipcRenderer.invoke('files:convert-docx-to-markdown', filePath, rootDirectory, pathType),
