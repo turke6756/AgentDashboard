@@ -68,3 +68,16 @@ export class BadgeInvalidationCoordinator<TTimer> {
     this.timers.clear();
   }
 }
+
+/** The single production composition: real Node timers plus the all-window
+ * broadcaster. Tests of coordinator timing continue to inject a fake scheduler. */
+export function createProductionBadgeInvalidationCoordinator():
+BadgeInvalidationCoordinator<ReturnType<typeof setTimeout>> {
+  return new BadgeInvalidationCoordinator({
+    scheduler: {
+      setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimeout: (timer) => clearTimeout(timer),
+    },
+    broadcast: broadcastPlanBadgesInvalidated,
+  });
+}

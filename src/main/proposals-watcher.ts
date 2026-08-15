@@ -49,6 +49,7 @@ import {
   getProposalByWorkspaceArtifactId,
   getLatestWriteWitnessAgentId,
   touchProposalRecord,
+  reviveProposalRecord,
   softDeleteProposalRecord,
 } from './database';
 import { workspaceStateDir, workspaceStateDirName } from './workspace-state-dir';
@@ -217,36 +218,58 @@ interface WorkspaceState {
   ws: Workspace;
   proposalsDir: string;
   unsubscribe: () => void;
-  debounce: ReturnType<typeof setTimeout> | null;
+  debounce: unknown | null;
 }
+
+export interface ProposalsWatcherScheduler {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(timer: unknown): void;
+  setInterval(callback: () => void, delayMs: number): unknown;
+  clearInterval(timer: unknown): void;
+}
+
+const realScheduler: ProposalsWatcherScheduler = {
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  setInterval: (callback, delayMs) => setInterval(callback, delayMs),
+  clearInterval: (timer) => clearInterval(timer as ReturnType<typeof setInterval>),
+};
 
 export interface ProposalsWatcherOptions {
   /** Injected clock for deterministic `created_at`/`updated_at` (tests). */
   now?: () => number;
+  scheduler?: ProposalsWatcherScheduler;
+  notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
 }
 
 export class ProposalsWatcher {
   private states = new Map<string, WorkspaceState>();
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: unknown | null = null;
   private started = false;
   private readonly now: () => number;
+  private readonly scheduler: ProposalsWatcherScheduler;
+  private readonly notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
 
   constructor(opts: ProposalsWatcherOptions = {}) {
     this.now = opts.now ?? (() => Date.now());
+    this.scheduler = opts.scheduler ?? realScheduler;
+    this.notifyPlanBadgesInvalidated = opts.notifyPlanBadgesInvalidated;
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    void this.attachAll();
-    this.refreshTimer = setInterval(() => { void this.attachAll(); }, WORKSPACE_REFRESH_MS);
+    await this.attachAll();
+    if (this.started) {
+      this.refreshTimer = this.scheduler.setInterval(() => { void this.attachAll(); }, WORKSPACE_REFRESH_MS);
+    }
   }
 
   stop(): void {
     this.started = false;
-    if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
+    if (this.refreshTimer) { this.scheduler.clearInterval(this.refreshTimer); this.refreshTimer = null; }
     for (const st of this.states.values()) {
-      if (st.debounce) clearTimeout(st.debounce);
+      if (st.debounce) this.scheduler.clearTimeout(st.debounce);
       try { st.unsubscribe(); } catch { /* ignore */ }
     }
     this.states.clear();
@@ -274,8 +297,8 @@ export class ProposalsWatcher {
   private scheduleReconcile(workspaceId: string): void {
     const st = this.states.get(workspaceId);
     if (!st) return;
-    if (st.debounce) clearTimeout(st.debounce);
-    st.debounce = setTimeout(() => {
+    if (st.debounce) this.scheduler.clearTimeout(st.debounce);
+    st.debounce = this.scheduler.setTimeout(() => {
       st.debounce = null;
       try { this.reconcileWorkspace(st.ws); }
       catch (err) { log(`reconcile failed for ${workspaceId}`, err); }
@@ -291,6 +314,7 @@ export class ProposalsWatcher {
    */
   reconcileWorkspace(ws: Workspace): ReconcileResult {
     const result: ReconcileResult = { registered: [], diagnostics: [] };
+    let badgeRelevantChanges = 0;
     const dir = proposalsDirFor(ws);
 
     let entries: fs.Dirent[] = [];
@@ -307,7 +331,7 @@ export class ProposalsWatcher {
       const relPath = relProposalPath(ws, name);
       presentRel.add(relPath);
       try {
-        this.reconcileOne(ws, dir, name, relPath, result);
+        if (this.reconcileOne(ws, dir, name, relPath, result)) badgeRelevantChanges += 1;
       } catch (err) {
         log(`reconcile of ${relPath} failed`, err);
       }
@@ -316,19 +340,22 @@ export class ProposalsWatcher {
     // Vanished rows → soft-delete (idempotent).
     for (const row of listProposalsByWorkspace(ws.id)) {
       if (row.deletedAt != null) continue;
-      if (!presentRel.has(row.path)) softDeleteProposalRecord(row.id, this.now());
+      if (!presentRel.has(row.path) && softDeleteProposalRecord(row.id, this.now()).badgeChanged) {
+        badgeRelevantChanges += 1;
+      }
     }
 
+    if (badgeRelevantChanges > 0) this.notifyPlanBadgesInvalidated?.(ws.id);
     return result;
   }
 
   private reconcileOne(
     ws: Workspace, dir: string, name: string, relPath: string, result: ReconcileResult,
-  ): void {
+  ): boolean {
     const absPath = joinNative(dir, name, ws.pathType);
     let st: fs.Stats;
-    try { st = fs.statSync(absPath); } catch { return; }
-    if (!st.isFile()) return;
+    try { st = fs.statSync(absPath); } catch { return false; }
+    if (!st.isFile()) return false;
 
     const existing = getProposalByWorkspacePath(ws.id, relPath);
     if (existing) {
@@ -338,10 +365,9 @@ export class ProposalsWatcher {
           detail: `artifact_id ${existing.artifactId ?? '(missing)'} does not match prop_[0-9a-f]{8}; quarantined from further ingestion: ${relPath}`,
         });
         log(`non-contract artifact_id quarantined: ${relPath}`);
-        return;
+        return false;
       }
-      // Revive a soft-deleted row's timestamps only when live; otherwise touch fs fields.
-      if (existing.deletedAt == null && (existing.mtimeMs !== st.mtimeMs || existing.sizeBytes !== st.size)) {
+      if (existing.deletedAt != null || existing.mtimeMs !== st.mtimeMs || existing.sizeBytes !== st.size) {
         const raw = readSmall(absPath);
         const fm = raw != null ? analyzeFrontmatter(raw) : { kind: 'absent' as const };
         const diskArtifactId = fm.kind === 'present' ? fm.fields.artifact_id : undefined;
@@ -351,7 +377,7 @@ export class ProposalsWatcher {
             detail: `on-disk artifact_id ${diskArtifactId ?? '(missing)'} does not match prop_[0-9a-f]{8}; changed proposal quarantined without updating its registered row: ${relPath}`,
           });
           log(`changed proposal has non-contract artifact_id; quarantined: ${relPath}`);
-          return;
+          return false;
         }
         if (diskArtifactId !== existing.artifactId) {
           result.diagnostics.push({
@@ -359,19 +385,22 @@ export class ProposalsWatcher {
             detail: `on-disk artifact_id changed from registered ${existing.artifactId} to ${diskArtifactId}; quarantined without rebinding: ${relPath}`,
           });
           log(`proposal artifact_id change quarantined: ${relPath}`);
-          return;
+          return false;
         }
         const title = (fm.kind === 'present' && fm.fields.title) || existing.title;
-        touchProposalRecord(existing.id, {
+        const fields = {
           title, mtimeMs: st.mtimeMs, sizeBytes: st.size, updatedAt: this.now(),
-        });
+        };
+        return existing.deletedAt != null
+          ? reviveProposalRecord(existing.id, fields).badgeChanged
+          : touchProposalRecord(existing.id, fields).badgeChanged;
       }
-      return;
+      return false;
     }
 
     // ── New file: read + analyze frontmatter ──
     const raw = readSmall(absPath);
-    if (raw == null) { log(`unreadable proposal skipped: ${relPath}`); return; }
+    if (raw == null) { log(`unreadable proposal skipped: ${relPath}`); return false; }
     let fm = analyzeFrontmatter(raw);
     if (fm.kind === 'malformed') {
       result.diagnostics.push({
@@ -379,7 +408,7 @@ export class ProposalsWatcher {
         detail: `leading --- frontmatter block is unterminated; quarantined (not registered, not rewritten): ${relPath}`,
       });
       log(`malformed frontmatter quarantined: ${relPath}`);
-      return;
+      return false;
     }
 
     // ── artifact_id: adopt when present, else mint + safely insert ──
@@ -394,7 +423,7 @@ export class ProposalsWatcher {
           kind: 'malformed-frontmatter', workspaceId: ws.id, relPath,
           detail: `could not safely insert artifact_id; quarantined: ${relPath}`,
         });
-        return;
+        return false;
       }
       if (ws.pathType === 'windows' && patched !== raw) {
         try { fs.writeFileSync(absPath, patched, 'utf8'); }
@@ -411,7 +440,7 @@ export class ProposalsWatcher {
         detail: `artifact_id ${artifactId} does not match prop_[0-9a-f]{8}; quarantined (not registered, not rewritten): ${relPath}`,
       });
       log(`non-contract artifact_id quarantined: ${relPath}`);
-      return;
+      return false;
     }
 
     // ── Duplicate policy: leave unregistered + both-paths diagnostic ──
@@ -422,7 +451,7 @@ export class ProposalsWatcher {
         detail: `artifact_id ${artifactId} already registered to ${canonical.path}; left ${relPath} unregistered (canonical row not rebound)`,
       });
       log(`duplicate artifact_id ${artifactId}: ${relPath} vs ${canonical.path}`);
-      return;
+      return false;
     }
 
     const fields = fm.kind === 'present' ? fm.fields : {};
@@ -455,6 +484,9 @@ export class ProposalsWatcher {
       // A concurrent writer may have raced us to the same (path|artifact_id).
       log(`insert failed for ${relPath}`, err);
     }
+    // A newly inserted proposal cannot already be the source of a plan row;
+    // ownership-only badges therefore do not invalidate here. Linking emits P2.
+    return false;
   }
 }
 
@@ -469,8 +501,8 @@ function readSmall(absPath: string): string | null {
   } catch { return null; }
 }
 
-export function startProposalsWatcher(opts?: ProposalsWatcherOptions): ProposalsWatcher {
+export async function startProposalsWatcher(opts?: ProposalsWatcherOptions): Promise<ProposalsWatcher> {
   const w = new ProposalsWatcher(opts);
-  w.start();
+  await w.start();
   return w;
 }

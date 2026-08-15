@@ -90,6 +90,8 @@ type DbModule = {
   addFileActivity(agentId: string, filePath: string, operation: string): unknown;
   getProposalByWorkspacePath(workspaceId: string, path: string): ProposalRecord | null;
   listProposalsByWorkspace(workspaceId: string): ProposalRecord[];
+  getAgentPlanBadgeSummary(workspaceId: string): Record<string, Array<{ title: string }>>;
+  getDb(): { prepare(sql: string): { run(...params: unknown[]): unknown } };
 };
 
 type Diagnostic = {
@@ -100,9 +102,19 @@ type ReconcileResult = { registered: ProposalRecord[]; diagnostics: Diagnostic[]
 type Ws = { id: string; path: string; pathType: string };
 
 type WatcherModule = {
-  ProposalsWatcher: new (opts?: { now?: () => number }) => {
+  ProposalsWatcher: new (opts?: { now?: () => number; notifyPlanBadgesInvalidated?: (workspaceId: string) => void }) => {
     reconcileWorkspace(ws: Ws): ReconcileResult;
+    stop(): void;
   };
+  startProposalsWatcher(opts?: {
+    now?: () => number;
+    scheduler?: {
+      setTimeout(callback: () => void, delayMs: number): unknown;
+      clearTimeout(timer: unknown): void;
+      setInterval(callback: () => void, delayMs: number): unknown;
+      clearInterval(timer: unknown): void;
+    };
+  }): Promise<{ stop(): void }>;
   ensureProposalsDir(ws: Ws): void;
   analyzeFrontmatter(raw: string): { kind: 'present' | 'absent' | 'malformed'; fields?: Record<string, string> };
   insertArtifactId(raw: string, id: string): string | null;
@@ -187,6 +199,72 @@ test('an adopted proposal with no witnessed write registers as author_role=unkno
   assert.equal(row!.createdAt, 2000);
   assert.equal(row!.authoredAt, Date.parse('2026-08-01T10:00:00Z'));
   assert.ok(res.registered.some((r) => r.path === '.lares/proposals/adopt.md'));
+});
+
+test('ownership badge title invalidation fires after committed title, delete, and revival changes only', () => {
+  const supervisor = makeSupervisor('Badge Owner');
+  writeProposal('badge-source.md', '---\nartifact_id: prop_badc0ffe\ntitle: Original\n---\n\nbody');
+  const observed: Array<string | null> = [];
+  const watcher = new wm.ProposalsWatcher({
+    now: () => clock,
+    notifyPlanBadgesInvalidated: (workspaceId) => {
+      const badge = dbm.getAgentPlanBadgeSummary(workspaceId)[supervisor.id]?.[0];
+      observed.push(badge?.title ?? null);
+    },
+  });
+  watcher.reconcileWorkspace(ws);
+  assert.deepEqual(observed, [], 'proposal insertion alone is not ownership/authorship');
+  const proposal = dbm.getProposalByWorkspacePath(ws.id, '.lares/proposals/badge-source.md')!;
+  dbm.getDb().prepare(
+    `INSERT INTO plans
+      (id, workspace_id, path, slug, format, run_state, mtime_ms, size_bytes,
+       artifact_id, source_proposal_id, responsible_supervisor_id)
+     VALUES (?, ?, ?, ?, 'structured', 'hardening', 1, 1, ?, ?, ?)`,
+  ).run('badge-plan-row', ws.id, '.lares/plans/badge/plan.md', 'badge-plan',
+    'plan_badc0ffe', proposal.id, supervisor.id);
+
+  clock += 1;
+  writeProposal('badge-source.md', '---\nartifact_id: prop_badc0ffe\ntitle: Updated ownership title\n---\n\nbody expanded');
+  watcher.reconcileWorkspace(ws);
+  assert.deepEqual(observed, ['Updated ownership title'],
+    'REACHABILITY:badge-producer-emits callback reads committed title');
+
+  observed.length = 0;
+  fs.rmSync(path.join(proposalsDir(), 'badge-source.md'));
+  clock += 1;
+  watcher.reconcileWorkspace(ws);
+  assert.deepEqual(observed, ['badge-plan'], 'delete callback reads committed fallback title');
+
+  observed.length = 0;
+  clock += 1;
+  writeProposal('badge-source.md', '---\nartifact_id: prop_badc0ffe\ntitle: Revived title\n---\n\nbody');
+  watcher.reconcileWorkspace(ws);
+  assert.deepEqual(observed, ['Revived title'], 'revival is readable before invalidation');
+
+  observed.length = 0;
+  watcher.reconcileWorkspace(ws);
+  assert.deepEqual(observed, [], 'no-op pass emits nothing');
+});
+
+test('production watcher factory resolves after initial reconcile and stop clears its refresh resource', async () => {
+  writeProposal('readiness.md', '---\nartifact_id: prop_1234abcd\ntitle: Ready before resolve\n---\n');
+  const intervals = new Set<unknown>();
+  const scheduler = {
+    setTimeout: (_callback: () => void, _delayMs: number) => ({ kind: 'timeout' }),
+    clearTimeout: (_timer: unknown) => {},
+    setInterval: (_callback: () => void, _delayMs: number) => {
+      const handle = { kind: 'interval' };
+      intervals.add(handle);
+      return handle;
+    },
+    clearInterval: (timer: unknown) => { intervals.delete(timer); },
+  };
+  const watcher = await wm.startProposalsWatcher({ now: () => clock, scheduler });
+  assert.ok(dbm.getProposalByWorkspacePath(ws.id, '.lares/proposals/readiness.md'),
+    'factory readiness includes initial reconcile before resolution');
+  assert.equal(intervals.size, 1, 'factory creates one refresh resource');
+  watcher.stop();
+  assert.equal(intervals.size, 0, 'stop clears the refresh resource');
 });
 
 test('created_at stays stable across an edit (date-grouping key)', () => {

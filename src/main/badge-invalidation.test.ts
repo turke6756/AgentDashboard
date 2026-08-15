@@ -108,7 +108,14 @@ try {
     BadgeInvalidationCoordinator,
     BADGE_INVALIDATION_QUIET_WINDOW_MS,
     broadcastPlanBadgesInvalidated,
+    createProductionBadgeInvalidationCoordinator,
   } = require('./badge-invalidation') as typeof import('./badge-invalidation');
+
+  const productionCoordinator = createProductionBadgeInvalidationCoordinator();
+  assert.ok(productionCoordinator instanceof BadgeInvalidationCoordinator,
+    'production obtains the coordinator through the real scheduler/broadcaster composition');
+  productionCoordinator.notify('production-resource-proof');
+  productionCoordinator.stop();
 
   const deliveryScheduler = new FakeScheduler();
   const deliveryCoordinator = new BadgeInvalidationCoordinator({

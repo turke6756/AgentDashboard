@@ -23,6 +23,7 @@ export interface SourceProposalProjectionDiagnostic {
 
 export interface SourceProposalProjectionResult extends PlanSourceProposalProjectionState {
   diagnostics: SourceProposalProjectionDiagnostic[];
+  badgeChanged: boolean;
 }
 
 export interface ReconcilePlanSourceProposalInput {
@@ -37,13 +38,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function asResult(state: PlanSourceProposalProjectionState): SourceProposalProjectionResult {
+function asResult(state: PlanSourceProposalProjectionState & { badgeChanged?: boolean }): SourceProposalProjectionResult {
   let diagnostics: SourceProposalProjectionDiagnostic[] = [];
   try {
     const parsed = JSON.parse(state.diagnosticsJson);
     if (Array.isArray(parsed)) diagnostics = parsed;
   } catch { /* database CHECK/default keeps production rows valid; tolerate legacy dirt */ }
-  return { ...state, diagnostics };
+  return { ...state, badgeChanged: state.badgeChanged === true, diagnostics };
 }
 
 function samePath(a: string, b: string): boolean {

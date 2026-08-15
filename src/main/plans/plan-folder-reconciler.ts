@@ -212,7 +212,7 @@ export function reconcilePlanFolderProjections(
         observedManifestMtime: null,
         reconciledAt: (input.now ?? (() => Date.now()))(),
       });
-      sourceProposal = { ...state, diagnostics: [{ code: 'source-reconciler-failed', detail }] };
+      sourceProposal = { ...state, badgeChanged: false, diagnostics: [{ code: 'source-reconciler-failed', detail }] };
     }
     const planning = (services.reconcilePlanningState ?? reconcilePlanFolderPlanningState)({
       workspaceId: input.workspace.id,

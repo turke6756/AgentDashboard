@@ -110,6 +110,7 @@ class FakeBetterSqlite {
 type DbModule = {
   initDatabase(): void;
   createWorkspace(input: { title: string; path: string; pathType: string }): { id: string };
+  deleteAgent(id: string): { workspaceId: string | null; badgeChanged: boolean };
 };
 
 let dbm: DbModule;
@@ -161,11 +162,13 @@ test('deleting the responsible supervisor nulls plans.responsible_supervisor_id 
   enableFk();
   rawInsertWorkspace('ws-r');
   rawInsertAgent('sup-null', 'ws-r');
-  rawInsertPlan('plan-null', { responsible_supervisor_id: 'sup-null' });
+  rawInsertPlan('plan-null', { artifact_id: 'plan_deadbeef', responsible_supervisor_id: 'sup-null' });
   assert.equal(
     FakeBetterSqlite.rawAll(`SELECT responsible_supervisor_id AS s FROM plans WHERE id='plan-null'`)[0].s,
     'sup-null');
-  FakeBetterSqlite.rawRun(`DELETE FROM agents WHERE id=?`, ['sup-null']);
+  const deletion = dbm.deleteAgent('sup-null');
+  assert.deepEqual(deletion, { workspaceId: 'ws-r', badgeChanged: true },
+    'agent deletion reports the committed ownership-badge change to its caller');
   // The plan survives; only its responsibility pointer is nulled.
   const rows = FakeBetterSqlite.rawAll(`SELECT responsible_supervisor_id AS s FROM plans WHERE id='plan-null'`);
   assert.equal(rows.length, 1, 'the plan row itself must survive the supervisor delete');

@@ -523,6 +523,7 @@ test('missing and malformed replacements preserve rows; valid omission tombstone
 
 test('last assigned array entry wins without timestamp sorting and never assigns active plan', () => {
   const ctx = context();
+  dbm.getDb().prepare('UPDATE plans SET artifact_id = ? WHERE id = ?').run(ctx.artifactId, ctx.plan.id);
   const sup1 = dbm.createAgent({ workspaceId: ctx.workspace.id, title: 'Sup 1', roleDescription: '',
     workingDirectory: ctx.workspace.path, command: 'x', isSupervisor: true,
     tmuxSessionName: null, autoRestartEnabled: false, logPath: 'l' });
@@ -537,6 +538,9 @@ test('last assigned array entry wins without timestamp sorting and never assigns
   const result = reconcile(ctx);
   assert.equal(result.responsibility.status, 'valid');
   assert.equal(result.responsibility.supervisorId, sup2.id);
+  assert.equal(result.responsibility.badgeChanged, true);
+  assert.equal(reconcile(ctx).responsibility.badgeChanged, false,
+    'idempotent ownership projection does not invalidate badges');
   assert.equal(raw('SELECT responsible_supervisor_id FROM plans WHERE id = ?', [ctx.plan.id])[0].responsible_supervisor_id, sup2.id);
   assert.equal(raw('SELECT * FROM supervisor_active_plan WHERE plan_id = ?', [ctx.plan.id]).length, 0,
     'boot/order reconciliation never assigns active attention');
@@ -544,6 +548,7 @@ test('last assigned array entry wins without timestamp sorting and never assigns
 
 test('invalid latest assignment clears stale authority independently while valid WP ingest proceeds', () => {
   const ctx = context();
+  dbm.getDb().prepare('UPDATE plans SET artifact_id = ? WHERE id = ?').run(ctx.artifactId, ctx.plan.id);
   const sup = dbm.createAgent({ workspaceId: ctx.workspace.id, title: 'Sup', roleDescription: '',
     workingDirectory: ctx.workspace.path, command: 'x', isSupervisor: true,
     tmuxSessionName: null, autoRestartEnabled: false, logPath: 'l' });
@@ -556,6 +561,7 @@ test('invalid latest assignment clears stale authority independently while valid
   ]);
   const result = reconcile(ctx);
   assert.equal(result.responsibility.status, 'invalid');
+  assert.equal(result.responsibility.badgeChanged, true, 'clearing stale ownership changes the badge set');
   assert.equal(result.workPackages.status, 'synced');
   assert.equal(raw('SELECT responsible_supervisor_id FROM plans WHERE id = ?', [ctx.plan.id])[0].responsible_supervisor_id, null);
   assert.equal(raw('SELECT * FROM supervisor_active_plan WHERE supervisor_id = ?', [sup.id]).length, 0);

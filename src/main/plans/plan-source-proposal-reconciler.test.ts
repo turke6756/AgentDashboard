@@ -79,19 +79,24 @@ class FakeBetterSqlite {
 
   await run('valid source transaction is isolated, idempotent, and preserves promoted_at', () => {
     const f = fixture();
+    dbm.getDb().prepare('UPDATE plans SET responsible_supervisor_id = ? WHERE id = ?')
+      .run('supervisor-owner', f.planId);
     const input = { workspace: f.ws, planId: f.planId, folderAbs: f.folderAbs,
       expectedPlanArtifactId: f.planArtifact, now: () => 1_786_000_000_100 };
     const first = reconciler.reconcilePlanSourceProposal(input);
     assert.equal(first.status, 'synced');
+    assert.equal(first.badgeChanged, true, 'new source identity/title link changes an ownership badge');
     const raw = dbm.getDb();
     const plan = raw.prepare('SELECT source_proposal_id, promoted_at, responsible_supervisor_id FROM plans WHERE id = ?').get(f.planId) as any;
     assert.equal(plan.source_proposal_id, 'proposal-row-1');
     assert.equal(plan.promoted_at, 1_786_000_000_000);
-    assert.equal(plan.responsible_supervisor_id, null);
+    assert.equal(plan.responsible_supervisor_id, 'supervisor-owner');
     assert.equal((raw.prepare("SELECT COUNT(*) AS n FROM plan_documents WHERE plan_id = ? AND doc_kind='proposal'").get(f.planId) as any).n, 1);
     assert.equal((raw.prepare('SELECT artifact_ref FROM plan_documents WHERE plan_id = ?').get(f.planId) as any).artifact_ref, f.artifact);
     raw.prepare('UPDATE plans SET promoted_at = 123 WHERE id = ?').run(f.planId);
-    assert.equal(reconciler.reconcilePlanSourceProposal(input).status, 'synced');
+    const second = reconciler.reconcilePlanSourceProposal(input);
+    assert.equal(second.status, 'synced');
+    assert.equal(second.badgeChanged, false, 'idempotent source projection is not a badge change');
     assert.equal((raw.prepare('SELECT promoted_at FROM plans WHERE id = ?').get(f.planId) as any).promoted_at, 123);
     assert.equal((raw.prepare('SELECT COUNT(*) AS n FROM supervisor_active_plan').get() as any).n, 0);
     assert.equal((raw.prepare('SELECT COUNT(*) AS n FROM plan_work_packages WHERE plan_id = ?').get(f.planId) as any).n, 0);
@@ -103,6 +108,7 @@ class FakeBetterSqlite {
     const result = reconciler.reconcilePlanSourceProposal({ workspace: f.ws, planId: f.planId,
       folderAbs: f.folderAbs, expectedPlanArtifactId: f.planArtifact });
     assert.equal(result.status, 'conflict');
+    assert.equal(result.badgeChanged, false);
     assert.equal(result.diagnosticCode, 'proposal-document-mismatch');
     const raw = dbm.getDb();
     assert.equal((raw.prepare('SELECT source_proposal_id FROM plans WHERE id = ?').get(f.planId) as any).source_proposal_id, null);

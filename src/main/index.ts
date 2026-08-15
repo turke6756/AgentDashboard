@@ -63,7 +63,12 @@ import { registerJupyterServerExitDisposal, shutdownJupyterServer } from './jupy
 import { disposeKernelClient } from './jupyter-kernel-client';
 import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
 import { startPlansWatcher, PlansWatcher } from './plans-watcher';
+import { startProposalsWatcher, type ProposalsWatcher } from './proposals-watcher';
 import { runProposalScan } from './proposal-scan';
+import {
+  BadgeInvalidationCoordinator,
+  createProductionBadgeInvalidationCoordinator,
+} from './badge-invalidation';
 import { LegacyPromotionDrain } from './plans/legacy-promotion-drain';
 import {
   PromotionDeliveryInspectorImpl,
@@ -346,6 +351,8 @@ let devServerUrl: string | null = null;
 let supervisor: AgentSupervisor | null = null;
 let wsServer: WsServer | null = null;
 let apiServer: ApiServer | null = null;
+let proposalsWatcher: ProposalsWatcher | null = null;
+let badgeInvalidationCoordinator: BadgeInvalidationCoordinator<ReturnType<typeof setTimeout>> | null = null;
 let orchestration: OrchestrationService | null = null;
 let browserManager: BrowserManager | null = null;
 // Idle-agent lifecycle §B9 — the automatic stale-idle sweep. Armed after
@@ -817,6 +824,10 @@ app.whenReady().then(async () => {
     console.log('Initializing database...');
     initDatabase();
     console.log('Database initialized');
+    badgeInvalidationCoordinator = createProductionBadgeInvalidationCoordinator();
+    const notifyPlanBadgesInvalidated = (workspaceId: string): void => {
+      badgeInvalidationCoordinator?.notify(workspaceId);
+    };
 
     // Windows node shim (bundled-node-exposure plan §1.2). Generate the
     // userData `node` trampoline BEFORE any agent can launch, so a Node-free
@@ -855,6 +866,7 @@ app.whenReady().then(async () => {
         console.error(`[proposal-scan] startup scan failed for ${ws.id}:`, err);
       }
     }
+    proposalsWatcher = await startProposalsWatcher({ notifyPlanBadgesInvalidated });
 
     // Boot lifecycle op, deliberately OUTSIDE initDatabase (which runs more than
     // once in some processes/tests). An 'open' continuation attempt is owned by
@@ -883,6 +895,11 @@ app.whenReady().then(async () => {
     validateAndRepairWslClaudeJson();
 
     supervisor = new AgentSupervisor();
+    supervisor.on('agentDeleted', (event: {
+      workspaceId?: string | null; badgeChanged?: boolean;
+    }) => {
+      if (event.badgeChanged === true && event.workspaceId) notifyPlanBadgesInvalidated(event.workspaceId);
+    });
 
     // Git-Native WP-G1.7 — construct the checkpoint engine (queue/service/
     // completion-tracker/coordinator/witness), wire it into the supervisor, install
@@ -1107,7 +1124,9 @@ app.whenReady().then(async () => {
       }
     });
     ipcMain.handle('orchestration:list-active', () => orchestration?.activeSupervisorIds() ?? []);
-    apiServer = new ApiServer(supervisor, undefined, orchestration);
+    apiServer = new ApiServer(
+      supervisor, undefined, orchestration, undefined, undefined, notifyPlanBadgesInvalidated,
+    );
     // Class IV (plans/class-iv-worker-hook-scaffold.md): tell the supervisor the
     // port the API server actually bound to (handles EADDRINUSE auto-increment)
     // so supervised workers' Stop hooks POST to the right place. start()
@@ -1146,6 +1165,7 @@ app.whenReady().then(async () => {
     // Legacy promotion machinery is drain-only. The mutation/status IPC no
     // longer exists, so no steady-state path can create a promotion_requests row.
     plansWatcher = startPlansWatcher({
+      notifyPlanBadgesInvalidated,
       onPlanFolderSettled: async () => {
         const report = await legacyPromotionDrain.drainAndRetire();
         if (report.processed > 0) {
@@ -1543,11 +1563,13 @@ async function shutdownApp(): Promise<void> {
   catch (err) { console.error('[shutdown] drain failed:', err); }
   drainCompleted = true;
   apiServer?.stop();
+  proposalsWatcher?.stop();
   wsServer?.stop();
   disposeKernelClient();
   void shutdownJupyterServer();
   stopClaudeJsonRuntimeWatcher();
   plansWatcher?.stop();
+  badgeInvalidationCoordinator?.stop();
   closeAllFsWatchers();
   app.quit();
 }

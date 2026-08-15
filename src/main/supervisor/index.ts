@@ -7292,8 +7292,8 @@ export class AgentSupervisor extends EventEmitter {
     // agent row is STILL present so the shared-reference scan can exclude this
     // id and detect only *other* agents pointing at the same path.
     if (logPath) reclaimAgentLogFiles(logPath, agentId, this.logsDir);
-    dbDeleteAgent(agentId);
-    this.emit('agentDeleted', { agentId });
+    const deletion = dbDeleteAgent(agentId);
+    this.emit('agentDeleted', { agentId, ...deletion });
   }
 
   /** §B6 — restart is ONE locked lifecycle op (stop → restarting → settle →

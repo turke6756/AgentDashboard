@@ -3786,6 +3786,43 @@ export function softDeletePlan(id: string): Plan | null {
   return getPlan(id);
 }
 
+function getRenderedOwnershipBadgeTitle(planId: string): string | null {
+  const row = queryOne(
+    `SELECT COALESCE(pr.title, p.slug, p.artifact_id) AS title
+       FROM plans p
+       LEFT JOIN proposals pr ON pr.workspace_id = p.workspace_id
+        AND pr.id = p.source_proposal_id AND pr.deleted_at IS NULL
+      WHERE p.id = ? AND p.deleted_at IS NULL AND p.artifact_id IS NOT NULL
+        AND p.responsible_supervisor_id IS NOT NULL`,
+    [planId],
+  ) as { title: string | null } | null;
+  return row?.title ?? null;
+}
+
+/** API-facing update result for exact post-commit title invalidation. */
+export function updatePlanWithBadgeResult(
+  id: string,
+  updates: UpdatePlanInput,
+): { plan: Plan | null; badgeChanged: boolean } {
+  const beforeTitle = getRenderedOwnershipBadgeTitle(id);
+  const plan = updatePlan(id, updates);
+  const afterTitle = getRenderedOwnershipBadgeTitle(id);
+  return { plan, badgeChanged: beforeTitle !== afterTitle };
+}
+
+/** Soft-delete only a live row and report whether this call committed the
+ * live-to-deleted transition. Broadcasting remains a caller concern. */
+export function softDeletePlanIfLive(id: string): { plan: Plan | null; changed: boolean } {
+  const current = getPlan(id);
+  if (!current || current.deletedAt != null) return { plan: current, changed: false };
+  const result = runWithResult(
+    `UPDATE plans SET deleted_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ? AND deleted_at IS NULL`,
+    [id],
+  );
+  return { plan: getPlan(id), changed: result.changes > 0 };
+}
+
 /** INTERNAL ONLY — used by updatePlan's DEC-1 tombstone reclaim. Never exposed as a
  *  route (the API never hard-deletes plans; soft only). Relies on ON DELETE CASCADE. */
 function hardDeletePlanRow(id: string): void {
@@ -5825,7 +5862,13 @@ export function pruneFileActivitiesToRecentSessions(
   return { prunedRows, prunedSessions: drop.length };
 }
 
-export function deleteAgent(id: string): void {
+export function deleteAgent(id: string): { workspaceId: string | null; badgeChanged: boolean } {
+  const agent = queryOne('SELECT workspace_id FROM agents WHERE id = ?', [id]) as { workspace_id: string } | null;
+  const badgeChanged = queryOne(
+    `SELECT 1 AS ok FROM plans
+      WHERE responsible_supervisor_id = ? AND deleted_at IS NULL AND artifact_id IS NOT NULL LIMIT 1`,
+    [id],
+  ) != null;
   deleteAgentContextStats(id);
   run('DELETE FROM file_activities WHERE agent_id = ?', [id]);
   run('DELETE FROM events WHERE agent_id = ?', [id]);
@@ -5835,6 +5878,7 @@ export function deleteAgent(id: string): void {
   // deletion — a restore/revert must remain possible after the agent is gone.
   // Regression-guarded in turn-records.test.ts.
   run('DELETE FROM agents WHERE id = ?', [id]);
+  return { workspaceId: agent?.workspace_id ?? null, badgeChanged };
 }
 
 /**
@@ -6978,6 +7022,10 @@ export interface PlanSourceProposalProjectionState {
   reconciledAt: number;
 }
 
+export interface ApplyPlanSourceProposalProjectionResult extends PlanSourceProposalProjectionState {
+  badgeChanged: boolean;
+}
+
 function rowToPlanSourceProposalProjectionState(row: any): PlanSourceProposalProjectionState {
   return {
     planId: row.plan_id,
@@ -7047,10 +7095,10 @@ export interface ApplyPlanSourceProposalProjectionInput {
  * request state. Document conflicts are durable and leave all linkage intact. */
 export function applyPlanSourceProposalProjection(
   input: ApplyPlanSourceProposalProjectionInput,
-): PlanSourceProposalProjectionState {
+): ApplyPlanSourceProposalProjectionResult {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const conflict = (code: string, detail: string): PlanSourceProposalProjectionState => {
+    const conflict = (code: string, detail: string): ApplyPlanSourceProposalProjectionResult => {
       run(`
         INSERT INTO plan_source_proposal_projection_state
           (plan_id, workspace_id, status, source_artifact_id, source_rel_path,
@@ -7068,11 +7116,11 @@ export function applyPlanSourceProposalProjection(
       `, [input.planId, input.workspaceId, input.sourceArtifactId, input.sourceRelPath,
         code, JSON.stringify([{ code, detail }]), input.observedManifestMtime,
         input.reconciledAt]);
-      return getPlanSourceProposalProjectionState(input.planId)!;
+      return { ...getPlanSourceProposalProjectionState(input.planId)!, badgeChanged: false };
     };
 
     const plan = queryOne(
-      `SELECT id, workspace_id, artifact_id, source_proposal_id
+      `SELECT id, workspace_id, artifact_id, source_proposal_id, responsible_supervisor_id
          FROM plans WHERE id = ? AND deleted_at IS NULL`,
       [input.planId],
     );
@@ -7169,7 +7217,11 @@ export function applyPlanSourceProposalProjection(
         reconciled_at = excluded.reconciled_at
     `, [input.planId, input.workspaceId, input.sourceArtifactId, input.sourceRelPath,
       input.observedManifestMtime, input.reconciledAt]);
-    const result = getPlanSourceProposalProjectionState(input.planId)!;
+    const result: ApplyPlanSourceProposalProjectionResult = {
+      ...getPlanSourceProposalProjectionState(input.planId)!,
+      badgeChanged: plan.artifact_id != null && plan.responsible_supervisor_id != null
+        && plan.source_proposal_id !== input.sourceProposalId,
+    };
     db.exec('COMMIT');
     return result;
   } catch (err) {
@@ -7437,6 +7489,7 @@ export interface ReconcilePlanResponsibilityResult {
   eventId: string | null;
   supervisorId: string | null;
   detail: string | null;
+  badgeChanged: boolean;
 }
 
 /** Apply manifest responsibility independently from every other folder projection. */
@@ -7445,9 +7498,10 @@ export function reconcilePlanResponsibility(
 ): ReconcilePlanResponsibilityResult {
   return getDb().transaction(() => {
     const plan = queryOne(
-      'SELECT workspace_id, responsible_supervisor_id FROM plans WHERE id = ?',
+      'SELECT workspace_id, artifact_id, deleted_at, responsible_supervisor_id FROM plans WHERE id = ?',
       [input.planId],
-    ) as { workspace_id: string; responsible_supervisor_id: string | null } | null;
+    ) as { workspace_id: string; artifact_id: string | null; deleted_at: string | null;
+      responsible_supervisor_id: string | null } | null;
     if (!plan || plan.workspace_id !== input.workspaceId) {
       throw new Error(`reconcilePlanResponsibility: plan ${input.planId} is not in workspace ${input.workspaceId}`);
     }
@@ -7501,7 +7555,14 @@ export function reconcilePlanResponsibility(
          responsibility_reconciled_at = excluded.responsibility_reconciled_at`,
       [input.planId, input.workspaceId, input.eventId, status, detail, input.reconciledAt],
     );
-    return { status, eventId: input.eventId, supervisorId: status === 'valid' ? supervisorId : null, detail };
+    return {
+      status,
+      eventId: input.eventId,
+      supervisorId: status === 'valid' ? supervisorId : null,
+      detail,
+      badgeChanged: plan.deleted_at == null && plan.artifact_id != null
+        && priorSupervisorId !== resolvedSupervisorId,
+    };
   })();
 }
 
@@ -9675,17 +9736,56 @@ export function getProposalByWorkspaceArtifactId(
 export function touchProposalRecord(
   id: string,
   fields: { title: string | null; mtimeMs: number | null; sizeBytes: number | null; updatedAt: number },
-): void {
+): { badgeChanged: boolean } {
+  const prior = queryOne('SELECT title FROM proposals WHERE id = ?', [id]) as { title: string | null } | null;
+  const badgeSource = prior != null && queryOne(
+    `SELECT 1 AS ok FROM plans
+      WHERE source_proposal_id = ? AND deleted_at IS NULL
+        AND artifact_id IS NOT NULL AND responsible_supervisor_id IS NOT NULL LIMIT 1`,
+    [id],
+  ) != null;
   run(
     `UPDATE proposals SET title = ?, mtime_ms = ?, size_bytes = ?, updated_at = ? WHERE id = ?`,
     [fields.title, fields.mtimeMs, fields.sizeBytes, fields.updatedAt, id],
   );
+  return { badgeChanged: badgeSource && prior!.title !== fields.title };
+}
+
+/** Clear a proposal tombstone and refresh its title/filesystem metadata in one
+ * committed write. Authorship stays fixed and is not badge-relevant. */
+export function reviveProposalRecord(
+  id: string,
+  fields: { title: string | null; mtimeMs: number | null; sizeBytes: number | null; updatedAt: number },
+): { revived: boolean; badgeChanged: boolean } {
+  const prior = queryOne('SELECT deleted_at FROM proposals WHERE id = ?', [id]) as { deleted_at: number | null } | null;
+  if (!prior || prior.deleted_at == null) return { revived: false, badgeChanged: false };
+  const badgeSource = queryOne(
+    `SELECT 1 AS ok FROM plans
+      WHERE source_proposal_id = ? AND deleted_at IS NULL
+        AND artifact_id IS NOT NULL AND responsible_supervisor_id IS NOT NULL LIMIT 1`,
+    [id],
+  ) != null;
+  run(
+    `UPDATE proposals SET title = ?, mtime_ms = ?, size_bytes = ?, updated_at = ?, deleted_at = NULL
+      WHERE id = ? AND deleted_at IS NOT NULL`,
+    [fields.title, fields.mtimeMs, fields.sizeBytes, fields.updatedAt, id],
+  );
+  return { revived: true, badgeChanged: badgeSource };
 }
 
 /** Soft-delete a proposal row whose backing `.md` vanished. Idempotent — the row
  *  survives (history/promotion linkage) with `deleted_at` stamped. */
-export function softDeleteProposalRecord(id: string, deletedAt: number): void {
-  run(`UPDATE proposals SET deleted_at = ?, updated_at = ? WHERE id = ?`, [deletedAt, deletedAt, id]);
+export function softDeleteProposalRecord(id: string, deletedAt: number): { badgeChanged: boolean } {
+  const prior = queryOne('SELECT deleted_at FROM proposals WHERE id = ?', [id]) as { deleted_at: number | null } | null;
+  if (!prior || prior.deleted_at != null) return { badgeChanged: false };
+  const badgeSource = queryOne(
+    `SELECT 1 AS ok FROM plans
+      WHERE source_proposal_id = ? AND deleted_at IS NULL
+        AND artifact_id IS NOT NULL AND responsible_supervisor_id IS NOT NULL LIMIT 1`,
+    [id],
+  ) != null;
+  run(`UPDATE proposals SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, [deletedAt, deletedAt, id]);
+  return { badgeChanged: badgeSource };
 }
 
 /** Witnessed-author resolution for the proposals watcher (WP-P2B). Returns the

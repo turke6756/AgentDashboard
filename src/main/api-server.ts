@@ -20,7 +20,7 @@ import {
   getContinuationAttempt, getContinuationEscapeBudget, closeContinuationHandoffAttempt, insertContinuationBrick,
   getLatestBrickForAttempt, countContinuationDeferrals, insertContinuationDeferral,
   getContinuationDeferralForAttempt, hasRunningOrchestrationForSupervisor,
-  getPlans, getPlan, getPlanByWorkspacePath, createOrRevivePlan, updatePlan, softDeletePlan, derivePlanSlug,
+  getPlans, getPlan, getPlanByWorkspacePath, createOrRevivePlan, updatePlanWithBadgeResult, softDeletePlanIfLive, derivePlanSlug,
   planItemInPlan,
   getSupervisorFocus, upsertSupervisorFocus, deleteSupervisorFocus,
   bumpSupervisorFocusAttended, getSupervisorFocusedPlans,
@@ -522,6 +522,7 @@ export class ApiServer {
     private orchestration?: OrchestrationService,
     private bindHost: string = '0.0.0.0',
     private browserTools?: BrowserToolProvider,
+    private notifyPlanBadgesInvalidated: (workspaceId: string) => void = () => {},
   ) {
     this.supervisor = supervisor;
     this.port = port;
@@ -3898,17 +3899,19 @@ export class ApiServer {
         updates.path = normalizePlanPath(b.path);                       // rename rebind
         if (updates.slug === undefined) updates.slug = derivePlanSlug(updates.path); // DEC-4 recompute
       }
-      const updated = updatePlan(planPatch[1], updates);               // may throw 409 (DEC-1)
-      if (!updated) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
-      return updated;
+      const update = updatePlanWithBadgeResult(planPatch[1], updates); // may throw 409 (DEC-1)
+      if (!update.plan) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
+      if (update.badgeChanged) this.notifyPlanBadgesInvalidated(update.plan.workspaceId);
+      return update.plan;
     }
 
     // DELETE /api/plans/:id  (soft)
     const planDel = path.match(/^\/api\/plans\/([^/]+)$/);
     if (method === 'DELETE' && planDel) {
-      const deleted = softDeletePlan(planDel[1]);
-      if (!deleted) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
-      return { ok: true, planId: deleted.id, deletedAt: deleted.deletedAt };
+      const deletion = softDeletePlanIfLive(planDel[1]);
+      if (!deletion.plan) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
+      if (deletion.changed) this.notifyPlanBadgesInvalidated(deletion.plan.workspaceId);
+      return { ok: true, planId: deletion.plan.id, deletedAt: deletion.plan.deletedAt };
     }
 
     // ── Supervisor-focus routes (B2 P1-03) — explicit supervisor_id; NO ACL (R1/R4) ──

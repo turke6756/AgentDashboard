@@ -31,7 +31,7 @@ import {
   getPlanByWorkspaceArtifactId,
   getProposalByWorkspaceArtifactId,
   getProposalByWorkspacePath,
-  softDeletePlan,
+  softDeletePlanIfLive,
   type ProposalRecord,
   type StructuredPlanChange,
 } from '../database';
@@ -224,6 +224,7 @@ export interface PlanFolderWatcherOptions {
   /** Deterministic projection-completion seam (tests); production uses the
    *  ordered folder projection coordinator. */
   reconcileProjections?: typeof reconcilePlanFolderProjections;
+  notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
 }
 
 interface AdoptedFolder {
@@ -288,6 +289,7 @@ export class PlanFolderWatcher {
   private readonly now: () => number;
   private readonly childSubCap: number;
   private readonly reconcileProjections: typeof reconcilePlanFolderProjections;
+  private readonly notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
   /** workspaceId → (folderRelPath → adopted snapshot). */
   private adopted = new Map<string, Map<string, AdoptedFolder>>();
   /** Boot projection rejections awaiting a periodic retry. */
@@ -298,6 +300,7 @@ export class PlanFolderWatcher {
     this.now = opts.now ?? (() => Date.now());
     this.childSubCap = opts.childSubCap ?? DEFAULT_FOLDER_CHILD_SUB_CAP;
     this.reconcileProjections = opts.reconcileProjections ?? reconcilePlanFolderProjections;
+    this.notifyPlanBadgesInvalidated = opts.notifyPlanBadgesInvalidated;
   }
 
   /** Absolute state-dir plans home for a workspace (migration-aware). */
@@ -390,7 +393,7 @@ export class PlanFolderWatcher {
       liveCount += 1;
       const overCap = liveCount > this.childSubCap;
 
-      let adopt: { planId: string; change: string };
+      let adopt: { planId: string; change: StructuredPlanChange };
       try {
         adopt = adoptStructuredPlan({
           workspaceId: ws.id,
@@ -452,7 +455,7 @@ export class PlanFolderWatcher {
 
       if (changeKind !== null) {
         result.settled.push({ planId: adopt.planId, folderRelPath, changeKind });
-        await this.fireSettled(ws, adopt.planId, folderRelPath, changeKind, isBoot);
+        await this.fireSettled(ws, adopt.planId, folderRelPath, changeKind, isBoot, adopt.change);
       }
     }
 
@@ -463,7 +466,8 @@ export class PlanFolderWatcher {
       result.removed.push(folderRelPath);
       this.clearPendingRetry(ws.id, folderRelPath);
       try {
-        softDeletePlan(snap.planId);
+        const deletion = softDeletePlanIfLive(snap.planId);
+        if (deletion.changed) this.notifyPlanBadgesInvalidated?.(ws.id);
       } catch (err) {
         // A row already gone / reclaimed is fine — the folder is gone regardless.
         void err;
@@ -479,7 +483,7 @@ export class PlanFolderWatcher {
    *  legacy PlansWatcher F-C discipline). */
   private async fireSettled(
     ws: Workspace, planId: string, folderRelPath: string,
-    changeKind: FolderChangeKind, isBoot: boolean,
+    changeKind: FolderChangeKind, isBoot: boolean, adoptChange: StructuredPlanChange,
   ): Promise<void> {
     const run = async (): Promise<void> => {
       const projections = await this.reconcileProjections({
@@ -503,6 +507,11 @@ export class PlanFolderWatcher {
         for (const diagnostic of projections.overview.diagnostics) {
           console.warn(`[plan-human-overview] ${diagnostic.code}: ${diagnostic.detail}`);
         }
+      }
+      if (adoptChange === 'adopted' || adoptChange === 'revived'
+          || projections.sourceProposal?.badgeChanged === true
+          || projections.responsibility?.badgeChanged === true) {
+        this.notifyPlanBadgesInvalidated?.(ws.id);
       }
     };
     if (isBoot) {

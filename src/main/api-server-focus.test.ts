@@ -178,6 +178,64 @@ test('DELETE /api/supervisor-focus decodes URL-encoded id segments', () =>
     assert.deepEqual(deleted(), { supervisorId: 'sup/1', planId: 'plan/1' });
   }));
 
+test('DELETE /api/plans invalidates only after a committed live-to-deleted transition', async () => {
+  resetCaptures();
+  installDefaultStubs();
+  let changed = true;
+  db.softDeletePlanIfLive = () => ({
+    plan: { ...PLAN, deletedAt: changed ? 't-del' : 't-already' },
+    changed,
+  });
+  const notifications: string[] = [];
+  const server = new ApiServer(
+    stubSupervisor, 0, undefined, '127.0.0.1', undefined,
+    (workspaceId) => notifications.push(workspaceId),
+  );
+  const port = await server.start();
+  try {
+    const first = await request(port, 'DELETE', '/api/plans/plan-1', AUTH);
+    assert.equal(first.status, 200);
+    assert.deepEqual(notifications, ['ws-1'], 'live delete emits after helper returns committed result');
+
+    changed = false;
+    const second = await request(port, 'DELETE', '/api/plans/plan-1', AUTH);
+    assert.equal(second.status, 200);
+    assert.deepEqual(notifications, ['ws-1'], 'already-deleted no-op emits nothing');
+  } finally {
+    server.stop();
+  }
+});
+
+test('PATCH /api/plans invalidates only when the committed rendered badge title changes', async () => {
+  resetCaptures();
+  installDefaultStubs();
+  let badgeChanged = true;
+  db.updatePlanWithBadgeResult = (_id: string, updates: Record<string, unknown>) => ({
+    plan: { ...PLAN, slug: updates.slug ?? PLAN.slug },
+    badgeChanged,
+  });
+  const notifications: string[] = [];
+  const server = new ApiServer(
+    stubSupervisor, 0, undefined, '127.0.0.1', undefined,
+    (workspaceId) => notifications.push(workspaceId),
+  );
+  const port = await server.start();
+  try {
+    const changed = await request(port, 'PATCH', '/api/plans/plan-1', JSON_AUTH,
+      JSON.stringify({ slug: 'renamed-title' }));
+    assert.equal(changed.status, 200);
+    assert.deepEqual(notifications, ['ws-1']);
+
+    badgeChanged = false;
+    const noOp = await request(port, 'PATCH', '/api/plans/plan-1', JSON_AUTH,
+      JSON.stringify({ run_state: 'executing' }));
+    assert.equal(noOp.status, 200);
+    assert.deepEqual(notifications, ['ws-1'], 'unrelated/no-op patch emits nothing');
+  } finally {
+    server.stop();
+  }
+});
+
 test('R1: focus routes function with NO X-Supervisor-Id header', () =>
   withServer(async (port) => {
     const post = await request(port, 'POST', '/api/supervisor-focus', JSON_AUTH,

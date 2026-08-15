@@ -63,6 +63,7 @@ export interface PlansWatcherOptions {
    *  beyond the cap are adopted + kept current by periodic reconciliation with a
    *  surfaced `degraded-watch` diagnostic — never silently frozen. */
   folderChildSubCap?: number;
+  notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
 }
 
 /** Extract a `data-plan-id="…"` value from plan HTML (adoption identity, C6). */
@@ -250,6 +251,7 @@ export class PlansWatcher {
     this.folderWatcher = new PlanFolderWatcher({
       onPlanFolderSettled: opts.onPlanFolderSettled,
       childSubCap: opts.folderChildSubCap,
+      notifyPlanBadgesInvalidated: opts.notifyPlanBadgesInvalidated,
     });
   }
 

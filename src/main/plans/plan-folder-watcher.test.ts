@@ -29,6 +29,7 @@ function test(name: string, fn: () => Promise<void> | void): void { tests.push({
 type SqlJsDatabase = {
   exec(sql: string): unknown;
   run(sql: string, params?: unknown[]): unknown;
+  getRowsModified(): number;
   prepare(sql: string): {
     bind(params: unknown[]): boolean;
     step(): boolean;
@@ -55,7 +56,10 @@ class FakeBetterSqlite {
   prepare(sql: string) {
     const inner = this.db;
     return {
-      run: (...params: unknown[]) => { inner.run(sql, params); return {}; },
+      run: (...params: unknown[]) => {
+        inner.run(sql, params);
+        return { changes: inner.getRowsModified() };
+      },
       get: (...params: unknown[]) => {
         const stmt = inner.prepare(sql);
         try { stmt.bind(params); return stmt.step() ? stmt.getAsObject() : undefined; }
@@ -129,6 +133,7 @@ type WatcherModule = {
     onPlanFolderSettled?: (planId: string, folderRelPath: string, changeKind: FolderChangeKind) => void | Promise<void>;
     now?: () => number; childSubCap?: number;
     reconcileProjections?: (input: any) => Promise<any>;
+    notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
   }) => {
     reconcileWorkspace(ws: Ws, isBoot: boolean): Promise<FolderReconcileResult>;
     plansHome(ws: Ws): string;
@@ -576,6 +581,66 @@ test('a returned terminal conflict completes boot and is not retried periodicall
   assert.deepEqual(watcher.pendingRetriesForTests(ws.id), []);
   await watcher.reconcileWorkspace(ws, false);
   assert.deepEqual(kinds, ['boot']);
+});
+
+test('badge invalidation executes the production reconcile seam only for committed ownership badge changes', async () => {
+  const sku = 'badge-feed';
+  let notifications: string[] = [];
+  let projection = {
+    sourceProposal: { badgeChanged: false }, responsibility: { badgeChanged: false },
+    intentLedger: { diagnostics: [] }, workPackages: { status: 'synced', diagnostics: [] },
+    overview: { status: 'synced', diagnostics: [] },
+  };
+  const watcher = new wm.PlanFolderWatcher({
+    notifyPlanBadgesInvalidated: (workspaceId) => notifications.push(workspaceId),
+    reconcileProjections: async () => projection,
+  });
+
+  writeFolder(sku, { mtimeMs: 1_000 });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [ws.id], 'REACHABILITY:badge-producer-emits adopted plan');
+
+  notifications = [];
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [], 'unchanged live pass emits nothing');
+
+  projection = { ...projection, responsibility: { badgeChanged: true } };
+  writeFolder(sku, { mtimeMs: 2_000 });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [ws.id], 'committed ownership transition is consumed');
+
+  notifications = [];
+  projection = { ...projection, responsibility: { badgeChanged: false }, sourceProposal: { badgeChanged: true } };
+  writeFolder(sku, { mtimeMs: 3_000 });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [ws.id], 'REACHABILITY:badge-changed-unconsumed');
+
+  notifications = [];
+  projection = { ...projection, sourceProposal: { badgeChanged: false } };
+  writeFolder(sku, { mtimeMs: 4_000 });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [], 'output-only metadata change emits nothing');
+
+  fs.rmSync(folderAbsOf(sku), { recursive: true, force: true });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [ws.id], 'live structured removal emits after soft-delete');
+
+  notifications = [];
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [], 'already removed plan emits nothing');
+
+  writeFolder(sku, { mtimeMs: 4_000 });
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(notifications, [ws.id], 'revival emits once');
+  notifications = [];
+  const bootCalls: string[] = [];
+  const bootWatcher = new wm.PlanFolderWatcher({
+    notifyPlanBadgesInvalidated: (workspaceId) => notifications.push(workspaceId),
+    reconcileProjections: async (input: any) => { bootCalls.push(input.changeKind); return projection; },
+  });
+  await bootWatcher.reconcileWorkspace(ws, true);
+  await waitFor(() => bootCalls.length === 1, 'unchanged boot projection completion');
+  assert.deepEqual(notifications, [], 'unchanged boot folder does not create a boot storm');
 });
 
 test('legacy non-contract folder is quarantined while a valid sibling reaches synced', async () => {

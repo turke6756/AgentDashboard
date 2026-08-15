@@ -127,7 +127,10 @@ function patchDb(agentsMap: Map<string, Agent>, workspace: Workspace): () => voi
   };
   db.getTeamMembership = () => null;
   db.updateAgentResumeSessionId = () => {};
-  db.deleteAgent = (id: string) => { agentsMap.delete(id); };
+  db.deleteAgent = (id: string) => {
+    agentsMap.delete(id);
+    return { workspaceId: workspace.id, badgeChanged: true };
+  };
   // Phase 1 lineage recording touched by the launchAgent / rebind paths; stub
   // so the real fns don't hit the uninitialized module-level db handle.
   db.insertAgentSession = () => {};
@@ -383,8 +386,13 @@ test('(c2) deleteAgent clears the pending entry', async () => {
     const agent = await h.supervisor.launchAgent(
       launchInput(h, 'claude', { initialUserPrompt: INITIAL_PROMPT }),
     );
+    let deletedEvent: unknown;
+    h.supervisor.once('agentDeleted', (event) => { deletedEvent = event; });
     await h.supervisor.deleteAgent(agent.id);
     assert.equal(h.pendingMap().size, 0, 'entry cleared on delete');
+    assert.deepEqual(deletedEvent, {
+      agentId: agent.id, workspaceId: h.workspace.id, badgeChanged: true,
+    }, 'production delete seam forwards committed ownership-badge metadata');
   } finally {
     h.cleanup();
   }
