@@ -74,6 +74,7 @@ interface PendingPlanNavigation {
 
 const PLAN_NAVIGATION_TIMEOUT_MS = 5_000;
 const pendingPlanNavigations = new Map<string, PendingPlanNavigation>();
+const agentPlanBadgeRequestGenerations = new Map<string, number>();
 
 function finishPlanNavigation(requestId: string, outcome: PlanNavOutcome): void {
   const pending = pendingPlanNavigations.get(requestId);
@@ -1590,10 +1591,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   loadAgentPlanBadges: async (workspaceId: string) => {
+    const requestGeneration = (agentPlanBadgeRequestGenerations.get(workspaceId) ?? 0) + 1;
+    agentPlanBadgeRequestGenerations.set(workspaceId, requestGeneration);
     try {
       const badges = await (window.api.agents as typeof window.api.agents & AgentBadgeApi)
         .getAgentPlanBadgeSummary(workspaceId);
       if (get().selectedWorkspaceId !== workspaceId) return;
+      if (agentPlanBadgeRequestGenerations.get(workspaceId) !== requestGeneration) return;
       set({ agentPlanBadges: badges });
     } catch (err) {
       console.warn('Failed to load agent plan badges:', err);

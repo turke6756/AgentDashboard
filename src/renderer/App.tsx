@@ -315,6 +315,14 @@ function AppInner() {
 }
 
 export default function App() {
+  useEffect(() => {
+    return window.api.agents.onPlanBadgesInvalidated(({ workspaceId }) => {
+      const store = useDashboardStore.getState();
+      if (store.selectedWorkspaceId !== workspaceId) return;
+      void store.loadAgentPlanBadges(workspaceId);
+    });
+  }, []);
+
   // Detached (tear-off) file-tab window: same renderer bundle, but a minimal
   // single-file viewer instead of the full dashboard shell (detachable-file-
   // tabs-plan §4 1.8). Branch on the `?detached=1` query main encodes at launch.
