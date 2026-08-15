@@ -355,15 +355,16 @@ test('repo-wide purge rejects a missing workspaceId before any engine call', asy
   assert.equal(routes.state.calls.length, 0);
 });
 
-// ── 3. Non-force restore rides the preview token (no gate consulted) ─────────────
+// ── 3. Non-force restore skips only the IPC force preflight ──────────────────────
 
-test('a non-force restore delegates straight through, without consulting the force gate', async () => {
+test('a non-force restore skips the IPC force preflight and delegates to the authoritative service gate', async () => {
   const { ipc, routes } = wire({ contention: [{ path: 'a.txt', turnId: 'other' }] });
   const res = await ipc.invoke(CHECKPOINT_CHANNELS.restore, {
     workspaceId: 'ws-1', turnId: 't1', paths: ['a.txt'], previewTokens: { 'a.txt': 'oid-at-preview' },
   }) as CheckpointRestoreResult;
   assert.equal(res.status, 'completed');
-  // No `preview` call (the gate only runs for force); exactly one `restore`.
+  // No IPC `preview` preflight (that wrapper only runs for force); the service
+  // restore entry remains authoritative and is reached exactly once.
   assert.equal(routes.state.calls.filter((c) => c.method === 'preview').length, 0);
   const restore = routes.state.calls.find((c) => c.method === 'restore');
   assert.ok(restore);

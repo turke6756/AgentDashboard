@@ -760,6 +760,43 @@ test('restorePaths accepts only a subset; rejects non-witnessed; flags same-path
   assert.deepEqual(svc.validateRestorePaths('T', ['a'], 'WS').contention, []);
 });
 
+test('closed later writer stays out of contention but D1 still refuses its changed after-image', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'before\n');
+  commitAll(repo);
+  const store = new FakeStore();
+  store.seedOpen('T1', 'WS', { turnSeq: 1, agentId: 'agent-1' });
+  const svc = mkService({ store });
+  const before = await svc.captureEdge({
+    edge: 'before', turnId: 'T1', workspaceId: 'WS', agentId: 'agent-1',
+    capability: capFor(repo), quality: 'guaranteed',
+  });
+  assert.equal(before.status, 'ready');
+  store.rows.get('T1')!.touched = [{ path: 'a.txt', op: 'write' }];
+  fs.writeFileSync(path.join(repo, 'a.txt'), 't1-after\n');
+  const after = await svc.captureEdge({
+    edge: 'after', turnId: 'T1', workspaceId: 'WS', agentId: 'agent-1',
+    capability: capFor(repo), quality: 'guaranteed',
+  });
+  assert.equal(after.status, 'ready');
+  await svc.settleCleanups();
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'closed-later-work\n');
+  store.seedOpen('T2', 'WS', {
+    turnSeq: 2, status: 'accepted', agentId: 'agent-2', endedAt: 20,
+    touched: [{ path: 'a.txt', op: 'write' }],
+  });
+  assert.deepEqual(svc.validateRestorePaths('T1', ['a.txt'], 'WS').contention, []);
+
+  const preview = await svc.previewRestore({
+    turnId: 'T1', workspaceId: 'WS', requestedPaths: ['a.txt'], capability: capFor(repo),
+  });
+  assert.equal(preview.available, false);
+  assert.equal(preview.reason, 'after-snapshot-overlap');
+  assert.equal(preview.contention.length, 0);
+  assert.deepEqual(preview.overlap?.files[0]?.blockers.map((b) => b.kind), ['later-turn']);
+});
+
 // ── runner ──────────────────────────────────────────────────────────────────────
 
 (async () => {
