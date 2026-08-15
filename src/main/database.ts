@@ -1677,6 +1677,8 @@ function initContextOptimizerSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_turn_records_ws_seq ON turn_records(workspace_id, turn_seq);
     CREATE INDEX IF NOT EXISTS idx_turn_records_agent ON turn_records(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_turn_records_ws_agent_started
+      ON turn_records(workspace_id, agent_id, started_at);
   `);
 
   // Save-card SC-WP-2A — immutable plan attribution, frozen at turn-open.
@@ -1731,6 +1733,8 @@ function initContextOptimizerSchema(): void {
       PRIMARY KEY (repository_key, commit_oid, turn_id),
       CHECK (relation IN ('candidate_member','exact_path_match','metadata_only'))
     );
+    CREATE INDEX IF NOT EXISTS idx_commit_turn_links_repo_turn
+      ON commit_turn_links(repository_key, turn_id);
     CREATE TABLE IF NOT EXISTS commit_path_links (
       repository_key TEXT NOT NULL,
       commit_oid TEXT NOT NULL,
@@ -1913,6 +1917,29 @@ function initContextOptimizerSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_pic_ws_path_time
       ON proposal_ingest_conflicts (workspace_id, path, observed_at);
+  `);
+
+  // While-you-were-away H1: every submitted capture has a durable lifecycle.
+  // opened_at is independent of updated_at and is never cleared after opening.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS capture_attempts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      turn_id TEXT,
+      status TEXT NOT NULL,
+      reason TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      opened_at INTEGER,
+      before_result TEXT NOT NULL DEFAULT 'unknown',
+      CHECK (status IN ('pending','opened','completed','skipped','failed')),
+      CHECK (before_result IN ('unknown','ready','non-ready'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_capture_attempts_workspace_status_created
+      ON capture_attempts(workspace_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_capture_attempts_turn
+      ON capture_attempts(turn_id);
   `);
 
   // FIVE guarded plans columns (exactly five — no more): the promotion + folder
@@ -2381,6 +2408,12 @@ function initContextOptimizerSchema(): void {
       ended_at            INTEGER
     )
   `);
+
+  // While-you-were-away WP-P1: the feed watermark is a pair of independent
+  // source cursors plus the time at which the client acknowledged the snapshot.
+  try { db.exec(`ALTER TABLE workspaces ADD COLUMN activity_last_viewed_seq INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE workspaces ADD COLUMN activity_last_viewed_file_activity_id INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE workspaces ADD COLUMN activity_last_viewed_at INTEGER`); } catch { /* exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_activity_merge_attempts_run
     ON activity_merge_attempts(execution_run_id, started_at DESC)`);
   db.exec(`
@@ -5962,6 +5995,130 @@ export function listCommitTurnLinks(repositoryKey: string, commitOid: string): C
      WHERE repository_key = ? AND commit_oid = ? ORDER BY turn_id`,
     [repositoryKey, commitOid],
   ).map(rowToCommitTurnLink);
+}
+
+/** Reverse commit lookup for one activity page. Intentionally one SQL query;
+ * callers must not issue the forward commit->turn lookup once per turn. */
+export function listCommitLinksForTurns(
+  repositoryKey: string,
+  turnIds: readonly string[],
+): CommitTurnLink[] {
+  if (turnIds.length === 0) return [];
+  const placeholders = turnIds.map(() => '?').join(', ');
+  return queryAll(
+    `SELECT * FROM commit_turn_links
+     WHERE repository_key = ? AND turn_id IN (${placeholders})
+     ORDER BY turn_id, commit_oid`,
+    [repositoryKey, ...turnIds],
+  ).map(rowToCommitTurnLink);
+}
+
+export type CaptureAttemptStatus = 'pending' | 'opened' | 'completed' | 'skipped' | 'failed';
+export type CaptureAttemptBeforeResult = 'unknown' | 'ready' | 'non-ready';
+
+export interface CaptureAttempt {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  turnId: string | null;
+  status: CaptureAttemptStatus;
+  reason: string | null;
+  createdAt: number;
+  updatedAt: number;
+  openedAt: number | null;
+  beforeResult: CaptureAttemptBeforeResult;
+}
+
+function rowToCaptureAttempt(row: any): CaptureAttempt {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    agentId: row.agent_id,
+    turnId: row.turn_id ?? null,
+    status: row.status as CaptureAttemptStatus,
+    reason: row.reason ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    openedAt: row.opened_at ?? null,
+    beforeResult: row.before_result as CaptureAttemptBeforeResult,
+  };
+}
+
+/** Insert the send-path pending row before any fail-open checkpoint work. */
+export function insertCaptureAttempt(input: {
+  id?: string;
+  workspaceId: string;
+  agentId: string;
+  createdAt?: number;
+}): CaptureAttempt {
+  const id = input.id ?? uuidv4();
+  const createdAt = input.createdAt ?? Date.now();
+  run(
+    `INSERT INTO capture_attempts (
+       id, workspace_id, agent_id, status, created_at, updated_at, before_result
+     ) VALUES (?, ?, ?, 'pending', ?, ?, 'unknown')`,
+    [id, input.workspaceId, input.agentId, createdAt, createdAt],
+  );
+  return getCaptureAttempt(id)!;
+}
+
+export function getCaptureAttempt(id: string): CaptureAttempt | null {
+  const row = queryOne(`SELECT * FROM capture_attempts WHERE id = ?`, [id]);
+  return row ? rowToCaptureAttempt(row) : null;
+}
+
+export function listCaptureAttempts(workspaceId: string): CaptureAttempt[] {
+  return queryAll(
+    `SELECT * FROM capture_attempts WHERE workspace_id = ? ORDER BY created_at, id`,
+    [workspaceId],
+  ).map(rowToCaptureAttempt);
+}
+
+/** Lifecycle update. openedAt uses COALESCE so terminal transitions retain the
+ * first opening timestamp even if a later caller supplies null/undefined. */
+export function updateCaptureAttempt(
+  id: string,
+  updates: {
+    turnId?: string | null;
+    status?: CaptureAttemptStatus;
+    reason?: string | null;
+    updatedAt?: number;
+    openedAt?: number | null;
+    beforeResult?: CaptureAttemptBeforeResult;
+  },
+): CaptureAttempt | null {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (updates.turnId !== undefined) { sets.push('turn_id = ?'); params.push(updates.turnId); }
+  if (updates.status !== undefined) { sets.push('status = ?'); params.push(updates.status); }
+  if (updates.reason !== undefined) { sets.push('reason = ?'); params.push(updates.reason); }
+  if (updates.beforeResult !== undefined) { sets.push('before_result = ?'); params.push(updates.beforeResult); }
+  if (updates.openedAt !== undefined && updates.openedAt !== null) {
+    sets.push('opened_at = COALESCE(opened_at, ?)');
+    params.push(updates.openedAt);
+  }
+  if (sets.length === 0) return getCaptureAttempt(id);
+  sets.push('updated_at = ?');
+  params.push(updates.updatedAt ?? Date.now(), id);
+  run(`UPDATE capture_attempts SET ${sets.join(', ')} WHERE id = ?`, params);
+  return getCaptureAttempt(id);
+}
+
+/** Crash reconciliation. Pending/opened rows cannot survive a process restart;
+ * preserve opened_at and before_result while making the terminal failure clear. */
+export function reconcileCaptureAttempts(workspaceId?: string, reconciledAt = Date.now()): number {
+  const where = workspaceId
+    ? `status IN ('pending','opened') AND workspace_id = ?`
+    : `status IN ('pending','opened')`;
+  const countParams: unknown[] = workspaceId ? [workspaceId] : [];
+  const count = Number(queryOne(`SELECT COUNT(*) AS n FROM capture_attempts WHERE ${where}`, countParams)?.n ?? 0);
+  const params: unknown[] = workspaceId ? [reconciledAt, workspaceId] : [reconciledAt];
+  db.prepare(
+    `UPDATE capture_attempts
+     SET status = 'failed', reason = 'process-restart', updated_at = ?
+     WHERE ${where}`,
+  ).run(...params);
+  return count;
 }
 
 export function upsertCommitPathLink(link: CommitPathLink): void {
@@ -9662,6 +9819,12 @@ export interface ListTurnRecordsOpts {
   since?: number;
   /** Coarse `started_at >=` epoch-ms floor. A SEPARATE filter, NEVER the cursor. */
   sinceTime?: number;
+  /** Inclusive `turn_seq` upper bound used as a stable activity snapshot ceiling. */
+  until?: number;
+  planId?: string;
+  planItemId?: string;
+  /** Open turns or turns with a write/create witness; applied before LIMIT. */
+  eligibleOnly?: boolean;
   /** Bounded page size. Callers validate the range ([1,200]); undefined → 50. */
   limit?: number;
   /** Workspace-relative POSIX path. Matches a turn whose `touched[]` contains it
@@ -9683,9 +9846,29 @@ export function listTurnRecords(
     clauses.push('turn_seq > ?');
     params.push(opts.since);
   }
+  if (opts?.until !== undefined) {
+    clauses.push('turn_seq <= ?');
+    params.push(opts.until);
+  }
   if (opts?.sinceTime !== undefined) {
     clauses.push('started_at >= ?');
     params.push(opts.sinceTime);
+  }
+  if (opts?.planId !== undefined) {
+    clauses.push('plan_id = ?');
+    params.push(opts.planId);
+  }
+  if (opts?.planItemId !== undefined) {
+    clauses.push('plan_item_id = ?');
+    params.push(opts.planItemId);
+  }
+  if (opts?.eligibleOnly) {
+    clauses.push(
+      `(status = 'open' OR (touched IS NOT NULL AND EXISTS (
+        SELECT 1 FROM json_each(turn_records.touched) eligible
+        WHERE json_extract(eligible.value, '$.op') IN ('write','create')
+      )))`,
+    );
   }
   if (opts?.file !== undefined) {
     // JSON1 path-presence predicate (op-agnostic — `touched[]` holds only
@@ -9717,6 +9900,171 @@ export function listOpenTurnRecords(workspaceId: string): TurnRecord[] {
     `SELECT * FROM turn_records WHERE workspace_id = ? AND status = 'open' ORDER BY turn_seq`,
     [workspaceId],
   ).map(rowToTurnRecord);
+}
+
+export interface ActivitySnapshot {
+  throughTurnSeq: number;
+  throughFileActivityId: number;
+  capturedAt: number;
+}
+
+export interface ActivitySourcePage<T> {
+  rows: T[];
+  before: number | null;
+  exhausted: boolean;
+  scanned: number;
+}
+
+export interface ActivityFileActivity extends FileActivity {
+  /** True when a same-agent, session-compatible turn encloses this source row. */
+  enclosed: boolean;
+}
+
+/** Capture both source ceilings before any activity page reads. */
+export function snapshotActivityBounds(
+  workspaceId: string,
+  now: () => number = Date.now,
+): ActivitySnapshot {
+  const row = queryOne(
+    `SELECT
+       COALESCE((SELECT MAX(turn_seq) FROM turn_records WHERE workspace_id = ?), 0) AS turn_seq,
+       COALESCE((SELECT MAX(fa.id) FROM file_activities fa
+         JOIN agents a ON a.id = fa.agent_id WHERE a.workspace_id = ?), 0) AS file_activity_id`,
+    [workspaceId, workspaceId],
+  );
+  return {
+    throughTurnSeq: Number(row?.turn_seq ?? 0),
+    throughFileActivityId: Number(row?.file_activity_id ?? 0),
+    capturedAt: now(),
+  };
+}
+
+export interface WorkspaceActivityView {
+  turnSeq: number;
+  fileActivityId: number;
+  viewedAt: number | null;
+}
+
+export function getWorkspaceActivityView(workspaceId: string): WorkspaceActivityView | null {
+  const row = queryOne(
+    `SELECT activity_last_viewed_seq, activity_last_viewed_file_activity_id,
+            activity_last_viewed_at
+     FROM workspaces WHERE id = ?`,
+    [workspaceId],
+  );
+  return row ? {
+    turnSeq: Number(row.activity_last_viewed_seq ?? 0),
+    fileActivityId: Number(row.activity_last_viewed_file_activity_id ?? 0),
+    viewedAt: row.activity_last_viewed_at ?? null,
+  } : null;
+}
+
+/** Persist exactly the snapshot acknowledged by the client, never page minima. */
+export function markWorkspaceActivityViewed(
+  workspaceId: string,
+  snapshot: Pick<ActivitySnapshot, 'throughTurnSeq' | 'throughFileActivityId'>,
+  viewedAt = Date.now(),
+): WorkspaceActivityView | null {
+  run(
+    `UPDATE workspaces SET activity_last_viewed_seq = ?,
+       activity_last_viewed_file_activity_id = ?, activity_last_viewed_at = ?
+     WHERE id = ?`,
+    [snapshot.throughTurnSeq, snapshot.throughFileActivityId, viewedAt, workspaceId],
+  );
+  return getWorkspaceActivityView(workspaceId);
+}
+
+export interface ListActivityTurnsOpts extends Omit<ListTurnRecordsOpts, 'limit' | 'until'> {
+  throughTurnSeq: number;
+  before: number | null;
+  exhausted?: boolean;
+  limit: number;
+}
+
+/** Newest-first turn scan with a one-row lookahead. Only page rows contribute
+ * to the cursor and scan count; the lookahead row is evidence of non-exhaustion. */
+export function listActivityTurnRecordsThrough(
+  workspaceId: string,
+  opts: ListActivityTurnsOpts,
+): ActivitySourcePage<TurnRecord> {
+  if (opts.exhausted) return { rows: [], before: opts.before, exhausted: true, scanned: 0 };
+  const limit = opts.limit;
+  const limitPlusOne = limit + 1;
+  const rows = listTurnRecords(workspaceId, {
+    ...opts,
+    eligibleOnly: opts.eligibleOnly ?? true,
+    until: opts.before === null
+      ? opts.throughTurnSeq
+      : Math.min(opts.throughTurnSeq, opts.before - 1),
+    limit: limitPlusOne,
+  }).reverse();
+  const pageRows = rows.slice(0, limit);
+  return {
+    rows: pageRows,
+    before: pageRows.length === 0 ? null : pageRows[pageRows.length - 1].turnSeq,
+    exhausted: rows.length <= limit,
+    scanned: pageRows.length,
+  };
+}
+
+export interface ListWorkspaceWriteActivitiesOpts {
+  throughFileActivityId: number;
+  throughTurnSeq: number;
+  snapshotCapturedAt: number;
+  before: number | null;
+  exhausted?: boolean;
+  limit: number;
+}
+
+/** Independently page write/create file activity. The CTE selects limit+1 raw
+ * source rows first; enclosure is then computed for those rows, so enclosed
+ * records still advance the source cursor and can never cause a pagination loop. */
+export function listWorkspaceWriteActivitiesThrough(
+  workspaceId: string,
+  opts: ListWorkspaceWriteActivitiesOpts,
+): ActivitySourcePage<ActivityFileActivity> {
+  if (opts.exhausted) return { rows: [], before: opts.before, exhausted: true, scanned: 0 };
+  const limit = opts.limit;
+  const limitPlusOne = limit + 1;
+  const beforeClause = opts.before === null ? '' : 'AND fa.id < ?';
+  const params: unknown[] = [workspaceId, opts.throughFileActivityId];
+  if (opts.before !== null) params.push(opts.before);
+  params.push(limitPlusOne, workspaceId, opts.throughTurnSeq, opts.snapshotCapturedAt);
+  const rows = queryAll(
+    `WITH scanned AS (
+       SELECT fa.* FROM file_activities fa
+       JOIN agents a ON a.id = fa.agent_id
+       WHERE a.workspace_id = ?
+         AND fa.operation IN ('write','create')
+         AND fa.id <= ? ${beforeClause}
+       ORDER BY fa.id DESC LIMIT ?
+     )
+     SELECT scanned.*,
+       NOT EXISTS (
+         SELECT 1 FROM turn_records t
+         WHERE t.workspace_id = ?
+           AND t.agent_id = scanned.agent_id
+           AND t.turn_seq <= ?
+           AND t.started_at IS NOT NULL
+           AND (scanned.session_id IS NULL OR t.session_id IS NULL OR t.session_id = scanned.session_id)
+           AND datetime(scanned.timestamp) >= datetime(t.started_at / 1000, 'unixepoch')
+           AND datetime(scanned.timestamp) <= datetime(
+             COALESCE(t.ended_at, ?) / 1000, 'unixepoch')
+       ) AS is_unenclosed
+     FROM scanned ORDER BY scanned.id DESC`,
+    params,
+  );
+  const exhausted = rows.length <= limit;
+  const pageRows = rows.slice(0, limit).map((row) => ({
+    ...rowToFileActivity(row),
+    enclosed: !Boolean(row.is_unenclosed),
+  }));
+  return {
+    rows: pageRows,
+    before: pageRows.length === 0 ? null : pageRows[pageRows.length - 1].id,
+    exhausted,
+    scanned: pageRows.length,
+  };
 }
 
 /** Every later turn that witnessed a write/create on one path. Unlike the
