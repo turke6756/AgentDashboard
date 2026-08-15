@@ -238,7 +238,10 @@ export default function FileViewerPanel() {
                 Plans is open in a separate window — close it to view plans here.
               </div>
             ) : effectiveTab.planId ? (
-              <PlanSurfaceContainer planId={effectiveTab.planId} />
+              <PlanSurfaceContainer
+                planId={effectiveTab.planId}
+                navigationRequest={effectiveTab.navigationRequest}
+              />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">Plan unavailable</div>
             )

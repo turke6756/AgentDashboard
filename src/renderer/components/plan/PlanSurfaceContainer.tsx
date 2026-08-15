@@ -4,14 +4,29 @@ import PlanSurfaceView from './PlanSurfaceView';
 import PlanDocumentTabs from './PlanDocumentTabs';
 import type { CandidatePreviewSelection } from '../save/CandidatePreview';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import type { PlanDocumentNavigationRequest } from '../../stores/dashboard-store';
 
 /** Folder-native plan surface. Legacy HTML panes and their activity projection
  * were retired in P8; the document tabs and DB/Git-backed review/package rails
  * are the only surviving surfaces. */
-export default function PlanSurfaceContainer({ planId }: { planId: string }): React.ReactElement {
+interface PlanSurfaceContainerProps {
+  planId: string;
+  navigationRequest?: PlanDocumentNavigationRequest;
+}
+
+export default function PlanSurfaceContainer({
+  planId,
+  navigationRequest,
+}: PlanSurfaceContainerProps): React.ReactElement {
   const [candidateSelection, setCandidateSelection] = useState<CandidatePreviewSelection | null>(null);
   const closeTab = useDashboardStore((s) => s.closeTab);
   const selectedWorkspaceId = useDashboardStore((s) => s.selectedWorkspaceId);
+  const resolvePlanNavigation = useDashboardStore((s) => s.resolvePlanNavigation);
+
+  const handleNavigationResolved = useCallback((result: Parameters<typeof resolvePlanNavigation>[1] & { requestId: string }) => {
+    const { requestId, ...resolution } = result;
+    resolvePlanNavigation(requestId, resolution);
+  }, [resolvePlanNavigation]);
 
   const dismiss = useCallback(() => {
     const { openTabs, selectedWorkspaceId: workspaceId } = useDashboardStore.getState();
@@ -47,7 +62,11 @@ export default function PlanSurfaceContainer({ planId }: { planId: string }): Re
   return (
     <div className="h-full flex min-h-0" data-testid="plan-surface-container">
       <div className="flex-1 min-w-0 min-h-0" data-testid="plan-doc-region">
-        <PlanDocumentTabs planId={planId} />
+        <PlanDocumentTabs
+          planId={planId}
+          navigationRequest={navigationRequest}
+          onNavigationResolved={handleNavigationResolved}
+        />
       </div>
       <div className="w-[384px] shrink-0 min-h-0 flex flex-col border-l dark:border-white/10 light:border-black/10">
         <div className="shrink-0 flex items-center justify-between px-3 py-1.5 border-b dark:border-white/10 light:border-black/10">

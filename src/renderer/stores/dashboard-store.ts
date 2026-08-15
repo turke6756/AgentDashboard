@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, AgentPlanBadge, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion, ActivityCounts, ActivityDigest, ActivityHeartbeatSnapshot, ActivityPage, ActivityViewedResult } from '../../shared/types';
+import type { Agent, AgentPlanBadge, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion, ActivityCounts, ActivityDigest, ActivityHeartbeatSnapshot, ActivityPage, ActivityViewedResult, PlanTabKey } from '../../shared/types';
 import { beginWrite, evictTabCache } from '../components/fileviewer/useFileContentCache';
 import { contentHash } from '../components/fileviewer/markdownSplice';
 import { diag, diagBasename, diagHash } from '../components/fileviewer/editLossDiag';
@@ -45,7 +45,62 @@ export interface TabFocusRange {
 // Renderer-side extension of FileTab: `color` is an optional per-tab visual
 // marker chosen from the tab context menu. The shared FileTab type stays
 // untouched because color never crosses the IPC boundary.
-export type ColoredFileTab = FileTab & { color?: string; focusRange?: TabFocusRange };
+export interface PlanDocumentNavigationRequest {
+  requestId: string;
+  tab: PlanTabKey;
+}
+
+export type PlanNavigationResolution =
+  | { ok: true; tab: PlanTabKey }
+  | { ok: false; reason: string };
+
+export type PlanNavOutcome =
+  | { kind: 'opened-main'; tab: PlanTabKey }
+  | { kind: 'revealed-detached'; tab: PlanTabKey }
+  | { kind: 'fallback-gallery'; reason: string }
+  | { kind: 'failed'; reason: string };
+
+export type ColoredFileTab = FileTab & {
+  color?: string;
+  focusRange?: TabFocusRange;
+  navigationRequest?: PlanDocumentNavigationRequest;
+};
+
+interface PendingPlanNavigation {
+  resolve: (outcome: PlanNavOutcome) => void;
+  timer: ReturnType<typeof setTimeout>;
+  clearRequest: () => void;
+}
+
+const PLAN_NAVIGATION_TIMEOUT_MS = 5_000;
+const pendingPlanNavigations = new Map<string, PendingPlanNavigation>();
+
+function finishPlanNavigation(requestId: string, outcome: PlanNavOutcome): void {
+  const pending = pendingPlanNavigations.get(requestId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingPlanNavigations.delete(requestId);
+  pending.clearRequest();
+  pending.resolve(outcome);
+}
+
+function waitForPlanNavigation(
+  request: PlanDocumentNavigationRequest,
+  clearRequest: () => void,
+): Promise<PlanNavOutcome> {
+  if (pendingPlanNavigations.has(request.requestId)) {
+    return Promise.resolve({ kind: 'failed', reason: 'Duplicate plan navigation request id.' });
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      finishPlanNavigation(request.requestId, {
+        kind: 'failed',
+        reason: `Timed out opening the ${request.tab} plan tab.`,
+      });
+    }, PLAN_NAVIGATION_TIMEOUT_MS);
+    pendingPlanNavigations.set(request.requestId, { resolve, timer, clearRequest });
+  });
+}
 
 const DEFAULT_LAYOUT: PanelLayout = {
   sidebarWidth: 256,
@@ -407,7 +462,13 @@ interface DashboardState {
   openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string, workspaceId?: string, focusRange?: TabFocusRange) => void;
   openDirectoryTab: (rootDirectory: string, pathType: PathType, workspaceId?: string) => void;
   openToolTab: (toolId: string, label: string, opts?: { workspaceId?: string; params?: Record<string, string> }) => void;
-  openPlanTab: (planId: string, label: string, workspaceId?: string) => void;
+  openPlanTab: (
+    planId: string,
+    label: string,
+    workspaceId?: string,
+    opts?: { tab?: PlanTabKey },
+  ) => Promise<PlanNavOutcome>;
+  resolvePlanNavigation: (requestId: string, result: PlanNavigationResolution) => void;
   closeTab: (tabId: string) => void;
   // Detachable file tabs (detachable-file-tabs-plan §4 1.7).
   detachTab: (tabId: string) => void;
@@ -683,21 +744,52 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // region — empty filePath/rootDirectory so no file header/tree renders — but
   // is deduped by (workspace, planId) so opening the same plan re-focuses its
   // existing tab. The content is a sandboxed WebContentsView driven by the main
-  // process; PlanSurfaceContainer streams the pane bounds and the provenance rail.
-  openPlanTab: (planId, label, workspaceId) => {
-    // A detached Plans view owns the single plan pane (main-process WebContentsView).
-    // Opening a plan tab in the main window would fight the detached window over
-    // that one pane, so it's inert here until the detached window closes — mirrors
-    // showFileViewer's detach guard.
-    if (get().detachedViews.includes('plans')) return;
+  // process; PlanSurfaceContainer owns the document and provenance rails.
+  openPlanTab: async (planId, label, workspaceId, opts) => {
+    // WP-8 will replace this typed detached failure with request/ack transport.
+    const requestedTab = opts?.tab ?? 'overview';
+    if (get().detachedViews.includes('plans')) {
+      return { kind: 'failed', reason: 'Plans is open in a detached window.' };
+    }
+    let model;
+    try {
+      model = await window.api.plans.documents(planId);
+    } catch {
+      return { kind: 'failed', reason: 'Could not load the plan destination.' };
+    }
+    if (!model) {
+      get().showPlans();
+      return { kind: 'fallback-gallery', reason: 'Plan no longer exists; opened the plans gallery.' };
+    }
+    if (!model.tabs.some((tab) => tab.key === requestedTab)) {
+      return { kind: 'failed', reason: `The plan has no ${requestedTab} tab.` };
+    }
     const { openTabs, selectedWorkspaceId } = get();
     const ws = workspaceId ?? selectedWorkspaceId ?? undefined;
+    const navigationRequest: PlanDocumentNavigationRequest = {
+      requestId: crypto.randomUUID(),
+      tab: requestedTab,
+    };
+    const completion = waitForPlanNavigation(navigationRequest, () => {
+      set((state) => ({
+        openTabs: state.openTabs.map((tab) => {
+          if (tab.navigationRequest?.requestId !== navigationRequest.requestId) return tab;
+          const { navigationRequest: _completedRequest, ...rest } = tab;
+          return rest;
+        }),
+      }));
+    });
     const existing = openTabs.find((t) => t.kind === 'plan' && t.planId === planId && t.workspaceId === ws);
     if (existing) {
-      set({ activeTabId: existing.id, fileViewerOpen: true, browserOpen: false });
-      return;
+      set((state) => ({
+        openTabs: state.openTabs.map((tab) => tab.id === existing.id ? { ...tab, navigationRequest } : tab),
+        activeTabId: existing.id,
+        fileViewerOpen: true,
+        browserOpen: false,
+      }));
+      return completion;
     }
-    const tab: FileTab = {
+    const tab: ColoredFileTab = {
       id: nextTabId(),
       filePath: '',
       rootDirectory: '',
@@ -706,6 +798,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       label,
       kind: 'plan',
       planId,
+      navigationRequest,
     };
     set((state) => ({
       openTabs: [...state.openTabs, tab],
@@ -713,9 +806,23 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       fileViewerOpen: true,
       browserOpen: false,
     }));
+    return completion;
+  },
+
+  resolvePlanNavigation: (requestId, result) => {
+    finishPlanNavigation(
+      requestId,
+      result.ok
+        ? { kind: 'opened-main', tab: result.tab }
+        : { kind: 'failed', reason: result.reason },
+    );
   },
 
   closeTab: (tabId) => {
+    const requestId = get().openTabs.find((tab) => tab.id === tabId)?.navigationRequest?.requestId;
+    if (requestId) {
+      finishPlanNavigation(requestId, { kind: 'failed', reason: 'Plan tab closed before navigation completed.' });
+    }
     set((state) => {
       const idx = state.openTabs.findIndex((t) => t.id === tabId);
       if (idx === -1) return state;
@@ -746,6 +853,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // already saved by the FileTabBar save-before-detach step (plan §1.6), and
   // the detached window now owns the file. Evicts the content cache too.
   detachTab: (tabId) => {
+    const requestId = get().openTabs.find((tab) => tab.id === tabId)?.navigationRequest?.requestId;
+    if (requestId) {
+      finishPlanNavigation(requestId, { kind: 'failed', reason: 'Plan tab detached before navigation completed.' });
+    }
     evictTabCache(tabId);
     set((state) => {
       const idx = state.openTabs.findIndex((t) => t.id === tabId);
@@ -824,7 +935,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   closeAllTabs: () => {
-    for (const tab of get().openTabs) {
+    const openTabs = get().openTabs;
+    for (const tab of openTabs) {
+      if (tab.navigationRequest) {
+        finishPlanNavigation(tab.navigationRequest.requestId, {
+          kind: 'failed',
+          reason: 'Plan tabs closed before navigation completed.',
+        });
+      }
       evictTabCache(tab.id);
     }
     set({ openTabs: [], activeTabId: null, fileViewerOpen: false, tabEditState: {} });

@@ -9,6 +9,7 @@ import type {
 } from '../../../shared/types';
 import { PLAN_TAB_KEYS, hasSupervisorPrivilege } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import type { PlanDocumentNavigationRequest, PlanNavigationResolution } from '../../stores/dashboard-store';
 import IntentLifecycleStrip from './IntentLifecycleStrip';
 import PlanOverviewBar from './PlanOverviewBar';
 import ProposalReader from './ProposalReader';
@@ -57,6 +58,8 @@ const SUBDIR_TABS: ReadonlySet<PlanTabKey> = new Set<PlanTabKey>([
   'supplements',
 ]);
 
+const COMPLETED_NAVIGATION_ID_LIMIT = 64;
+
 interface DocReadState {
   /** The manifest id of the doc being read — dedupes stale async responses. */
   documentId: string;
@@ -85,7 +88,19 @@ function primaryDocOf(tab: PlanDocumentTab | undefined): PlanTabDocument | null 
   return tab?.documents[0] ?? null;
 }
 
-export default function PlanDocumentTabs({ planId }: { planId: string }): React.ReactElement {
+export type PlanDocumentNavigationResult = PlanNavigationResolution & { requestId: string };
+
+interface PlanDocumentTabsProps {
+  planId: string;
+  navigationRequest?: PlanDocumentNavigationRequest;
+  onNavigationResolved?: (result: PlanDocumentNavigationResult) => void;
+}
+
+export default function PlanDocumentTabs({
+  planId,
+  navigationRequest,
+  onNavigationResolved,
+}: PlanDocumentTabsProps): React.ReactElement {
   const [model, setModel] = useState<PlanDocumentsModel | null>(null);
   const [modelLoading, setModelLoading] = useState(true);
   const [activeKey, setActiveKey] = useState<PlanTabKey>('overview');
@@ -121,6 +136,15 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
   // tab's primary), stash its id here so the tab-change effect opens it instead of
   // the primary. Cleared as soon as it is honored (a one-shot).
   const pendingDocIdRef = useRef<string | null>(null);
+  const completedNavigationIdsRef = useRef(new Set<string>());
+  const rememberCompletedNavigation = useCallback((requestId: string) => {
+    const completed = completedNavigationIdsRef.current;
+    completed.add(requestId);
+    if (completed.size > COMPLETED_NAVIGATION_ID_LIMIT) {
+      const oldest = completed.values().next().value;
+      if (oldest !== undefined) completed.delete(oldest);
+    }
+  }, []);
 
   // Load the live tab projection on mount / plan switch. Reset to the default
   // `overview` tab so a plan switch never strands the view on a key the new plan
@@ -155,6 +179,46 @@ export default function PlanDocumentTabs({ planId }: { planId: string }): React.
     return PLAN_TAB_KEYS.map((k) => byKey.get(k)).filter((t): t is PlanDocumentTab => Boolean(t));
   }, [tabs]);
   const activeTab = useMemo(() => tabs.find((t) => t.key === activeKey), [tabs, activeKey]);
+
+  // Navigation is a command distinct from opening a particular document. The
+  // first committed settled render selects the requested tab; a later committed
+  // render observes that selection before reporting success.
+  useEffect(() => {
+    if (modelLoading || !model || !navigationRequest) return;
+    if (completedNavigationIdsRef.current.has(navigationRequest.requestId)) return;
+    if (orderedTabs.some((tab) => tab.key === navigationRequest.tab)
+        && activeKey !== navigationRequest.tab) {
+      setActiveKey(navigationRequest.tab);
+    }
+  }, [activeKey, model, modelLoading, navigationRequest, orderedTabs]);
+
+  useEffect(() => {
+    if (modelLoading || !model || !navigationRequest || !onNavigationResolved) return;
+    const { requestId, tab } = navigationRequest;
+    if (completedNavigationIdsRef.current.has(requestId)) return;
+    if (!orderedTabs.some((candidate) => candidate.key === tab)) {
+      rememberCompletedNavigation(requestId);
+      onNavigationResolved({ requestId, ok: false, reason: 'tab-absent' });
+      return;
+    }
+    if (activeKey === tab) {
+      rememberCompletedNavigation(requestId);
+      onNavigationResolved({ requestId, ok: true, tab });
+    }
+  }, [activeKey, model, modelLoading, navigationRequest, onNavigationResolved, orderedTabs, rememberCompletedNavigation]);
+
+  // A request superseded before completion or abandoned by an unmount must also
+  // settle its store promise. Completed ids make the cleanup a no-op after either
+  // the success or tab-absent path above.
+  useEffect(() => {
+    if (!navigationRequest || !onNavigationResolved) return undefined;
+    const { requestId } = navigationRequest;
+    return () => {
+      if (completedNavigationIdsRef.current.has(requestId)) return;
+      rememberCompletedNavigation(requestId);
+      onNavigationResolved({ requestId, ok: false, reason: 'navigation-unmounted' });
+    };
+  }, [navigationRequest, onNavigationResolved, rememberCompletedNavigation]);
 
   // The currently-open document (matched by manifest id), passed to the comments
   // rail so a new comment is created against its opaque ref and threads scope to
