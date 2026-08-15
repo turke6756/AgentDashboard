@@ -69,16 +69,24 @@ export default function RestoreDialog({
   const [windowDiff, setWindowDiff] = useState<CheckpointDiffEntry | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [force, setForce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CheckpointRestoreResult | null>(null);
 
   const contention = preview?.contention ?? [];
   const rejected = preview?.rejectedPaths ?? [];
-  // A stale preview is one taken before the current selection — confirming with a
-  // preview in hand is the whole gate, so any preview unlocks confirm; re-preview is
-  // offered whenever the selection changes.
-  const canConfirm = !!preview && !confirming && (mode === 'revert' || effectivePaths.length > 0);
+  // The server owns the safety verdict. The dialog only honors and explains it;
+  // runRestore will recheck authoritatively under its lock.
+  const gateRefused = !!preview && (
+    !!preview.overlap
+    || preview.reason === 'after-snapshot-overlap'
+    || preview.reason === 'after-edge-unusable'
+    || preview.reason === 'current-hash-failed'
+    || preview.reason === 'active-turn-witnesses-path'
+  );
+  const canConfirm = !!preview
+    && !gateRefused
+    && !confirming
+    && (mode === 'revert' || effectivePaths.length > 0);
 
   async function handlePreview() {
     setPreviewing(true);
@@ -113,11 +121,11 @@ export default function RestoreDialog({
       const out =
         mode === 'revert'
           ? await revertCheckpointTurn(
-              { workspaceId, turnId: turn.turnId, previewTokens: tokens, force },
+              { workspaceId, turnId: turn.turnId, previewTokens: tokens },
               agentId,
             )
           : await restoreCheckpointPaths(
-              { workspaceId, turnId: turn.turnId, paths: effectivePaths, previewTokens: tokens, force },
+              { workspaceId, turnId: turn.turnId, paths: effectivePaths, previewTokens: tokens },
               agentId,
             );
       setResult(out);
@@ -236,13 +244,32 @@ export default function RestoreDialog({
         </div>
       )}
 
-      {/* Optional force: IPC-only stale-preview override. Main STILL refuses it while
-          an active turn witnesses a path, so it is offered, not guaranteed. */}
-      {preview && contention.length > 0 && (
-        <label className="flex items-center gap-1.5 mb-2 text-[11px] text-gray-400">
-          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-          Override a stale preview (force) — main refuses this while a turn is still active.
-        </label>
+      {preview && gateRefused && (
+        <div
+          role="alert"
+          data-testid="restore-refusal"
+          className="mb-2 p-2 rounded text-accent-red bg-accent-red/10 border border-accent-red/30"
+        >
+          <div className="font-semibold mb-1">Undo is blocked</div>
+          {preview.overlap?.files.map((file) => (
+            <div key={file.path} className="mb-1 last:mb-0">
+              <div className="font-mono text-[11px]">{file.path}</div>
+              {file.blockers.map((blocker, index) => (
+                <div key={blocker.kind === 'later-turn' ? blocker.turnId : `external:${index}`} className="text-[11px]">
+                  {blocker.kind === 'external'
+                    ? 'changed after this turn (not by a recorded turn)'
+                    : `${blocker.agentTitle ?? blocker.agentId ?? 'Unknown agent'} — ${blocker.taskLabel ?? 'Untitled task'} — turn ${blocker.turnSeq}`}
+                </div>
+              ))}
+            </div>
+          ))}
+          {preview.overlap?.files.length === 0 && (
+            <div className="text-[11px]">{preview.reason ?? preview.overlap.reason}</div>
+          )}
+          {!preview.overlap && (
+            <div className="text-[11px]">{preview.reason}</div>
+          )}
+        </div>
       )}
 
       {/* Unattributed window diff — CLEARLY labeled as raw/unattributed. */}

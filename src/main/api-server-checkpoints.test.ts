@@ -354,6 +354,29 @@ test('a non-witnessed path is rejected by the restore route (surfaced from the e
     }),
   }));
 
+test('K: an overlap refusal remains an HTTP 200 engine result (never 409)', () =>
+  withServer(async (port) => {
+    const res = await request(port, 'POST', '/api/checkpoints/t1/restore', {
+      Authorization: bearerFor('supervisor', 'sup-A'),
+    }, { paths: ['a.txt'], previewTokens: { 'a.txt': 'oid-current' } });
+    assert.equal(res.status, 200);
+    const body = parse(res);
+    assert.equal(body.status, 'failed');
+    assert.equal(body.failureReason, 'after-snapshot-overlap');
+  }, {
+    routes: makeFakeRoutes({
+      restorePaths: async (args) => ({
+        status: 'failed', operationId: 'op-overlap', kind: 'restore_paths', preRef: null, preOid: null,
+        requestedPaths: args.paths, completedPaths: [], rejectedPaths: [], failures: [], contention: [],
+        overlap: {
+          reason: 'after-snapshot-overlap',
+          files: [{ path: 'a.txt', blockers: [{ kind: 'external' }] }],
+        },
+        failureReason: 'after-snapshot-overlap',
+      }),
+    }),
+  }));
+
 // ── 9. No `force` accepted on any HTTP route ─────────────────────────────────────
 
 test('`force` in the body is refused on every checkpoint mutation route', () =>
