@@ -30,34 +30,6 @@ type AgentBadgeApi = {
   getAgentPlanBadgeSummary: (workspaceId: string) => Promise<Record<string, AgentPlanBadge>>;
 };
 
-function withLegacyPlanBadgeRoleView(badges: Record<string, AgentPlanBadge>): Record<string, AgentPlanBadge> {
-  for (const destinations of Object.values(badges)) {
-    // Tolerate a stale pre-WP-4 payload during rolling renderer/main upgrades.
-    if (!Array.isArray(destinations)) continue;
-    // AgentCard.tsx and OwnerContainerBar.tsx still read `.authored`/`.carrying`
-    // until WP-6 replaces their label code with destination consumers. Keep the
-    // compatibility view non-enumerable so Object.keys/spreads preserve the
-    // specified destination-array payload; WP-6 must delete this view.
-    Object.defineProperties(destinations, {
-      authored: {
-        enumerable: false,
-        configurable: true,
-        writable: true,
-        // Authorship is intentionally not a card mark; retain only the empty
-        // property required by the two pre-WP-6 consumers named above.
-        value: [],
-      },
-      carrying: {
-        enumerable: false,
-        configurable: true,
-        writable: true,
-        value: destinations.map((destination) => destination.planArtifactId),
-      },
-    });
-  }
-  return badges;
-}
-
 // WP4 — a transient request to scroll/highlight a source span when a tab opens or
 // re-activates. Pure renderer UI state (like `color`, below): it never crosses the
 // IPC boundary, so it lives on the renderer extension, not the shared FileTab.
@@ -1504,7 +1476,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const badges = await (window.api.agents as typeof window.api.agents & AgentBadgeApi)
         .getAgentPlanBadgeSummary(workspaceId);
       if (get().selectedWorkspaceId !== workspaceId) return;
-      set({ agentPlanBadges: withLegacyPlanBadgeRoleView(badges) });
+      set({ agentPlanBadges: badges });
     } catch (err) {
       console.warn('Failed to load agent plan badges:', err);
     }

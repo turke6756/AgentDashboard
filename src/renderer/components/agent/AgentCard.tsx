@@ -13,6 +13,8 @@ import { summarizeStopExclusions } from '../../lib/stop-exclusion-copy';
 import { PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useCursorMenuPosition } from '../../lib/floating/useCursorMenuPosition';
+import AgentPlanBadges from './AgentPlanBadges';
+import { useAgentPlanNavigation } from './useAgentPlanNavigation';
 
 function getDisplayDirectory(agent: Agent): string {
   const dir = agent.workingDirectory.replace(/\\/g, '/');
@@ -113,6 +115,8 @@ export default function AgentCard({
   const phaseState = useDashboardStore((s) => s.continuationPhases[agent.id] ?? null);
   const transferring = isActivePhase(phaseState?.phase);
   const cs = useDashboardStore((s) => s.contextStats[agent.id] ?? null);
+  const planBadges = useDashboardStore((s) => s.agentPlanBadges[agent.id] ?? null);
+  const planNav = useAgentPlanNavigation(planBadges ?? []);
   const selectAgent = useDashboardStore((s) => s.selectAgent);
   const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
   const deleteAgent = useDashboardStore((s) => s.deleteAgent);
@@ -439,6 +443,7 @@ export default function AgentCard({
 
         {/* Row 3 (conditional): the live continuation-handoff phase. */}
         {phaseState && <ContinuationPhaseLine state={phaseState} />}
+        <AgentPlanBadges navigation={planNav} />
       </div>
 
       {confirmDelete && (

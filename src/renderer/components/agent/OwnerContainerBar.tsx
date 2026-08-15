@@ -8,6 +8,8 @@ import { PROVIDER_META } from '../../../shared/constants';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { isActivePhase } from './continuation-phase-view';
 import { useCursorMenuPosition } from '../../lib/floating/useCursorMenuPosition';
+import AgentPlanBadges from './AgentPlanBadges';
+import { useAgentPlanNavigation } from './useAgentPlanNavigation';
 
 // The header bar for an owner-container: a horizontal, full-width band (gold top
 // accent + thick blue fill) standing in for the vertical AgentCard when an agent
@@ -51,6 +53,10 @@ export default function OwnerContainerBar({
   const isSelected = useDashboardStore((s) => s.selectedAgentId === agent.id);
   const isTerminalActive = useDashboardStore((s) => s.terminalAgentId === agent.id);
   const cs = useDashboardStore((s) => s.contextStats[agent.id] ?? null);
+  // Same slice AgentCard reads — owner bars are the surface that actually
+  // earns these badges (supervisors own children), so they must render them.
+  const planBadges = useDashboardStore((s) => s.agentPlanBadges[agent.id] ?? null);
+  const planNav = useAgentPlanNavigation(planBadges ?? []);
   // Gold "snake" border while this supervisor is mid context-brick continuation transfer.
   const transferring = useDashboardStore((s) => isActivePhase(s.continuationPhases[agent.id]?.phase));
   const selectAgent = useDashboardStore((s) => s.selectAgent);
@@ -188,7 +194,10 @@ export default function OwnerContainerBar({
             </span>
           </div>
 
+
           {/* Context bar — fixed slice on the right so the bar stays horizontal. */}
+          <AgentPlanBadges navigation={planNav} />
+
           {cs && (
             <div className="hidden md:block w-44 shrink-0">
               <ContextStatsBar cs={cs} className="" />

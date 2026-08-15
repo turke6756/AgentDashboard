@@ -40,21 +40,7 @@ describe('agent plan badge refresh rule', () => {
 
     expect(getBadges).toHaveBeenCalledTimes(1);
     expect(useDashboardStore.getState().agentPlanBadges).toEqual(populated);
-    expect(useDashboardStore.getState().agentPlanBadges[agent.id].authored).toEqual([]);
-    expect(useDashboardStore.getState().agentPlanBadges[agent.id].carrying).toEqual(['plan-one']);
-    expect(Object.keys(useDashboardStore.getState().agentPlanBadges[agent.id])).toEqual(['0']);
-  });
-
-  it('reapplies the compatibility view to the same destination array reference', async () => {
-    getBadges.mockResolvedValue(populated);
-
-    await expect(useDashboardStore.getState().loadAgentPlanBadges(workspace.id)).resolves.toBeUndefined();
-    await expect(useDashboardStore.getState().loadAgentPlanBadges(workspace.id)).resolves.toBeUndefined();
-
-    expect(getBadges).toHaveBeenCalledTimes(2);
     expect(useDashboardStore.getState().agentPlanBadges[agent.id]).toBe(destinations);
-    expect(useDashboardStore.getState().agentPlanBadges[agent.id].authored).toEqual([]);
-    expect(useDashboardStore.getState().agentPlanBadges[agent.id].carrying).toEqual(['plan-one']);
   });
 
   it('does not fetch badges when an agent status refresh calls loadAgents', async () => {
