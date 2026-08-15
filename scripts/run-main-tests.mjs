@@ -206,6 +206,8 @@ const TESTS = [
   'dist/main/main/git-checkpoints/checkpoint-service.test.js',
   // While-you-were-away WP-P2: binary-safe, omission-honest turn-window paths.
   'dist/main/main/git-checkpoints/window-paths.test.js',
+  // While-you-were-away WP-P3: pure rows, verified-plan groups, counts, and undo mapping.
+  'dist/main/main/activity/turn-projection.test.js',
   // Git-Native WP-G1.3c: guarded blob-write restore (real git) — byte-exact, path-scoped
   // PRE safety ref, directory-transition + symlink-ancestor guards, partial accounting.
   'dist/main/main/git-checkpoints/checkpoint-restore.test.js',

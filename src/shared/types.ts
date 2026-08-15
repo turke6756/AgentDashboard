@@ -2115,6 +2115,116 @@ export interface CheckpointRestoreResult {
   failureReason: string | null;
 }
 
+// ── While-you-were-away: shared Activity projection DTOs ─────────────────────────
+
+export interface ActivityPath {
+  /** Canonical POSIX path relative to the repository root. */
+  repoPath: string;
+  /** Workspace-relative path intended for display. */
+  displayPath: string;
+}
+
+export type CountStat =
+  | { value: null; status: 'pending' }
+  | { value: number; status: 'complete' };
+
+export interface ActivityUndoSafety {
+  state: 'checking' | 'restorable' | 'no-checkpoint' | 'blocked-overlap' | 'unavailable';
+  basis: 'stored-hints' | 'preview';
+  reason: string | null;
+  overlap?: CheckpointPreviewResult['overlap'];
+  contention: CheckpointPreviewResult['contention'];
+}
+
+export interface ActivityCounts {
+  turnCount: number;
+  agentCount: number;
+  fileCount: number;
+  planCount: number;
+  commitCount: number;
+  noCheckpointCount: number;
+  blockedOverlapCount: CountStat;
+  unavailableCount: CountStat;
+  checkingCount: CountStat;
+}
+
+export type ActivityTurnStatus =
+  | 'open'
+  | 'accepted'
+  | 'interrupted'
+  | 'crashed'
+  | 'stopped'
+  | 'delivery_failed'
+  | 'skipped'
+  | 'reverted';
+
+export interface TurnActivityRow {
+  kind: 'turn';
+  turnId: string;
+  turnSeq: number;
+  agentId: string | null;
+  agentTitle: string | null;
+  taskLabel: string | null;
+  planId: string | null;
+  planItemId: string | null;
+  planStampStatus: 'verified' | 'unstamped' | 'unverified';
+  status: ActivityTurnStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  witnessedPaths: ActivityPath[];
+  writeCount: number;
+  undo: ActivityUndoSafety;
+  beforeReady: boolean;
+  afterReady: boolean;
+  beforeQuality: string | null;
+  afterQuality: string | null;
+  failureReason: string | null;
+  beforePrunedAt: number | null;
+  afterPrunedAt: number | null;
+  commitOids: string[];
+}
+
+export interface PlanGroupRow {
+  kind: 'plan-group';
+  planId: string;
+  planTitle: string | null;
+  latestTurnSeq: number;
+  latestStartedAt: number | null;
+  members: TurnActivityRow[];
+  pageCounts: ActivityCounts;
+  /** Present only when supplied by an exact, unbounded aggregate. */
+  totalCounts?: ActivityCounts;
+  countsComplete: boolean;
+  nextOlderCursor: { turnSeq: number | null };
+}
+
+export interface ToolUnjoinedRow {
+  kind: 'tool-unjoined';
+  id: string;
+  agentId: string;
+  agentTitle: string | null;
+  fileActivityIds: number[];
+  paths: ActivityPath[];
+  startedAt: number;
+  endedAt: number;
+}
+
+export interface WindowUnattributedRow {
+  kind: 'window-unattributed';
+  id: string;
+  hostTurnId: string;
+  hostTurnSeq: number;
+  paths: ActivityPath[];
+  omittedPathCount: number | null;
+  hasOmittedPaths: boolean;
+}
+
+export type ActivityItem =
+  | TurnActivityRow
+  | PlanGroupRow
+  | ToolUnjoinedRow
+  | WindowUnattributedRow;
+
 /** Renderer → main restore request. `force` (stale-preview override) is IPC-ONLY
  *  and only honored when no active turn witnesses a requested path. */
 export interface CheckpointRestoreRequest {
