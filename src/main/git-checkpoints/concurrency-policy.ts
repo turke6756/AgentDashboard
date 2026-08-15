@@ -64,6 +64,39 @@ export interface ObservePathIntentsInput {
   runGit: ConcurrencyRunGit;
 }
 
+export type CheckpointPathEntryResolution =
+  | { kind: 'absent' }
+  | { kind: 'entry'; mode: string; type: 'blob'; oid: string }
+  | { kind: 'unusable'; mode: string | null; type: string | null };
+
+/** Resolve one path's comparable tree entry without collapsing unreadable or
+ * non-blob entries into absence. The after-snapshot gate needs this distinction
+ * to fail closed for dead commits, trees, and gitlinks. */
+export async function resolveCheckpointPathEntry(input: {
+  repoRoot: string;
+  gitExe: string;
+  commitOid: string | null;
+  path: EncodedGitPath;
+  runGit: ConcurrencyRunGit;
+}): Promise<CheckpointPathEntryResolution> {
+  if (!input.commitOid || !input.path.utf8Clean) {
+    return { kind: 'unusable', mode: null, type: null };
+  }
+  const result = await input.runGit(
+    input.repoRoot,
+    ['ls-tree', input.commitOid, '--', input.path.displayPath],
+    { gitExe: input.gitExe, maxBytes: 64 << 10, timeoutMs: 10_000, allowNonzero: true },
+  );
+  if (result.code !== 0) return { kind: 'unusable', mode: null, type: null };
+  const line = result.stdout.split(/\r?\n/, 1)[0] ?? '';
+  if (line.length === 0) return { kind: 'absent' };
+  const match = /^(\d{6})\s+(\S+)\s+([0-9a-f]+)\t/.exec(line);
+  if (!match) return { kind: 'unusable', mode: null, type: null };
+  const [, mode, type, oid] = match;
+  if (type !== 'blob') return { kind: 'unusable', mode, type };
+  return { kind: 'entry', mode, type: 'blob', oid };
+}
+
 /** Resolve one path's blob from one checkpoint tree. Absence/pruning is data. */
 export async function resolveCheckpointPathBlob(input: {
   repoRoot: string;
@@ -72,16 +105,8 @@ export async function resolveCheckpointPathBlob(input: {
   path: EncodedGitPath;
   runGit: ConcurrencyRunGit;
 }): Promise<string | null> {
-  if (!input.commitOid || !input.path.utf8Clean) return null;
-  const result = await input.runGit(
-    input.repoRoot,
-    ['ls-tree', input.commitOid, '--', input.path.displayPath],
-    { gitExe: input.gitExe, maxBytes: 64 << 10, timeoutMs: 10_000, allowNonzero: true },
-  );
-  if (result.code !== 0) return null;
-  const line = result.stdout.split(/\r?\n/, 1)[0] ?? '';
-  const match = /^(\d{6})\s+blob\s+([0-9a-f]+)\t/.exec(line);
-  return match?.[2] ?? null;
+  const result = await resolveCheckpointPathEntry(input);
+  return result.kind === 'entry' ? result.oid : null;
 }
 
 /** Observe every turn using ls-tree on its before/after checkpoint tree. */

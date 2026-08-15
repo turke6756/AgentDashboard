@@ -761,6 +761,8 @@ const TESTS = [
   // Intent architecture WP-3: per-path checkpoint-tree observation and the
   // five-way graduated concurrency classifier, including pruned evidence.
   'dist/main/main/git-checkpoints/concurrency-policy.test.js',
+  // While-you-were-away WP-G2: kind+OID after-image overlap gate.
+  'dist/main/main/git-checkpoints/after-snapshot-gate.test.js',
   // WP-7: intent lifecycle telemetry exposes the six cutover counters and
   // increments each counter at its production transition seam.
   'dist/main/main/git-checkpoints/intent-architecture-telemetry.test.js',
