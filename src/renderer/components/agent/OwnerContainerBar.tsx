@@ -10,6 +10,7 @@ import { isActivePhase } from './continuation-phase-view';
 import { useCursorMenuPosition } from '../../lib/floating/useCursorMenuPosition';
 import AgentPlanBadges from './AgentPlanBadges';
 import { useAgentPlanNavigation } from './useAgentPlanNavigation';
+import PlanNavMenu from './PlanNavMenu';
 
 // The header bar for an owner-container: a horizontal, full-width band (gold top
 // accent + thick blue fill) standing in for the vertical AgentCard when an agent
@@ -67,6 +68,7 @@ export default function OwnerContainerBar({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const menuPosition = useCursorMenuPosition(menuRef, contextMenu, { width: 260, height: 85 }, confirmDelete);
 
   // Dismiss the menu on any outside click (mirrors AgentCard's context menu).
@@ -121,6 +123,8 @@ export default function OwnerContainerBar({
 
   return (
     <div
+      ref={barRef}
+      tabIndex={-1}
       className={`relative ${accent} ${isSelected ? 'owner-bar-selected' : fill} border border-surface-3
         ${expanded ? 'rounded-t border-b-0' : 'rounded'}
         ${!isSelected && isTerminalActive ? 'bg-accent-blue/[0.18]' : ''} ${ring}
@@ -244,8 +248,10 @@ export default function OwnerContainerBar({
               return confirmDelete ? `Confirm — delete ${label}` : `Delete ${label}`;
             })()}
           </button>
+          <PlanNavMenu navigation={planNav} onRequestClose={() => setContextMenu(null)} returnFocusRef={barRef} />
         </div>
       )}
+      <PlanNavMenu navigation={planNav} standalone />
     </div>
   );
 }

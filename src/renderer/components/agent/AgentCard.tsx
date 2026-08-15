@@ -15,6 +15,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import { useCursorMenuPosition } from '../../lib/floating/useCursorMenuPosition';
 import AgentPlanBadges from './AgentPlanBadges';
 import { useAgentPlanNavigation } from './useAgentPlanNavigation';
+import PlanNavMenu from './PlanNavMenu';
 
 function getDisplayDirectory(agent: Agent): string {
   const dir = agent.workingDirectory.replace(/\\/g, '/');
@@ -361,6 +362,7 @@ export default function AgentCard({
   return (
     <motion.div
       ref={cardRef}
+      tabIndex={-1}
       layout
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -624,8 +626,11 @@ export default function AgentCard({
                 : `Delete all selected (${selectionCount})`}
             </button>
           )}
+          <PlanNavMenu navigation={planNav} onRequestClose={() => setContextMenu(null)} returnFocusRef={cardRef} />
         </div>
       )}
+
+      <PlanNavMenu navigation={planNav} standalone />
 
       {/* Drag-to-query popover */}
       {dragQuery && (

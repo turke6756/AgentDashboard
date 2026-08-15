@@ -7,6 +7,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import AgentGrid from './AgentGrid';
 
 const controllerProbe = vi.hoisted(() => ({ rewriteOwnerTitle: false }));
+const openPlanTab = vi.fn(async () => ({ kind: 'opened-main' as const, tab: 'overview' as const }));
 
 vi.mock('./useAgentPlanNavigation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./useAgentPlanNavigation')>();
@@ -80,6 +81,12 @@ beforeEach(() => {
       getContextStats: vi.fn(async () => null),
       updateSupervised: vi.fn(async () => {}),
     },
+    plans: {
+      documents: vi.fn(async () => ({ tabs: [{ key: 'overview' }, { key: 'proposal' }] })),
+    },
+    files: {
+      resolveOpenableWorkspacePath: vi.fn(async (_request: unknown) => ({ ok: true, canonicalPath: 'C:/ws/proposal.md' })),
+    },
   };
 
   useDashboardStore.setState({
@@ -102,7 +109,9 @@ beforeEach(() => {
     },
     selectedAgentId: null,
     deliberatingSupervisorIds: [],
+    openPlanTab,
   } as any);
+  openPlanTab.mockClear();
 });
 
 afterEach(() => {
@@ -171,5 +180,42 @@ describe('AgentGrid plan badge routing', () => {
     const card = childlessCard();
     expect(card.querySelectorAll('[data-testid="agent-plan-badge"]')).toHaveLength(2);
     expect(card.querySelector('[data-testid="agent-plan-overflow"]')?.textContent).toBe('+3');
+  });
+
+  it('REACHABILITY:plan-menu-both-card-routes enters shared plan rows through both real surfaces', async () => {
+    await renderGrid();
+
+    await act(async () => {
+      childlessCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
+    });
+    const childPlan = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Go to plan — Childless destination'));
+    expect(childPlan).toBeTruthy();
+    await act(async () => { childPlan!.click(); });
+    expect(openPlanTab).toHaveBeenCalledWith('plan-row-1', expect.any(String), 'ws', { tab: 'overview' });
+
+    await act(async () => {
+      ownerBar().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 30 }));
+    });
+    const plansRow = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Plans (3)…');
+    expect(plansRow).toBeTruthy();
+    await act(async () => { plansRow!.click(); });
+    const ownerPlan = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Go to plan — Owner plan two');
+    expect(ownerPlan).toBeTruthy();
+    await act(async () => { ownerPlan!.click(); });
+    expect(openPlanTab).toHaveBeenCalledWith('plan-row-3', 'Owner plan two', 'ws', { tab: 'overview' });
+  });
+
+  it('routes a promoted proposal from the real AgentCard menu', async () => {
+    await renderGrid();
+    await act(async () => {
+      childlessCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
+    });
+    const proposal = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Go to proposal — Childless destination'));
+    await act(async () => { proposal!.click(); });
+    expect(openPlanTab).toHaveBeenCalledWith('plan-row-1', expect.any(String), 'ws', { tab: 'proposal' });
   });
 });
