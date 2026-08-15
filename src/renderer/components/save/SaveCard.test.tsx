@@ -196,7 +196,7 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelectorAll('[data-testid="save-bundle"]')).toHaveLength(1);
   });
 
-  it('keeps loose changes saveable', async () => {
+  it('REACHABILITY:save-gesture-disabled keeps every Save gesture inert', async () => {
     vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
       finalizationId: 'finalization-loose', packageId: 'loose-1', finalizationKind: 'plan-package',
       outcome: 'created', boundaryRef: 'refs/lares/test', boundaryStatus: 'ready', packageRevision: 1,
@@ -205,10 +205,18 @@ describe('SaveCard intent-first rendering', () => {
     await renderCard(inventory({ intentUnits: [unit({ intentId: 'loose-1', presentation: 'loose' })] }));
 
     const prepare = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
+    const submit = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-submit"]')!;
+    const saveAll = container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')!;
+    expect(prepare.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(saveAll.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="save-gestures-disabled"]')?.textContent)
+      .toContain('Review and undo now replace Save');
     await act(async () => { prepare.click(); await Promise.resolve(); await Promise.resolve(); });
-    expect(window.api.saveCard.markDone).toHaveBeenCalledWith(expect.objectContaining({
-      packageId: 'loose-1', targetWorkspaceId: 'ws-1',
-    }));
+    await act(async () => { submit.click(); saveAll.click(); await Promise.resolve(); });
+    expect(window.api.saveCard.markDone).not.toHaveBeenCalled();
+    expect(window.api.saveCard.preview).not.toHaveBeenCalled();
+    expect(window.api.saveCard.sweep).not.toHaveBeenCalled();
   });
 
   it('renders the contributor roster on both loose and package cards', async () => {
@@ -234,7 +242,7 @@ describe('SaveCard intent-first rendering', () => {
     expect(getInventory).toHaveBeenCalledTimes(2);
   });
 
-  it('sends the projected repository key when pinning a real-shaped inventory snapshot', async () => {
+  it('keeps preparation disabled for a real-shaped stable inventory snapshot', async () => {
     vi.mocked(window.api.saveCard.markDone).mockResolvedValue({
       finalizationId: 'finalization-1', packageId: 'intent-1', finalizationKind: 'plan-package',
       outcome: 'created', boundaryRef: 'refs/lares/test', boundaryStatus: 'ready', packageRevision: 1,
@@ -256,11 +264,8 @@ describe('SaveCard intent-first rendering', () => {
     }));
     const pin = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
     await act(async () => { pin.click(); await Promise.resolve(); });
-    expect(window.api.saveCard.markDone).toHaveBeenCalledWith(expect.objectContaining({
-      packageId: 'intent-1', targetWorkspaceId: 'ws-1',
-      pinnedSnapshotId: 'snapshot-1', pinnedSnapshotFingerprint: 'fingerprint-1',
-      repositoryKey: 'repo-1',
-    }));
+    expect(pin.disabled).toBe(true);
+    expect(window.api.saveCard.markDone).not.toHaveBeenCalled();
   });
 
   it('keeps committed intents, unstamped turns, and legacy finalizations read-only', async () => {
@@ -280,7 +285,7 @@ describe('SaveCard intent-first rendering', () => {
     expect(container.querySelector('[data-testid="save-bundle-submit"]')).toBeNull();
   });
 
-  it('renders a fallback unit as a save gesture and sends only the main-owned unit identity', async () => {
+  it('renders a fallback unit with its Save gesture disabled', async () => {
     const fallback = unit({
       intentId: 'agent-fallback:repo:stable',
       kind: 'agent-session-fallback',
@@ -304,17 +309,11 @@ describe('SaveCard intent-first rendering', () => {
       .toContain('Build worker — mixed session work');
     const prepare = container.querySelector<HTMLButtonElement>('[data-testid="save-bundle-pin"]')!;
     await act(async () => { prepare.click(); await Promise.resolve(); });
-    expect(window.api.saveCard.markDone).toHaveBeenCalledWith({
-      saveUnitId: 'agent-fallback:repo:stable',
-      saveUnitKind: 'agent-session-fallback',
-      targetWorkspaceId: 'ws-1',
-    });
-    const request = vi.mocked(window.api.saveCard.markDone).mock.calls[0][0] as unknown as Record<string, unknown>;
-    expect(request).not.toHaveProperty('memberEntryIds');
-    expect(request).not.toHaveProperty('packageId');
+    expect(prepare.disabled).toBe(true);
+    expect(window.api.saveCard.markDone).not.toHaveBeenCalled();
   });
 
-  it('commits one fallback gesture with cross-intent context when its member is shared with another fallback unit', async () => {
+  it('keeps fallback Save gestures inert even with cross-intent context', async () => {
     const first = unit({
       intentId: 'agent-fallback:first', kind: 'agent-session-fallback',
       saveUnitId: 'agent-fallback:first', saveUnitKind: 'agent-session-fallback',
@@ -374,16 +373,10 @@ describe('SaveCard intent-first rendering', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(window.api.saveCard.preview).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'ws-1', saveUnitIds: [first.intentId], finalizationIds: ['fallback-fin'],
-    }));
-    const previewRequest = vi.mocked(window.api.saveCard.preview).mock.calls[0][0] as unknown as Record<string, unknown>;
-    expect(previewRequest).not.toHaveProperty('resolutionIds');
+    expect(window.api.saveCard.markDone).not.toHaveBeenCalled();
+    expect(window.api.saveCard.preview).not.toHaveBeenCalled();
     expect(window.api.saveCard.resolveAttribution).not.toHaveBeenCalled();
-    expect(window.api.saveCard.sweep).toHaveBeenCalledWith(expect.objectContaining({
-      acknowledgedChallengeAtoms: [],
-    }));
-    expect(article.textContent).toContain('saved — commit commit-1');
+    expect(window.api.saveCard.sweep).not.toHaveBeenCalled();
   });
 
   it('shows a visible warning for a null-session coarse fallback unit', async () => {
@@ -449,7 +442,7 @@ describe('SaveCard intent-first rendering', () => {
       workspaceId: 'ws-1', pathBytesBase64: btoa('src/intent.ts'),
     });
     expect(container.querySelector('[data-testid="save-card-degraded"]')).toBeNull();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')?.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="save-all"]')?.disabled).toBe(true);
   });
 
   it('gives could-not-assess precedence when protection degradation and no unit co-occur', async () => {

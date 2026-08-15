@@ -47,6 +47,10 @@ import { createCandidateSubmitter } from './candidate-submit';
 import { initialSaveGestureState, saveGestureReducer } from './save-gesture-state';
 import './save-card.css';
 
+const SAVE_GESTURES_DISABLED = true;
+const SAVE_GESTURES_DISABLED_REASON =
+  'Save is turned off while Lares moves to the Activity workflow. Review and undo now replace Save.';
+
 export type SaveTrackingOnboarding = SaveCardOnboardingPrompt;
 
 export interface SaveCardProps {
@@ -572,8 +576,10 @@ const PackageSaveGesture = forwardRef<PackageSaveGestureHandle, {
   const snapshotRefusal = gesture.status === 'refused'
     && (gesture.refusal.code === 'snapshot-stale' || gesture.refusal.code === 'snapshot-repository-missing' || gesture.refusal.code === 'snapshot-gone')
     ? gesture.refusal.code : null;
-  const disabledReason = composeSaveDisabledReason({ snapshotStable, saveable: unit.saveability.saveable,
-    saveGate: unit.saveGate, snapshotRefusal, transient: submitting });
+  const disabledReason = SAVE_GESTURES_DISABLED
+    ? SAVE_GESTURES_DISABLED_REASON
+    : composeSaveDisabledReason({ snapshotStable, saveable: unit.saveability.saveable,
+        saveGate: unit.saveGate, snapshotRefusal, transient: submitting });
   return (
     <div className="sc-save-launcher">
       <SaveBundle
@@ -1054,17 +1060,19 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
   const snapshotId = computeState?.snapshot?.snapshotId;
   const snapshotFingerprint = computeState?.snapshot?.boundaryInputFingerprint;
   const snapshotRepositoryKey = computeState?.snapshot?.repositoryKey;
-  const saveAllReason = !snapshotStable
-    ? 'Save all is unavailable because the inventory snapshot is unstable. Refresh first.'
-    : saveableUnits.length === 0
-      ? 'Save all is unavailable because no displayed package is currently saveable.'
-      : loud.some((unit) => unit.saveability.saveable === false)
-        ? 'Save all is unavailable because at least one displayed package cannot be saved.'
-        : loud.some((unit) => unit.saveGate && !unit.saveGate.ready)
-          ? 'Save all is unavailable because at least one displayed package has not been fully scanned or hashed.'
-          : computeState?.inventory.completeness === 'partial'
-            ? 'Save all is unavailable because the inventory is incomplete; review packages individually or complete the scan.'
-            : null;
+  const saveAllReason = SAVE_GESTURES_DISABLED
+    ? SAVE_GESTURES_DISABLED_REASON
+    : !snapshotStable
+      ? 'Save all is unavailable because the inventory snapshot is unstable. Refresh first.'
+      : saveableUnits.length === 0
+        ? 'Save all is unavailable because no displayed package is currently saveable.'
+        : loud.some((unit) => unit.saveability.saveable === false)
+          ? 'Save all is unavailable because at least one displayed package cannot be saved.'
+          : loud.some((unit) => unit.saveGate && !unit.saveGate.ready)
+            ? 'Save all is unavailable because at least one displayed package has not been fully scanned or hashed.'
+            : computeState?.inventory.completeness === 'partial'
+              ? 'Save all is unavailable because the inventory is incomplete; review packages individually or complete the scan.'
+              : null;
   const saveAllDisabled = Boolean(saveAllReason);
   const degradedCopy = degradedSaveCopy(computeProjection, uniqueChangedEntries);
   const scopeOptions = [...new Map<string, {
@@ -1281,6 +1289,11 @@ export default function SaveCard({ onboarding = null, onOnboardingDecision }: Sa
       {firstContactPrompt}
 
       {degradedBanner}
+
+      <section className="sc-state" data-testid="save-gestures-disabled" role="status">
+        <div className="sc-state-title">Save is turned off</div>
+        <div className="sc-state-body">{SAVE_GESTURES_DISABLED_REASON}</div>
+      </section>
 
       <button
         type="button"

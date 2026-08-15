@@ -588,7 +588,7 @@ test('successful packages advance through fresh resolution without full post-sav
   assert.equal(fullRefreshes, 0, 'no redundant full status + attribution refresh runs after a package');
 });
 
-test('production IPC registration invokes savecard:sweep on a real SaveSweepService', async () => {
+test('production IPC registration refuses savecard:sweep before the service', async () => {
   type RegisteredHandler = (event: unknown, ...args: unknown[]) => unknown;
   const handlers = new Map<string, RegisteredHandler>();
   const ipcMain = {
@@ -619,12 +619,13 @@ test('production IPC registration invokes savecard:sweep on a real SaveSweepServ
 
   try {
     const bridge = require('../ipc-handlers') as typeof import('../ipc-handlers');
-    const service = new SaveSweepService({
-      candidateService: candidateService(),
-      resolveIntent: async () => { throw new Error('empty sweep must not resolve an intent'); },
-      consume: async () => { throw new Error('empty sweep must not consume'); },
-      refreshInventory: async () => { throw new Error('empty sweep must not refresh'); },
-    });
+    let sweepCalls = 0;
+    const service = {
+      sweep: async () => {
+        sweepCalls += 1;
+        return { results: [], halted: false, haltKind: null };
+      },
+    } as unknown as SaveSweepService;
     bridge.setSaveSweepService(service);
     const supervisor = new Proxy({}, { get: () => noop });
     const mainWindow = new Proxy({
@@ -641,12 +642,12 @@ test('production IPC registration invokes savecard:sweep on a real SaveSweepServ
 
     const handler = handlers.get('savecard:sweep');
     assert.ok(handler, 'the production registerIpcHandlers path must register savecard:sweep');
-    const result = await handler({}, {
+    await assert.rejects(async () => handler({}, {
       intents: [],
       reviewedManifestDigests: [],
       acknowledgedChallengeAtoms: [],
-    });
-    assert.deepEqual(result, { results: [], halted: false, haltKind: null });
+    }), /save-disabled-review-and-undo/);
+    assert.equal(sweepCalls, 0, 'the disabled route refuses before the committing service');
   } finally {
     if (priorElectron) require.cache[electronPath] = priorElectron;
     else delete require.cache[electronPath];

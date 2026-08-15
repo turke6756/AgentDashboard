@@ -159,11 +159,21 @@ export function setSaveSweepService(service: SaveSweepService | null): void {
   saveSweepService = service;
 }
 
+// WP-N1 — temporary fail-closed bridge while the Save UI and its alternate
+// plan-surface callers are retired. Keep the route registered so callers get an
+// explicit refusal; the subtraction phase removes the route and intent engine.
+export const SAVE_COMMITTING_ROUTES_DISABLED = true;
+
 export function registerSaveSweepIpc(
   ipc: Pick<typeof ipcMain, 'handle'>,
   getService: () => SaveSweepService | null,
 ): void {
   ipc.handle(SAVE_SWEEP_CHANNEL, (_event, request: SaveSweepRequest) => {
+    if (SAVE_COMMITTING_ROUTES_DISABLED) {
+      throw new Error(
+        'save-disabled-review-and-undo: Save is turned off; review and undo replace Save',
+      );
+    }
     const service = getService();
     if (!service) {
       throw new Error('save sweep unavailable (the engine has not finished bootstrapping)');

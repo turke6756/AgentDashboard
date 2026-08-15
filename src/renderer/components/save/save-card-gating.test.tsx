@@ -56,16 +56,16 @@ describe('Save-card gating', () => {
     act(() => root.unmount());
   });
 
-  it('keeps scoped units actionable during enumeration-partial while disabling Save all distinctly', async () => {
+  it('keeps every Save control disabled during enumeration-partial', async () => {
     const getInventory = vi.fn(async () => inventory({ computeState: { scope: 'global', inventory: { completeness: 'partial', dirtyCorpusStopReasons: ['entries'], observedEntries: 1, observedStatusBytes: 1, observedPathBytes: 1, totalsExact: false }, protection: { assessment: { evaluation: 'complete', rung: 'unprotected' }, checkpointStopReasons: [] } } }));
     const container = document.createElement('div'); const root = createRoot(container);
     (window as any).api = { saveCard: { getInventory, scopedRescan: vi.fn(), markDone: vi.fn(), preview: vi.fn(), sweep: vi.fn(), completeOnboarding: vi.fn(), resolveAttribution: vi.fn(), adoptAllAsBaseline: vi.fn() }, demandProbe: { record: vi.fn() } };
     useSaveCardStore.getState().clearInventoryCache();
     await act(async () => { root.render(<SaveCard />); await Promise.resolve(); await Promise.resolve(); });
-    expect((container.querySelector('[data-testid="save-bundle-pin"]') as HTMLButtonElement).disabled).toBe(false);
+    expect((container.querySelector('[data-testid="save-bundle-pin"]') as HTMLButtonElement).disabled).toBe(true);
     const all = container.querySelector('[data-testid="save-all"]') as HTMLButtonElement;
     expect(all.disabled).toBe(true);
-    expect(container.querySelector('#save-all-reason')?.textContent).toMatch(/inventory is incomplete/);
+    expect(container.querySelector('#save-all-reason')?.textContent).toMatch(/Review and undo now replace Save/);
     act(() => root.unmount());
   });
 
@@ -78,7 +78,7 @@ describe('Save-card gating', () => {
     act(() => root.unmount());
   });
 
-  it('refreshes exactly once and replaces card state after a non-fresh mark-done result', async () => {
+  it('does not mark done or refresh when the disabled Prepare control is clicked', async () => {
     const refreshed = inventory({ intentUnits: [unit({ title: 'Replaced after refresh' })] });
     const getInventory = vi.fn()
       .mockResolvedValueOnce(inventory())
@@ -93,9 +93,9 @@ describe('Save-card gating', () => {
     useSaveCardStore.getState().clearInventoryCache();
     await act(async () => { root.render(<SaveCard />); await Promise.resolve(); await Promise.resolve(); });
     await act(async () => { (container.querySelector('[data-testid="save-bundle-pin"]') as HTMLButtonElement).click(); await new Promise((resolve) => setTimeout(resolve, 25)); await Promise.resolve(); await Promise.resolve(); });
-    expect(markDone).toHaveBeenCalledTimes(1);
-    expect(getInventory).toHaveBeenCalledTimes(2);
-    expect(useSaveCardStore.getState().inventoryByWorkspace['ws-1'].inventory.intentUnits[0].title).toBe('Replaced after refresh');
+    expect(markDone).not.toHaveBeenCalled();
+    expect(getInventory).toHaveBeenCalledTimes(1);
+    expect(useSaveCardStore.getState().inventoryByWorkspace['ws-1'].inventory.intentUnits[0].title).toBe('Package');
     act(() => root.unmount());
   });
 });
