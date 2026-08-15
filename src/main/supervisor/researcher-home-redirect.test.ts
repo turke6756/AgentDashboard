@@ -24,7 +24,7 @@ afterEach(() => {
 function patchLaunchDependencies(agents: Map<string, Agent>, launches: CapturedLaunch[]): void {
   const db = require('../database') as Record<string, unknown>;
   const dbKeys = [
-    'updateAgentStatus', 'applyStatusTransition', 'updateAgentHookStatus', 'updateAgentPid',
+    'updateAgentStatus', 'applyStatusTransition', 'updateAgentHookStatus', 'updateAgentDashboardMcpStatus', 'updateAgentPid',
     'getAgent', 'addEvent', 'updateAgentLastOutput', 'updateAgentExitCode',
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent', 'addFileActivity',
     'updateAgentResumeSessionId', 'getTeamMembership', 'getAgentTemplate', 'getCurrentBrick',
@@ -41,6 +41,7 @@ function patchLaunchDependencies(agents: Map<string, Agent>, launches: CapturedL
     return { prior, current: status, changed: prior !== status };
   };
   db.updateAgentHookStatus = () => {};
+  db.updateAgentDashboardMcpStatus = () => {};
   db.updateAgentPid = () => {};
   db.getAgent = (id: string) => agents.get(id) ?? null;
   db.addEvent = () => {};

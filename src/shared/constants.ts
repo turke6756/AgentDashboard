@@ -839,9 +839,27 @@ Every worker brief must require the worker to:
 This is a prompt-level discipline, not hook enforcement. Stronger pathspec
 enforcement and reliable per-agent hook identity remain open design questions.
 `;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V23.replace(
+export const SUPERVISOR_AGENT_MD_V24 = SUPERVISOR_AGENT_MD_V23.replace(
   SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_ANCHOR,
   `${SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_SECTION}\n${SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_ANCHOR}`,
+);
+
+/** v25 corrects the researcher provider posture: no Codex researcher launch
+ * currently loads a tool-restriction hook or equivalent provider control. */
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V24.replace(
+  `Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
+enforcement and is strongest. Codex has a weaker PreToolUse deny matching exact
+tool names, so unknown or future tools and MCP routes are not covered. Agy has
+deny regexes plus \`write_file\` grants whose own comments record fail-open shell
+chaining; its terminal sandbox is not OS-enforced. Codex and agy are \`degraded\`
+configuration readings, never observed denials.`,
+  `Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
+enforcement and is strongest. Codex researchers currently have no tool
+restriction wired into launch; dormant exact-name logic exists inside the shared
+git-discard script, but no researcher config or profile loads it. Agy has deny
+regexes plus \`write_file\` grants whose own comments record fail-open shell
+chaining; its terminal sandbox is not OS-enforced. Agy is a \`degraded\`
+configuration reading, never an observed denial.`,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
@@ -2261,11 +2279,11 @@ timeout = 30
 /** Current v7 Codex worker config. Codex 0.146.0 calls this setting
  *  sandbox_workspace_write.writable_roots; it ADDS roots beyond the launch cwd,
  *  so it cannot turn an already-writable cwd into a subdirectory-only outbox.
- *  Lares has no Codex researcher lane today: existing Codex worker/supervisor
- *  lanes need the declared workspace root, while the Claude-only researcher is
- *  guarded separately. The native sandbox is defense in depth and is disabled
+ *  Codex researcher launches do not load this worker config and currently have
+ *  no tool restriction wired into launch. Existing Codex worker/supervisor
+ *  lanes need the declared workspace root. The native sandbox is disabled
  *  by any custom launch command carrying --dangerously-bypass-approvals-and-sandbox. */
-export const WORKER_CODEX_CONFIG_TOML = WORKER_CODEX_CONFIG_TOML_V6.replace(
+export const WORKER_CODEX_CONFIG_TOML_V8 = WORKER_CODEX_CONFIG_TOML_V6.replace(
   '# Codex hooks are on by default in current Codex,',
   `# Provider-native write scope (Codex 0.146.0): workspace-write always includes
 # this lane's cwd; writable_roots adds the declared Lares workspace. This is
@@ -2279,6 +2297,15 @@ sandbox_mode = "workspace-write"
 writable_roots = ['\${WORKSPACE_ROOT}']
 
 # Codex hooks are on by default in current Codex,`,
+);
+
+/** v9 corrects the adjacent researcher posture without changing this worker
+ * config's behavior. Codex researcher restriction loading is a separate gap. */
+export const WORKER_CODEX_CONFIG_TOML = WORKER_CODEX_CONFIG_TOML_V8.replace(
+  `# researcher write containment. The Codex researcher restriction is a separate
+# exact-tool-name PreToolUse deny, weaker than a native allowlist. Custom`,
+  `# researcher write containment. Codex researchers currently have no tool
+# restriction wired into launch. Custom`,
 );
 
 /** FROZEN v7 Codex worker config body, recovered from the pre-WP-F template.
@@ -2431,7 +2458,7 @@ timeout = 30
  *  be unit-tested without spawning a process. Authored with String.raw so the
  *  regex backslashes survive verbatim; the literal backtick in the segment-split
  *  character class is written as \x60 so it does not terminate the template. */
-export const GUARD_GIT_DISCARD_MJS = String.raw`#!/usr/bin/env node
+export const GUARD_GIT_DISCARD_MJS_V4 = String.raw`#!/usr/bin/env node
 // Shared PreToolUse git-discard guard — see WORKER_CLAUDE_SETTINGS_JSON /
 // WORKER_CODEX_CONFIG_TOML. Blocks git commands that discard uncommitted work in
 // this workspace's SHARED working tree. Dependency-free; fails OPEN on error.
@@ -2729,13 +2756,27 @@ try {
 if (invokedDirectly) main();
 `;
 
-/** Codex researcher PreToolUse deny source (WP-C).
+/** v5 only corrects the shipped script's posture comment. Its dormant Codex
+ * researcher predicate remains byte-for-byte functional but still has no
+ * researcher launch consumer. */
+export const GUARD_GIT_DISCARD_MJS = GUARD_GIT_DISCARD_MJS_V4.replace(
+  `// Codex researcher capability boundary (WP-C). This is intentionally an
+// exact-name deny, not command-string inspection: Codex researchers cannot use
+// the currently enumerated execution/file-mutation tools. This hook is weaker
+// than Claude's native tool allowlist: unknown/future tool names and arbitrary
+// MCP tools are not covered, so a newly exposed execution route must be added
+// here and to the acceptance fixture before it can be considered blocked.`,
+  `// Dormant Codex researcher exact-name logic (WP-C). No Codex researcher launch
+// currently loads this script, so this is not a tool boundary or an observed
+// denial. A separate wiring package must supply and verify a real consumer.`,
+);
+
+/** Dormant Codex researcher PreToolUse source (WP-C).
  *
- * Delivered through the existing Codex profile's live guard path. This is a
- * hook-based exact-name deny and is weaker than Claude's native tool allowlist:
- * unknown/future tool names and arbitrary MCP tools remain uncovered. The
- * enumerated surface and non-execution proof live in
- * codex-researcher-guard.test.ts; keep them in lockstep when Codex grows.
+ * This is deliberately an alias of the shared git-discard guard. The aliased
+ * script contains dormant exact-name researcher logic, but no Codex researcher
+ * launch config or profile consumes it today. It therefore establishes no
+ * launch-time tool restriction and no observed denial.
  */
 export const CODEX_RESEARCHER_TOOL_DENY_HOOK = GUARD_GIT_DISCARD_MJS;
 
@@ -4363,7 +4404,7 @@ export function getContextWindowForModel(model: string): number {
 
 /** Managed README for the research store root (.lares/research/README.md).
  *  Documents the two tiers, the frontmatter schema, and a worked example. */
-export const RESEARCH_STORE_README_MD = `# Research store
+export const RESEARCH_STORE_README_MD_V2 = `# Research store
 
 Workspace-local, trust-tiered storage for web-derived research artifacts.
 
@@ -4425,6 +4466,20 @@ This hook and the inbox promotion/reader checks do not contain provider-home
 persistence or make the other providers' enforcement equivalent.
 `;
 
+/** v3 corrects the Codex researcher launch posture. */
+export const RESEARCH_STORE_README_MD = RESEARCH_STORE_README_MD_V2.replace(
+  `enforcement is uneven: Claude has native CLI tool allowlist/denylist controls;
+Codex has a weaker exact-tool-name PreToolUse deny; and agy has deny regexes
+plus \`write_file\` grants that fail open on shell chaining, with no OS-enforced
+terminal sandbox. Codex and agy are degraded configuration readings, not live
+observations.`,
+  `enforcement is uneven: Claude has native CLI tool allowlist/denylist controls;
+Codex researchers currently have no tool restriction wired into launch; and agy
+has deny regexes plus \`write_file\` grants that fail open on shell chaining,
+with no OS-enforced terminal sandbox. Agy is a degraded configuration reading,
+not a live observation.`,
+);
+
 /** PreToolUse(Write) guard for the researcher persona — scaffolded to
  *  .lares/researcher/scripts/research-write-guard.mjs and wired by
  *  RESEARCHER_CLAUDE_SETTINGS_JSON. Dependency-free; the frontmatter validation
@@ -4435,8 +4490,9 @@ persistence or make the other providers' enforcement equivalent.
  *  body contains no \${...} or backtick, so raw interpolation never triggers.
  *
  *  SECURITY-CONTROL STATUS: Claude's native tool boundary is the strongest
- *  provider mechanism. Codex and agy are degraded readings of deny
- *  configuration, not observed live denials; no live researcher launch or
+ *  provider mechanism. Codex has no researcher restriction wired into launch.
+ *  Agy is a degraded reading of deny configuration, not an observed denial;
+ *  no live researcher launch or
  *  provider-home mutation attempt was performed during the plan.
  *  The script emits {hookSpecificOutput:{permissionDecision:"deny",…}} on stdout
  *  and exits 2. Claude 2.1.220 does NOT honor an exit-0 hookSpecificOutput deny

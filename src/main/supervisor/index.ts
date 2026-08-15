@@ -8,7 +8,7 @@ import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, Bulk
 import { assembleGuardSnapshot, evaluateStopEligibility, type AgentBrowserState, type GuardDeps } from '../lifecycle/guards';
 import {
   TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL,
-  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_MEMORY_MD,
+  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_MEMORY_MD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON, SUPERVISOR_CLAUDE_SETTINGS_JSON_V1, SUPERVISOR_CLAUDE_SETTINGS_JSON_V2,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V3,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL,
@@ -23,10 +23,10 @@ import {
   WORKER_AGY_HOOKS_JSON_V1_HASH,
   WORKER_CODEX_CONFIG_TOML, WORKER_CODEX_CONFIG_TOML_V1, WORKER_CODEX_CONFIG_TOML_V2,
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
-  WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7,
+  WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7, WORKER_CODEX_CONFIG_TOML_V8,
   WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_BEHAVIORAL_MD,
   WORKER_GROK_AGENTS_MD, WORKER_AGY_AGENTS_MD,
-  GUARD_GIT_DISCARD_MJS,
+  GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4,
   DASHBOARD_STATUS_SCRIPT_MJS, DASHBOARD_STATUS_SCRIPT_MJS_V3, DASHBOARD_STATUS_SCRIPT_MJS_V4, DASHBOARD_STATUS_SCRIPT_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
   DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
@@ -34,7 +34,7 @@ import {
   CODEX_WORKER_PROFILE_NAME, CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS,
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
   TMUX_OPTION_MAX_AGE_MS, TMUX_OPTION_LAUNCH_SKEW_MS, STATUS_POLL_INTERVAL_MS,
-  RESEARCH_STORE_README_MD, RESEARCH_WRITE_GUARD_MJS, RESEARCHER_CLAUDE_SETTINGS_JSON,
+  RESEARCH_STORE_README_MD, RESEARCH_STORE_README_MD_V2, RESEARCH_WRITE_GUARD_MJS, RESEARCHER_CLAUDE_SETTINGS_JSON,
   RESEARCHER_CLAUDE_SETTINGS_JSON_V1, RESEARCHER_CLAUDE_SETTINGS_JSON_V2, RESEARCHER_AGENT_MD,
   PERSONA_CREATE_PERSONA_SKILL, PERSONA_READ_COMMENTS_SKILL, SCRIPT_READ_COMMENTS_PY,
   PERSONA_CREATE_PERSONA_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V2, PERSONA_READ_COMMENTS_SKILL_V3, PERSONA_READ_COMMENTS_SKILL_V4,
@@ -1853,7 +1853,7 @@ export function researcherScaffoldPaths(provider: LaunchableAgentProvider): stri
 /** Researcher-native Codex identity. This is intentionally separate from the
  * managed worker AGENTS.md: the researcher must not inherit worker task
  * instructions or claim permission to edit/build/test project code. */
-export const RESEARCHER_CODEX_AGENTS_MD = `# Researcher Agent
+export const RESEARCHER_CODEX_AGENTS_MD_V1 = `# Researcher Agent
 
 You are the workspace researcher: investigate across the web, documentation, and the repository, then produce reliable research findings.
 
@@ -1861,6 +1861,11 @@ Do not edit project code, run builds, run tests, or make project changes. Write 
 
 The supervisor is your only human-side interlocutor. Report evidence, source links, uncertainty, and blockers clearly so the supervisor can decide what to do next.
 `;
+
+export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V1.replace(
+  'The supervisor is your only human-side interlocutor.',
+  `These are instructions, not an enforced tool boundary. Codex researcher launches currently load no tool-restriction hook or equivalent provider control.\n\nThe supervisor is your only human-side interlocutor.`,
+);
 
 export function researcherScaffoldContent(provider: LaunchableAgentProvider): string {
   if (provider === 'codex') return RESEARCHER_CODEX_AGENTS_MD;
@@ -3649,8 +3654,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 24, // v24 adds the worker commit-policy briefing contract.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH },
+      version: 25, // v25 corrects the Codex researcher launch posture.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24) },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -3787,7 +3792,7 @@ export class AgentSupervisor extends EventEmitter {
     // providers; blocks git commands that discard uncommitted work in the shared
     // working tree. Written on every workspace-script scaffold pass, like
     // dashboard-status.mjs.
-    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 4, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH, 3: GUARD_GIT_DISCARD_MJS_V3_HASH } }, // v4: Codex researcher exact-name tool deny (weaker than Claude native allowlist; unknown/future and arbitrary MCP routes remain uncovered). v3: per-provider exit.
+    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 5, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH, 3: GUARD_GIT_DISCARD_MJS_V3_HASH, 4: sha256Hex(GUARD_GIT_DISCARD_MJS_V4) } }, // v5: corrects dormant Codex researcher posture; v4 added the dormant exact-name predicate.
     // Memory-index v2 CLI (WP-A1). Self-contained ESM bundled from
     // scripts/memory-index-cli-entry.ts + src/shared/memory-index-core.ts (one
     // source of logic; main imports the same core in-process). The `remember`
@@ -3849,7 +3854,7 @@ export class AgentSupervisor extends EventEmitter {
    *  fresh checkout. README is managed (version-migrated); the .gitkeeps are
    *  empty placeholders. */
   private static RESEARCH_STORE_FILES: Record<string, ScaffoldFile> = {
-    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 2, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1' } },
+    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 3, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1', 2: sha256Hex(RESEARCH_STORE_README_MD_V2) } },
     [`.lares/research/inbox/.gitkeep`]:   { content: '', version: 1 },
     [`.lares/research/cleared/.gitkeep`]: { content: '', version: 1 },
   };
@@ -3970,9 +3975,8 @@ export class AgentSupervisor extends EventEmitter {
       // hooks = true` (so this file works as the sole hook carrier on native
       // Windows, with no profile layer to supply the gate) and rewrites the
       // now-stale INERT header; v7 enables workspace-write and grants the declared
-      // workspace through writable_roots. The Codex researcher uses a separate
-      // exact-tool-name PreToolUse deny; this config is not researcher write
-      // containment.
+      // workspace through writable_roots. No Codex researcher tool restriction
+      // is wired into launch; this worker config is not researcher containment.
       const codexConfigV1 = WORKER_CODEX_CONFIG_TOML_V1.replace(
         /\$\{WORKSPACE_ROOT\}/g,
         posixWorkspaceRoot,
@@ -4001,6 +4005,10 @@ export class AgentSupervisor extends EventEmitter {
         /\$\{WORKSPACE_ROOT\}/g,
         posixWorkspaceRoot,
       );
+      const codexConfigV8 = WORKER_CODEX_CONFIG_TOML_V8.replace(
+        /\$\{WORKSPACE_ROOT\}/g,
+        posixWorkspaceRoot,
+      );
       const codexFiles: Record<string, ScaffoldFile> = {
         ...proposalToPlanEntries('.lares/workers/codex/.agents/skills/proposal-to-plan'),
         ...writeProposalEntry('.lares/workers/codex/.agents/skills/write-proposal'),
@@ -4008,7 +4016,7 @@ export class AgentSupervisor extends EventEmitter {
         ...proveProductionEntryPointEntry('.lares/workers/codex/.agents/skills/prove-the-production-entry-point'),
         [`.lares/workers/codex/.codex/config.toml`]: {
           content: codexConfig,
-          version: 8,
+          version: 9,
           previousHashes: {
             1: sha256Hex(codexConfigV1),
             2: sha256Hex(codexConfigV2),
@@ -4017,6 +4025,7 @@ export class AgentSupervisor extends EventEmitter {
             5: sha256Hex(codexConfigV5),
             6: sha256Hex(codexConfigV6),
             7: sha256Hex(codexConfigV7),
+            8: sha256Hex(codexConfigV8),
           },
         },
         // Standing instructions for the Codex worker. AGENTS.md is the file the
@@ -4162,8 +4171,8 @@ export class AgentSupervisor extends EventEmitter {
    *  researcher launch (cwd/--tools/persona CLAUDE.md) and calls this. */
   private ensureResearcherScaffold(workDir: string, provider: LaunchableAgentProvider, pathType: string): void {
     this.ensureResearchStoreScaffold(workDir, pathType);
-    // The Codex researcher path is new in WP-B, so version 1 has no
-    // previousHashes: no prior deployed researcher AGENTS.md exists to migrate.
+    // Agy remains seed-once; Codex researcher AGENTS.md is version-migrated
+    // below and retains its deployed v1 body in previousHashes.
     if (provider === 'agy') {
       // Agy recognizes both AGENTS.md and GEMINI.md. AGENTS.md is the
       // designated identity and is seed-once/user-owned, matching its worker
@@ -4180,7 +4189,9 @@ export class AgentSupervisor extends EventEmitter {
     }
     const files = provider === 'claude'
       ? AgentSupervisor.RESEARCHER_FILES
-      : { [`.lares/researcher/${provider}/${researcherScaffoldPaths(provider)[0]}`]: { content: researcherScaffoldContent(provider), version: 1 } };
+      : { [`.lares/researcher/${provider}/${researcherScaffoldPaths(provider)[0]}`]: provider === 'codex'
+        ? { content: researcherScaffoldContent(provider), version: 2, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1) } }
+        : { content: researcherScaffoldContent(provider), version: 1 } };
     const created = this.writeScaffoldMap(workDir, files, pathType);
     if (created > 0) {
       console.log(`[supervisor] Researcher scaffold: ${created} files in ${workDir}/.lares/researcher/${provider}/`);

@@ -50,13 +50,15 @@ test('new Claude researcher sessions classify to their workspace', () => {
   } as never), 'C:\\workspace');
 });
 
-test('Codex researcher scaffold is AGENTS.md-only', () => {
+test('Codex researcher scaffold is AGENTS.md-only and states that launch has no enforced tool boundary', () => {
   assert.deepEqual(researcherScaffoldPaths('codex'), ['AGENTS.md']);
   assert.ok(!researcherScaffoldPaths('codex').includes('CLAUDE.md'));
   assert.ok(!researcherScaffoldPaths('codex').includes('.claude/settings.json'));
   const content = researcherScaffoldContent('codex');
   assert.match(content, /workspace researcher/);
   assert.match(content, /\.lares\/research\/inbox/);
-  assert.doesNotMatch(content, /edit project code|run builds|run tests/);
+  assert.match(content, /Do not edit project code, run builds, run tests/);
+  assert.match(content, /instructions, not an enforced tool boundary/);
+  assert.match(content, /currently load no tool-restriction hook/);
   assert.notEqual(content, WORKER_CODEX_AGENTS_MD);
 });

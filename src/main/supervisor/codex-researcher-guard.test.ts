@@ -38,13 +38,13 @@ function assertCodexDeny(result: ReturnType<typeof runHook>, tool: string) {
   assert.match(parsed.hookSpecificOutput.permissionDecisionReason, new RegExp(tool));
 }
 
-test('Codex researcher fixture enumerates the exact execution/file-mutation surface', () => {
+test('dormant Codex researcher hook-body fixture enumerates its exact-name surface', () => {
   assert.deepEqual(CODEX_RESEARCHER_TOOL_SURFACE, ['shell_command', 'apply_patch']);
   assert.ok(CODEX_RESEARCHER_TOOL_DENY_HOOK.includes("'shell_command'"));
   assert.ok(CODEX_RESEARCHER_TOOL_DENY_HOOK.includes("'apply_patch'"));
 });
 
-test('Codex researcher shell deny prevents the side effect from running', () => {
+test('dormant Codex researcher hook body emits a shell-deny response when invoked directly', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-researcher-exec-'));
   const target = path.join(dir, 'must-not-exist.txt');
   const command = `node -e "require('fs').writeFileSync(${JSON.stringify(target)}, 'ran')"`;
@@ -59,10 +59,10 @@ test('Codex researcher shell deny prevents the side effect from running', () => 
   if (!JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision) {
     spawnSync(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(target)}, 'ran')`]);
   }
-  assert.equal(fs.existsSync(target), false, 'blocked shell command must not run');
+  assert.equal(fs.existsSync(target), false, 'direct hook-body fixture must not run the simulated shell command');
 });
 
-test('Codex researcher direct file mutation tool is denied by name', () => {
+test('dormant Codex researcher hook body emits a direct-mutation deny response by name', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-researcher-edit-'));
   const target = path.join(dir, 'must-not-exist.txt');
   const result = runHook({
@@ -75,10 +75,10 @@ test('Codex researcher direct file mutation tool is denied by name', () => {
   if (!JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision) {
     fs.writeFileSync(target, 'ran', 'utf8');
   }
-  assert.equal(fs.existsSync(target), false, 'blocked file mutation must not run');
+  assert.equal(fs.existsSync(target), false, 'direct hook-body fixture must not run the simulated file mutation');
 });
 
-test('unknown and non-researcher tool calls remain outside this exact-name boundary', () => {
+test('dormant Codex researcher hook body ignores unknown and non-researcher tool calls', () => {
   const unknown = runHook({ turn_id: 'turn-unknown', model: 'codex', cwd: RESEARCHER_CWD, tool_name: 'future_exec_tool' });
   assert.equal(unknown.status, 0);
   assert.equal(unknown.stdout, '');
