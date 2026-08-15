@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import type { Agent, AgentStopReason } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
@@ -29,6 +29,14 @@ function timeAgo(dateStr: string | null): string {
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)}M AGO`;
   if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}H AGO`;
   return `${Math.floor(diff / 86400_000)}D AGO`;
+}
+
+function whenForActivity(timestamp: number): string {
+  const diff = Math.max(0, Date.now() - timestamp);
+  if (diff < 60_000) return 'now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} hr ago`;
+  return `${Math.floor(diff / 86_400_000)} days ago`;
 }
 
 function formatSpawnTime(dateStr: string): string {
@@ -110,6 +118,17 @@ export default function AgentCard({
   const deleteAgent = useDashboardStore((s) => s.deleteAgent);
   const forkAgent = useDashboardStore((s) => s.forkAgent);
   const queryAgent = useDashboardStore((s) => s.queryAgent);
+  const activityPage = useDashboardStore((s) => s.activityPage);
+  const showActivity = useDashboardStore((s) => s.showActivity);
+  const loadActivity = useDashboardStore((s) => s.loadActivity);
+  const activitySummary = useMemo(() => {
+    const rows = (activityPage?.items ?? []).flatMap((item) =>
+      item.kind === 'turn' ? [item] : item.kind === 'plan-group' ? item.members : [],
+    ).filter((row) => row.agentId === agent.id);
+    const files = new Set(rows.flatMap((row) => row.witnessedPaths.map((path) => path.repoPath)));
+    const latest = rows.reduce<number | null>((value, row) => Math.max(value ?? 0, row.endedAt ?? row.startedAt ?? 0), null);
+    return { turns: rows.length, files: files.size, latest };
+  }, [activityPage, agent.id]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // WP-G2.4 checkpoint time-rail: COLLAPSED by default so the default card
   // footprint is unchanged; the rail (and its lazy checkpoint load) only mount
@@ -471,6 +490,18 @@ export default function AgentCard({
       <div className="text-[11px] text-gray-500 mt-0.5">
         Spawned: {formatSpawnTime(agent.createdAt)}
       </div>
+      <button
+        type="button"
+        className="mt-1 text-[10px] text-gray-500 hover:text-accent-blue"
+        onClick={(event) => {
+          event.stopPropagation();
+          showActivity({ agentId: agent.id });
+          void loadActivity(agent.workspaceId, { agentId: agent.id });
+        }}
+        data-testid="agent-activity-filter"
+      >
+        {activitySummary.turns} turns · {activitySummary.files} files · last activity {activitySummary.latest ? whenForActivity(activitySummary.latest) : 'not observed'}
+      </button>
 
       {/* WP-G2.4 — checkpoint time rail, collapsed by default. The toggle keeps the
           rail (and its checkpoint IPC load) out of the default card footprint. */}

@@ -4069,6 +4069,14 @@ export interface IpcApi {
     pruneRepoWidePlan: (workspaceId: string) => Promise<RepoWidePurgeResult>;
     pruneRepoWide: (req: { workspaceId: string; confirm: boolean }) => Promise<RepoWidePurgeResult>;
   };
+  activity: {
+    list: (request: ActivityListRequest) => Promise<ActivityPage>;
+    digest: (request: ActivityListRequest) => Promise<ActivityDigest>;
+    heartbeat: (workspaceId: string) => Promise<ActivityHeartbeatSnapshot>;
+    markViewed: (request: ActivityMarkViewedRequest) => Promise<ActivityViewedResult>;
+    onUndoUpdated: (callback: (event: ActivityUndoUpdatedEvent) => void) => () => void;
+    onPageCounts: (callback: (event: ActivityPageCountsEvent) => void) => () => void;
+  };
 }
 
 // ───────────────────────── Context-Overhead Analyzer ─────────────────────────

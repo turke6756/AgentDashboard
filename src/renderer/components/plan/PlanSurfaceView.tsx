@@ -9,6 +9,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import MissionBoard from './MissionBoard';
 import PlanReviewView from './PlanReviewView';
 import PlanPackageChecklist from './PlanPackageChecklist';
+import PlanEvidenceStrip from '../activity/PlanEvidenceStrip';
 
 /** Right-hand rail for the folder-native plan surface. Its evidence comes from
  * the review/package ledgers; the retired HTML section/activity projection is
@@ -70,6 +71,7 @@ function PlanSurfaceView({
 
   return (
     <div className="plan-surface" data-testid="plan-surface">
+      {workspaceId && activePlanId && <PlanEvidenceStrip workspaceId={workspaceId} planId={activePlanId} />}
       {workspaceId && candidateSelection && !commitOutcome && (
         <div className="plan-surface__candidate" data-testid="plan-candidate-preview">
           <CandidatePreview

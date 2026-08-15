@@ -34,7 +34,7 @@ export default function PlanReviewView({
 }): React.ReactElement {
   const { baselineDiff, annotations } = projection;
   const baselineLabel = baselineDiff.baseline.kind === 'head'
-    ? `Pinned baseline ${baselineDiff.baseline.headOid.slice(0, 12)}`
+    ? 'Pinned baseline'
     : 'Unborn repository baseline';
 
   return (
@@ -51,12 +51,12 @@ export default function PlanReviewView({
           <span>{baselineLabel}</span>
         </div>
         {baselineDiff.witnessedPaths.length > 0 && (
-          <ul className="plan-review__paths" aria-label="Plan-witnessed paths">
+          <ul className="plan-review__paths" aria-label="Plan changed paths">
             {baselineDiff.witnessedPaths.map((path) => <li key={path}>{path}</li>)}
           </ul>
         )}
         <pre className="plan-review__patch" data-testid="plan-review-patch">
-          {baselineDiff.patch || 'No baseline-to-current changes on plan-witnessed paths.'}
+          {baselineDiff.patch || 'No baseline-to-current changes on plan changed paths.'}
         </pre>
       </section>
 

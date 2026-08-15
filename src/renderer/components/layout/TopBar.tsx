@@ -4,6 +4,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import { useThemeStore } from '../../stores/theme-store';
 import appIcon from '../../../../assets/icon.png';
 import { LARES_RELEASES_URL } from '../../../shared/constants';
+import ActivityShield from '../activity/ActivityShield';
 
 // The spanning top chrome for the frameless window. The window is
 // titleBarStyle:'hidden' + titleBarOverlay, so the native min/max/close buttons
@@ -164,6 +165,7 @@ export default function TopBar() {
 
       {/* Right cluster — sits left of the native caption buttons (env inset). */}
       <div className="flex items-center gap-0.5 pr-1 app-no-drag">
+        <ActivityShield />
         <button
           onClick={toggleTheme}
           title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}

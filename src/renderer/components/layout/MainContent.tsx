@@ -8,6 +8,7 @@ import BrowserPanel from '../browser/BrowserPanel';
 import PlansMenu from '../plan/PlansMenu';
 import PlansPane from '../plan/PlansPane';
 import SaveCard from '../save/SaveCard';
+import ActivityTab from '../activity/ActivityTab';
 import { useBrowserStore, ensureBrowserBridge } from '../../stores/browser-store';
 import { useSaveCardStore, useSaveCardAttentionActive } from '../../stores/save-card-store';
 import * as Icons from 'lucide-react';
@@ -55,7 +56,7 @@ function DetachedViewPlaceholder({ label }: { label: string }) {
 }
 
 export default function MainContent() {
-  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, saveCardOpen, plansOpen, openTabs, detachedViews } = useDashboardStore(
+  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, saveCardOpen, plansOpen, activityOpen, openTabs, detachedViews } = useDashboardStore(
     useShallow((s) => ({
       workspaces: s.workspaces,
       selectedWorkspaceId: s.selectedWorkspaceId,
@@ -63,6 +64,7 @@ export default function MainContent() {
       browserOpen: s.browserOpen,
       saveCardOpen: s.saveCardOpen,
       plansOpen: s.plansOpen,
+      activityOpen: s.activityOpen,
       openTabs: s.openTabs,
       detachedViews: s.detachedViews,
     })),
@@ -71,6 +73,7 @@ export default function MainContent() {
   const showBrowser = useDashboardStore((s) => s.showBrowser);
   const showDashboard = useDashboardStore((s) => s.showDashboard);
   const showSaveCard = useDashboardStore((s) => s.showSaveCard);
+  const showActivity = useDashboardStore((s) => s.showActivity);
   const browserPaneAttention = useBrowserStore((s) => s.paneAttention);
   // SC-WP-N2 — the Save entry's amber attention: true when a checkpoint edge for the
   // selected workspace is expiring soon. Driven by the lightweight
@@ -216,9 +219,10 @@ export default function MainContent() {
   const hasOpenTabs = workspaceTabCount > 0;
   // Center-view dispatch — precedence file viewer > browser > save card >
   // dashboard grid. The Save card is a read-only peer surface (SC-WP-1I).
-  const dashboardActive = !fileViewerOpen && !browserOpen && !saveCardOpen && !plansOpen;
+  const dashboardActive = !fileViewerOpen && !browserOpen && !saveCardOpen && !plansOpen && !activityOpen;
   const saveCardActive = saveCardOpen && !fileViewerOpen && !browserOpen;
   const plansActive = plansOpen && !fileViewerOpen && !browserOpen && !saveCardOpen;
+  const activityActive = activityOpen && !fileViewerOpen && !browserOpen && !saveCardOpen && !plansOpen;
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
@@ -295,6 +299,15 @@ export default function MainContent() {
               onDragEnd={(e) => handleViewDragEnd(e, 'plans')}
             />
             <button
+              data-testid="view-btn-activity"
+              onClick={() => showActivity({})}
+              className={`ui-btn ui-btn-outline flex-1 whitespace-nowrap px-3 py-1.5 text-[13px] font-medium ${activityActive ? 'ui-btn-success is-active' : ''}`}
+              title="View workspace activity"
+            >
+              <Icons.History className="w-4 h-4 shrink-0" />
+              {!toolbarCompact && 'Activity'}
+            </button>
+            <button
               data-testid="view-btn-save"
               data-attention={saveCardAttention ? 'expiring' : undefined}
               onClick={showSaveCard}
@@ -353,6 +366,8 @@ export default function MainContent() {
         <DetachedViewPlaceholder label="Plans" />
       ) : plansActive ? (
         <PlansPane />
+      ) : activityActive ? (
+        <ActivityTab />
       ) : dashboardDetached ? (
         <DetachedViewPlaceholder label="Dashboard" />
       ) : (

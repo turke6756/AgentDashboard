@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AgentPlanBadge, IpcApi, DetachRequest, DetachedClosedPayload, ViewDetachRequest, ViewDetachedClosedPayload, FlushRequestPayload, FlushReplyPayload } from '../shared/types';
-import { TAB_CHANNELS, VIEW_CHANNELS, CHECKPOINT_CHANNELS, SAVECARD_CHANNELS, SAVECARD_ADOPT_BASELINE_CHANNEL, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, SAVECARD_PREVIEW_CHANNEL, COMMIT_CANDIDATE_MINT_CHANNEL, SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL, SAVECARD_FINALIZE_CHANNEL, SAVECARD_ATTENTION_CHANNEL, SAVECARD_ATTENTION_CHANGED_CHANNEL, SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, COMMIT_COORDINATOR_CHANNEL } from '../shared/types';
+import { ACTIVITY_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS, CHECKPOINT_CHANNELS, SAVECARD_CHANNELS, SAVECARD_ADOPT_BASELINE_CHANNEL, SAVECARD_ONBOARDING_DECISION_CHANNEL, SAVECARD_SCOPED_RESCAN_CHANNEL, SAVECARD_PREVIEW_CHANNEL, COMMIT_CANDIDATE_MINT_CHANNEL, SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL, SAVECARD_FINALIZE_CHANNEL, SAVECARD_ATTENTION_CHANNEL, SAVECARD_ATTENTION_CHANGED_CHANNEL, SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, COMMIT_COORDINATOR_CHANNEL } from '../shared/types';
 import { BROWSER_CHANNELS } from '../shared/browser';
 import type {
   AccessRequestDecision,
@@ -222,6 +222,22 @@ const api: IpcApi = {
     pruneRepoWidePlan: (workspaceId) =>
       ipcRenderer.invoke(CHECKPOINT_CHANNELS.pruneRepoWidePlan, workspaceId),
     pruneRepoWide: (req) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.pruneRepoWide, req),
+  },
+  activity: {
+    list: (request) => ipcRenderer.invoke(ACTIVITY_CHANNELS.list, request),
+    digest: (request) => ipcRenderer.invoke(ACTIVITY_CHANNELS.digest, request),
+    heartbeat: (workspaceId) => ipcRenderer.invoke(ACTIVITY_CHANNELS.heartbeat, workspaceId),
+    markViewed: (request) => ipcRenderer.invoke(ACTIVITY_CHANNELS.markViewed, request),
+    onUndoUpdated: (callback) => {
+      const listener = (_event: unknown, payload: Parameters<typeof callback>[0]) => callback(payload);
+      ipcRenderer.on(ACTIVITY_CHANNELS.undoUpdated, listener);
+      return () => ipcRenderer.removeListener(ACTIVITY_CHANNELS.undoUpdated, listener);
+    },
+    onPageCounts: (callback) => {
+      const listener = (_event: unknown, payload: Parameters<typeof callback>[0]) => callback(payload);
+      ipcRenderer.on(ACTIVITY_CHANNELS.pageCounts, listener);
+      return () => ipcRenderer.removeListener(ACTIVITY_CHANNELS.pageCounts, listener);
+    },
   },
   plans: {
     list: (workspaceId) => ipcRenderer.invoke('plan:list', workspaceId),

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion } from '../../shared/types';
+import type { Agent, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion, ActivityCounts, ActivityDigest, ActivityHeartbeatSnapshot, ActivityPage, ActivityViewedResult } from '../../shared/types';
 import { beginWrite, evictTabCache } from '../components/fileviewer/useFileContentCache';
 import { contentHash } from '../components/fileviewer/markdownSplice';
 import { diag, diagBasename, diagHash } from '../components/fileviewer/editLossDiag';
@@ -179,6 +179,25 @@ interface WorkspaceViewState {
   detailPane: 0 | 1 | 2;
 }
 
+function patchActivityUndo(page: ActivityPage, turnId: string, undo: import('../../shared/types').ActivityUndoSafety): ActivityPage {
+  return {
+    ...page,
+    items: page.items.map((item) => {
+      if (item.kind === 'turn') return item.turnId === turnId ? { ...item, undo } : item;
+      if (item.kind === 'plan-group') {
+        return { ...item, members: item.members.map((row) => row.turnId === turnId ? { ...row, undo } : row) };
+      }
+      return item;
+    }),
+  };
+}
+
+export interface ActivityFilter {
+  agentId?: string;
+  planId?: string;
+  planItemId?: string;
+}
+
 interface DashboardState {
   workspaces: Workspace[];
   agents: Agent[];
@@ -234,6 +253,22 @@ interface DashboardState {
   // opened mid-cycle shows the same state (see continuation-phase-view.ts).
   // Absent id = no handoff running.
   continuationPhases: Record<string, ContinuationPhaseState>;
+
+  // While-you-were-away is a snapshot-first workspace projection. The banner
+  // keeps the pre-markViewed counts while the page itself may continue to
+  // receive asynchronous undo-safety refinements.
+  activityPage: ActivityPage | null;
+  activityHeartbeat: ActivityHeartbeatSnapshot | null;
+  activityReturnCounts: ActivityCounts | null;
+  activityLastViewed: ActivityViewedResult | null;
+  activityFilter: ActivityFilter;
+  activityLoading: boolean;
+  activityError: string | null;
+  lastHeartbeatOkAt: number | null;
+  activityDegradedStreak: number;
+  loadActivity: (workspaceId: string, filter?: ActivityFilter, markViewed?: boolean) => Promise<void>;
+  pollActivityHeartbeat: (workspaceId: string) => Promise<void>;
+  subscribeActivity: (workspaceId: string) => () => void;
 
   // Git-Native WP-G2.4 — per-agent checkpoint time-rail data. Keyed by agentId
   // (NOT cwd/slug — the CLAUDE.md invariant: many agents share one working dir).
@@ -307,6 +342,7 @@ interface DashboardState {
   // Plans center-pane flag. A first-class peer of fileViewerOpen, browserOpen,
   // and saveCardOpen. Plans is an inline center surface, never a popup/overlay.
   plansOpen: boolean;
+  activityOpen: boolean;
   tabEditState: Record<string, TabEditState>;
 
   // Actions
@@ -409,6 +445,7 @@ interface DashboardState {
   showSaveCard: () => void;
   // Activate the Plans center pane (closes the other panes).
   showPlans: () => void;
+  showActivity: (filter?: ActivityFilter) => void;
   // WP-P1S — consume the one-shot gesture signal after SaveCard has witnessed it.
   consumeSaveCardGesture: () => void;
 
@@ -449,6 +486,15 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   usageLimits: null,
   deliberatingSupervisorIds: [],
   continuationPhases: {},
+  activityPage: null,
+  activityHeartbeat: null,
+  activityReturnCounts: null,
+  activityLastViewed: null,
+  activityFilter: {},
+  activityLoading: false,
+  activityError: null,
+  lastHeartbeatOkAt: null,
+  activityDegradedStreak: 0,
   checkpointTurns: {},
   checkpointLoading: {},
   workspaceCheckpointTurns: {},
@@ -504,6 +550,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   saveCardOpen: false,
   saveCardOpenGesture: false,
   plansOpen: false,
+  activityOpen: false,
   tabEditState: {},
 
   openTab: (filePath, rootDirectory, pathType, agentId?, workspaceId?, focusRange?) => {
@@ -1252,6 +1299,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         browserOpen: false,
         saveCardOpen: false,
         plansOpen: false,
+        activityOpen: false,
         activeTabId: activeBelongs ? activeTabId : wsTabs[0].id,
       });
     } else {
@@ -1272,7 +1320,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Browser pane (WP1-B) — mirrors show/hideFileViewer. Opening either center
   // mode closes the other; the file viewer wins when both flags are set.
-  showBrowser: () => set({ browserOpen: true, fileViewerOpen: false, saveCardOpen: false, plansOpen: false }),
+  showBrowser: () => set({ browserOpen: true, fileViewerOpen: false, saveCardOpen: false, plansOpen: false, activityOpen: false }),
   hideBrowser: () => set({ browserOpen: false }),
 
   // Save-card center surface (SC-WP-1I). Peer of the file viewer / browser
@@ -1280,12 +1328,23 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // inspect surface; there is no writer, so this only swaps what the center
   // renders. Not detachable (Stage ① non-goal), so no detached-view guard.
   showSaveCard: () =>
-    set({ saveCardOpen: true, saveCardOpenGesture: true, fileViewerOpen: false, browserOpen: false, plansOpen: false }),
+    set({ saveCardOpen: true, saveCardOpenGesture: true, fileViewerOpen: false, browserOpen: false, plansOpen: false, activityOpen: false }),
 
   // Activate Plans as an inline peer of the other center panes. No portal or
   // component-local open state participates in top-level navigation.
   showPlans: () =>
-    set({ plansOpen: true, fileViewerOpen: false, browserOpen: false, saveCardOpen: false }),
+    set({ plansOpen: true, fileViewerOpen: false, browserOpen: false, saveCardOpen: false, activityOpen: false }),
+
+  showActivity: (filter = {}) => {
+    set({
+      activityOpen: true,
+      activityFilter: filter,
+      fileViewerOpen: false,
+      browserOpen: false,
+      saveCardOpen: false,
+      plansOpen: false,
+    });
+  },
 
   // WP-P1S — SaveCard calls this on mount once it has recorded the voluntary-open
   // demand probe, so a later re-render / StrictMode remount can't re-fire it.
@@ -1296,7 +1355,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // ghost button stays inert (MainContent renders a placeholder instead).
   showDashboard: () => {
     if (get().detachedViews.includes('dashboard')) return;
-    set({ fileViewerOpen: false, browserOpen: false, saveCardOpen: false, plansOpen: false });
+    set({ fileViewerOpen: false, browserOpen: false, saveCardOpen: false, plansOpen: false, activityOpen: false });
   },
 
   // Detachable views registry (renderer mirror of main's view-window registry).
@@ -1446,6 +1505,75 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   // ── Git-Native WP-G2.4 — checkpoint time rail ──────────────────────────────
+  loadActivity: async (workspaceId, filter = get().activityFilter, markViewed = true) => {
+    set({ activityLoading: true, activityError: null, activityFilter: filter });
+    try {
+      const request = { workspaceId, ...filter, limit: 50, fileActivityLimit: 50 };
+      const digest: ActivityDigest = await window.api.activity.digest(request);
+      if (get().selectedWorkspaceId !== workspaceId) return;
+      set({
+        activityPage: digest.page,
+        activityHeartbeat: digest.heartbeat,
+        activityReturnCounts: digest.sinceCounts,
+        lastHeartbeatOkAt: Date.now(),
+        activityDegradedStreak: digest.heartbeat.serverState === 'degraded-visible' ? 1 : 0,
+      });
+      const livePage = await window.api.activity.list({ ...request, preview: 'none' });
+      if (get().selectedWorkspaceId !== workspaceId) return;
+      set({ activityPage: livePage });
+      if (markViewed) {
+        const viewed = await window.api.activity.markViewed({ workspaceId, snapshot: livePage.cursor.snapshot });
+        if (get().selectedWorkspaceId === workspaceId) set({ activityLastViewed: viewed });
+      }
+    } catch (error) {
+      if (get().selectedWorkspaceId === workspaceId) {
+        set({ activityError: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
+    }
+  },
+
+  pollActivityHeartbeat: async (workspaceId) => {
+    try {
+      const heartbeat = await window.api.activity.heartbeat(workspaceId);
+      if (get().selectedWorkspaceId !== workspaceId) return;
+      set((state) => ({
+        activityHeartbeat: heartbeat,
+        lastHeartbeatOkAt: Date.now(),
+        activityDegradedStreak: heartbeat.serverState === 'degraded-visible'
+          ? state.activityDegradedStreak + 1
+          : 0,
+      }));
+    } catch {
+      // Deliberately retain lastHeartbeatOkAt. The shield's local clock turns
+      // the last known server result red once the response becomes stale.
+    }
+  },
+
+  subscribeActivity: (workspaceId) => {
+    const api = window.api.activity;
+    const offUndo = api.onUndoUpdated((event) => {
+      if (event.workspaceId !== workspaceId) return;
+      set((state) => state.activityPage
+        ? { activityPage: patchActivityUndo(state.activityPage, event.turnId, event.undo) }
+        : {});
+    });
+    const offCounts = api.onPageCounts((event) => {
+      if (event.workspaceId !== workspaceId) return;
+      set((state) => state.activityPage
+        ? { activityPage: { ...state.activityPage, pageCounts: event.pageCounts } }
+        : {});
+    });
+    void get().pollActivityHeartbeat(workspaceId);
+    const timer = window.setInterval(() => void get().pollActivityHeartbeat(workspaceId), 15_000);
+    return () => {
+      window.clearInterval(timer);
+      offUndo();
+      offCounts();
+    };
+  },
+
   loadCheckpointTurns: async (workspaceId, agentId) => {
     set((s) => ({ checkpointLoading: { ...s.checkpointLoading, [agentId]: true } }));
     try {
@@ -1610,6 +1738,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       browserOpen: nextBrowserOpen,
       saveCardOpen: nextSaveCardOpen,
       plansOpen: nextPlansOpen,
+      activityOpen: false,
+      activityPage: null,
+      activityReturnCounts: null,
+      activityFilter: {},
       detailPane: nextDetailPane,
       workspaceViewState,
     });

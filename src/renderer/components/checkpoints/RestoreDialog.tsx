@@ -190,10 +190,10 @@ export default function RestoreDialog({
       {/* Witnessed path selection (restore) / summary (revert). */}
       <div className="mb-2">
         <div className="text-gray-500 uppercase text-[10px] tracking-wider mb-1">
-          Witnessed paths {mode === 'restore' ? '(select to restore)' : '(all undone)'}
+          Changed files {mode === 'restore' ? '(select to restore)' : '(all undone)'}
         </div>
         {turn.witnessedPaths.length === 0 ? (
-          <div className="text-gray-500 italic">No witnessed paths for this turn.</div>
+          <div className="text-gray-500 italic">No changed files for this turn.</div>
         ) : (
           <ul className="space-y-0.5">
             {turn.witnessedPaths.map((p) => (
@@ -233,12 +233,12 @@ export default function RestoreDialog({
           <div className="font-semibold mb-1">Current conflicts</div>
           {contention.map((c) => (
             <div key={`${c.path}:${c.turnId}`} className="font-mono text-[11px]">
-              {c.path} — witnessed by open turn {c.turnId}
+              {c.path} — being changed by an active turn
             </div>
           ))}
           {rejected.map((p) => (
             <div key={`rej:${p}`} className="font-mono text-[11px]">
-              {p} — not witnessed by this turn (rejected)
+              {p} — not part of this turn (rejected)
             </div>
           ))}
         </div>
