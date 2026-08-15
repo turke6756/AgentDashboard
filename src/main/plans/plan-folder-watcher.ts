@@ -26,7 +26,15 @@ import fs from 'fs';
 import path from 'path';
 import type { ObservedOverviewSourceToken, Workspace } from '../../shared/types';
 import { isPlanArtifactId } from '../../shared/planning-artifact-ids';
-import { adoptStructuredPlan, softDeletePlan, type StructuredPlanChange } from '../database';
+import {
+  adoptStructuredPlan,
+  getPlanByWorkspaceArtifactId,
+  getProposalByWorkspaceArtifactId,
+  getProposalByWorkspacePath,
+  softDeletePlan,
+  type ProposalRecord,
+  type StructuredPlanChange,
+} from '../database';
 import { workspaceStateDir, workspaceStateDirName } from '../workspace-state-dir';
 import { observeOverviewSource } from './plan-human-overview';
 import {
@@ -47,7 +55,7 @@ const PLAN_JSON_MAX_BYTES = 1_000_000;
 /** Bounded fan-out when computing a folder's change signature. */
 const SIGNATURE_MAX_FILES = 400;
 
-export type FolderChangeKind = 'boot' | 'adopted' | 'changed';
+export type FolderChangeKind = 'boot' | 'adopted' | 'changed' | 'dependency';
 
 export type PlanFolderDiagnosticKind =
   | 'malformed-plan-json'
@@ -213,12 +221,62 @@ export interface PlanFolderWatcherOptions {
   now?: () => number;
   /** Max folders with live child subscriptions (default 64). */
   childSubCap?: number;
+  /** Deterministic projection-completion seam (tests); production uses the
+   *  ordered folder projection coordinator. */
+  reconcileProjections?: typeof reconcilePlanFolderProjections;
 }
 
 interface AdoptedFolder {
   planId: string;
   artifactId: string;
   signature: PlanFolderSignature;
+  sourceProposalDepKey: string;
+}
+
+type SourceProposalDependencyRow = Pick<ProposalRecord,
+  'id' | 'artifactId' | 'path' | 'deletedAt' | 'promotedToPlanId'>;
+
+function dependencyRow(row: ProposalRecord | null): SourceProposalDependencyRow | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    artifactId: row.artifactId,
+    path: row.path,
+    deletedAt: row.deletedAt,
+    promotedToPlanId: row.promotedToPlanId,
+  };
+}
+
+/** Stable JSON of exactly the registry and adopted-row fields consulted by the
+ * source-proposal reconciler and its database projection guards. */
+export function computeSourceProposalDepKey(input: {
+  workspaceId: string;
+  planId: string;
+  planSourceProposalId: string | null;
+  folderAbs: string;
+}): string {
+  let sourceArtifactId: string | null = null;
+  let sourceRelPath: string | null = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(input.folderAbs, 'plan.json'), 'utf8'));
+    const source = manifest && typeof manifest === 'object' ? manifest.source_proposal : null;
+    if (source && typeof source === 'object') {
+      sourceArtifactId = typeof source.artifact_id === 'string' ? source.artifact_id : null;
+      sourceRelPath = typeof source.rel_path === 'string' ? source.rel_path : null;
+    }
+  } catch { /* validity/projection diagnostics own malformed manifests */ }
+  const byArtifact = sourceArtifactId === null
+    ? null : getProposalByWorkspaceArtifactId(input.workspaceId, sourceArtifactId);
+  const byPath = sourceRelPath === null
+    ? null : getProposalByWorkspacePath(input.workspaceId, sourceRelPath);
+  return JSON.stringify({
+    planId: input.planId,
+    planSourceProposalId: input.planSourceProposalId,
+    sourceArtifactId,
+    sourceRelPath,
+    byArtifact: dependencyRow(byArtifact),
+    byPath: dependencyRow(byPath),
+  });
 }
 
 /** Per-workspace ingest state + reconciler. Holds the adopted-folder snapshot so
@@ -229,13 +287,17 @@ export class PlanFolderWatcher {
   private readonly onSettled?: PlanFolderWatcherOptions['onPlanFolderSettled'];
   private readonly now: () => number;
   private readonly childSubCap: number;
+  private readonly reconcileProjections: typeof reconcilePlanFolderProjections;
   /** workspaceId → (folderRelPath → adopted snapshot). */
   private adopted = new Map<string, Map<string, AdoptedFolder>>();
+  /** Boot projection rejections awaiting a periodic retry. */
+  private pendingRetry = new Map<string, Set<string>>();
 
   constructor(opts: PlanFolderWatcherOptions = {}) {
     this.onSettled = opts.onPlanFolderSettled;
     this.now = opts.now ?? (() => Date.now());
     this.childSubCap = opts.childSubCap ?? DEFAULT_FOLDER_CHILD_SUB_CAP;
+    this.reconcileProjections = opts.reconcileProjections ?? reconcilePlanFolderProjections;
   }
 
   /** Absolute state-dir plans home for a workspace (migration-aware). */
@@ -346,7 +408,22 @@ export class PlanFolderWatcher {
         continue;
       }
 
-      next.set(folderRelPath, { planId: adopt.planId, artifactId: validity.planArtifactId, signature });
+      const adoptedRow = getPlanByWorkspaceArtifactId(ws.id, validity.planArtifactId);
+      const sourceProposalDepKey = computeSourceProposalDepKey({
+        workspaceId: ws.id,
+        planId: adopt.planId,
+        planSourceProposalId: adoptedRow?.sourceProposalId ?? null,
+        folderAbs,
+      });
+      // This is intentionally the pre-apply key. A first successful link can
+      // cause one idempotent dependency re-projection; do not reorder boot/live
+      // projection work merely to eliminate that self-limiting pass.
+      next.set(folderRelPath, {
+        planId: adopt.planId,
+        artifactId: validity.planArtifactId,
+        signature,
+        sourceProposalDepKey,
+      });
       if (overCap) {
         result.overCap.push(folderRelPath);
         result.diagnostics.push({
@@ -370,6 +447,8 @@ export class PlanFolderWatcher {
       else if (adopt.change === 'adopted' || adopt.change === 'revived') changeKind = 'adopted';
       else if (adopt.change === 'changed'
         || (priorSnap != null && !signaturesEqual(priorSnap.signature, signature))) changeKind = 'changed';
+      else if (priorSnap != null && priorSnap.sourceProposalDepKey !== sourceProposalDepKey) changeKind = 'dependency';
+      else if (this.pendingRetry.get(ws.id)?.has(folderRelPath)) changeKind = 'dependency';
 
       if (changeKind !== null) {
         result.settled.push({ planId: adopt.planId, folderRelPath, changeKind });
@@ -382,6 +461,7 @@ export class PlanFolderWatcher {
     for (const [folderRelPath, snap] of prior) {
       if (next.has(folderRelPath)) continue;
       result.removed.push(folderRelPath);
+      this.clearPendingRetry(ws.id, folderRelPath);
       try {
         softDeletePlan(snap.planId);
       } catch (err) {
@@ -402,7 +482,7 @@ export class PlanFolderWatcher {
     changeKind: FolderChangeKind, isBoot: boolean,
   ): Promise<void> {
     const run = async (): Promise<void> => {
-      const projections = await reconcilePlanFolderProjections({
+      const projections = await this.reconcileProjections({
         workspace: ws,
         planFolderRelPath: folderRelPath,
         changeKind,
@@ -427,15 +507,43 @@ export class PlanFolderWatcher {
     };
     if (isBoot) {
       Promise.resolve(run())
-        .catch((err) => console.error('[plan-folder-watcher] onPlanFolderSettled (boot) threw', err));
+        .then(() => this.clearPendingRetry(ws.id, folderRelPath))
+        .catch((err) => {
+          let retry = this.pendingRetry.get(ws.id);
+          if (!retry) { retry = new Set(); this.pendingRetry.set(ws.id, retry); }
+          retry.add(folderRelPath);
+          console.error('[plan-folder-watcher] onPlanFolderSettled (boot) threw', err);
+        });
     } else {
       await run();
+      this.clearPendingRetry(ws.id, folderRelPath);
     }
+  }
+
+  private clearPendingRetry(workspaceId: string, folderRelPath: string): void {
+    const retry = this.pendingRetry.get(workspaceId);
+    if (!retry) return;
+    retry.delete(folderRelPath);
+    if (retry.size === 0) this.pendingRetry.delete(workspaceId);
+  }
+
+  clearRuntimeState(workspaceId?: string): void {
+    if (workspaceId === undefined) {
+      this.adopted.clear();
+      this.pendingRetry.clear();
+      return;
+    }
+    this.adopted.delete(workspaceId);
+    this.pendingRetry.delete(workspaceId);
   }
 
   /** Test/inspection seam: the adopted-folder snapshot for a workspace. */
   adoptedFoldersForTests(workspaceId: string): string[] {
     return [...(this.adopted.get(workspaceId)?.keys() ?? [])];
+  }
+
+  pendingRetriesForTests(workspaceId: string): string[] {
+    return [...(this.pendingRetry.get(workspaceId) ?? [])];
   }
 }
 

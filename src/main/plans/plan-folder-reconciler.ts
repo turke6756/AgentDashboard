@@ -22,7 +22,7 @@ import {
   appendPromotedLifecycleEvent,
 } from './plan-manifest';
 
-export type PlanFolderReconcileChangeKind = 'boot' | 'adopted' | 'changed' | 'manual';
+export type PlanFolderReconcileChangeKind = 'boot' | 'adopted' | 'changed' | 'dependency' | 'manual';
 export type AdoptFailureReason = 'absent' | 'malformed' | 'no-artifact-id' | 'non-contract-artifact-id' | 'conflict';
 
 export interface AdoptResult {

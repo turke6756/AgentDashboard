@@ -3806,6 +3806,7 @@ export interface StructuredPlanRow {
   mtimeMs: number;
   sizeBytes: number;
   deletedAt: string | null;
+  sourceProposalId?: string | null;
 }
 
 function rowToStructuredPlan(row: any): StructuredPlanRow {
@@ -3820,6 +3821,7 @@ function rowToStructuredPlan(row: any): StructuredPlanRow {
     mtimeMs: row.mtime_ms,
     sizeBytes: row.size_bytes,
     deletedAt: row.deleted_at ?? null,
+    sourceProposalId: row.source_proposal_id ?? null,
   };
 }
 

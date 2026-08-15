@@ -243,6 +243,8 @@ export class PlansWatcher {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private readonly folderWatcher: PlanFolderWatcher;
+  /** workspace id -> diagnostic identity -> last detail logged */
+  private folderDiagnosticCache = new Map<string, Map<string, string>>();
 
   constructor(private readonly opts: PlansWatcherOptions = {}) {
     this.folderWatcher = new PlanFolderWatcher({
@@ -274,6 +276,8 @@ export class PlansWatcher {
       }
     }
     this.folderStates.clear();
+    this.folderWatcher.clearRuntimeState();
+    this.folderDiagnosticCache.clear();
   }
 
   /** (Re)attach BOTH roots for every workspace. The legacy `plans/` root only
@@ -349,6 +353,15 @@ export class PlansWatcher {
     const fst = this.folderStates.get(ws.id);
     if (!fst) return;
     const result = await this.folderWatcher.reconcileWorkspace(ws, isBoot);
+    const priorDiagnostics = this.folderDiagnosticCache.get(ws.id) ?? new Map<string, string>();
+    const nextDiagnostics = new Map<string, string>();
+    for (const diagnostic of result.diagnostics) {
+      const key = JSON.stringify([diagnostic.kind, diagnostic.relPath, diagnostic.otherRelPath ?? null]);
+      nextDiagnostics.set(key, diagnostic.detail);
+      if (priorDiagnostics.get(key) !== diagnostic.detail) log(diagnostic.detail);
+    }
+    if (nextDiagnostics.size === 0) this.folderDiagnosticCache.delete(ws.id);
+    else this.folderDiagnosticCache.set(ws.id, nextDiagnostics);
     this.syncChildSubs(fst, new Set(result.watchable));
   }
 

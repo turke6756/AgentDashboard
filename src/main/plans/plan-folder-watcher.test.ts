@@ -9,8 +9,8 @@
 // plan_artifact_id; NO author_* write (schema-checked); child-sub set tracked +
 // removals reported; duplicate/malformed per policy; no P2L import.
 //
-// NOT registered in scripts/run-main-tests.mjs here — the stage-end gate (P2Z)
-// owns that edit.
+// Registered in scripts/run-main-tests.mjs so the production main-test gate
+// executes this suite.
 //
 // Uses the sql.js-backed better-sqlite3 fake (mirrors plan-gallery.test) so the
 // REAL database + plan-folder-watcher modules run against a live schema, plus a
@@ -93,6 +93,9 @@ class FakeBetterSqlite {
       return rows;
     } finally { stmt.free(); }
   }
+  static rawRun(sql: string, params: unknown[] = []): void {
+    FakeBetterSqlite.store().run(sql, params);
+  }
 }
 
 // ── Types mirrored off the real modules (structural) ─────────────────────────
@@ -100,6 +103,7 @@ type StructuredPlanRow = {
   id: string; workspaceId: string; artifactId: string | null; folderRelPath: string | null;
   path: string; format: string; runState: string | null; mtimeMs: number; sizeBytes: number;
   deletedAt: string | null;
+  sourceProposalId?: string | null;
 };
 type Plan = { id: string; workspaceId: string; deletedAt: string | null };
 
@@ -108,9 +112,11 @@ type DbModule = {
   createWorkspace(input: { title: string; path: string; pathType: string }): { id: string };
   getPlanByWorkspaceArtifactId(workspaceId: string, artifactId: string): StructuredPlanRow | null;
   getPlans(filters?: { workspaceId?: string; includeDeleted?: boolean }): Plan[];
+  insertProposalRecord(rec: any): void;
+  getPlanSourceProposalProjectionState(planId: string): { status: string } | null;
 };
 
-type FolderChangeKind = 'boot' | 'adopted' | 'changed';
+type FolderChangeKind = 'boot' | 'adopted' | 'changed' | 'dependency';
 type PlanFolderDiagnostic = { kind: string; workspaceId: string; relPath: string; otherRelPath?: string; detail: string };
 type FolderReconcileResult = {
   settled: Array<{ planId: string; folderRelPath: string; changeKind: FolderChangeKind }>;
@@ -122,10 +128,13 @@ type WatcherModule = {
   PlanFolderWatcher: new (opts?: {
     onPlanFolderSettled?: (planId: string, folderRelPath: string, changeKind: FolderChangeKind) => void | Promise<void>;
     now?: () => number; childSubCap?: number;
+    reconcileProjections?: (input: any) => Promise<any>;
   }) => {
     reconcileWorkspace(ws: Ws, isBoot: boolean): Promise<FolderReconcileResult>;
     plansHome(ws: Ws): string;
     adoptedFoldersForTests(workspaceId: string): string[];
+    pendingRetriesForTests(workspaceId: string): string[];
+    clearRuntimeState(workspaceId?: string): void;
   };
   validatePlanFolder(folderAbs: string): { valid: boolean; reason?: string; planArtifactId?: string };
   computeFolderSignature(folderAbs: string): { maxManagedMtimeMs: number; overviewToken: string };
@@ -181,6 +190,50 @@ function writeFolder(sku: string, opts: {
   if (opts.planMd !== null) fs.writeFileSync(path.join(abs, 'plan.md'), opts.planMd ?? `# ${sku}\n`);
   if (opts.mtimeMs !== undefined) touchAll(abs, opts.mtimeMs);
   return relOf(sku);
+}
+
+let sourceSeq = 0;
+function writeSourceFolder(opts: { register?: boolean } = {}): {
+  sku: string; rel: string; planArtifactId: string; proposalArtifactId: string;
+  proposalRelPath: string;
+} {
+  sourceSeq += 1;
+  const hex = sourceSeq.toString(16).padStart(8, '0');
+  const sku = `source-${hex}`;
+  const planArtifactId = `plan_${hex}`;
+  const proposalArtifactId = `prop_${hex}`;
+  const proposalRelPath = `.lares/proposals/${sku}.md`;
+  fs.mkdirSync(path.join(wsRoot, '.lares', 'proposals'), { recursive: true });
+  fs.writeFileSync(path.join(wsRoot, proposalRelPath),
+    `---\nartifact_id: ${proposalArtifactId}\nauthored_at: 2026-08-15\ntitle: Source\n---\n# Source\n`);
+  const rel = writeFolder(sku, {
+    artifactId: planArtifactId,
+    planJson: {
+      source_proposal: { artifact_id: proposalArtifactId, rel_path: proposalRelPath },
+      responsibility_events: [], created_at: 1_786_800_000_000, updated_at: 1_786_800_000_000,
+    },
+  });
+  if (opts.register) registerSourceProposal(proposalArtifactId, proposalRelPath);
+  return { sku, rel, planArtifactId, proposalArtifactId, proposalRelPath };
+}
+
+function registerSourceProposal(artifactId: string, proposalRelPath: string): string {
+  const id = `proposal-row-${ws.id}-${artifactId}`;
+  dbm.insertProposalRecord({
+    id, artifactId, workspaceId: ws.id, path: proposalRelPath, slug: null, title: 'Source',
+    state: 'proposal', authorAgentId: null, authorRole: 'unknown', authorDisplay: null,
+    authoredAt: null, createdAt: 10, updatedAt: 10, mtimeMs: 1, sizeBytes: 1,
+    promotedToPlanId: null, deletedAt: null,
+  });
+  return id;
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`timed out waiting for ${label}`);
 }
 
 /** Force mtimes under a folder so signature changes are deterministic. */
@@ -390,6 +443,177 @@ test('adopt writes NO author_* column (schema-checked): plans has no author colu
 test('P2L ledger scan is wired through the settle seam', () => {
   const compiled = fs.readFileSync(path.join(__dirname, 'plan-folder-watcher.js'), 'utf8');
   assert.match(compiled, /plan-intent-ledger/, 'compiled settle-seam module references plan-intent-ledger');
+});
+
+test('dependency convergence: a proposal registered after folder boot syncs on an unchanged periodic pass', async () => {
+  const source = writeSourceFolder();
+  const settled: any[] = [];
+  const watcher = newWatcher({ settled });
+  await watcher.reconcileWorkspace(ws, true);
+  const plan = dbm.getPlanByWorkspaceArtifactId(ws.id, source.planArtifactId)!;
+  await waitFor(() => dbm.getPlanSourceProposalProjectionState(plan.id)?.status === 'absent', 'boot absence');
+
+  registerSourceProposal(source.proposalArtifactId, source.proposalRelPath);
+  const periodic = await watcher.reconcileWorkspace(ws, false);
+  assert.ok(periodic.settled.some((entry) => entry.folderRelPath === source.rel
+    && entry.changeKind === 'dependency'), 'registry-only change re-enters the production seam');
+  assert.equal(dbm.getPlanSourceProposalProjectionState(plan.id)?.status, 'synced');
+});
+
+test('dependency convergence: plans.source_proposal_id and byPath.deletedAt alone each rerun projection', async () => {
+  const source = writeSourceFolder({ register: true });
+  const calls: string[] = [];
+  const watcher = new wm.PlanFolderWatcher({
+    reconcileProjections: async (input: any) => {
+      calls.push(input.changeKind);
+      return {
+        intentLedger: { diagnostics: [] }, workPackages: { status: 'synced', diagnostics: [] },
+        overview: { status: 'synced', diagnostics: [] },
+      };
+    },
+  });
+  await watcher.reconcileWorkspace(ws, false);
+  const plan = dbm.getPlanByWorkspaceArtifactId(ws.id, source.planArtifactId)!;
+  calls.length = 0;
+
+  FakeBetterSqlite.rawRun('UPDATE plans SET source_proposal_id = ? WHERE id = ?', ['foreign-proposal-id', plan.id]);
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(calls, ['dependency'], 'plan linkage alone invalidates the key');
+
+  calls.length = 0;
+  const proposalId = `proposal-row-${ws.id}-${source.proposalArtifactId}`;
+  FakeBetterSqlite.rawRun('UPDATE proposals SET deleted_at = ? WHERE id = ?', [123, proposalId]);
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(calls, ['dependency'], 'byPath.deletedAt with the same row id invalidates the key');
+});
+
+test('boot rejection retries once on an unchanged periodic pass, fulfillment clears it, then no-op stays quiet', async () => {
+  const source = writeSourceFolder();
+  let calls = 0;
+  const kinds: string[] = [];
+  const watcher = new wm.PlanFolderWatcher({
+    reconcileProjections: async (input: any) => {
+      calls += 1;
+      kinds.push(input.changeKind);
+      if (calls === 1) throw new Error('injected boot rejection');
+      return {
+        intentLedger: { diagnostics: [] }, workPackages: { status: 'synced', diagnostics: [] },
+        overview: { status: 'synced', diagnostics: [] },
+      };
+    },
+  });
+  await watcher.reconcileWorkspace(ws, true);
+  await waitFor(() => watcher.pendingRetriesForTests(ws.id).includes(source.rel), 'boot retry registration');
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(kinds, ['boot', 'dependency']);
+  assert.deepEqual(watcher.pendingRetriesForTests(ws.id), [], 'fulfilled retry clears key');
+  await watcher.reconcileWorkspace(ws, false);
+  assert.equal(calls, 2, 'following no-op does not project');
+
+  // Removal evicts a failed boot retry, so recreating the same rel-path gets
+  // only its ordinary revive projection and no stale retry projection after it.
+  const removedRetry = new wm.PlanFolderWatcher({ reconcileProjections: async () => { throw new Error('remove me'); } });
+  await removedRetry.reconcileWorkspace(ws, true);
+  await waitFor(() => removedRetry.pendingRetriesForTests(ws.id).includes(source.rel), 'retry before removal');
+  fs.rmSync(folderAbsOf(source.sku), { recursive: true, force: true });
+  await removedRetry.reconcileWorkspace(ws, false);
+  const rawRetry = (removedRetry as unknown as {
+    pendingRetry: Map<string, Set<string>>;
+  }).pendingRetry;
+  assert.equal(rawRetry.get(ws.id)?.has(source.rel) ?? false, false, 'removal evicts the raw retry entry');
+  const recreatedKinds: string[] = [];
+  (removedRetry as any).reconcileProjections = async (input: any) => {
+    recreatedKinds.push(input.changeKind);
+    return {
+      intentLedger: { diagnostics: [] }, workPackages: { status: 'synced', diagnostics: [] },
+      overview: { status: 'synced', diagnostics: [] },
+    };
+  };
+  writeFolder(source.sku, {
+    artifactId: source.planArtifactId,
+    planJson: {
+      source_proposal: { artifact_id: source.proposalArtifactId, rel_path: source.proposalRelPath },
+      responsibility_events: [], created_at: 1_786_800_000_000, updated_at: 1_786_800_000_000,
+    },
+  });
+  await removedRetry.reconcileWorkspace(ws, false);
+  await removedRetry.reconcileWorkspace(ws, false);
+  assert.deepEqual(recreatedKinds, ['adopted'], 'same-path recreation has no stale follow-up retry');
+
+  // A rejected boot after teardown is forgotten; restart work is attributed to boot.
+  const rejecting = new wm.PlanFolderWatcher({ reconcileProjections: async () => { throw new Error('reject'); } });
+  await rejecting.reconcileWorkspace(ws, true);
+  await waitFor(() => rejecting.pendingRetriesForTests(ws.id).length === 1, 'pending retry before clear');
+  rejecting.clearRuntimeState();
+  assert.deepEqual(rejecting.pendingRetriesForTests(ws.id), []);
+  const restartKinds: string[] = [];
+  (rejecting as any).reconcileProjections = async (input: any) => {
+    restartKinds.push(input.changeKind);
+    return {
+      intentLedger: { diagnostics: [] }, workPackages: { status: 'synced', diagnostics: [] },
+      overview: { status: 'synced', diagnostics: [] },
+    };
+  };
+  await rejecting.reconcileWorkspace(ws, true);
+  await waitFor(() => restartKinds.length === 1, 'restart boot projection');
+  assert.deepEqual(restartKinds, ['boot'], 'post-clear restart is boot, not retained retry');
+});
+
+test('a returned terminal conflict completes boot and is not retried periodically', async () => {
+  writeSourceFolder();
+  const kinds: string[] = [];
+  const watcher = new wm.PlanFolderWatcher({
+    reconcileProjections: async (input: any) => {
+      kinds.push(input.changeKind);
+      return {
+        sourceProposal: { status: 'conflict' }, intentLedger: { diagnostics: [] },
+        workPackages: { status: 'synced', diagnostics: [] }, overview: { status: 'synced', diagnostics: [] },
+      };
+    },
+  });
+  await watcher.reconcileWorkspace(ws, true);
+  await waitFor(() => kinds.length === 1, 'terminal boot completion');
+  assert.deepEqual(watcher.pendingRetriesForTests(ws.id), []);
+  await watcher.reconcileWorkspace(ws, false);
+  assert.deepEqual(kinds, ['boot']);
+});
+
+test('legacy non-contract folder is quarantined while a valid sibling reaches synced', async () => {
+  writeFolder('legacy-pigt5a83', { artifactId: 'plan_pigt5a83' });
+  const source = writeSourceFolder({ register: true });
+  const result = await newWatcher().reconcileWorkspace(ws, false);
+  const plan = dbm.getPlanByWorkspaceArtifactId(ws.id, source.planArtifactId)!;
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.kind === 'non-contract-plan-artifact-id'));
+  assert.equal(dbm.getPlanSourceProposalProjectionState(plan.id)?.status, 'synced');
+});
+
+test('PlansWatcher logs a stable quarantine diagnostic once across repeated no-op scans', async () => {
+  const plansWatcherModule = require('../plans-watcher') as typeof import('../plans-watcher');
+  const watcher: any = new plansWatcherModule.PlansWatcher();
+  watcher.folderStates.set(ws.id, {
+    ws, home: plansHomeAbs(), rootUnsubscribe: () => {}, childSubs: new Map(), debounce: null,
+  });
+  const diagnostic = {
+    kind: 'non-contract-plan-artifact-id', workspaceId: ws.id, relPath: '.lares/plans/legacy-pigt5a83',
+    detail: 'legacy quarantine',
+  };
+  let runtimeCleared = false;
+  watcher.folderWatcher = {
+    reconcileWorkspace: async () => ({ settled: [], watchable: [], overCap: [], removed: [], diagnostics: [diagnostic] }),
+    clearRuntimeState: () => { runtimeCleared = true; },
+  };
+  const messages: unknown[][] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { messages.push(args); };
+  try {
+    await watcher.reconcileFolderRoot(ws, false);
+    await watcher.reconcileFolderRoot(ws, false);
+  } finally {
+    console.log = originalLog;
+    watcher.stop();
+  }
+  assert.equal(messages.filter((args) => String(args[0]).includes('legacy quarantine')).length, 1);
+  assert.equal(runtimeCleared, true, 'PlansWatcher.stop clears folder watcher runtime state');
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────────
