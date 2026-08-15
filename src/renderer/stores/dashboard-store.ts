@@ -41,12 +41,16 @@ function withLegacyPlanBadgeRoleView(badges: Record<string, AgentPlanBadge>): Re
     Object.defineProperties(destinations, {
       authored: {
         enumerable: false,
+        configurable: true,
+        writable: true,
         // Authorship is intentionally not a card mark; retain only the empty
         // property required by the two pre-WP-6 consumers named above.
         value: [],
       },
       carrying: {
         enumerable: false,
+        configurable: true,
+        writable: true,
         value: destinations.map((destination) => destination.planArtifactId),
       },
     });

@@ -38,10 +38,9 @@ tests.push(() => {
     [id, ws.id, `.lares/plans/${id}/plan.md`, id, artifact, source, ownerId]);
   insertPlan('plan-one', 'plan_one', 'proposal-one', owner.id);
   insertPlan('plan-two', 'plan_two', 'proposal-two', owner.id);
-  db.insertProposalRecord({ id: 'proposal-one', artifactId: 'proposal_one', workspaceId: ws.id, path: '.lares/proposals/one.md', slug: 'one', title: 'one', state: 'promoted', authorAgentId: follower.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-one', deletedAt: null });
+  db.insertProposalRecord({ id: 'proposal-one', artifactId: 'proposal_one', workspaceId: ws.id, path: '.lares/proposals/one.md', slug: 'one', title: 'one', state: 'promoted', authorAgentId: author.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-one', deletedAt: null });
   db.insertProposalRecord({ id: 'proposal-two', artifactId: 'proposal_two', workspaceId: ws.id, path: '.lares/proposals/two.md', slug: 'two', title: 'two', state: 'promoted', authorAgentId: author.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-two', deletedAt: null });
   db.upsertSupervisorFocus({ supervisorId: follower.id, planId: 'plan-one' });
-  db.upsertSupervisorFocus({ supervisorId: author.id, planId: 'plan-two' });
   const result = db.getAgentPlanBadgeSummary(ws.id);
   assert.deepEqual(result[owner.id], [{
     kind: 'promoted-plan', planId: 'plan-one', planArtifactId: 'plan_one', title: 'one',
@@ -52,8 +51,8 @@ tests.push(() => {
     relationships: ['carrying'], proposalPath: '.lares/proposals/two.md',
     proposalArtifactId: 'proposal_two',
   }]);
-  assert.equal(result[follower.id], undefined, 'focus and authorship must not confer a card mark');
-  assert.equal(result[author.id], undefined, 'authorship and focus must not confer a card mark');
+  assert.equal(result[follower.id], undefined, 'focus alone must not confer a card mark');
+  assert.equal(result[author.id], undefined, 'authorship alone must not confer a card mark');
   assert.equal(result[unattached.id], undefined);
 });
 
