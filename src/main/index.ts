@@ -33,6 +33,7 @@ import { AgentSupervisor } from './supervisor';
 import { startContinuationWatcher } from './supervisor/continuation-watcher-wiring';
 import { runCheckpointStartupMaintenance } from './git-checkpoints/reconciler';
 import { createCheckpointEngine } from './git-checkpoints/engine-bootstrap';
+import { captureHealthManager } from './activity/capture-health';
 import { RETENTION_CYCLE_INTERVAL_MS } from '../shared/constants';
 import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSaveCardPreviewRoutes, setSaveCardMintRoutes, setSaveCardFinalizeRoutes, setCommitCoordinatorRoutes, setSaveSweepService, setSaveCardAttentionProvider, setActivityMergeService } from './ipc-handlers';
 import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
@@ -832,6 +833,7 @@ app.whenReady().then(async () => {
     // close seam. Fire-and-forget so it never delays window creation; a git that
     // cannot be resolved simply leaves the feature off (sweep-only fallback).
     void (async () => {
+      captureHealthManager.markBootstrapping();
       try {
         const engine = await createCheckpointEngine();
         if (engine && supervisor) {
@@ -988,9 +990,11 @@ app.whenReady().then(async () => {
           if (typeof retentionTimer.unref === 'function') retentionTimer.unref();
         } else {
           // No usable internal git → engine off, but the sweep backstop still runs.
+          captureHealthManager.markEngineAbsent();
           await runCheckpointStartupMaintenance({ workspaces: getWorkspaces() });
         }
       } catch (err) {
+        captureHealthManager.markEngineFailed();
         console.error('[checkpoint] engine bootstrap / startup maintenance failed:', err);
       }
     })();

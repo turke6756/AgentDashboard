@@ -18,6 +18,7 @@ import {
   listTurnRecords,
   listActiveBoundaryRefs,
   recordWitnessedActivity,
+  reconcileCaptureAttempts,
   type WitnessObserver,
 } from '../database';
 import type { CheckpointRoutes, TurnCheckpointSummary } from '../api-server';
@@ -50,6 +51,7 @@ import {
 } from './prune';
 import { forcePrerequisiteRecheck } from '../runtime-prerequisites';
 import type { RepoWidePurgeResult, RepoWidePurgeWorkspace } from '../../shared/types';
+import { CAPABILITY_PROBE_TTL_MS, captureHealthManager } from '../activity/capture-health';
 
 export interface CheckpointEngineHandle {
   /** The internal Git exe this engine resolved. Reused by the Save-card route
@@ -156,18 +158,29 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
 
   // Per-workspace capability cache (keyed by workspaceId). A missing/unusable repo
   // caches as null so the send path short-circuits without re-probing every turn.
-  const capabilityCache = new Map<string, GitCapability | null>();
+  const capabilityCache = new Map<string, { cap: GitCapability | null; probedAt: number }>();
+  const capabilityRefreshes = new Map<string, Promise<GitCapability | null>>();
   const resolveCapabilityByWorkspace = async (wsId: string): Promise<GitCapability | null> => {
-    if (capabilityCache.has(wsId)) return capabilityCache.get(wsId) ?? null;
-    let cap: GitCapability | null = null;
-    try {
-      const ws = getWorkspace(wsId);
-      if (ws?.path) cap = await probeWorkspaceGit(canonicalDir(ws.path));
-    } catch {
-      cap = null;
-    }
-    capabilityCache.set(wsId, cap);
-    return cap;
+    const cached = capabilityCache.get(wsId);
+    if (cached && Date.now() - cached.probedAt <= CAPABILITY_PROBE_TTL_MS) return cached.cap;
+    const inFlight = capabilityRefreshes.get(wsId);
+    if (inFlight) return cached?.cap ?? inFlight;
+    captureHealthManager.noteCapabilityProbeStarted(wsId);
+    const refresh = (async () => {
+      let cap: GitCapability | null = null;
+      try {
+        const ws = getWorkspace(wsId);
+        if (ws?.path) cap = await probeWorkspaceGit(canonicalDir(ws.path));
+      } catch {
+        cap = null;
+      }
+      const probedAt = Date.now();
+      capabilityCache.set(wsId, { cap, probedAt });
+      captureHealthManager.noteCapability(wsId, cap, probedAt);
+      return cap;
+    })().finally(() => capabilityRefreshes.delete(wsId));
+    capabilityRefreshes.set(wsId, refresh);
+    return cached?.cap ?? refresh;
   };
   const resolveCapability = (agent: DispatchAgentInfo): Promise<GitCapability | null> =>
     resolveCapabilityByWorkspace(agent.workspaceId);
@@ -418,7 +431,10 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
     await runCheckpointStartupMaintenance({
       workspaces: getWorkspaces(),
       // WP-G1.7 seam upgrade: dangling-open close runs through the LIVE coordinator.
-      closeOpenTurns: (workspaceId: string) => coordinator.reconcileOpenTurns(workspaceId),
+      closeOpenTurns: (workspaceId: string) => {
+        reconcileCaptureAttempts(workspaceId);
+        return coordinator.reconcileOpenTurns(workspaceId);
+      },
     });
     await reconcilePlanningActivityWorktrees({ gitExe });
   };
@@ -460,6 +476,16 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
       label,
     });
   };
+
+  captureHealthManager.attachEngine({
+    coordinator,
+    verifyEdge: (row, edge, capability) => service.verifyEdgeUsable(
+      capability.repoRoot as string,
+      edge === 'before' ? row.beforeReady : row.afterReady,
+      edge === 'before' ? row.beforeRef : row.afterRef,
+      edge === 'before' ? row.beforeOid : row.afterOid,
+    ),
+  });
 
   return {
     gitExe,

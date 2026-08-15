@@ -121,6 +121,7 @@ import { detectInteractivePrompt } from './interactive-prompt-detector';
 import { isNonBlockingNotificationType, isTurnCompleteNotificationMessage } from '../../shared/notification-classify';
 import { workspaceStateDir, workspaceStateDirName } from '../workspace-state-dir';
 import { ensureInstallationLauncher } from '../installation-descriptor';
+import { beginCaptureAttemptForSubmittedSend, captureHealthManager } from '../activity/capture-health';
 
 // Back-compat re-export shim: scaffold-version-migration.test.ts (and any other
 // caller) imports these from './index'. The definitions now live in
@@ -8557,6 +8558,9 @@ export class AgentSupervisor extends EventEmitter {
     dispatch?: DispatchContext,
   ): Promise<SendOutcome> {
     const agent = getAgent(agentId);
+    // Insert before checkpoint's fail-open block. The health observer is itself
+    // fail-open, so its storage can never prevent delivery of an agent turn.
+    const captureAttemptId = beginCaptureAttemptForSubmittedSend(submit, agent);
     // Agy's Phase-0 capture exposes a branded signed-out startup screen. Do not
     // type a dashboard message into that authentication UI: fail before any PTY
     // byte, preserve the draft, and return the prompt metadata used by every
@@ -8564,6 +8568,7 @@ export class AgentSupervisor extends EventEmitter {
     if (submit && agent?.provider === 'agy') {
       const prompt = this.classifyPtyPrompt(agentId);
       if (prompt?.kind === 'sign-in') {
+        captureHealthManager.markAttemptFailed(captureAttemptId, 'interactive-prompt');
         noteProviderObservation('agy', 'auth-banner', prompt.excerpt, Date.now());
         return this.recordSendOutcome({
           disposition: 'failed', agentId, delivered: false,
@@ -8584,7 +8589,9 @@ export class AgentSupervisor extends EventEmitter {
     // never blocked by the checkpoint (released by the WP-G1.5 wall-clock bound).
     let openedTurn = false;
     let openedTurnId: string | null = null;
-    if (submit && this.checkpointEngine) {
+    if (submit && !this.checkpointEngine) {
+      captureHealthManager.markAttemptSkipped(captureAttemptId, 'engine-absent');
+    } else if (submit && this.checkpointEngine) {
       try {
         const ctx = await this.checkpointEngine.buildTurnContext(
           agentId,
@@ -8597,9 +8604,16 @@ export class AgentSupervisor extends EventEmitter {
           const opened = await this.checkpointEngine.coordinator.beforeCheckpoint(agentId, ctx);
           openedTurn = true;
           openedTurnId = opened.turnId;
+          captureHealthManager.observeBeforeResult(captureAttemptId, opened);
           this.bindContinuationKickoffTurn(agentId, opened.turnId);
+        } else {
+          captureHealthManager.markAttemptSkipped(captureAttemptId, 'capability-none');
         }
       } catch (err) {
+        captureHealthManager.markAttemptFailed(
+          captureAttemptId,
+          err instanceof Error ? err.message : 'before-checkpoint-failed',
+        );
         console.warn(`[checkpoint] before-checkpoint failed for ${agentId} (delivery proceeds):`, err);
       }
     }

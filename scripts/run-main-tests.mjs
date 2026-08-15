@@ -186,6 +186,7 @@ const TESTS = [
   'dist/main/main/turn-records.test.js',
   // While-you-were-away WP-P1: activity snapshot/lookahead/enclosure + attempts.
   'dist/main/main/database.activity.test.js',
+  'dist/main/main/activity/capture-health.test.js',
   // Git-Native WP-G0.1: MinGit manifest loader + shape validation.
   'dist/main/main/git/mingit-manifest.test.js',
   // Git-Native WP-G0.2: git-runtime dual resolution + capability probe.
