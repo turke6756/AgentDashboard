@@ -790,7 +790,7 @@ const SUPERVISOR_AGENT_MD_V21_PLANNING_BLOCK = [
 export const SUPERVISOR_AGENT_MD_V21 = SUPERVISOR_AGENT_MD_V20
   .split(SUPERVISOR_AGENT_MD_V21_ANCHOR)
   .join(SUPERVISOR_AGENT_MD_V21_PLANNING_BLOCK + SUPERVISOR_AGENT_MD_V21_ANCHOR);
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V21.replace(
+export const SUPERVISOR_AGENT_MD_V23 = SUPERVISOR_AGENT_MD_V21.replace(
   'Supported providers: **claude, codex** (gemini is not session-addressable and is rejected).',
   'Supported providers: **claude, codex**. Historical Gemini agents remain readable, but Gemini is discontinued and cannot be launched or revived; use Antigravity (agy) for new work.',
 ).replace(
@@ -819,6 +819,29 @@ inbox/outside-inbox mutation attempt. Inbox promotion and reader constraints
 protect downstream report consumption, not provider-home persistence.
 
 ## Decision Framework`,
+);
+
+// WP-N3: freeze v23 above, then add the standing commit policy dispatching
+// supervisors must carry into every worker brief. This is prompt policy only:
+// per-agent hook identity and stronger pathspec enforcement remain unsolved.
+const SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_ANCHOR = '## Constraints';
+const SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_SECTION = `## Worker commit policy
+
+Every worker brief must require the worker to:
+
+- commit exactly once per finished, verified work package;
+- stage and commit only explicit, strict pathspecs â€” never use \`git add .\`,
+  \`git add -A\`, or \`git commit -a\`;
+- format the message as \`[role] verb: one-line outcome\`;
+- never push, tag, amend, rebase, or reset; and
+- use only the app-bundled local Git. No remote is configured or required.
+
+This is a prompt-level discipline, not hook enforcement. Stronger pathspec
+enforcement and reliable per-agent hook identity remain open design questions.
+`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V23.replace(
+  SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_ANCHOR,
+  `${SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_SECTION}\n${SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_ANCHOR}`,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory

@@ -1250,6 +1250,10 @@ export const SUPERVISOR_AGENT_MD_V19_HASH = 'bb0c5b846bde9e4f857503ccd7c67087bc9
 export const SUPERVISOR_AGENT_MD_V20_HASH = 'd9191bb1f403d1ac659a57f5c3068c4713ed5081c53c015a58ac4b31369bce9f';
 /** Frozen v21 body before Gemini retirement guidance was added in v22. */
 export const SUPERVISOR_AGENT_MD_V21_HASH = 'cab43b74e35dcd71e3baf059212ec4890ff56759e37821cd2d6b2e7c3a2b7527';
+/** SHA-256 hex of the v23 `.lares/supervisor/CLAUDE.md` body before WP-N3
+ *  added the worker commit-policy briefing contract. previousHashes[23] for
+ *  silent v23 â†’ v24 upgrades of pristine workspaces. */
+export const SUPERVISOR_AGENT_MD_V23_HASH = 'e8877c57a8e3c220b1ea37f0879cdaf6e31186101ef98a3a52ec1c4259135878';
 
 /** SHA-256 hex of the v6 `.dashboard/workers/claude/CLAUDE.md` (pre-`.lares`
  *  rename). Used in the v7 file's previousHashes. */
@@ -3652,8 +3656,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 23, // v23 states the provider-specific, non-uniform researcher posture.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd' },
+      version: 24, // v24 adds the worker commit-policy briefing contract.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
