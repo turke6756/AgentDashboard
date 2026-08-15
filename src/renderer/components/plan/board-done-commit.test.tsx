@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  CommitCoordinatorConsumeResponse,
   MissionBoardCard,
   MissionBoardPackageTimeline,
   SaveCardPreviewResponse,
@@ -76,8 +75,9 @@ let container: HTMLDivElement | null = null;
 let finalizeItemDone: ReturnType<typeof vi.fn>;
 let previewCandidate: ReturnType<typeof vi.fn>;
 let commit: ReturnType<typeof vi.fn>;
+let sweep: ReturnType<typeof vi.fn>;
 
-async function renderBoard(state: MissionBoardCard['state'], outcome?: CommitCoordinatorConsumeResponse) {
+async function renderBoard(state: MissionBoardCard['state']) {
   finalizeItemDone = vi.fn(async () => ({ outcome: 'created' }));
   previewCandidate = vi.fn(async () => ({
     candidate: savePreview.candidate,
@@ -86,15 +86,13 @@ async function renderBoard(state: MissionBoardCard['state'], outcome?: CommitCoo
       selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
     },
   }));
-  commit = vi.fn(async () => outcome ?? ({
-    kind: 'saved',
-    outcome: { status: 'committed', commitOid: 'oid-1', attemptId: 'attempt-1', indexIntegrity: 'verified' },
-    finalizations: [],
-  }));
+  commit = vi.fn();
+  sweep = vi.fn(async () => ({ halted: false, haltKind: null, results: [] }));
   (window as unknown as { api: unknown }).api = {
     plans: { finalizeItemDone, previewCandidate },
     saveCard: {
       preview: vi.fn(async () => savePreview),
+      sweep,
       getInventory: vi.fn(async () => ({ bundles: [], quotaWeakening: null })),
     },
     commitCoordinator: {
@@ -145,16 +143,13 @@ afterEach(() => {
 });
 
 describe('WP-P6D board done + commit integration', () => {
-  it('renders a typed mint-stage refusal instead of silently returning', async () => {
+  it('opens an eligible package as review-only with honest retired-Save copy', async () => {
     await renderBoard('done');
-    (window.api.commitCoordinator.mint as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...savePreview,
-      refusal: { stage: 'mint', code: 'acknowledgement-stale', message: 'Mint stage refused.' },
-      candidate: { ...savePreview.candidate, eligibility: { eligible: false, reason: 'unattributed-not-acknowledged' } },
-    });
     await click('[data-testid="commit-package-WP-P6D"]');
-    await click('[data-testid="candidate-preview-save"]');
-    expect(container!.querySelector('[data-testid="board-save-refusal"]')?.textContent).toContain('Mint stage');
+    expect(container!.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="board-save-disabled"]')?.textContent)
+      .toBe('Review and undo now replace Save.');
+    expect(sweep).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
   });
   it('routes done only through SC-WP-3D and never infers it from live activity', async () => {
@@ -176,22 +171,17 @@ describe('WP-P6D board done + commit integration', () => {
     expect(events[1].textContent).toContain('Done (revision 1)');
   });
 
-  const outcomes: Array<[string, CommitCoordinatorConsumeResponse]> = [
-    ['saved', { kind: 'saved', outcome: { status: 'committed', commitOid: 'oid', attemptId: 'a1', indexIntegrity: 'verified' }, finalizations: [] }],
-    ['stale-refused', { kind: 'outcome', outcome: { status: 'aborted-stale', reason: 'changed', attemptId: 'a2' } }],
-    ['integrity-incident', { kind: 'outcome', outcome: { status: 'committed-integrity-mismatch', commitOid: 'oid', attemptId: 'a3', mismatchedPaths: [], indexIntegrity: 'verified' } }],
-    ['repository-uncertain', { kind: 'outcome', outcome: { status: 'repository-state-uncertain', pinnedHeadOid: 'before', resolvedHeadOid: 'after', attemptId: 'a4' } }],
-  ];
+  const retiredOutcomes = ['saved', 'stale-refused', 'integrity-incident', 'repository-uncertain'] as const;
 
-  it.each(outcomes)('uses Plan resolution, the shared coordinator, and shared %s outcome', async (state, outcome) => {
-    await renderBoard('done', outcome);
+  it.each(retiredOutcomes)('uses Plan resolution but cannot reach the retired %s outcome', async () => {
+    await renderBoard('done');
     await click('[data-testid="commit-package-WP-P6D"]');
     expect(previewCandidate).toHaveBeenCalledWith({
       workspaceId: 'ws-1', planId: 'plan-1', selectedComponentIds: [],
       selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
     });
-    await click('[data-testid="candidate-preview-save"]');
-    expect(commit).toHaveBeenCalledWith({ candidateId: 'candidate-1', tokenId: 'token-1', message: 'Save WP-P6D' });
-    expect(container!.querySelector('[data-testid="commit-outcome"]')?.getAttribute('data-state')).toBe(state);
+    expect(container!.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
+    expect(sweep).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 });

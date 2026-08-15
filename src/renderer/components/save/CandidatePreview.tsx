@@ -44,8 +44,8 @@ export interface CandidatePreviewProps {
     acknowledgedUnattributedEntryIds: string[],
     draft: CandidatePreviewDraft,
   ) => void | Promise<void>;
-  /** SaveCard's decisive gesture lives outside this optional detail pane. Plan
-   * keeps the original in-pane action by default. */
+  /** The decisive gesture is retired by default. A future surface must opt in
+   * explicitly rather than inheriting a repository-mutating action. */
   showCommitAction?: boolean;
   onDraftChange?: (draft: CandidatePreviewDraft) => void;
   /** An authoritative submit-time response installed without another fetch. */
@@ -171,7 +171,7 @@ export default function CandidatePreview({
   title,
   onClose,
   onCommit,
-  showCommitAction = true,
+  showCommitAction = false,
   onDraftChange,
   authoritativeResponse,
   onBusyChange,

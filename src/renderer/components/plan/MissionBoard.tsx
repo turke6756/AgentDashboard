@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CheckpointTurnSummary,
-  CommitCoordinatorConsumeResponse,
   MissionBoardCard,
   MissionBoardDurableTurn,
   MissionBoardLiveActivity,
@@ -14,9 +13,6 @@ import AttributionPanel from '../checkpoints/AttributionPanel';
 import FileHistoryView from '../checkpoints/FileHistoryView';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import CandidatePreview, { type CandidatePreviewSelection } from '../save/CandidatePreview';
-import CommitOutcome from '../save/CommitOutcome';
-import { renderSaveRefusal } from '../save/save-refusal-copy';
-import { createCandidateSubmitter } from '../save/candidate-submit';
 import WorkPackageCard, { type WorkPackageFileSelection } from './WorkPackageCard';
 import './missionBoard.css';
 
@@ -99,10 +95,6 @@ export default function MissionBoard({
   const [actionPending, setActionPending] = useState<{ packageId: string; action: 'done' | 'commit' } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [commitSelection, setCommitSelection] = useState<CommitSelection | null>(null);
-  const [commitOutcome, setCommitOutcome] = useState<CommitCoordinatorConsumeResponse | null>(null);
-  const [commitRefusal, setCommitRefusal] = useState<string | null>(null);
-  const submitterRef = useRef<ReturnType<typeof createCandidateSubmitter> | null>(null);
-  if (!submitterRef.current) submitterRef.current = createCandidateSubmitter();
 
   const cardRevisionKey = useMemo(
     () => cards.map((card) => `${card.packageId}:${card.revision}:${card.state}`).join('|'),
@@ -116,8 +108,6 @@ export default function MissionBoard({
 
   useEffect(() => {
     setCommitSelection(null);
-    setCommitOutcome(null);
-    setCommitRefusal(null);
     setActionError(null);
   }, [planId]);
 
@@ -156,7 +146,6 @@ export default function MissionBoard({
       && event.lifecycleStatus === 'active');
     if (!finalization || finalization.source !== 'finalization') return;
     setActionError(null);
-    setCommitOutcome(null);
     setActionPending({ packageId: card.packageId, action: 'commit' });
     try {
       // The Plan route resolves whole components and candidate identity. The board
@@ -235,38 +224,17 @@ export default function MissionBoard({
         ))}
       </div>
 
-      {commitSelection && !commitOutcome && (
+      {commitSelection && (
         <div className="mission-board__commit" data-testid="board-candidate-preview">
           <CandidatePreview
             workspaceId={commitSelection.workspaceId}
             selection={commitSelection.selection}
             title={`Commit ${commitSelection.packageId}`}
             onClose={() => setCommitSelection(null)}
-            onCommit={async (_response, _messageBody, _acknowledgedIds, draft) => {
-              const result = await submitterRef.current!.submit({
-                workspaceId: commitSelection.workspaceId,
-                selection: commitSelection.selection,
-                draft,
-              });
-              if (result.kind === 'committed') {
-                setCommitRefusal(null);
-                setCommitOutcome(result.response);
-              } else if (result.kind === 'refused') {
-                setCommitRefusal(renderSaveRefusal(result.refusal));
-                if (result.response) setCommitOutcome(result.response);
-              } else {
-                setCommitRefusal(result.message);
-              }
-            }}
+            showCommitAction={false}
           />
+          <p data-testid="board-save-disabled">Review and undo now replace Save.</p>
         </div>
-      )}
-      {commitRefusal && <div role="alert" data-testid="board-save-refusal">{commitRefusal}</div>}
-      {commitOutcome && (
-        <CommitOutcome
-          response={commitOutcome}
-          onRepreview={() => setCommitOutcome(null)}
-        />
       )}
 
       {fileHistory && (

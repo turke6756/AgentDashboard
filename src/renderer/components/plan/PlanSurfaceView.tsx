@@ -1,10 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './planSurface.css';
 import CandidatePreview, { type CandidatePreviewSelection } from '../save/CandidatePreview';
-import CommitOutcome from '../save/CommitOutcome';
-import { renderSaveRefusal } from '../save/save-refusal-copy';
-import { createCandidateSubmitter } from '../save/candidate-submit';
-import type { CommitCoordinatorConsumeResponse, PlanReviewProjection } from '../../../shared/types';
+import type { PlanReviewProjection } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import MissionBoard from './MissionBoard';
 import PlanReviewView from './PlanReviewView';
@@ -21,14 +18,10 @@ function PlanSurfaceView({
   workspaceId?: string;
   candidateSelection?: CandidatePreviewSelection | null;
 }): React.ReactElement {
-  const [commitOutcome, setCommitOutcome] = useState<CommitCoordinatorConsumeResponse | null>(null);
-  const [commitRefusal, setCommitRefusal] = useState<string | null>(null);
   const [reviewProjection, setReviewProjection] = useState<PlanReviewProjection | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const reviewRequestKeyRef = useRef<string | null>(null);
   const currentReviewKeyRef = useRef<string | null>(null);
-  const submitterRef = useRef<ReturnType<typeof createCandidateSubmitter> | null>(null);
-  if (!submitterRef.current) submitterRef.current = createCandidateSubmitter();
   const activePlanId = useDashboardStore((state) => {
     const activeTab = state.openTabs.find((tab) => tab.id === state.activeTabId);
     return activeTab?.kind === 'plan' ? activeTab.planId : null;
@@ -67,38 +60,20 @@ function PlanSurfaceView({
       });
   }, [activePlanId, reviewKey, workspaceId]);
 
-  useEffect(() => { setCommitOutcome(null); setCommitRefusal(null); }, [workspaceId, candidateSelection]);
-
   return (
     <div className="plan-surface" data-testid="plan-surface">
       {workspaceId && activePlanId && <PlanEvidenceStrip workspaceId={workspaceId} planId={activePlanId} />}
-      {workspaceId && candidateSelection && !commitOutcome && (
+      {workspaceId && candidateSelection && (
         <div className="plan-surface__candidate" data-testid="plan-candidate-preview">
           <CandidatePreview
             workspaceId={workspaceId}
             selection={candidateSelection}
             title="Save this plan's work"
-            onCommit={async (_response, _messageBody, _acknowledgedIds, draft) => {
-              const result = await submitterRef.current!.submit({
-                workspaceId,
-                selection: candidateSelection,
-                draft,
-              });
-              if (result.kind === 'committed') {
-                setCommitRefusal(null);
-                setCommitOutcome(result.response);
-              } else if (result.kind === 'refused') {
-                setCommitRefusal(renderSaveRefusal(result.refusal));
-                if (result.response) setCommitOutcome(result.response);
-              } else {
-                setCommitRefusal(result.message);
-              }
-            }}
+            showCommitAction={false}
           />
+          <p data-testid="plan-save-disabled">Review and undo now replace Save.</p>
         </div>
       )}
-      {commitRefusal && <div role="alert" data-testid="plan-save-refusal">{commitRefusal}</div>}
-      {commitOutcome && <CommitOutcome response={commitOutcome} onRepreview={() => setCommitOutcome(null)} />}
       {activePlanId ? (
         <PlanPackageChecklist planId={activePlanId} />
       ) : (

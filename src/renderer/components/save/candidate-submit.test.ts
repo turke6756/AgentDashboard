@@ -236,6 +236,26 @@ describe('candidate submit sweep transaction', () => {
     expect(deps.sweep).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces the typed retired-Save refusal without claiming repository uncertainty', async () => {
+    const deps = api();
+    deps.sweep.mockRejectedValue(new Error(
+      'Error invoking remote method savecard:sweep: Error: '
+      + 'save-disabled-review-and-undo: Save is turned off; review and undo replace Save',
+    ));
+    await expect(createCandidateSubmitter(deps).submit({
+      workspaceId: 'ws-1', selection, draft: draft(),
+    })).resolves.toEqual({
+      kind: 'refused',
+      refusal: {
+        stage: 'commit',
+        code: 'save-disabled-review-and-undo',
+        message: 'Save is turned off; review and undo replace Save',
+      },
+    });
+    expect(deps.sweep).toHaveBeenCalledTimes(1);
+    expect(deps.refreshInventory).not.toHaveBeenCalled();
+  });
+
   it('does not replace terminal verdicts when the renderer inventory refresh fails', async () => {
     const deps = api();
     deps.refreshInventory.mockRejectedValue(new Error('cache unavailable'));

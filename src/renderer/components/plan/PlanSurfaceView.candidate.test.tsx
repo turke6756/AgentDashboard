@@ -209,7 +209,9 @@ describe('SC-WP-3I plan-lens candidate identity', () => {
       { selectedComponentIds: [], selectedUnattributedEntryIds: ['e1'], finalizationIds: ['fin-1'] },
       ctx,
     ) as CommitCandidate;
-    expect(carved.eligibility).toEqual({ eligible: false, reason: 'unattributed-not-acknowledged' });
+    // Since bb823b15, normalized Git closure governs the selection. This entry
+    // lacks finalized package closure, so acknowledgement cannot make it eligible.
+    expect(carved.eligibility).toEqual({ eligible: false, reason: 'package-not-finalized' });
   });
 });
 
@@ -274,6 +276,9 @@ describe('SC-WP-3I PlanSurfaceView candidate preview reuse', () => {
     expect(c.querySelector('[data-testid="plan-candidate-preview"]')).not.toBeNull();
     const preview = c.querySelector('[data-testid="candidate-preview"]');
     expect(preview).not.toBeNull();
+    expect(c.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
+    expect(c.querySelector('[data-testid="plan-save-disabled"]')?.textContent)
+      .toBe('Review and undo now replace Save.');
     // Both member verdicts render.
     expect(c.querySelectorAll('[data-testid="candidate-member"]').length).toBe(2);
     // window.api.saveCard.preview was driven with the plan lens's selection.

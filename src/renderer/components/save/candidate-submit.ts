@@ -67,6 +67,19 @@ function localRefusal(
   return { kind: 'refused', refusal: { stage, code, message }, ...(preview ? { preview } : {}) };
 }
 
+const SAVE_DISABLED_CODE = 'save-disabled-review-and-undo';
+const SAVE_DISABLED_MESSAGE = 'Save is turned off; review and undo replace Save';
+
+function typedSaveDisabledRefusal(error: unknown): CandidateSubmitResult | null {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : null;
+  if (!message?.includes(`${SAVE_DISABLED_CODE}:`)) return null;
+  return localRefusal('commit', SAVE_DISABLED_CODE, SAVE_DISABLED_MESSAGE);
+}
+
 function editableMessage(draft: CandidatePreviewDraft | null | undefined, preview: SaveCardPreviewResponse): string {
   const body = draft?.messageBody ?? preview.defaultMessageBody;
   const trailers = draft?.userTrailers.trim() ?? '';
@@ -158,7 +171,9 @@ async function runCandidateSubmit(
       reviewedManifestDigests: [reviewedManifestDigest],
       acknowledgedChallengeAtoms,
     });
-  } catch {
+  } catch (error) {
+    const refusal = typedSaveDisabledRefusal(error);
+    if (refusal) return refusal;
     return {
       kind: 'uncertain',
       stage: 'commit',

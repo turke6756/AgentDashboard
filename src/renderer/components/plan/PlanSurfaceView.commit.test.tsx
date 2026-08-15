@@ -2,10 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  CommitCoordinatorConsumeResponse,
-  SaveCardPreviewResponse,
-} from '../../../shared/types';
+import type { SaveCardPreviewResponse } from '../../../shared/types';
 import PlanSurfaceView from './PlanSurfaceView';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,42 +16,26 @@ const selection = {
 const preview: SaveCardPreviewResponse = {
   isCandidate: true,
   candidate: {
-    candidateId: 'candidate-shared-1',
-    contractVersion: 1,
+    candidateId: 'candidate-shared-1', contractVersion: 1,
     repository: {
-      repositoryKey: 'repo-1',
-      objectDatabaseKey: 'objects-1',
-      gitObjectFormat: 'sha1',
-      bareRepo: false,
-      workspaces: [{ workspaceId: 'workspace-1', workspacePrefix: '' }],
+      repositoryKey: 'repo-1', objectDatabaseKey: 'objects-1', gitObjectFormat: 'sha1',
+      bareRepo: false, workspaces: [{ workspaceId: 'workspace-1', workspacePrefix: '' }],
     },
-    componentIds: ['component-1'],
-    selectedUnattributedEntryIds: [],
+    componentIds: ['component-1'], selectedUnattributedEntryIds: [],
     members: [{
       entryId: 'entry-1',
       path: { pathBytesBase64: 'c3JjL3BsYW4udHM=', displayPath: 'src/plan.ts', utf8Clean: true },
-      expectedWorktreeState: 'present',
-      rawWorktreeBlobOid: 'raw-1',
-      expectedCommitBlobOid: 'commit-1',
-      expectedCommitMode: '100644',
-      checkpointMode: '100644',
-      coveringFinalizationIds: ['finalization-1'],
-      packageVerification: 'verified-match',
-      protection: 'checkpoint-protected',
+      expectedWorktreeState: 'present', rawWorktreeBlobOid: 'raw-1', expectedCommitBlobOid: 'commit-1',
+      expectedCommitMode: '100644', checkpointMode: '100644', coveringFinalizationIds: ['finalization-1'],
+      packageVerification: 'verified-match', protection: 'checkpoint-protected',
     }],
     finalizations: [{
-      finalizationId: 'finalization-1',
-      packageId: 'package-1',
-      packageRevision: 1,
-      boundaryStatus: 'ready',
+      finalizationId: 'finalization-1', packageId: 'package-1', packageRevision: 1, boundaryStatus: 'ready',
     }],
-    eligibility: { eligible: true },
-    token: null,
+    eligibility: { eligible: true }, token: null,
   },
-  laresTrailers: ['Lares-Plan: plan-1'],
-  defaultMessageBody: 'Save finalized plan work',
-  unacknowledgedUnattributedEntryIds: [],
-  componentTopologyDigest: 'topo-1',
+  laresTrailers: ['Lares-Plan: plan-1'], defaultMessageBody: 'Save finalized plan work',
+  unacknowledgedUnattributedEntryIds: [], componentTopologyDigest: 'topo-1',
   selectionDrift: { added: [], missing: [], reAttributed: [], byteMoved: [] },
   selectionDriftDisplayPaths: {},
   pinnedSelection: { selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], frozenMemberCount: 1 },
@@ -63,50 +44,22 @@ const preview: SaveCardPreviewResponse = {
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderAndCommit(
-  response: CommitCoordinatorConsumeResponse,
-  mintOverride?: SaveCardPreviewResponse,
-): Promise<void> {
-  const commit = vi.fn(async () => response);
-  const tokenful = {
-    ...preview,
-    candidate: {
-      ...preview.candidate,
-      token: { tokenId: 'token-shared-1', candidateId: 'candidate-shared-1', contractVersion: 1, issuedAt: 1, expiresAt: 2 },
-    },
-  };
-  const mint = vi.fn(async () => mintOverride ?? tokenful);
+async function renderReviewOnly() {
+  const sweep = vi.fn(async () => ({ halted: false, haltKind: null, results: [] }));
+  const commit = vi.fn();
   (window as unknown as { api: unknown }).api = {
-    saveCard: {
-      preview: vi.fn(async () => preview),
-      getInventory: vi.fn(async () => ({ bundles: [], quotaWeakening: null })),
-    },
-    commitCoordinator: { mint, commit },
+    saveCard: { preview: vi.fn(async () => preview), sweep },
+    commitCoordinator: { mint: vi.fn(), commit },
   };
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root.render(
-      <PlanSurfaceView
-        workspaceId="workspace-1"
-        candidateSelection={selection}
-      />,
-    );
+    root.render(<PlanSurfaceView workspaceId="workspace-1" candidateSelection={selection} />);
+    await Promise.resolve();
+    await Promise.resolve();
   });
-  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-
-  const save = container.querySelector('[data-testid="candidate-preview-save"]') as HTMLButtonElement;
-  expect(save.disabled).toBe(false);
-  await act(async () => { save.click(); });
-
-  if (!mintOverride) {
-    expect(commit).toHaveBeenCalledWith({
-      candidateId: 'candidate-shared-1',
-      tokenId: 'token-shared-1',
-      message: 'Save finalized plan work',
-    });
-  }
+  return { sweep, commit };
 }
 
 afterEach(() => {
@@ -115,64 +68,24 @@ afterEach(() => {
   delete (window as unknown as { api?: unknown }).api;
 });
 
-describe('SC-WP-4L Plan-lens commit wiring', () => {
-  it('renders a typed mint-stage refusal instead of silently returning', async () => {
-    await renderAndCommit({
-      kind: 'token-unresolved',
-      refusal: { stage: 'token-consume', code: 'unused', message: 'unused' },
-    }, {
-      ...preview,
-      refusal: { stage: 'mint', code: 'mint-refused', message: 'Mint stage refused: compose-in-flight.' },
-      candidate: { ...preview.candidate, eligibility: { eligible: false, reason: 'compose-in-flight' } },
-    });
-    expect(container.querySelector('[data-testid="plan-save-refusal"]')?.textContent).toContain('Mint stage');
-  });
-  const cases: Array<[string, CommitCoordinatorConsumeResponse]> = [
-    ['saved', {
-      kind: 'saved',
-      outcome: { status: 'committed', commitOid: 'saved-oid', attemptId: 'attempt-1', indexIntegrity: 'verified' },
-      finalizations: [],
-    }],
-    ['stale-refused', {
-      kind: 'outcome',
-      outcome: { status: 'aborted-stale', reason: 'candidate changed', attemptId: 'attempt-2' },
-    }],
-    ['integrity-incident', {
-      kind: 'outcome',
-      outcome: {
-        status: 'committed-integrity-mismatch',
-        commitOid: 'incident-oid',
-        attemptId: 'attempt-3',
-        mismatchedPaths: [],
-        indexIntegrity: 'verified',
-      },
-    }],
-    ['repository-uncertain', {
-      kind: 'outcome',
-      outcome: {
-        status: 'repository-state-uncertain',
-        pinnedHeadOid: 'head-before',
-        resolvedHeadOid: 'head-after',
-        attemptId: 'attempt-4',
-      },
-    }],
-  ];
-
-  it.each(cases)('consumes the shared token and renders the shared %s outcome', async (state, response) => {
-    await renderAndCommit(response);
-    expect(container.querySelector('[data-testid="commit-outcome"]')?.getAttribute('data-state')).toBe(state);
-    expect(container.querySelector('[data-testid="plan-candidate-preview"]')).toBeNull();
-  });
-
-  it('re-previews a safely refused candidate through the same Plan-lens selection', async () => {
-    await renderAndCommit({
-      kind: 'outcome',
-      outcome: { status: 'aborted-stale', reason: 'candidate changed', attemptId: 'attempt-5' },
-    });
-    act(() => {
-      (container.querySelector('[data-testid="commit-outcome-repreview"]') as HTMLButtonElement).click();
-    });
+describe('WP-N5 Plan-lens retired Save gesture', () => {
+  it('keeps an eligible preview visible while omitting the Save action', async () => {
+    await renderReviewOnly();
     expect(container.querySelector('[data-testid="plan-candidate-preview"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="commit-outcome"]')).toBeNull();
+    expect(container.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
+  });
+
+  it('explains that review and undo replace Save', async () => {
+    await renderReviewOnly();
+    expect(container.querySelector('[data-testid="plan-save-disabled"]')?.textContent)
+      .toBe('Review and undo now replace Save.');
+  });
+
+  const retiredOutcomes = ['saved', 'stale-refused', 'integrity-incident', 'repository-uncertain'] as const;
+  it.each(retiredOutcomes)('cannot reach the retired %s commit outcome', async () => {
+    const { sweep, commit } = await renderReviewOnly();
+    expect(container.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
+    expect(sweep).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 });

@@ -122,6 +122,9 @@ async function render(props: Partial<React.ComponentProps<typeof CandidatePrevie
       React.createElement(CandidatePreview, {
         workspaceId: 'ws-1',
         selection: SELECTION,
+        // Most tests exercise the explicitly opt-in action contract. Production
+        // callers all leave it off; a dedicated regression below covers default-off.
+        showCommitAction: true,
         ...props,
       }),
     );
@@ -151,6 +154,13 @@ function all(testid: string): HTMLElement[] {
 }
 
 describe('CandidatePreview', () => {
+  it('defaults the Save action off when a caller does not opt in', async () => {
+    preview.mockResolvedValue(response());
+    await render({ showCommitAction: undefined });
+    expect(q('candidate-preview')).not.toBeNull();
+    expect(q('candidate-preview-save')).toBeNull();
+  });
+
   it('renders per-member verdicts and enables one-click save for an eligible candidate', async () => {
     preview.mockResolvedValue(response());
     await render();
