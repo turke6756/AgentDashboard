@@ -8,6 +8,7 @@ import { AgentStopReason, AgentPlanBadge, deriveHookAvailability, isAgentStopRea
 import { Agent, AgentProvider, AgentSessionRow, AgentStatus, AgentTemplate, ContextStats, CreateAgentTemplateInput, CreateSelectionCommentInput, CreateSelectionCommentReplyInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, Plan, PlanFormat, PlanTabKey, PlanTabOverview, SelectionComment, SelectionCommentReply, SelectionCommentStatus, SupervisorFocus, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, UpdateSelectionCommentInput, Workspace } from '../shared/types';
 import { parsePdfSelectionAnchor, serializePdfSelectionAnchor, validatePdfSelectionAnchor, type PdfSelectionAnchorV1, type SelectionAnchorType } from '../shared/pdf-annotations';
 import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, SUPERVISOR_AGENT_MD } from '../shared/constants';
+import { isCanonicalPlanRowId, isPlanArtifactId } from '../shared/planning-artifact-ids';
 import { OrchestrationBinding, OrchestrationEvent, OrchestrationRun, OrchestrationPlanBindingMode } from './orchestration/types';
 import { resolveWorkspaceForCwd, WORKSPACE_LINEAGE_VERSION, type WorkspaceRecordLite } from './skill-analytics/workspace-lineage';
 import { unwrapOsc8, stripTerminalEscapes, canonicalizeToAbsolute, looksPolluted } from './file-activity-normalize';
@@ -97,6 +98,44 @@ function backfillReviewedPlanSourceProposals(database: Database.Database): void 
       .run(marker, new Date().toISOString());
   });
   for (const mapping of REVIEWED_PLAN_SOURCE_PROPOSAL_BACKFILLS) apply(mapping);
+}
+
+export interface InvalidPlanLinksRepairReport {
+  clearedLinks: Array<{ id: string; was: string }>;
+  staleNonContractPlans: Array<{ id: string; artifactId: string; folderRelPath: string | null }>;
+}
+
+/** Quarantine invalid proposal links without interpreting UUID-shaped lineage. */
+export function repairInvalidPlanLinks(database: Database.Database): InvalidPlanLinksRepairReport {
+  return database.transaction(() => {
+    const linkedProposals = database.prepare(
+      `SELECT id, promoted_to_plan_id FROM proposals
+        WHERE promoted_to_plan_id IS NOT NULL ORDER BY id`,
+    ).all() as Array<{ id: string; promoted_to_plan_id: string }>;
+    const clearLink = database.prepare(
+      `UPDATE proposals SET promoted_to_plan_id = NULL WHERE id = ?`,
+    );
+    const clearedLinks: InvalidPlanLinksRepairReport['clearedLinks'] = [];
+    for (const proposal of linkedProposals) {
+      if (isCanonicalPlanRowId(proposal.promoted_to_plan_id)) continue;
+      clearLink.run(proposal.id);
+      clearedLinks.push({ id: proposal.id, was: proposal.promoted_to_plan_id });
+    }
+
+    const livePlanRows = database.prepare(
+      `SELECT id, artifact_id, folder_rel_path FROM plans
+        WHERE artifact_id IS NOT NULL AND deleted_at IS NULL`,
+    ).all() as Array<{ id: string; artifact_id: string; folder_rel_path: string | null }>;
+    const staleNonContractPlans = livePlanRows
+      .filter((plan) => !isPlanArtifactId(plan.artifact_id))
+      .map((plan) => ({
+        id: plan.id,
+        artifactId: plan.artifact_id,
+        folderRelPath: plan.folder_rel_path,
+      }));
+
+    return { clearedLinks, staleNonContractPlans };
+  })();
 }
 
 export function initDatabase(): void {
@@ -1969,6 +2008,10 @@ function initContextOptimizerSchema(): void {
   // ingested the corresponding rows. No title/path/time heuristic participates:
   // the exact portable IDs and reviewed disk-relative locations must all match.
   backfillReviewedPlanSourceProposals(db);
+  const invalidPlanLinksRepair = repairInvalidPlanLinks(db);
+  console.log(
+    `[database] invalid plan-link repair: cleared=${invalidPlanLinksRepair.clearedLinks.length} staleNonContractPlans=${invalidPlanLinksRepair.staleNonContractPlans.length}`,
+  );
 
   // Planning-surface WP-P2L-schema — planning-intent LEDGER (STAGE P2L). DDL-
   // serialized in the NEXT serial slot after WP-P2A (above), inside this optimizer-
