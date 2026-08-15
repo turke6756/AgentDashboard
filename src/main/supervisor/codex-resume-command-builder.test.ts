@@ -85,6 +85,19 @@ test('bare ccodex command: builds resume <args> <sid> with single-quoted tokens'
   );
 });
 
+test('resume-only injected args are rendered before the session id', () => {
+  const out = buildCodexResumeCommand(
+    'ccodex --dangerously-bypass-approvals-and-sandbox',
+    SID,
+    'linux',
+    ['-c', 'mcp_servers.agent-dashboard.command="fixture"'],
+  );
+  assert.equal(
+    out,
+    `'ccodex' 'resume' '--dangerously-bypass-approvals-and-sandbox' '-c' 'mcp_servers.agent-dashboard.command="fixture"' '${SID}'`,
+  );
+});
+
 test('resume path composes with the Windows default without doubling the bypass token', () => {
   // The new Windows default already carries the bypass flag; the resume builder
   // must pass it through exactly once (no --full-auto re-mapping, no duplicate).

@@ -858,6 +858,10 @@ export interface Agent {
   // Surfaced for visibility only — a 'broken'/'degraded' status NEVER re-enables
   // PTY inference for worker-lane agents.
   hookStatus?: 'unknown' | 'healthy' | 'broken' | 'degraded';
+  /** Dashboard MCP delivery health, orthogonal to process and hook status.
+   *  A degraded Codex agent is still running but lacks dashboard tools. */
+  dashboardMcpStatus?: 'unknown' | 'available' | 'degraded';
+  dashboardMcpMessage?: string | null;
   /** WP2 (hook-absence-resilience) — DERIVED from hookStatus, non-persisted.
    *  True when the status-hook transport is unavailable for this agent — either
    *  the launch canary proved it dead ('broken') or the command could not be

@@ -365,6 +365,7 @@ const TESTS = [
   'dist/main/main/pasted-image-store.test.js',
   'dist/main/main/path-utils-to-agent.test.js',
   'dist/main/main/supervisor/mcp-config-builder.test.js',
+  'dist/main/main/supervisor/mcp-injection-ungate.test.js',
   'dist/main/main/supervisor/scaffold-version-migration.test.js',
   // Free-function scaffold writer branches, incl. the EDR P0.1 retirement
   // (removed: true) entries — silent delete / .bak+delete / never-touch-recreated.

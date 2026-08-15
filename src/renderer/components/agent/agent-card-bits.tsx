@@ -56,6 +56,20 @@ export function HooksOffBadge({ agent }: { agent: Agent }) {
   );
 }
 
+/** Dashboard MCP delivery health is independent of process and hook health.
+ *  A degraded Codex agent is alive but cannot use dashboard tools. */
+export function DashboardMcpOffBadge({ agent }: { agent: Agent }) {
+  if (agent.dashboardMcpStatus !== 'degraded') return null;
+  return (
+    <span
+      className="text-[11px] text-accent-red bg-accent-red/15 px-1.5 py-0.5 font-semibold truncate shrink-0"
+      title={agent.dashboardMcpMessage ?? 'Dashboard MCP tools were not injected for this launch.'}
+    >
+      MCP OFF
+    </span>
+  );
+}
+
 // Context-usage bar: token counts, a colored fill scaled to context %, model id
 // and percentage. `className` overrides the wrapper spacing so the vertical card
 // and the horizontal owner bar can each place it appropriately.

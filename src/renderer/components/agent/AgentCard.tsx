@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import type { Agent, AgentStopReason } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
 import { formatAgentToken } from '../../lib/agent-mention';
-import { RoleChips, ContextStatsBar, HooksOffBadge } from './agent-card-bits';
+import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge } from './agent-card-bits';
 import ContinuationSplitButton from './ContinuationSplitButton';
 import AgentTurnRail from './AgentTurnRail';
 import ContinuationPhaseLine from './ContinuationPhaseLine';
@@ -405,6 +405,7 @@ export default function AgentCard({
              {isContinuationEligible(agent) && <ContinuationSplitButton agent={agent} />}
              {/* WP2 — hook-health badge, orthogonal to (and never replacing) the operational status. */}
              <HooksOffBadge agent={agent} />
+             <DashboardMcpOffBadge agent={agent} />
              <StatusBadge status={agent.status} />
 
              {!confirmDelete && (

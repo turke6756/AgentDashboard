@@ -203,6 +203,7 @@ import {
   updateAgentAttached, addEvent, deleteAgent as dbDeleteAgent, markAgentTerminalHistoryReclaimed,
   updateAgentResumeSessionId, addFileActivity, clearWitnessObserver, getTeamMembership, addTeamMember, getAgentTemplate,
   getFileActivities, pruneFileActivitiesToRecentSessions, updateAgentHookStatus,
+  updateAgentDashboardMcpStatus,
   updateAgentLastSendError, updateAgentLastSend,
   setContinuationEnabled as dbSetContinuationEnabled,
   getContinuationAttempt, getCurrentBrick, commitContinuationRelaunch,
@@ -221,6 +222,8 @@ import { getScriptPath, getLaresNativeDir } from './paths';
 import {
   toolsetsForLane,
   buildDashboardMcpConfigArg,
+  buildCodexMcpConfigArgs,
+  DASHBOARD_API_TOKEN_ENV_VAR,
   laneUsesStrictMcp,
   redactMcpToken,
   shouldDirectSpawn,
@@ -230,7 +233,7 @@ import {
 // Re-export the pure WP-A.2 builders so existing `./index` importers (and the
 // follow-on researcher-lane slice) get them from the supervisor module too;
 // the canonical home is ./mcp-config-builder.
-export { toolsetsForLane, buildDashboardMcpConfigArg, laneUsesStrictMcp, redactMcpToken };
+export { toolsetsForLane, buildDashboardMcpConfigArg, buildCodexMcpConfigArgs, laneUsesStrictMcp, redactMcpToken };
 import { tmuxListSessions, tmuxSendInput, tmuxSendSubmit, tmuxReadStatusOptions, shQuote, getPassiveWslStatus, tmuxKillSession } from '../wsl-bridge';
 import { encodeAgyWindowsBody, getWindowsSubmitSequence } from './send-input-encoders';
 import { HookSpoolTailer, resolveSpoolReadPath, canonicalSpoolKey } from './hook-spool-tailer';
@@ -241,6 +244,7 @@ import {
   getWindowsSystemPath,
   findWindowsClaudePath,
   findWindowsProviderBinary,
+  findWindowsCodexNativeBinary,
   probeWindowsProvider,
   missingProviderMessage,
 } from './provider-resolver';
@@ -2012,13 +2016,18 @@ export function buildCodexResumeCommand(
   command: string,
   sessionId: string,
   platform: NodeJS.Platform = process.platform,
+  argsBeforeSessionId: string[] = [],
 ): string {
   const parts = tokenizeShell(command);
   let envEnd = 0;
   while (envEnd < parts.length && SHELL_ENV_ASSIGNMENT_RE.test(parts[envEnd])) envEnd++;
   const envPrefix = parts.slice(0, envEnd);
   const cmd = parts[envEnd] || 'codex';
-  const args = buildCodexResumeArgs(parts.slice(envEnd + 1), sessionId, platform);
+  const args = buildCodexResumeArgs(
+    [...parts.slice(envEnd + 1), ...argsBeforeSessionId],
+    sessionId,
+    platform,
+  );
   const cmdAndArgs = [cmd, ...args].map(shellSingleQuote).join(' ');
   return envPrefix.length > 0 ? `${envPrefix.join(' ')} ${cmdAndArgs}` : cmdAndArgs;
 }
@@ -4725,10 +4734,9 @@ export class AgentSupervisor extends EventEmitter {
 
   /** WP-A.2 — build the inline `--mcp-config` JSON for an agent's role-lane,
    *  pointing at the parameterized `mcp-dashboard.js` proxy with the lane's
-   *  `DASHBOARD_MCP_TOOLSETS` grant. The bearer token lives ONLY in this
-   *  in-process JSON (never on disk). Impure inputs (script path, bound port,
-   *  token, WSL gateway IP) are supplied here; the JSON shape is built by the
-   *  pure `buildDashboardMcpConfigArg`. */
+   *  `DASHBOARD_MCP_TOOLSETS` grant. Claude supplies the bearer value here;
+   *  Codex supplies the inherited token env-var name before translation to
+   *  dotted `-c` arguments. Neither form is written to disk. */
   buildDashboardMcpConfigForLane(
     lane: AgentRoleLane,
     pathType: string,
@@ -4995,6 +5003,7 @@ export class AgentSupervisor extends EventEmitter {
     const cmd = parts[0];
     let args = overrideArgs || parts.slice(1);
     args = addProviderAutoApproveFlag(agent.provider, args);
+    let codexMcpArgsForLaunch: string[] = [];
 
     if (!overrideArgs) {
       const isClaude = agent.provider === 'claude';
@@ -5014,8 +5023,8 @@ export class AgentSupervisor extends EventEmitter {
       // global MCPs survive). This also fires on resume=true (reconnect /
       // auto-restart) because that path passes no overrideArgs — so a restarted
       // agent keeps its toolset + strict disposition (AU-7).
+      const lane = roleLaneOf(agent);
       if (isClaude) {
-        const lane = roleLaneOf(agent);
         // WP0.5 — use the entry-resolved `membership` + single `capabilityToken`;
         // never re-mint here. `capabilityToken` is `undefined` only for a legacy,
         // non-team agent, which enters neither branch below, so the `!` holds.
@@ -5055,6 +5064,17 @@ export class AgentSupervisor extends EventEmitter {
           args.push('--model', WORKER_CLAUDE_MODEL);
           console.log(`[Windows] Worker model pin: --model ${WORKER_CLAUDE_MODEL}`);
         }
+      } else if (agent.provider === 'codex' && lane !== 'legacy') {
+        const config = this.buildDashboardMcpConfigForLane(
+          lane,
+          'windows',
+          this.buildIdentityEnvForAgent(agent),
+          DASHBOARD_API_TOKEN_ENV_VAR,
+        );
+        // Preserve the structured argv until the resolver proves that this
+        // launch can bypass cmd.exe. A shim-only install still launches, but
+        // without arguments that cmd.exe would corrupt.
+        codexMcpArgsForLaunch = buildCodexMcpConfigArgs(config);
       }
 
       // Workspace-root contract (see docs/PERSISTENT_AGENT_LAUNCH_CONTRACT.md):
@@ -5225,11 +5245,9 @@ export class AgentSupervisor extends EventEmitter {
     // `(isSupervisor || isSupervised)` gate at line 1234.)
     const hasPromptArg = !!agentMdPrompt && !resume && agent.provider === 'claude';
     // shouldDirectSpawn keys off the resolved role-lane (roleLaneOf), NOT the raw
-    // lane booleans, so it stays in lockstep with the inline-MCP injection above
-    // (also `lane !== 'legacy'`). ANY non-legacy claude lane gets an inline
-    // --mcp-config JSON that the cmd.exe wrap would corrupt into a bogus file
-    // path — including a privilegeLane:'supervisor' persona that is none of the
-    // four booleans yet resolves to the supervisor lane (the crash-loop regressor).
+    // lane booleans, so it stays in lockstep with the provider-specific MCP
+    // injection above. Any non-legacy Claude or Codex lane carries quoted MCP
+    // values that pty-host's cmd.exe wrapper would corrupt.
     const needsDirectSpawn = shouldDirectSpawn({
       lane: roleLaneOf(agent),
       provider: agent.provider,
@@ -5237,7 +5255,7 @@ export class AgentSupervisor extends EventEmitter {
       overrideArgs: !!overrideArgs,
     });
     let launchCmd = cmd;
-    if (needsDirectSpawn) {
+    if (needsDirectSpawn && agent.provider === 'claude') {
       try {
         launchCmd = await findWindowsClaudePath(process.env as NodeJS.ProcessEnv);
         console.log(`[Windows] Using direct spawn with: ${launchCmd} (hasPromptArg=${hasPromptArg}, supervisor=${agent.isSupervisor}, supervised=${agent.isSupervised})`);
@@ -5264,10 +5282,7 @@ export class AgentSupervisor extends EventEmitter {
         throw new Error(message);
       }
     }
-    const useDirectSpawn = needsDirectSpawn && launchCmd !== cmd;
-
-    // Codex/Grok/Agy have no known-install resolver like claude's, and go
-    // through pty-host's `cmd.exe /c` wrap (useDirectSpawn is claude-only).
+    // Codex/Grok/Agy use the provider resolver rather than Claude's resolver.
     // Electron's login-time PATH can omit a codex/grok/agy shim that works in
     // the user's terminal, so a bare `cmd.exe /c codex` crashes with a cryptic
     // "'codex' is not recognized". Resolve the real binary to an absolute path
@@ -5275,6 +5290,7 @@ export class AgentSupervisor extends EventEmitter {
     // user-visible message. Keying off provider (not the literal token) also
     // rescues a wsl-style `ccodex`/`ccode` command that landed on the Windows
     // path. Known installer locations are preferred by provider-resolver.
+    let codexMcpInjected = false;
     if (agent.provider === 'codex' || agent.provider === 'grok' || agent.provider === 'agy') {
       const resolvedBinary = await findWindowsProviderBinary(agent.provider);
       if (resolvedBinary) {
@@ -5291,6 +5307,32 @@ export class AgentSupervisor extends EventEmitter {
         throw new Error(message);
       }
     }
+    if (agent.provider === 'codex' && codexMcpArgsForLaunch.length > 0 && needsDirectSpawn) {
+      const nativeCodex = path.extname(launchCmd).toLowerCase() === '.exe'
+        ? launchCmd
+        : await findWindowsCodexNativeBinary(launchCmd);
+      if (nativeCodex) {
+        launchCmd = nativeCodex;
+        args.push(...codexMcpArgsForLaunch);
+        codexMcpInjected = true;
+        updateAgentDashboardMcpStatus(agent.id, 'available', null);
+        console.log(
+          `[Windows] Codex MCP injected lane=${roleLaneOf(agent)} toolsets='${toolsetsForLane(roleLaneOf(agent))}' additive=on`,
+        );
+      } else {
+        const message =
+          `Dashboard MCP was not injected for this Codex launch because Lares found ${launchCmd} ` +
+          `but no native codex.exe suitable for direct spawn. Codex is launching without dashboard tools. ` +
+          `Install or reinstall Codex with the official Windows installer, then fully quit and restart Lares.`;
+        console.warn(`[Windows] ${message}`);
+        updateAgentDashboardMcpStatus(agent.id, 'degraded', message);
+      }
+    }
+    // A shim-only Codex install deliberately stays behind cmd.exe and receives
+    // no dashboard MCP args. Other providers retain their established behavior.
+    const useDirectSpawn = agent.provider === 'codex'
+      ? codexMcpInjected
+      : needsDirectSpawn && launchCmd !== cmd;
 
     // BUG-26: every non-resume codex launch (including freshSession=true)
     // runs post-launch discovery so the new agent record gets bound to the
@@ -5893,6 +5935,7 @@ export class AgentSupervisor extends EventEmitter {
 
     let command = overrideCommand || agent.command;
     const isClaude = agent.provider === 'claude';
+    let codexMcpArgsForLaunch: string[] = [];
 
     // BUG-13 Path A: disable Claude Code's next-prompt ghost-text suggestion
     // rendering. The grey suggestion bytes (a) flap PTY-fallback status
@@ -6064,8 +6107,8 @@ export class AgentSupervisor extends EventEmitter {
       // single-quoting is safe). Fires on resume=true (reconnect/auto-restart)
       // too since that passes no overrideCommand → restarted agents keep toolset
       // + strict disposition (AU-7).
+      const lane = roleLaneOf(agent);
       if (isClaude) {
-        const lane = roleLaneOf(agent);
         // WP0.5 — reuse the entry-resolved `membership` + single `capabilityToken`;
         // never re-mint. `undefined` only for a legacy non-team agent (neither
         // branch below), so the `!` holds.
@@ -6107,6 +6150,18 @@ export class AgentSupervisor extends EventEmitter {
           command += ` --model ${WORKER_CLAUDE_MODEL}`;
           console.log(`[WSL] Worker model pin: --model ${WORKER_CLAUDE_MODEL}`);
         }
+      } else if (agent.provider === 'codex' && lane !== 'legacy') {
+        const config = this.buildDashboardMcpConfigForLane(
+          lane,
+          'wsl',
+          this.buildIdentityEnvForAgent(agent),
+          DASHBOARD_API_TOKEN_ENV_VAR,
+        );
+        // Delay rendering until after buildCodexResumeCommand. The resume
+        // rewriter quotes every existing command token; feeding it already
+        // single-quoted TOML values would add a second quoting layer.
+        codexMcpArgsForLaunch = buildCodexMcpConfigArgs(config);
+        updateAgentDashboardMcpStatus(agent.id, 'available', null);
       }
 
       // Append --add-dir on the bare command. The --append-system-prompt-file
@@ -6165,8 +6220,22 @@ export class AgentSupervisor extends EventEmitter {
         if (!sid) {
           throw new Error(`Cannot resume ${agent.title} (${agent.id}): no Codex resumeSessionId on record and no cwd-matching rollout found`);
         }
-        command = buildCodexResumeCommand(command, sid);
+        // Keep WSL's established SID-last ordering: `codex resume <options>
+        // <sid>`. Windows appends MCP options after its resume rewrite; Codex
+        // 0.146.0 accepts both positions. Supplying pending tokens here lets
+        // this single renderer quote each value exactly once.
+        command = buildCodexResumeCommand(command, sid, process.platform, codexMcpArgsForLaunch);
+        codexMcpArgsForLaunch = [];
         console.log(`[WSL] Resuming ${agent.title} (${agent.id}) with codex resume ${sid}`);
+      }
+
+      if (codexMcpArgsForLaunch.length > 0) {
+        for (let i = 0; i < codexMcpArgsForLaunch.length; i += 2) {
+          command += ` ${codexMcpArgsForLaunch[i]} ${shQuote(codexMcpArgsForLaunch[i + 1])}`;
+        }
+        console.log(
+          `[WSL] Codex MCP injected lane=${lane} toolsets='${toolsetsForLane(lane)}' additive=on`,
+        );
       }
 
       // Wrap the command to load any of:

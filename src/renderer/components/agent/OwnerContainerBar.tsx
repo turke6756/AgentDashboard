@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import type { Agent } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
-import { RoleChips, ContextStatsBar, HooksOffBadge } from './agent-card-bits';
+import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge } from './agent-card-bits';
 import ContinuationSplitButton from './ContinuationSplitButton';
 import { isContinuationEligible } from './continuation-controls';
 import { PROVIDER_META } from '../../../shared/constants';
@@ -200,6 +200,7 @@ export default function OwnerContainerBar({
             {isContinuationEligible(agent) && <ContinuationSplitButton agent={agent} />}
             {/* WP2 — hook-health badge, orthogonal to (and never replacing) the operational status. */}
             <HooksOffBadge agent={agent} />
+            <DashboardMcpOffBadge agent={agent} />
             <StatusBadge status={agent.status} />
           </div>
         </div>

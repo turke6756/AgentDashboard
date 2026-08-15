@@ -108,6 +108,8 @@ type DbAgent = {
   continuationEnabled?: boolean;
   planId?: string | null;
   planSection?: string | null;
+  dashboardMcpStatus?: 'unknown' | 'available' | 'degraded';
+  dashboardMcpMessage?: string | null;
 };
 type CreateAgentData = {
   workspaceId: string;
@@ -133,6 +135,7 @@ type DbModule = {
   getSupervisorAgent(workspaceId: string): DbAgent | null;
   getOwnerForWorker(worker: DbAgent): DbAgent | null;
   updateAgentStatus(id: string, status: string): void;
+  updateAgentDashboardMcpStatus(id: string, status: 'unknown' | 'available' | 'degraded', message: string | null): void;
   setContinuationEnabled(agentId: string, enabled: boolean): void;
   deleteAgent(id: string): void;
   // GT-C ownership + trail plumbing.
@@ -359,6 +362,20 @@ test('owner_agent_id migration is idempotent — re-running ALTER does not throw
 });
 
 // ── Planning surface WP1: plan-rail freeze at launch ─────────────────────────
+
+test('dashboard MCP degradation persists through the production agent DTO projection', () => {
+  const a = makeAgentRow();
+  const message = 'Codex is launching without dashboard tools.';
+  dbm.updateAgentDashboardMcpStatus(a.id, 'degraded', message);
+  const reread = dbm.getAgent(a.id)!;
+  assert.equal(reread.dashboardMcpStatus, 'degraded');
+  assert.equal(reread.dashboardMcpMessage, message);
+
+  dbm.updateAgentDashboardMcpStatus(a.id, 'available', null);
+  const recovered = dbm.getAgent(a.id)!;
+  assert.equal(recovered.dashboardMcpStatus, 'available');
+  assert.equal(recovered.dashboardMcpMessage, null);
+});
 
 test('WP1: createAgent / rowToAgent freezes planId + planSection at launch', () => {
   const a = makeAgentRow({ planId: 'plan-xyz', planSection: 'sec_abc123' });

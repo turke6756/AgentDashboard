@@ -7,11 +7,11 @@
 // AgentSupervisor methods supply the impure inputs (script path, bound API
 // port, the per-process bearer token, the WSL→host gateway IP) and call these.
 //
-// SECURITY (D-4/F9/F10): the API bearer token lives ONLY inside the inline
-// `--mcp-config` JSON these functions return, which is passed to the child
-// process in-memory at launch. It must NEVER be written to disk or echoed to a
-// log. `redactMcpToken` is the choke point that scrubs it from any rendered
-// command string before that string is logged or persisted.
+// SECURITY (D-4/F9/F10): Claude receives the API bearer token only in inline
+// `--mcp-config` JSON. Codex receives only the token environment-variable NAME
+// in its dotted `-c` config and inherits the value from the child environment.
+// Neither form is written to config on disk. `redactMcpToken` remains the choke
+// point for rendered Claude command strings.
 
 import type { AgentRoleLane } from '../../shared/types';
 
@@ -133,7 +133,7 @@ export interface DirectSpawnParams {
    *  quoteForCmd() doubled every `"` in the inline JSON. Lane-keying covers
    *  privilegeLane:'supervisor' for free (roleLaneOf maps it to 'supervisor'). */
   lane: AgentRoleLane;
-  /** Agent provider ('claude' | 'codex' | …). Only claude agents direct-spawn. */
+  /** Agent provider. Non-legacy Claude and Codex agents direct-spawn. */
   provider: string;
   /** True when a multiline positional prompt arg is present
    *  (agentMdPrompt && !resume && provider === 'claude'). */
@@ -143,26 +143,21 @@ export interface DirectSpawnParams {
   overrideArgs?: boolean;
 }
 
-/** Should a Windows claude launch bypass the `cmd.exe /c` wrap and spawn
- *  claude.exe directly?
+/** Should a Windows launch bypass the `cmd.exe /c` wrap and spawn the provider
+ *  executable directly?
  *
  *  Two reasons to direct-spawn:
  *   1. `hasPromptArg` — a multiline positional prompt would be shredded by
  *      cmd.exe argument parsing.
- *   2. Any non-legacy claude lane (supervisor / worker / researcher — and any
- *      privilege-lane persona, which roleLaneOf folds into the supervisor lane)
- *      — these pass a load-bearing `--append-system-prompt` AND an inline
- *      `--mcp-config <JSON>`. Under the cmd.exe wrap, pty-host quoteForCmd()
- *      doubles every `"` in the JSON, so it no longer starts with `{` and
- *      claude.exe mistakes it for a missing file path ("MCP config file not
- *      found"). The predicate is `lane !== 'legacy'` — deliberately the SAME
- *      predicate that gates the inline-MCP injection (index.ts), so the two can
- *      never diverge (the divergence that crash-looped the privilege-lane
- *      persona: injected but not direct-spawned). */
+ *   2. Any non-legacy Claude or Codex lane. Claude's inline MCP JSON and Codex's
+ *      dotted TOML values both contain load-bearing double quotes. Under the
+ *      cmd.exe wrap, pty-host quoteForCmd() doubles every `"`, corrupting the
+ *      bytes before the provider sees them. The predicate is `lane !==
+ *      'legacy'`, matching dashboard MCP injection for both providers. */
 export function shouldDirectSpawn(p: DirectSpawnParams): boolean {
   const persistentAgent =
     p.lane !== 'legacy' &&
-    p.provider === 'claude' &&
+    (p.provider === 'claude' || p.provider === 'codex') &&
     !p.overrideArgs;
   return p.hasPromptArg || persistentAgent;
 }
@@ -224,7 +219,7 @@ export interface DashboardMcpConfigParams {
   scriptPath: string;
   /** The real bound API server port. */
   apiPort: number;
-  /** The per-process bearer token. Lives only in the returned JSON. */
+  /** Claude: per-process bearer value. Codex translation: inherited env-var name. */
   apiToken: string;
   /** WSL→Windows-host gateway IP. Required for the wsl path; ignored on windows.
    *  Defaults to 127.0.0.1 (mirrored-mode WSL) when omitted. */
@@ -237,6 +232,67 @@ export interface DashboardMcpConfigParams {
    *  keys (token / host / port / toolsets) always override — a hostile identityEnv
    *  can never clobber them. */
   identityEnv?: Record<string, string>;
+}
+
+/** Environment variable inherited by the dashboard MCP proxy. Codex's
+ *  per-launch config names this variable via `env_vars`; its value must never
+ *  be copied into a `-c` argument. */
+export const DASHBOARD_API_TOKEN_ENV_VAR = 'AGENT_DASHBOARD_API_TOKEN';
+
+/** Translate the dashboard's inline JSON server description into Codex's
+ *  repeatable dotted-config syntax. Codex has no strict MCP isolation flag, so
+ *  these overrides are deliberately additive to servers in shared config.toml.
+ *
+ *  The AGENT_DASHBOARD_API_TOKEN entry in `configJson` is interpreted as an
+ *  environment-variable NAME and emitted through `env_vars`; all other env
+ *  entries are non-secret fixed launch configuration. */
+export function buildCodexMcpConfigArgs(configJson: string): string[] {
+  const parsed = JSON.parse(configJson) as {
+    mcpServers?: Record<string, {
+      command?: unknown;
+      args?: unknown;
+      env?: Record<string, unknown>;
+    }>;
+  };
+  const servers = parsed.mcpServers;
+  if (!servers || typeof servers !== 'object') {
+    throw new Error('buildCodexMcpConfigArgs: mcpServers object is required');
+  }
+
+  const result: string[] = [];
+  const add = (key: string, value: unknown): void => {
+    result.push('-c', `${key}=${JSON.stringify(value)}`);
+  };
+  for (const [serverName, server] of Object.entries(servers)) {
+    const prefix = `mcp_servers.${serverName}`;
+    if (typeof server.command !== 'string') {
+      throw new Error(`buildCodexMcpConfigArgs: ${serverName}.command must be a string`);
+    }
+    add(`${prefix}.command`, server.command);
+    if (server.args !== undefined) {
+      if (!Array.isArray(server.args) || !server.args.every((arg) => typeof arg === 'string')) {
+        throw new Error(`buildCodexMcpConfigArgs: ${serverName}.args must be a string array`);
+      }
+      add(`${prefix}.args`, server.args);
+    }
+
+    const env = { ...(server.env ?? {}) };
+    const tokenEnvVarName = env[DASHBOARD_API_TOKEN_ENV_VAR];
+    delete env[DASHBOARD_API_TOKEN_ENV_VAR];
+    if (tokenEnvVarName !== undefined) {
+      if (typeof tokenEnvVarName !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnvVarName)) {
+        throw new Error('buildCodexMcpConfigArgs: API token env-var name is invalid');
+      }
+      add(`${prefix}.env_vars`, [tokenEnvVarName]);
+    }
+    for (const [name, value] of Object.entries(env)) {
+      if (typeof value !== 'string') {
+        throw new Error(`buildCodexMcpConfigArgs: ${serverName}.env.${name} must be a string`);
+      }
+      add(`${prefix}.env.${name}`, value);
+    }
+  }
+  return result;
 }
 
 /** Build the inline `--mcp-config` JSON string for the parameterized dashboard

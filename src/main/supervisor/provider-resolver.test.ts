@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   findWindowsProviderBinary,
+  findWindowsCodexNativeBinary,
   findWindowsClaudePath,
   probeWindowsProvider,
   missingProviderMessage,
@@ -183,6 +184,69 @@ test('grok resolves to null when nothing is installed', async () => {
   try {
     assert.equal(await findWindowsProviderBinary('grok'), null);
     assert.equal(await probeWindowsProvider('grok'), null);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('finds the npm-installed native codex executable without changing ordinary shim resolution', async () => {
+  const fake = withFakeHome('user', (home) => {
+    const npmRoot = path.join(home, 'AppData', 'Roaming', 'npm');
+    writeShim(path.join(npmRoot, 'codex.cmd'));
+    writeShim(path.join(npmRoot, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+      'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'));
+  });
+  try {
+    const ordinary = await findWindowsProviderBinary('codex');
+    assert.ok(ordinary?.endsWith('codex.cmd'), `ordinary resolver contract changed: ${ordinary}`);
+    const found = await findWindowsCodexNativeBinary(ordinary!);
+    assert.ok(found, 'expected the npm-installed native codex executable');
+    assert.ok(found.endsWith('codex.exe'), `direct-spawn-safe native executable must win; got: ${found}`);
+    assert.match(found, /codex-win32-x64/);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('finds the official Codex installer executable when an npm shim exists and nested vendor is absent', async () => {
+  const fake = withFakeHome('user', (home) => {
+    writeShim(path.join(home, 'AppData', 'Roaming', 'npm', 'codex.cmd'));
+    writeShim(path.join(home, 'AppData', 'Local', 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
+  });
+  try {
+    const ordinary = await findWindowsProviderBinary('codex');
+    assert.ok(ordinary?.endsWith('codex.cmd'), `fixture must exercise first-match shim behavior: ${ordinary}`);
+    const native = await findWindowsCodexNativeBinary(ordinary!);
+    assert.ok(native?.endsWith(path.join('OpenAI', 'Codex', 'bin', 'codex.exe')), `official native binary must be found: ${native}`);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('returns no direct-spawn candidate for a shim-only Codex installation', async () => {
+  const fake = withFakeHome('user', (home) => {
+    writeShim(path.join(home, 'AppData', 'Roaming', 'npm', 'codex.cmd'));
+  });
+  try {
+    const ordinary = await findWindowsProviderBinary('codex');
+    assert.ok(ordinary?.endsWith('codex.cmd'), `shim must remain launchable: ${ordinary}`);
+    assert.equal(await findWindowsCodexNativeBinary(ordinary!), null);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('finds the vendor executable relative to a shim in a non-standard npm prefix', async () => {
+  const fake = withFakeHome('user', (home) => {
+    const customPrefix = path.join(home, 'tools', 'relocated-npm');
+    writeShim(path.join(customPrefix, 'codex.cmd'));
+    writeShim(path.join(customPrefix, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+      'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'));
+  });
+  try {
+    const shim = path.join(fake.home, 'tools', 'relocated-npm', 'codex.cmd');
+    const native = await findWindowsCodexNativeBinary(shim);
+    assert.ok(native?.endsWith(path.join('x86_64-pc-windows-msvc', 'bin', 'codex.exe')), `relative vendor executable must be found: ${native}`);
   } finally {
     fake.restore();
   }

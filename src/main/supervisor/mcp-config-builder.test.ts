@@ -272,9 +272,15 @@ test('shouldDirectSpawn: a multiline prompt arg forces direct-spawn even for a l
     'a positional prompt would be shredded by cmd.exe — must direct-spawn');
 });
 
-test('shouldDirectSpawn: a non-claude worker (e.g. codex) does NOT direct-spawn on the lane alone', () => {
-  assert.equal(shouldDirectSpawn({ lane: 'worker', provider: 'codex', hasPromptArg: false }), false,
-    'only claude agents take the persistent-lane direct-spawn path');
+test('shouldDirectSpawn: a non-legacy codex lane direct-spawns to preserve dotted TOML bytes', () => {
+  assert.equal(shouldDirectSpawn({ lane: 'worker', provider: 'codex', hasPromptArg: false }), true,
+    'cmd.exe quoteForCmd doubles the quotes in codex -c values, so codex must direct-spawn');
+  assert.equal(shouldDirectSpawn({ lane: 'legacy', provider: 'codex', hasPromptArg: false }), false,
+    'legacy codex has no injected dashboard MCP config and keeps the wrapped path');
+  assert.equal(shouldDirectSpawn({ lane: 'worker', provider: 'grok', hasPromptArg: false }), false,
+    'grok remains outside WP-3 direct-spawn behavior');
+  assert.equal(shouldDirectSpawn({ lane: 'worker', provider: 'agy', hasPromptArg: false }), false,
+    'agy remains outside WP-3 direct-spawn behavior');
 });
 
 // ── buildDashboardMcpConfigArg (windows) ─────────────────────────────

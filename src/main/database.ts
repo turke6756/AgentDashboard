@@ -995,6 +995,10 @@ export function initDatabase(): void {
   // resolves it; last_hook_event_at is the wall-clock ms of the last hook POST.
   try { db.exec(`ALTER TABLE agents ADD COLUMN hook_status TEXT NOT NULL DEFAULT 'unknown'`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE agents ADD COLUMN last_hook_event_at INTEGER`); } catch { /* exists */ }
+  // WP-3: dashboard MCP delivery is independent of hook/process health. Persist
+  // it so an MCP-degraded launch remains visible across status DTO refreshes.
+  try { db.exec(`ALTER TABLE agents ADD COLUMN dashboard_mcp_status TEXT NOT NULL DEFAULT 'unknown'`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE agents ADD COLUMN dashboard_mcp_message TEXT`); } catch { /* exists */ }
   // Migration: C1 synchronous-submit-confirmation failure surface
   // (plans/global-hook-rollout-and-submit-confirmation.md §3.1). JSON blob
   // `{message,ts}` or NULL; set when confirm-and-retry exhausts, cleared on a
@@ -3151,6 +3155,8 @@ function rowToAgent(row: any): Agent {
     resumeSessionId: row.resume_session_id,
     status: row.status as AgentStatus,
     hookStatus: (row.hook_status || 'unknown') as Agent['hookStatus'],
+    dashboardMcpStatus: (row.dashboard_mcp_status || 'unknown') as Agent['dashboardMcpStatus'],
+    dashboardMcpMessage: row.dashboard_mcp_message ?? null,
     // WP2 (hook-absence-resilience) — DERIVED from hook_status (still the sole
     // authority; no new column). 'broken'/'degraded' → hooksUnavailable, with a
     // distinct reason for the card badge tooltip.
@@ -4461,6 +4467,18 @@ export function updateAgentHookStatus(
       [hookStatus, id],
     );
   }
+}
+
+/** Persist the dashboard MCP delivery posture for renderer status DTOs. */
+export function updateAgentDashboardMcpStatus(
+  id: string,
+  status: NonNullable<Agent['dashboardMcpStatus']>,
+  message: string | null,
+): void {
+  run(
+    "UPDATE agents SET dashboard_mcp_status = ?, dashboard_mcp_message = ?, updated_at = datetime('now') WHERE id = ?",
+    [status, message, id],
+  );
 }
 
 /** C1 — set or clear the synchronous-submit-confirmation failure surface.

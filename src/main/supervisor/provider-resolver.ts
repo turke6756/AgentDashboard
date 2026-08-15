@@ -137,6 +137,48 @@ export function findWindowsProviderBinary(provider: 'codex' | 'grok' | 'agy'): P
   });
 }
 
+/** Find a native Codex executable suitable for direct-spawn without changing
+ *  the ordinary provider resolver's first-match contract. WP-3 consults this
+ *  only when it has quoted dotted-config arguments to inject. Every known
+ *  native location is checked before the caller degrades MCP delivery. */
+export function findWindowsCodexNativeBinary(resolvedBinary?: string): Promise<string | null> {
+  const home = userHome();
+  const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const npmDirs = [path.join(appData, 'npm'), path.join(localAppData, 'npm')];
+  const shimDir = resolvedBinary ? path.dirname(resolvedBinary) : null;
+  const relativeCandidates = shimDir ? [
+    path.join(shimDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+      'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
+    path.join(shimDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+      'codex-win32-arm64', 'vendor', 'aarch64-pc-windows-msvc', 'bin', 'codex.exe'),
+  ] : [];
+  const candidates = [
+    // The resolved shim is authoritative for custom/relocated npm prefixes.
+    // Search its platform payload before any conventional fixed location.
+    ...relativeCandidates,
+    path.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'),
+    path.join(localAppData, 'Programs', 'codex', 'codex.exe'),
+    ...npmDirs.flatMap((dir) => [
+      path.join(dir, 'codex.exe'),
+      path.join(dir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+        'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
+      path.join(dir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+        'codex-win32-arm64', 'vendor', 'aarch64-pc-windows-msvc', 'bin', 'codex.exe'),
+    ]),
+    path.join(home, '.local', 'bin', 'codex.exe'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return Promise.resolve(candidate);
+    } catch {
+      /* ignore unreadable candidate and keep searching */
+    }
+  }
+  return Promise.resolve(null);
+}
+
 /** Non-throwing preflight form: the absolute path a launch WOULD use, or null.
  *  Deliberately delegates to the two functions above rather than reproducing
  *  their candidate lists — if the launcher can't find it, neither can we, and
