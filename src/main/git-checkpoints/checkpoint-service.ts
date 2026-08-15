@@ -99,6 +99,10 @@ import { checkpointRef, recoveryRef, type CheckpointEdge } from './ref-encoding'
 import { deriveRawGitMode } from './raw-git-mode';
 import { encodeGitPath } from '../commit-candidates/dirty-inventory';
 import { resolveCheckpointPathBlob } from './concurrency-policy';
+import {
+  checkAfterSnapshot,
+  type AfterSnapshotOverlap,
+} from './after-snapshot-gate';
 
 // ── injectable seams ──────────────────────────────────────────────────────────
 
@@ -1087,17 +1091,7 @@ export class CheckpointService {
       else rejectedPaths.push(p);
     }
 
-    // Same-path active contention from OPEN turn_records (excluding this turn).
-    const requested = new Set(validatedPaths);
-    const contention: { path: string; turnId: string }[] = [];
-    for (const other of this.store.listTurnRecords(workspaceId)) {
-      if (other.id === turnId || other.status !== 'open') continue;
-      for (const e of other.touched ?? []) {
-        if ((e.op === 'write' || e.op === 'create') && requested.has(e.path)) {
-          contention.push({ path: e.path, turnId: other.id });
-        }
-      }
-    }
+    const contention = this.openTurnContention(turnId, validatedPaths, workspaceId);
 
     return {
       ok: rejectedPaths.length === 0,
@@ -1190,10 +1184,48 @@ export class CheckpointService {
     if (!row) return { ...base, reason: 'unknown-turn' };
     const beforeUsable = await this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
 
+    if (!beforeUsable) return { ...base, reason: 'before-edge-unusable' };
+    if (!validation.ok) return { ...base, reason: 'non-witnessed-paths' };
+
+    const afterUsable = await this.verifyEdgeUsable(
+      repoRoot,
+      row.afterReady,
+      row.afterRef,
+      row.afterOid,
+    );
+    const root = this.canonicalRoot(repoRoot);
+    const gate = await checkAfterSnapshot({
+      repoRoot,
+      gitExe: this.gitExe,
+      workspaceId,
+      turnId,
+      turnSeq: row.turnSeq,
+      afterOid: row.afterOid,
+      afterEdgeUsable: afterUsable,
+      paths: validation.validatedPaths,
+      store: this.store,
+      runGit: this.runGit,
+      lstatPath: (p) => this.lstatAbs(this.abs(root, p)),
+      hashPaths: (paths) => this.hashPaths(
+        repoRoot,
+        [...paths],
+        this.now() + this.restoreTuning.fileTimeoutMs,
+      ),
+    });
+    if (!gate.ok) {
+      return {
+        ...base,
+        reason: gate.failureReason,
+        ...(gate.failureReason === 'current-hash-failed' ? {} : { overlap: gate.overlap }),
+      };
+    }
+    if (validation.contention.length > 0) {
+      return { ...base, reason: 'active-turn-witnesses-path' };
+    }
+
     // Compute a token for every VALIDATED (witnessed) path: current raw blob OID for
     // a present file, the ABSENT sentinel for an absent path or a directory-occupied
     // slot (matches captureSafetyPre's currentOid semantics exactly).
-    const root = this.canonicalRoot(repoRoot);
     const tokens: Record<string, string> = {};
     const present: string[] = [];
     for (const p of validation.validatedPaths) {
@@ -1210,8 +1242,7 @@ export class CheckpointService {
       for (const p of present) tokens[p] = oidByPath.get(p) ?? ABSENT_SENTINEL;
     }
 
-    const reason = !beforeUsable ? 'before-edge-unusable' : validation.ok ? null : 'non-witnessed-paths';
-    return { ...base, available: beforeUsable && validation.ok, reason, tokens };
+    return { ...base, available: true, reason: null, tokens };
   }
 
   // ── WP-G3.1: per-path version history (view/diff/restore one file) ─────────────
@@ -1465,6 +1496,7 @@ export class CheckpointService {
     const root = this.canonicalRoot(repoRoot);
     const paths = dedupe(args.paths);
     const operationId = args.operationId ?? randomUUID();
+    let contention: { path: string; turnId: string }[] = [];
 
     // 1. Write the recovery_operations row `pending` (before any snapshot/mutation).
     this.recoveryStore.insertRecoveryOperation(args.workspaceId, {
@@ -1477,11 +1509,17 @@ export class CheckpointService {
     });
 
     const fail = (reason: string, extra?: Partial<RestoreOutcome>): RestoreOutcome => {
+      const overlap = extra?.overlap;
+      const rejectedPaths = extra?.rejectedPaths ?? [];
       this.recoveryStore.updateRecoveryOperation(operationId, {
         status: 'failed',
         failureReason: reason,
         endedAt: this.now(),
-        ...(extra?.rejectedPaths ? { result: JSON.stringify({ rejectedPaths: extra.rejectedPaths }) } : {}),
+        result: JSON.stringify({
+          ...(overlap ? { overlap } : {}),
+          contention,
+          ...(rejectedPaths.length > 0 ? { rejectedPaths } : {}),
+        }),
       });
       return {
         status: 'failed',
@@ -1491,10 +1529,11 @@ export class CheckpointService {
         preOid: extra?.preOid ?? null,
         requestedPaths: paths,
         completedPaths: [],
-        rejectedPaths: extra?.rejectedPaths ?? [],
+        rejectedPaths,
         failures: extra?.failures ?? [],
-        contention: args.contention,
+        contention,
         failureReason: reason,
+        ...(overlap ? { overlap } : {}),
       };
     };
 
@@ -1525,6 +1564,42 @@ export class CheckpointService {
     const beforeUsable = await this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
     if (!beforeUsable) return fail('before-edge-unusable');
     const beforeOid = row.beforeOid as string;
+
+    // Recompute under the restore lock. Pre-lock preview/validation contention is
+    // advisory only and is never returned by runRestore.
+    contention = this.openTurnContention(args.turnId, paths, args.workspaceId);
+
+    const afterUsable = await this.verifyEdgeUsable(
+      repoRoot,
+      row.afterReady,
+      row.afterRef,
+      row.afterOid,
+    );
+    const gate = await checkAfterSnapshot({
+      repoRoot,
+      gitExe: this.gitExe,
+      workspaceId: args.workspaceId,
+      turnId: args.turnId,
+      turnSeq: row.turnSeq,
+      afterOid: row.afterOid,
+      afterEdgeUsable: afterUsable,
+      paths,
+      store: this.store,
+      runGit: this.runGit,
+      lstatPath: (p) => currentStat.get(p) ?? null,
+      hashPaths: (gatePaths) => this.hashPaths(
+        repoRoot,
+        [...gatePaths],
+        this.now() + this.restoreTuning.fileTimeoutMs,
+      ),
+    });
+    if (!gate.ok) {
+      return fail(
+        gate.failureReason,
+        gate.failureReason === 'current-hash-failed' ? undefined : { overlap: gate.overlap },
+      );
+    }
+    if (contention.length > 0) return fail('active-turn-witnesses-path');
 
     // 2. Path-scoped PRE safety checkpoint (present-with-OID/mode or explicitly absent);
     //    create + verify the recovery `pre` ref. Abort the ENTIRE restore unless verified.
@@ -1610,9 +1685,31 @@ export class CheckpointService {
       completedPaths: completed,
       rejectedPaths: [],
       failures,
-      contention: args.contention,
+      contention,
       failureReason: null,
     };
+  }
+
+  /** Same-path write/create witnesses from other currently-open turns. */
+  private openTurnContention(
+    turnId: string,
+    paths: readonly string[],
+    workspaceId: string,
+  ): { path: string; turnId: string }[] {
+    const requested = new Set(paths);
+    const seen = new Set<string>();
+    const contention: { path: string; turnId: string }[] = [];
+    for (const other of this.store.listOpenTurnRecords(workspaceId)) {
+      if (other.id === turnId) continue;
+      for (const entry of other.touched ?? []) {
+        if ((entry.op !== 'write' && entry.op !== 'create') || !requested.has(entry.path)) continue;
+        const key = `${entry.path}\0${other.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        contention.push({ path: entry.path, turnId: other.id });
+      }
+    }
+    return contention;
   }
 
   // ── step 2: path-scoped PRE safety checkpoint ──────────────────────────────────
@@ -1944,6 +2041,7 @@ export class CheckpointService {
     paths: string[],
     contention: { path: string; turnId: string }[],
     reason: string,
+    overlap?: AfterSnapshotOverlap,
   ): RestoreOutcome {
     return {
       status: 'failed',
@@ -1957,6 +2055,7 @@ export class CheckpointService {
       failures: [],
       contention,
       failureReason: reason,
+      ...(overlap ? { overlap } : {}),
     };
   }
 }
@@ -2011,6 +2110,7 @@ export interface CheckpointPreviewResult {
   validatedPaths: string[];
   rejectedPaths: string[];
   contention: { path: string; turnId: string }[];
+  overlap?: AfterSnapshotOverlap;
 }
 
 export interface RestorePathValidation {
@@ -2071,6 +2171,7 @@ export interface RestoreOutcome {
   failures: { path: string; reason: string }[];
   /** Same-path open-turn contention surfaced to the caller. */
   contention: { path: string; turnId: string }[];
+  overlap?: AfterSnapshotOverlap;
   /** Op-level failure reason (classification / before-edge / pre-snapshot). */
   failureReason: string | null;
 }

@@ -98,7 +98,7 @@ class FakeStore implements CheckpointTurnStore {
   rows = new Map<string, Record<string, unknown>>();
   seedOpen(id: string, workspaceId: string, extra: Record<string, unknown> = {}): void {
     this.rows.set(id, {
-      id, workspaceId, status: 'open', agentId: null,
+      id, workspaceId, status: 'open', agentId: null, turnSeq: 1,
       beforeReady: false, afterReady: false, touched: [],
       beforeOid: null, afterOid: null, beforeRef: null, afterRef: null,
       ...extra,
@@ -181,6 +181,15 @@ interface Setup {
   queue: CheckpointQueue;
   beforeOid: string;
 }
+
+async function captureAfter(repo: string, turnId: string, ws: string, svc: CheckpointService): Promise<void> {
+  const after = await svc.captureEdge({
+    edge: 'after', turnId, workspaceId: ws, agentId: 'agent-1',
+    capability: capFor(repo), quality: 'guaranteed',
+  });
+  await svc.settleCleanups();
+  assert.equal(after.status, 'ready', 'after edge must be ready for gated restore');
+}
 /** Capture a real before edge for `turnId` over `repo`, seed `touched`, return the svc. */
 async function setupBefore(
   repo: string,
@@ -256,6 +265,7 @@ test('scrambled file restored byte-exact; index checksum + HEAD + all branch ref
   // The agent scrambles the witnessed a.txt AND leaves an UNAFFECTED dirty b.txt.
   fs.writeFileSync(path.join(repo, 'a.txt'), 'SCRAMBLED-DIFFERENT-LENGTH\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'orig-b-dirty\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const headBefore = git(repo, ['rev-parse', 'HEAD']);
   const idxBefore = indexChecksum(repo);
@@ -289,6 +299,7 @@ test('core.autocrlf=true: restore is byte-exact CRLF (no re-normalization / smud
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'win.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'win.txt'), Buffer.from('scrambled\n'));
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['win.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -305,6 +316,7 @@ test('binary file restored byte-exact', async () => {
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'blob.bin', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'blob.bin'), Buffer.from([9, 9, 9]));
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['blob.bin'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -322,6 +334,7 @@ test('all-clean input → check-ignore exits 1 → restore PROCEEDS (exit 1 is n
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'v2\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
   });
@@ -359,6 +372,7 @@ test('untracked-creation restore removes it; PRE recorded it present (reversible
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'created.txt', op: 'create' }]);
   fs.writeFileSync(path.join(repo, 'created.txt'), 'agent-made-this\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['created.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -379,6 +393,7 @@ test('tracked-deletion restore recreates exact bytes; PRE records the currently-
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'gone.txt', op: 'write' }]);
   fs.rmSync(path.join(repo, 'gone.txt'));
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['gone.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -397,6 +412,7 @@ test('PRE safety ref is created + VERIFIED before any mutation, is path-scoped, 
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'keep.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'keep.txt'), 'scrambled\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['keep.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -427,15 +443,18 @@ test('non-empty directory with an UNRELATED file, tree wants a file → fails vi
   fs.rmSync(path.join(repo, 'data'));
   fs.mkdirSync(path.join(repo, 'data'));
   fs.writeFileSync(path.join(repo, 'data', 'unrelated.txt'), 'keep-me\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['data'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
   });
   await s.svc.settleCleanups();
-  assert.equal(res.status, 'partial');
+  assert.equal(res.status, 'failed');
+  assert.equal(res.failureReason, 'after-edge-unusable');
+  assert.deepEqual(res.overlap, { reason: 'after-edge-unusable', files: [] });
+  assert.equal(res.preRef, null);
+  assert.equal(res.preOid, null);
   assert.deepEqual(res.completedPaths, []);
-  assert.equal(res.failures[0].path, 'data');
-  assert.match(res.failures[0].reason, /dir-transition-blocked/);
   // The unrelated descendant is NEVER recursively deleted.
   assert.deepEqual(fs.readFileSync(path.join(repo, 'data', 'unrelated.txt')), Buffer.from('keep-me\n'));
 });
@@ -447,14 +466,21 @@ test('empty directory occupying a file path → removed and replaced with the re
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'x', op: 'write' }]);
   fs.rmSync(path.join(repo, 'x'));
   fs.mkdirSync(path.join(repo, 'x')); // empty dir in the way
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['x'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
   });
   await s.svc.settleCleanups();
-  assert.equal(res.status, 'completed');
-  assert.ok(fs.statSync(path.join(repo, 'x')).isFile());
-  assert.deepEqual(fs.readFileSync(path.join(repo, 'x')), Buffer.from('file-bytes\n'));
+  assert.equal(res.status, 'failed');
+  assert.equal(res.failureReason, 'after-snapshot-overlap');
+  assert.deepEqual(res.overlap, {
+    reason: 'after-snapshot-overlap',
+    files: [{ path: 'x', blockers: [{ kind: 'external' }] }],
+  });
+  assert.equal(res.preRef, null);
+  assert.equal(res.preOid, null);
+  assert.ok(fs.statSync(path.join(repo, 'x')).isDirectory());
 });
 
 // ══ symlink-ancestor traversal rejection (invariant #13) ════════════════════════
@@ -476,6 +502,7 @@ test('symlink/junction ancestor escaping the workspace → rejected; the outside
     console.error('  SKIP inner — could not create a symlink/junction:', (err as Error).message);
     return;
   }
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['data/secret.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -496,6 +523,7 @@ test('read-only target is replaced (Windows read-only clear); byte-exact', async
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'ro.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'ro.txt'), 'v2-dirty\n');
   fs.chmodSync(path.join(repo, 'ro.txt'), 0o444); // read-only
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['ro.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -525,6 +553,7 @@ test('before-tree symlink (120000) and gitlink (160000) modes → visible per-pa
   // Current worktree: plain files (so classification passes).
   fs.writeFileSync(path.join(repo, 'link'), 'regular\n');
   fs.writeFileSync(path.join(repo, 'sub'), 'regular\n');
+  await captureAfter(repo, 'T', 'WS', svc);
 
   const res = await svc.restorePaths({
     turnId: 'T', requestedPaths: ['link', 'sub'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -588,6 +617,7 @@ test('mutation blocked midway → partial with accurate completed_paths, PRE usa
   ]);
   fs.writeFileSync(path.join(repo, 'good.txt'), 'good-dirty\n');
   fs.writeFileSync(path.join(repo, 'bad'), 'regular\n');
+  await captureAfter(repo, 'T', 'WS', svc);
 
   const res = await svc.restorePaths({
     turnId: 'T', requestedPaths: ['good.txt', 'bad'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -630,6 +660,7 @@ test('revertTurn restores the whole witnessed set (modify + create → delete)',
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'm.txt', op: 'write' }, { path: 'c.txt', op: 'create' }]);
   fs.writeFileSync(path.join(repo, 'm.txt'), 'm-changed\n');
   fs.writeFileSync(path.join(repo, 'c.txt'), 'created\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.revertTurn({ turnId: 'T', workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo) });
   await s.svc.settleCleanups();
@@ -648,6 +679,7 @@ test('preview-token mismatch aborts before mutation unless forced', async () => 
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'v2\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
 
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
@@ -661,12 +693,99 @@ test('preview-token mismatch aborts before mutation unless forced', async () => 
 
 // ══ concurrency: a BEFORE enqueued during a restore waits (withLock held) ════════
 
+test('force cannot bypass a later-turn after-snapshot overlap before PRE', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'before\n');
+  commitAll(repo);
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'target-after\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
+
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'later-finished-work\n');
+  s.store.seedOpen('T2', 'WS', {
+    turnSeq: 2,
+    status: 'accepted',
+    agentId: 'agent-2',
+    agentTitle: 'Second Agent',
+    taskLabel: 'later task',
+    endedAt: 42,
+    touched: [{ path: 'a.txt', op: 'write' }],
+  });
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo), requestedPaths: ['a.txt'],
+  });
+  assert.equal(preview.available, false);
+  assert.equal(preview.reason, 'after-snapshot-overlap');
+  assert.equal(preview.overlap?.files[0]?.blockers[0]?.kind, 'later-turn');
+
+  const res = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), force: true,
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(res.failureReason, 'after-snapshot-overlap', 'REACHABILITY:overlap-gate-enforced');
+  assert.equal(res.status, 'failed');
+  assert.equal(res.preRef, null);
+  assert.equal(res.preOid, null);
+  assert.deepEqual(res.contention, []);
+  assert.deepEqual(res.overlap, {
+    reason: 'after-snapshot-overlap',
+    files: [{
+      path: 'a.txt',
+      blockers: [{
+        kind: 'later-turn',
+        turnId: 'T2',
+        turnSeq: 2,
+        agentId: 'agent-2',
+        agentTitle: 'Second Agent',
+        taskLabel: 'later task',
+        status: 'accepted',
+        endedAt: 42,
+      }],
+    }],
+  });
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), Buffer.from('later-finished-work\n'));
+  assert.deepEqual(
+    JSON.parse(s.recoveryStore.rows.get(res.operationId)!.result as string),
+    { overlap: res.overlap, contention: [] },
+  );
+});
+
+test('open-turn contention is recomputed and refuses matching bytes before PRE', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'before\n');
+  commitAll(repo);
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'target-after\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  s.store.seedOpen('T2', 'WS', {
+    turnSeq: 2,
+    touched: [{ path: 'a.txt', op: 'write' }],
+  });
+
+  const res = await s.svc.revertTurn({
+    turnId: 'T', workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo), force: true,
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(res.status, 'failed');
+  assert.equal(res.failureReason, 'active-turn-witnesses-path');
+  assert.deepEqual(res.contention, [{ path: 'a.txt', turnId: 'T2' }]);
+  assert.equal(res.overlap, undefined);
+  assert.equal(res.preRef, null);
+  assert.equal(res.preOid, null);
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), Buffer.from('target-after\n'));
+});
+
 test('a concurrent BEFORE checkpoint enqueued during a restore does not start until the restore releases the lock', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'orig\n');
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
   fs.writeFileSync(path.join(repo, 'a.txt'), 'scrambled\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
   s.store.seedOpen('T2', 'WS', { agentId: 'agent-2' });
 
   const log: string[] = [];

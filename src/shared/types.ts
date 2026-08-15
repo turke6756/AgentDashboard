@@ -2075,6 +2075,25 @@ export interface CheckpointPreviewResult {
   validatedPaths: string[];
   rejectedPaths: string[];
   contention: { path: string; turnId: string }[];
+  overlap?: CheckpointRestoreOverlap;
+}
+
+export type CheckpointRestoreBlocker =
+  | {
+      kind: 'later-turn';
+      turnId: string;
+      turnSeq: number;
+      agentId: string | null;
+      agentTitle: string | null;
+      taskLabel: string | null;
+      status: string;
+      endedAt: number | null;
+    }
+  | { kind: 'external' };
+
+export interface CheckpointRestoreOverlap {
+  reason: 'after-snapshot-overlap' | 'after-edge-unusable';
+  files: Array<{ path: string; blockers: CheckpointRestoreBlocker[] }>;
 }
 
 /** Outcome of a restore/revert (path-scoped, partial-recoverable). A human `force`
@@ -2092,6 +2111,7 @@ export interface CheckpointRestoreResult {
   rejectedPaths: string[];
   failures: { path: string; reason: string }[];
   contention: { path: string; turnId: string }[];
+  overlap?: CheckpointRestoreOverlap;
   failureReason: string | null;
 }
 
