@@ -204,6 +204,8 @@ const TESTS = [
   'dist/main/main/git-checkpoints/checkpoint-gating.test.js',
   // Git-Native WP-G1.3b: snapshot core — full raw capture (real git) + durable finalize.
   'dist/main/main/git-checkpoints/checkpoint-service.test.js',
+  // While-you-were-away WP-P2: binary-safe, omission-honest turn-window paths.
+  'dist/main/main/git-checkpoints/window-paths.test.js',
   // Git-Native WP-G1.3c: guarded blob-write restore (real git) — byte-exact, path-scoped
   // PRE safety ref, directory-transition + symlink-ancestor guards, partial accounting.
   'dist/main/main/git-checkpoints/checkpoint-restore.test.js',

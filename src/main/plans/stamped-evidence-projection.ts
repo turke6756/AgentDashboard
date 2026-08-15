@@ -83,7 +83,7 @@ const EXPLICITLY_UNSTAMPED_SOURCES: ReadonlySet<string> = new Set([
   'unbound-manual',
 ]);
 
-function annotateStamp(turn: TurnRecord): StampedTurnAnnotation {
+export function classifyTurnPlanStamp(turn: TurnRecord): StampedTurnAnnotation {
   const source = turn.planStampSource ?? null;
   const planId = turn.planId ?? null;
   const planItemId = turn.planItemId ?? null;
@@ -120,7 +120,7 @@ export function projectLiveStampedActivity(
   return turns
     .filter((turn) => turn.status === 'open')
     .map((turn) => {
-      const stamp = annotateStamp(turn);
+      const stamp = classifyTurnPlanStamp(turn);
       const touched = witnessedTouches(turn);
       return {
         turnId: turn.id,
@@ -159,7 +159,7 @@ export function projectDurableStampedTrail(
       diffStats: turn.diffStats,
       compactDiff: turn.compactDiff,
       compactDiffProvenance: turn.compactDiffProvenance,
-      ...annotateStamp(turn),
+      ...classifyTurnPlanStamp(turn),
     }));
 
   const projectedRecovery = recoveryOperations

@@ -52,6 +52,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { TextDecoder } from 'util';
 
 import {
   BEFORE_CHECKPOINT_BUDGET_MS,
@@ -84,8 +85,10 @@ import {
 } from './checkpoint-gating';
 import {
   runGit as realRunGit,
+  runGitBytes as realRunGitBytes,
   runGitBlobToFile as realRunGitBlobToFile,
   type GitRunResult,
+  type GitRunBytesResult,
   type RunGitOptions,
   type RunGitBlobToFileOptions,
   GitCommandError,
@@ -101,6 +104,13 @@ import { resolveCheckpointPathBlob } from './concurrency-policy';
 
 /** The git-command.runGit shape (cwd, args, opts). */
 export type RunGitLike = (cwd: string, args: string[], opts: RunGitOptions) => Promise<GitRunResult>;
+
+/** Binary-preserving counterpart used by NUL-delimited Git output. */
+export type RunGitBytesLike = (
+  cwd: string,
+  args: string[],
+  opts: RunGitOptions,
+) => Promise<GitRunBytesResult>;
 
 /** The subset of the WP-A0 turn_records accessors the finalize write order needs.
  *  Defaults bind to the real database.ts exports; tests inject an in-memory fake so
@@ -188,6 +198,8 @@ export interface CheckpointServiceOptions {
   /** Resolved absolute git exe (cached `resolveInternalGit()` in production). */
   gitExe: string;
   runGit?: RunGitLike;
+  /** Binary-safe Git seam for NUL-delimited output. Never derived from `runGit`. */
+  runGitBytes?: RunGitBytesLike;
   /** Restore's binary blob-write seam — defaults to git-command.runGitBlobToFile. */
   runGitBlobToFile?: RunGitBlobToFileLike;
   store?: CheckpointTurnStore;
@@ -300,10 +312,107 @@ interface SnapshotOutcome {
   unsupportedPaths: string[];
 }
 
+export const WINDOW_PATHS_MAX_BYTES = 1 << 20;
+export const WINDOW_PATHS_TIMEOUT_MS = 15_000;
+
+export interface WindowPathList {
+  available: boolean;
+  reason:
+    | 'ok' | 'empty'
+    | 'before-edge-unusable' | 'after-edge-unusable'
+    | 'malformed' | 'non-utf8'
+    | 'cap-exhausted' | 'timeout' | 'git-failed';
+  paths: string[];
+  omittedPathCount: number | null;
+  hasOmittedPaths: boolean;
+  truncated: boolean;
+}
+
+function unavailableWindowPaths(reason: WindowPathList['reason']): WindowPathList {
+  return {
+    available: false,
+    reason,
+    paths: [],
+    omittedPathCount: null,
+    hasOmittedPaths: true,
+    truncated: false,
+  };
+}
+
+function parseWindowPathBytes(stdout: Buffer): WindowPathList {
+  if (stdout.length === 0) {
+    return {
+      available: true,
+      reason: 'empty',
+      paths: [],
+      omittedPathCount: 0,
+      hasOmittedPaths: false,
+      truncated: false,
+    };
+  }
+
+  const fields: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < stdout.length; i++) {
+    if (stdout[i] !== 0) continue;
+    fields.push(stdout.subarray(start, i));
+    start = i + 1;
+  }
+  const hasUnterminatedTail = start < stdout.length;
+
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const paths: string[] = [];
+  let omittedPathCount = 0;
+  let cursor = 0;
+  while (cursor < fields.length) {
+    const statusBytes = fields[cursor++];
+    if (statusBytes.length === 0 || statusBytes.some((byte) => byte > 0x7f)) {
+      return { ...unavailableWindowPaths('malformed'), paths };
+    }
+    const status = statusBytes.toString('ascii');
+    const pathCount = /^[AMDTUXB]$/.test(status) ? 1 : /^[RC]\d+$/.test(status) ? 2 : 0;
+    if (pathCount === 0 || cursor + pathCount > fields.length) {
+      return { ...unavailableWindowPaths('malformed'), paths };
+    }
+
+    for (let i = 0; i < pathCount; i++) {
+      const pathBytes = fields[cursor++];
+      if (pathBytes.length === 0) return { ...unavailableWindowPaths('malformed'), paths };
+      try {
+        paths.push(decoder.decode(pathBytes));
+      } catch {
+        omittedPathCount += 1;
+      }
+    }
+  }
+
+  if (hasUnterminatedTail) return { ...unavailableWindowPaths('malformed'), paths };
+
+  if (omittedPathCount > 0) {
+    return {
+      available: false,
+      reason: 'non-utf8',
+      paths,
+      omittedPathCount,
+      hasOmittedPaths: true,
+      truncated: false,
+    };
+  }
+  return {
+    available: true,
+    reason: paths.length === 0 ? 'empty' : 'ok',
+    paths,
+    omittedPathCount: 0,
+    hasOmittedPaths: false,
+    truncated: false,
+  };
+}
+
 export class CheckpointService {
   private readonly queue: CheckpointQueue;
   private readonly gitExe: string;
   private readonly runGit: RunGitLike;
+  private readonly runGitBytes: RunGitBytesLike;
   private readonly runGitBlobToFile: RunGitBlobToFileLike;
   private readonly store: CheckpointTurnStore;
   private readonly recoveryStore: CheckpointRecoveryStore;
@@ -321,6 +430,7 @@ export class CheckpointService {
     this.queue = opts.queue;
     this.gitExe = opts.gitExe;
     this.runGit = opts.runGit ?? realRunGit;
+    this.runGitBytes = opts.runGitBytes ?? realRunGitBytes;
     this.runGitBlobToFile = opts.runGitBlobToFile ?? realRunGitBlobToFile;
     this.store = opts.store ?? DEFAULT_TURN_STORE;
     this.recoveryStore = opts.recoveryStore ?? DEFAULT_RECOVERY_STORE;
@@ -810,8 +920,8 @@ export class CheckpointService {
       return { witnessed: { ...unavail, label: 'witnessed changes' }, window: { ...unavail, label: 'unattributed changes in this window' } };
     }
 
-    const beforeUsable = await this.isEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
-    const afterUsable = await this.isEdgeUsable(repoRoot, row.afterReady, row.afterRef, row.afterOid);
+    const beforeUsable = await this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
+    const afterUsable = await this.verifyEdgeUsable(repoRoot, row.afterReady, row.afterRef, row.afterOid);
 
     const witnessedLabel = 'witnessed changes';
     const windowLabel = 'unattributed changes in this window';
@@ -844,6 +954,68 @@ export class CheckpointService {
     };
   }
 
+  /**
+   * List every repo-relative path in a turn's usable before/after window. Git's
+   * NUL-delimited bytes are parsed without a text round-trip; any incomplete or
+   * undecodable result remains visibly unavailable with honest omission counts.
+   */
+  async listWindowPaths(turnId: string, repoRoot: string): Promise<WindowPathList> {
+    const row = this.store.getTurnRecord(turnId);
+    const [beforeUsable, afterUsable] = await Promise.all([
+      this.verifyEdgeUsable(
+        repoRoot,
+        row?.beforeReady ?? false,
+        row?.beforeRef ?? null,
+        row?.beforeOid ?? null,
+      ),
+      this.verifyEdgeUsable(
+        repoRoot,
+        row?.afterReady ?? false,
+        row?.afterRef ?? null,
+        row?.afterOid ?? null,
+      ),
+    ]);
+    if (!beforeUsable) return unavailableWindowPaths('before-edge-unusable');
+    if (!afterUsable) return unavailableWindowPaths('after-edge-unusable');
+
+    try {
+      const result = await this.runGitBytes(
+        repoRoot,
+        [
+          '--no-pager',
+          ...this.longpaths(),
+          'diff',
+          '--name-status',
+          '-z',
+          '--no-ext-diff',
+          '--no-textconv',
+          row!.beforeOid as string,
+          row!.afterOid as string,
+        ],
+        {
+          gitExe: this.gitExe,
+          maxBytes: WINDOW_PATHS_MAX_BYTES,
+          timeoutMs: WINDOW_PATHS_TIMEOUT_MS,
+          mode: 'read',
+        },
+      );
+      return parseWindowPathBytes(result.stdout);
+    } catch (error) {
+      if (error instanceof GitCommandError) {
+        if (error.kind === 'timeout' || error.kind === 'deadline') {
+          return unavailableWindowPaths('timeout');
+        }
+        if (error.kind === 'nonzero' && /output exceeded maxBytes/i.test(error.message)) {
+          return {
+            ...unavailableWindowPaths('cap-exhausted'),
+            truncated: true,
+          };
+        }
+      }
+      return unavailableWindowPaths('git-failed');
+    }
+  }
+
   /** `git --no-pager [--no-ext-diff --no-textconv] diff <before> <after> [-- paths]`. */
   private diff(
     repoRoot: string,
@@ -859,7 +1031,7 @@ export class CheckpointService {
 
   /** An edge is usable ONLY when ready=1 AND the stored ref lives + resolves to the
    *  stored OID right now. Never trust ready=1 alone (refs are user-mutable). */
-  private async isEdgeUsable(
+  async verifyEdgeUsable(
     repoRoot: string,
     ready: boolean,
     ref: string | null,
@@ -968,7 +1140,7 @@ export class CheckpointService {
       (entry.op === 'write' || entry.op === 'create')
       && canonicalHistoryPath(entry.path, params.repoRoot) === canonical);
     if (!witnessed || canonical === '') return null;
-    const usable = await this.isEdgeUsable(
+    const usable = await this.verifyEdgeUsable(
       params.repoRoot, row.afterReady, row.afterRef, row.afterOid,
     );
     if (!usable) return null;
@@ -1016,7 +1188,7 @@ export class CheckpointService {
     if (!repoRoot) return { ...base, reason: 'missing-repo' };
     const row = this.store.getTurnRecord(turnId);
     if (!row) return { ...base, reason: 'unknown-turn' };
-    const beforeUsable = await this.isEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
+    const beforeUsable = await this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
 
     // Compute a token for every VALIDATED (witnessed) path: current raw blob OID for
     // a present file, the ABSENT sentinel for an absent path or a directory-occupied
@@ -1079,7 +1251,7 @@ export class CheckpointService {
 
       // The before edge is the restorable source — it must LIVE-verify (a pruned
       // ref drops the whole version, never listed as restorable).
-      const beforeUsable = await this.isEdgeUsable(
+      const beforeUsable = await this.verifyEdgeUsable(
         params.repoRoot,
         row.beforeReady,
         row.beforeRef,
@@ -1087,7 +1259,7 @@ export class CheckpointService {
       );
       if (!beforeUsable) continue;
 
-      const afterUsable = await this.isEdgeUsable(
+      const afterUsable = await this.verifyEdgeUsable(
         params.repoRoot,
         row.afterReady,
         row.afterRef,
@@ -1350,7 +1522,7 @@ export class CheckpointService {
     // to the stored OID (reuse the G1.3b guard — DB ready flags are hints, not authority).
     const row = this.store.getTurnRecord(args.turnId);
     if (!row) return fail('unknown-turn');
-    const beforeUsable = await this.isEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
+    const beforeUsable = await this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid);
     if (!beforeUsable) return fail('before-edge-unusable');
     const beforeOid = row.beforeOid as string;
 
