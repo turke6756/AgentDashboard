@@ -48,6 +48,8 @@ const TOOL_MAP: Record<string, FileOperation> = {
   // Claude
   'Read': 'read',
   'Edit': 'write',
+  'MultiEdit': 'write',
+  'NotebookEdit': 'write',
   'Write': 'create',
   'Glob': 'read',
   'Grep': 'read',
@@ -557,6 +559,7 @@ function extractStructuredToolPaths(input: unknown): string[] {
   if (!input || typeof input !== 'object') return [];
   const obj = input as {
     file_path?: unknown;
+    notebook_path?: unknown;
     path?: unknown;
     file_paths?: unknown;
     paths?: unknown;
@@ -565,6 +568,7 @@ function extractStructuredToolPaths(input: unknown): string[] {
   };
   const out: string[] = [];
   if (typeof obj.file_path === 'string') out.push(obj.file_path);
+  if (typeof obj.notebook_path === 'string') out.push(obj.notebook_path);
   if (typeof obj.path === 'string') out.push(obj.path);
   if (typeof obj.target_file === 'string') out.push(obj.target_file);
   if (typeof obj.target_directory === 'string') out.push(obj.target_directory);

@@ -66,6 +66,24 @@ test('Gemini read_file with file_path emits one read', () => {
   assert.deepEqual(emitted, [{ agentId: 'agent-1', filePath: 'src/a.ts', operation: 'read' }]);
 });
 
+test('Claude MultiEdit and NotebookEdit JSONL tool calls emit witnessed writes', () => {
+  const { reader, emitted } = makeHarness();
+  reader.emit('tool-use', toolUse(
+    'MultiEdit',
+    { file_path: 'src/multi.ts', edits: [{ old_string: 'before', new_string: 'after' }] },
+    'claude-multiedit',
+  ));
+  reader.emit('tool-use', toolUse(
+    'NotebookEdit',
+    { notebook_path: 'notebooks/analysis.ipynb', cell_id: 'cell-1', new_source: 'print(1)' },
+    'claude-notebookedit',
+  ));
+  assert.deepEqual(emitted, [
+    { agentId: 'agent-1', filePath: 'src/multi.ts', operation: 'write' },
+    { agentId: 'agent-1', filePath: 'notebooks/analysis.ipynb', operation: 'write' },
+  ], 'REACHABILITY:tool-map-multiedit');
+});
+
 test('Gemini read_many_files with paths emits multiple reads', () => {
   const { reader, emitted } = makeHarness();
   reader.emit('tool-use', toolUse('read_many_files', { paths: ['a.ts', 'b.ts'] }));
