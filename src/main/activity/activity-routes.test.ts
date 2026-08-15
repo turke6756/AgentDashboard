@@ -17,7 +17,10 @@ import type {
 } from '../database';
 import type { ActivityHeartbeatSnapshot, ActivityPage, CheckpointPreviewResult } from '../../shared/types';
 import { ACTIVITY_CHANNELS } from '../../shared/types';
-import { registerCheckpointIpc } from '../git-checkpoints/checkpoint-ipc';
+import {
+  registerCheckpointIpc,
+  type HumanCheckpointRoutes,
+} from '../git-checkpoints/checkpoint-ipc';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
 const tests: TestCase[] = [];
@@ -254,16 +257,90 @@ function request(port: number, path: string, authorization: string): Promise<Htt
   });
 }
 
-function checkpointRoutes(onList?: (opts: unknown) => void): CheckpointRoutes {
+function checkpointRoutes(
+  onList?: (opts: unknown) => void,
+  onWindowPaths?: (turnId: string, repoRoot: string) => void,
+): CheckpointRoutes {
   return {
     list: (_workspaceId, opts) => { onList?.(opts); return []; },
     fileHistory: async () => [],
     diff: async () => ({ witnessed: { available: false, reason: null, label: '', text: null }, window: { available: false, reason: null, label: '', text: null } }),
     preview: async (turnId) => preview(turnId),
+    listWindowPaths: async (turnId, repoRoot) => {
+      onWindowPaths?.(turnId, repoRoot);
+      return { available: true, reason: 'ok', paths: ['src/a.ts', 'src/external.ts'],
+        omittedPathCount: 0, hasOmittedPaths: false, truncated: false };
+    },
     restorePaths: async () => { throw new Error('unused'); },
     revertTurn: async () => { throw new Error('unused'); },
   };
 }
+
+function installProductionActivitySources(): () => void {
+  const names = [
+    'snapshotActivityBounds',
+    'listActivityTurnRecordsThrough',
+    'listWorkspaceWriteActivitiesThrough',
+    'markWorkspaceActivityViewed',
+    'listCommitLinksForTurns',
+  ] as const;
+  const originals = Object.fromEntries(names.map((name) => [name, db[name]]));
+  db.snapshotActivityBounds = () => ({ throughTurnSeq: 7, throughFileActivityId: 0, capturedAt: 1_000 });
+  db.listActivityTurnRecordsThrough = () => sourcePage([turn()], 7);
+  db.listWorkspaceWriteActivitiesThrough = () => sourcePage<ActivityFileActivity>([], null);
+  db.markWorkspaceActivityViewed = () => ({ turnSeq: 7, fileActivityId: 0, viewedAt: 1_000 });
+  db.listCommitLinksForTurns = () => [];
+  return () => {
+    for (const name of names) db[name] = originals[name];
+  };
+}
+
+test('production HTTP and IPC registrars both thread listWindowPaths into activity projection', async () => {
+  const restoreSources = installProductionActivitySources();
+  const supervisor = { getContextStats: () => null, isInputInFlight: () => false } as unknown as AgentSupervisor;
+  const server = new ApiServer(supervisor, 0, undefined, '127.0.0.1');
+  let httpWindowCalls = 0;
+  server.setCheckpointRoutes(checkpointRoutes(undefined, (turnId, repoRoot) => {
+    httpWindowCalls += 1;
+    assert.deepEqual([turnId, repoRoot], ['turn-1', '/repo']);
+  }));
+
+  const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
+  let ipcWindowCalls = 0;
+  const humanRoutes = {
+    preview: async (_workspaceId: string, turnId: string) => preview(turnId),
+    listWindowPaths: async (turnId: string, repoRoot: string) => {
+      ipcWindowCalls += 1;
+      assert.deepEqual([turnId, repoRoot], ['turn-1', '/repo']);
+      return { available: true, reason: 'ok' as const, paths: ['src/a.ts', 'src/external.ts'],
+        omittedPathCount: 0, hasOmittedPaths: false, truncated: false };
+    },
+  } as unknown as HumanCheckpointRoutes;
+  registerCheckpointIpc({
+    handle: (channel, listener) => { ipcHandlers.set(channel, listener); },
+  }, () => humanRoutes);
+  restoreSources();
+
+  const port = await server.start();
+  const token = agentCapabilities.mint({ agentId: 'sup', workspaceId: 'ws', privilegeLane: 'supervisor' });
+  try {
+    const httpActivity = await request(port, '/api/activity', `Bearer ${token}`);
+    assert.equal(httpActivity.status, 200);
+    const httpPage = JSON.parse(httpActivity.body) as ActivityPage;
+    assert.equal(httpWindowCalls, 1, 'real ApiServer registration must call listWindowPaths');
+    assert.ok(httpPage.items.some((item) => item.kind === 'window-unattributed'));
+
+    const ipcPage = await ipcHandlers.get(ACTIVITY_CHANNELS.list)!(
+      {},
+      { workspaceId: 'ws', preview: 'none' },
+    ) as ActivityPage;
+    assert.equal(ipcWindowCalls, 1, 'real registerCheckpointIpc path must call listWindowPaths');
+    assert.ok(ipcPage.items.some((item) => item.kind === 'window-unattributed'));
+  } finally {
+    server.stop();
+    agentCapabilities.clear();
+  }
+});
 
 test('production ApiServer registration enters GET /api/activity and checkpoint parser forwards P1 filters', async () => {
   const supervisor = { getContextStats: () => null, isInputInFlight: () => false } as unknown as AgentSupervisor;

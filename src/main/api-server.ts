@@ -92,7 +92,13 @@ import { runOverheadScan } from './context-overhead/ipc-deps';
 import { recordDemandProbe, isDemandProbeKind, DEMAND_PROBE_ROUTE } from './telemetry/demand-probe';
 import { buildOverheadSnapshot, scrubPaths } from './context-overhead/overhead-dto';
 import type { AgentRoleLane, BehaviorEvidenceTier, ContextOptimizerProposalKind, ContextOptimizerResult, AgentKnowledgeGraph, SkillUsageResult, McpToolUsageRollupDTO, WorkspaceScopeMode, PathRole, OverheadModel } from '../shared/types';
-import type { DiffResult, RestoreOutcome, CheckpointPreviewResult, FileHistoryVersion } from './git-checkpoints/checkpoint-service';
+import type {
+  DiffResult,
+  RestoreOutcome,
+  CheckpointPreviewResult,
+  FileHistoryVersion,
+  WindowPathList,
+} from './git-checkpoints/checkpoint-service';
 import type { RequestedPlanBinding } from '../shared/commit-candidates';
 import {
   registerActivityRoutes,
@@ -464,6 +470,7 @@ export interface CheckpointRoutes {
   fileHistory(workspaceId: string, path: string, opts?: { agentId?: string }): Promise<FileHistoryVersion[]>;
   diff(turnId: string, workspaceId: string): Promise<{ witnessed: DiffResult; window: DiffResult }>;
   preview(turnId: string, workspaceId: string, requestedPaths?: string[]): Promise<CheckpointPreviewResult>;
+  listWindowPaths?(turnId: string, repoRoot: string): Promise<WindowPathList>;
   restorePaths(args: {
     turnId: string;
     workspaceId: string;
@@ -522,6 +529,10 @@ export class ApiServer {
       previewRestore: async (workspaceId, turnId) => {
         if (!this.checkpointRoutes) throw new Error('checkpoint-engine-unavailable');
         return this.checkpointRoutes.preview(turnId, workspaceId);
+      },
+      listWindowPaths: async (_workspaceId, turnId, repoRoot) => {
+        if (!this.checkpointRoutes?.listWindowPaths) throw new Error('checkpoint-engine-unavailable');
+        return this.checkpointRoutes.listWindowPaths(turnId, repoRoot);
       },
     });
   }

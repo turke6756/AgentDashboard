@@ -236,6 +236,7 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
       const cap = await requireCapability(workspaceId);
       return service.previewRestore({ turnId, workspaceId, capability: cap, requestedPaths });
     },
+    listWindowPaths: (turnId, repoRoot) => service.listWindowPaths(turnId, repoRoot),
     restorePaths: async (args) => {
       const cap = await requireCapability(args.workspaceId);
       return service.restorePaths({
@@ -323,6 +324,7 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
       return { workspaceId, turnId, witnessed: d.witnessed, window: d.window };
     },
     preview: (workspaceId, turnId, paths) => checkpointRoutes.preview(turnId, workspaceId, paths),
+    listWindowPaths: (turnId, repoRoot) => checkpointRoutes.listWindowPaths!(turnId, repoRoot),
     restore: async ({ workspaceId, turnId, paths, previewTokens, force }) => {
       const cap = await requireCapability(workspaceId);
       return service.restorePaths({

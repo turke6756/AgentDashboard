@@ -35,6 +35,7 @@ import {
   type RepoWidePurgeResult,
 } from '../../shared/types';
 import { registerActivityRoutes } from '../activity/activity-routes';
+import type { WindowPathList } from './checkpoint-service';
 
 /** The force-capable engine surface the IPC layer drives. Built by the engine
  *  bootstrap over the SAME CheckpointService + WP-G2.1 CheckpointRoutes, so the
@@ -47,6 +48,7 @@ export interface HumanCheckpointRoutes {
   fileHistory(workspaceId: string, path: string, opts?: { agentId?: string }): Promise<CheckpointFileHistoryResult>;
   diff(workspaceId: string, turnId: string): Promise<CheckpointDiffResult>;
   preview(workspaceId: string, turnId: string, paths?: string[]): Promise<CheckpointPreviewResult>;
+  listWindowPaths?(turnId: string, repoRoot: string): Promise<WindowPathList>;
   restore(args: {
     workspaceId: string;
     turnId: string;
@@ -186,6 +188,11 @@ export function registerCheckpointIpc(ipc: IpcLike, getRoutes: () => HumanCheckp
       const routes = getRoutes();
       if (!routes) throw new Error('checkpoint-engine-unavailable');
       return routes.preview(workspaceId, turnId);
+    },
+    listWindowPaths: async (_workspaceId, turnId, repoRoot) => {
+      const routes = getRoutes();
+      if (!routes?.listWindowPaths) throw new Error('checkpoint-engine-unavailable');
+      return routes.listWindowPaths(turnId, repoRoot);
     },
   });
   const activityRequest = (raw: unknown): ActivityListRequest => {
