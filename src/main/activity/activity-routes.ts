@@ -1,5 +1,6 @@
 import {
   getWorkspace,
+  getWorkspaceActivityView,
   listActivityTurnRecordsThrough,
   listCommitLinksForTurns,
   listWorkspaceWriteActivitiesThrough,
@@ -59,6 +60,7 @@ export interface ActivityRouteDeps {
     opts: Parameters<typeof listWorkspaceWriteActivitiesThrough>[1],
   ) => ActivitySourcePage<ActivityFileActivity>;
   markViewed?: typeof markWorkspaceActivityViewed;
+  getViewed?: typeof getWorkspaceActivityView;
   heartbeat?: (workspaceId: string) => ActivityHeartbeatSnapshot;
   resolveWorkspace?: (workspaceId: string) => ActivityWorkspaceContext | null;
   previewRestore?: (workspaceId: string, turnId: string) => Promise<CheckpointPreviewResult>;
@@ -119,7 +121,7 @@ function requirePositiveLimit(value: number | undefined, fallback: number, max: 
 
 export class ActivityRoutes {
   private readonly deps: Required<Pick<ActivityRouteDeps,
-    'now' | 'snapshot' | 'listTurns' | 'listFileActivities' | 'markViewed' | 'heartbeat'
+    'now' | 'snapshot' | 'listTurns' | 'listFileActivities' | 'markViewed' | 'getViewed' | 'heartbeat'
     | 'resolveWorkspace' | 'listCommitLinks'>> & ActivityRouteDeps;
   private generations = new Map<string, number>();
 
@@ -131,6 +133,7 @@ export class ActivityRoutes {
       listTurns: deps.listTurns ?? listActivityTurnRecordsThrough,
       listFileActivities: deps.listFileActivities ?? listWorkspaceWriteActivitiesThrough,
       markViewed: deps.markViewed ?? markWorkspaceActivityViewed,
+      getViewed: deps.getViewed ?? getWorkspaceActivityView,
       heartbeat: deps.heartbeat ?? ((workspaceId) => captureHealthManager.snapshot(workspaceId)),
       resolveWorkspace: deps.resolveWorkspace ?? ((workspaceId) => {
         const workspace = getWorkspace(workspaceId);
@@ -188,7 +191,11 @@ export class ActivityRoutes {
 
   async digest(request: ActivityListRequest): Promise<ActivityDigest> {
     const page = await this.buildPage({ ...request, preview: 'sync' });
-    const since = request.since;
+    const viewed = request.since ? null : this.deps.getViewed(request.workspaceId);
+    const since = request.since ?? (viewed ? {
+      turnSeq: viewed.turnSeq,
+      fileActivityId: viewed.fileActivityId,
+    } : undefined);
     let sinceCounts = page.pageCounts;
     if (since) {
       const context = this.requireWorkspaceContext(request.workspaceId);

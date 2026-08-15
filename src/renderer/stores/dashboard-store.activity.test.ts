@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActivityDigest, ActivityPage } from '../../shared/types';
 import { useDashboardStore } from './dashboard-store';
 
-function page(): ActivityPage {
+function page(overrides: Partial<ActivityPage> = {}): ActivityPage {
   return {
     workspaceId: 'ws', items: [],
     cursor: { snapshot: { throughTurnSeq: 8, throughFileActivityId: 13, capturedAt: 100 }, nextOlder: null },
@@ -11,6 +11,7 @@ function page(): ActivityPage {
       blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' },
     },
     scans: { turns: { scanned: 8, emitted: 8, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 50 } },
+    ...overrides,
   };
 }
 
@@ -31,17 +32,61 @@ beforeEach(() => {
 
 describe('dashboard activity store', () => {
   it('preserves pre-view return counts and marks the exact displayed snapshot viewed', async () => {
+    const calls: string[] = [];
     const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 8, fileActivityId: 13, viewedAt: 101 }));
     (globalThis as unknown as { window: unknown }).window = {
       api: { activity: {
-        digest: vi.fn(async () => ({ page: page(), sinceCounts: page().pageCounts, heartbeat })),
-        list: vi.fn(async () => page()), markViewed,
+        digest: vi.fn(async () => { calls.push('digest'); return { page: page(), sinceCounts: page().pageCounts, heartbeat }; }),
+        list: vi.fn(async () => { calls.push('list'); return page(); }),
+        markViewed: async (...args: Parameters<typeof markViewed>) => { calls.push('markViewed'); return markViewed(...args); },
       } },
     };
     await useDashboardStore.getState().loadActivity('ws', {}, true);
     expect(useDashboardStore.getState().activityReturnCounts?.turnCount).toBe(8);
     expect(markViewed).toHaveBeenCalledWith({ workspaceId: 'ws', snapshot: page().cursor.snapshot });
     expect(useDashboardStore.getState().activityLastViewed?.viewedAt).toBe(101);
+    expect(calls).toEqual(['digest', 'list', 'markViewed']);
+  });
+
+  it('passes the previously read watermark into digest before advancing it', async () => {
+    useDashboardStore.setState({ activityLastViewed: { workspaceId: 'ws', turnSeq: 8, fileActivityId: 13, viewedAt: 101 } });
+    const digest = vi.fn(async () => ({ page: page(), sinceCounts: { ...page().pageCounts, turnCount: 0, fileCount: 0 }, heartbeat }));
+    const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 8, fileActivityId: 13, viewedAt: 102 }));
+    (globalThis as unknown as { window: unknown }).window = {
+      api: { activity: { digest, list: vi.fn(async () => page()), markViewed } },
+    };
+    await useDashboardStore.getState().loadActivity('ws', {}, true);
+    expect(digest).toHaveBeenCalledWith(expect.objectContaining({
+      since: { turnSeq: 8, fileActivityId: 13 },
+    }));
+    expect(useDashboardStore.getState().activityReturnCounts?.turnCount).toBe(0);
+  });
+
+  it('reaches older pages with the original snapshot and independent source cursors', async () => {
+    const nextOlder = {
+      turns: { before: 8, exhausted: false },
+      fileActivities: { before: 13, exhausted: false },
+    };
+    const first = page({
+      items: [{ kind: 'tool-unjoined', id: 'tool:a:13:13', agentId: 'a', agentTitle: 'Agent', fileActivityIds: [13], paths: [], startedAt: 1, endedAt: 2 }],
+      cursor: { ...page().cursor, nextOlder },
+    });
+    const older = page({
+      items: [{ kind: 'tool-unjoined', id: 'tool:a:3:3', agentId: 'a', agentTitle: 'Agent', fileActivityIds: [3], paths: [], startedAt: 1, endedAt: 2 }],
+      cursor: { ...page().cursor, nextOlder: null },
+    });
+    const list = vi.fn(async () => older);
+    useDashboardStore.setState({ activityPage: first });
+    (globalThis as unknown as { window: unknown }).window = { api: { activity: { list } } };
+    await useDashboardStore.getState().loadOlderActivity('ws');
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: first.cursor.snapshot,
+      before: nextOlder,
+      preview: 'none',
+    }));
+    expect(useDashboardStore.getState().activityPage?.items.map((item) => item.kind === 'turn' ? item.turnId : item.id))
+      .toEqual(['tool:a:13:13', 'tool:a:3:3']);
+    expect(useDashboardStore.getState().activityPage?.cursor.nextOlder).toBeNull();
   });
 
   it('primes cards and shield without advancing last-viewed', async () => {

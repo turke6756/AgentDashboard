@@ -77,14 +77,17 @@ function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActi
   );
 }
 
-function OtherRow({ item }: { item: Exclude<ActivityItem, TurnActivityRow | { kind: 'plan-group' }> }): React.ReactElement {
+export function OtherRow({ item }: { item: Exclude<ActivityItem, TurnActivityRow | { kind: 'plan-group' }> }): React.ReactElement {
   const external = item.kind === 'window-unattributed';
   const paths = item.paths;
   return (
     <article className="ui-card p-3">
-      <div className="text-[10px] uppercase tracking-wider text-gray-500">{external ? 'External or script change' : 'Agent edit'}</div>
+      <div className="text-[10px] uppercase tracking-wider text-gray-500">{external ? 'External or script change' : 'Tool or script activity outside a recorded turn'}</div>
       <div className="mt-1 text-[12px] text-gray-300">{paths.length} changed {paths.length === 1 ? 'file' : 'files'}</div>
       <div className="mt-2 flex flex-wrap gap-1">{paths.map((path) => <span key={path.repoPath} className="rounded bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-mono text-gray-500">{path.displayPath}</span>)}</div>
+      {external && item.hasOmittedPaths && (
+        <p className="mt-2 text-[11px] text-accent-orange">Additional changed paths cannot be displayed.</p>
+      )}
     </article>
   );
 }
@@ -97,6 +100,7 @@ export default function ActivityTab(): React.ReactElement {
   const loading = useDashboardStore((state) => state.activityLoading);
   const error = useDashboardStore((state) => state.activityError);
   const loadActivity = useDashboardStore((state) => state.loadActivity);
+  const loadOlderActivity = useDashboardStore((state) => state.loadOlderActivity);
   const showActivity = useDashboardStore((state) => state.showActivity);
   const [undoRow, setUndoRow] = useState<TurnActivityRow | null>(null);
 
@@ -119,14 +123,20 @@ export default function ActivityTab(): React.ReactElement {
         </div>
         {newCount > 0 && <div role="status" className="mb-4 rounded border border-accent-blue/30 bg-accent-blue/10 p-3 text-[12px] text-accent-blue">{newCount} new activity {newCount === 1 ? 'item' : 'items'} since you last viewed this workspace</div>}
         {error && <div role="alert" className="mb-4 text-[12px] text-accent-red">Activity unavailable: {error}</div>}
-        {loading && items.length === 0 ? <div className="text-gray-500">Loading activity…</div> : items.length === 0 ? <div className="ui-card p-6 text-center text-gray-500">No activity observed yet.</div> : (
+        {loading && items.length === 0 ? <div className="text-gray-500">Loading activity…</div> : (
           <div className="space-y-2">
+            {items.length === 0 && <div className="ui-card p-6 text-center text-gray-500">No activity observed on this page.</div>}
             {items.map((item) => item.kind === 'turn' ? <TurnRow key={item.turnId} row={item} onUndo={setUndoRow} /> : item.kind === 'plan-group' ? (
-              <section key={`plan:${item.planId}`} className="space-y-2">
+              <section key={`plan:${item.planId}:${item.latestTurnSeq}`} className="space-y-2">
                 <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
                 {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={setUndoRow} />)}
               </section>
             ) : <OtherRow key={item.id} item={item} />)}
+            {page?.cursor.nextOlder && (
+              <button type="button" className="ui-btn ui-btn-ghost mx-auto flex text-[11px]" disabled={loading} onClick={() => void loadOlderActivity(workspaceId)}>
+                {loading ? 'Loading older activity...' : 'Load older activity'}
+              </button>
+            )}
           </div>
         )}
       </div>

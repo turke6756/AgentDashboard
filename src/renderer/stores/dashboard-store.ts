@@ -267,6 +267,7 @@ interface DashboardState {
   lastHeartbeatOkAt: number | null;
   activityDegradedStreak: number;
   loadActivity: (workspaceId: string, filter?: ActivityFilter, markViewed?: boolean) => Promise<void>;
+  loadOlderActivity: (workspaceId: string) => Promise<void>;
   pollActivityHeartbeat: (workspaceId: string) => Promise<void>;
   subscribeActivity: (workspaceId: string) => () => void;
 
@@ -1508,7 +1509,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   loadActivity: async (workspaceId, filter = get().activityFilter, markViewed = true) => {
     set({ activityLoading: true, activityError: null, activityFilter: filter });
     try {
-      const request = { workspaceId, ...filter, limit: 50, fileActivityLimit: 50 };
+      const lastViewed = get().activityLastViewed;
+      const request = {
+        workspaceId,
+        ...filter,
+        limit: 50,
+        fileActivityLimit: 200,
+        ...(lastViewed?.workspaceId === workspaceId ? {
+          since: { turnSeq: lastViewed.turnSeq, fileActivityId: lastViewed.fileActivityId },
+        } : {}),
+      };
       const digest: ActivityDigest = await window.api.activity.digest(request);
       if (get().selectedWorkspaceId !== workspaceId) return;
       set({
@@ -1525,6 +1535,41 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         const viewed = await window.api.activity.markViewed({ workspaceId, snapshot: livePage.cursor.snapshot });
         if (get().selectedWorkspaceId === workspaceId) set({ activityLastViewed: viewed });
       }
+    } catch (error) {
+      if (get().selectedWorkspaceId === workspaceId) {
+        set({ activityError: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
+    }
+  },
+
+  loadOlderActivity: async (workspaceId) => {
+    const current = get().activityPage;
+    const before = current?.cursor.nextOlder;
+    if (!current || !before || current.workspaceId !== workspaceId || get().activityLoading) return;
+    set({ activityLoading: true, activityError: null });
+    try {
+      const older = await window.api.activity.list({
+        workspaceId,
+        ...get().activityFilter,
+        preview: 'none',
+        snapshot: current.cursor.snapshot,
+        before,
+        limit: 50,
+        fileActivityLimit: 200,
+      });
+      if (get().selectedWorkspaceId !== workspaceId) return;
+      set((state) => state.activityPage?.cursor.snapshot.capturedAt === current.cursor.snapshot.capturedAt
+        ? {
+            activityPage: {
+              ...state.activityPage,
+              items: [...state.activityPage.items, ...older.items],
+              cursor: older.cursor,
+              scans: older.scans,
+            },
+          }
+        : {});
     } catch (error) {
       if (get().selectedWorkspaceId === workspaceId) {
         set({ activityError: error instanceof Error ? error.message : String(error) });

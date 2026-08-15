@@ -74,6 +74,7 @@ function makeRoutes(overrides: ActivityRouteDeps = {}): ActivityRoutes {
     snapshot: () => ({ throughTurnSeq: 7, throughFileActivityId: 0, capturedAt: 1_000 }),
     listTurns: () => sourcePage([turn()], 7),
     listFileActivities: () => sourcePage<ActivityFileActivity>([], null),
+    getViewed: () => ({ turnSeq: 0, fileActivityId: 0, viewedAt: null }),
     markViewed: (workspaceId, snapshot, viewedAt) => ({
       turnSeq: snapshot.throughTurnSeq,
       fileActivityId: snapshot.throughFileActivityId,
@@ -84,6 +85,16 @@ function makeRoutes(overrides: ActivityRouteDeps = {}): ActivityRoutes {
     ...overrides,
   });
 }
+
+test('B2 digest reads the durable pre-view watermark so a revisit with no new work has zero return counts', async () => {
+  const routes = makeRoutes({
+    getViewed: () => ({ turnSeq: 7, fileActivityId: 0, viewedAt: 900 }),
+  });
+  const digest = await routes.digest({ workspaceId: 'ws' });
+  assert.equal(digest.page.pageCounts.turnCount, 1, 'the historical page still contains the turn');
+  assert.equal(digest.sinceCounts.turnCount, 0, 'the historical page must not be relabeled as new');
+  assert.equal(digest.sinceCounts.fileCount, 0);
+});
 
 function flatTurns(page: ActivityPage) {
   return page.items.flatMap((item) => item.kind === 'turn' ? [item]
