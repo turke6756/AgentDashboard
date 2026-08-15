@@ -94,6 +94,11 @@ import { buildOverheadSnapshot, scrubPaths } from './context-overhead/overhead-d
 import type { AgentRoleLane, BehaviorEvidenceTier, ContextOptimizerProposalKind, ContextOptimizerResult, AgentKnowledgeGraph, SkillUsageResult, McpToolUsageRollupDTO, WorkspaceScopeMode, PathRole, OverheadModel } from '../shared/types';
 import type { DiffResult, RestoreOutcome, CheckpointPreviewResult, FileHistoryVersion } from './git-checkpoints/checkpoint-service';
 import type { RequestedPlanBinding } from '../shared/commit-candidates';
+import {
+  registerActivityRoutes,
+  type ActivityRoutes,
+} from './activity/activity-routes';
+import type { ActivityBefore, ActivityListRequest, ActivitySnapshot } from '../shared/types';
 import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import {
@@ -441,7 +446,17 @@ export interface TurnCheckpointSummary {
 export interface CheckpointRoutes {
   list(
     workspaceId: string,
-    opts?: { agentId?: string; since?: number; sinceTime?: number; limit?: number; file?: string },
+    opts?: {
+      agentId?: string;
+      since?: number;
+      sinceTime?: number;
+      until?: number;
+      planId?: string;
+      planItemId?: string;
+      eligibleOnly?: boolean;
+      limit?: number;
+      file?: string;
+    },
   ): Promise<TurnCheckpointSummary[]> | TurnCheckpointSummary[];
   /** WP-G3.1 — versions of ONE canonical path across retained, live-verified turns.
    *  Only edges with a live-verified before-ref are returned (a pruned edge is never
@@ -480,6 +495,7 @@ export class ApiServer {
   private server: http.Server | null = null;
   private supervisor: AgentSupervisor;
   private port: number;
+  private activityRoutes: ActivityRoutes;
 
   /** Context-brick Inc 4 (4.4) — injectable awaiting-human predicate for the
    *  continuation-relaunch gate. Conservative stub: defaults to false so the
@@ -502,6 +518,12 @@ export class ApiServer {
   ) {
     this.supervisor = supervisor;
     this.port = port;
+    this.activityRoutes = registerActivityRoutes({
+      previewRestore: async (workspaceId, turnId) => {
+        if (!this.checkpointRoutes) throw new Error('checkpoint-engine-unavailable');
+        return this.checkpointRoutes.preview(turnId, workspaceId);
+      },
+    });
   }
 
   /** Late injection for the WP2 browser-tool provider. Production must use
@@ -529,6 +551,11 @@ export class ApiServer {
   private checkpointRoutes?: CheckpointRoutes;
   setCheckpointRoutes(routes: CheckpointRoutes): void {
     this.checkpointRoutes = routes;
+  }
+
+  /** Test/alternate composition seam; production uses registerActivityRoutes above. */
+  setActivityRoutes(routes: ActivityRoutes): void {
+    this.activityRoutes = routes;
   }
 
   private requireBrowserTools(): BrowserToolProvider {
@@ -1089,6 +1116,34 @@ export class ApiServer {
     throw Object.assign(new Error(`Unknown checkpoint route: ${method} ${path}`), { statusCode: 404 });
   }
 
+  private async routeActivity(
+    method: string,
+    url: URL,
+    req: http.IncomingMessage,
+    capability: CapabilityClaim | undefined,
+  ): Promise<any> {
+    const { workspaceId } = this.authorizeCheckpoint(req, capability, url);
+    const path = url.pathname;
+    if (method === 'GET' && path === '/api/activity') {
+      return this.activityRoutes.list(parseActivityListRequest(url, workspaceId, 'none'));
+    }
+    if (method === 'GET' && path === '/api/activity/digest') {
+      return this.activityRoutes.digest(parseActivityListRequest(url, workspaceId, 'sync'));
+    }
+    if (method === 'GET' && path === '/api/activity/heartbeat') {
+      return this.activityRoutes.heartbeat(workspaceId);
+    }
+    if (path === '/api/activity/viewed') {
+      if (method !== 'POST') throw methodNotAllowed();
+      const body = parseJsonBody(await readBody(req));
+      return this.activityRoutes.markViewed({
+        workspaceId,
+        snapshot: parseActivitySnapshot(body.snapshot),
+      });
+    }
+    throw Object.assign(new Error(`Unknown activity route: ${method} ${path}`), { statusCode: 404 });
+  }
+
   /** Planning-surface focus auto-subscribe: when the caller resolves to an
    *  asserted supervisor (validated X-Supervisor-Id → identity.supervisorId), record
    *  a supervisor_focus row so the plan resurfaces in its get_my_context orientation
@@ -1261,6 +1316,9 @@ export class ApiServer {
     // the global bearer untouched.
     if (path === '/api/checkpoints' || path.startsWith('/api/checkpoints/')) {
       return this.routeCheckpoints(method, url, req, capability);
+    }
+    if (path === '/api/activity' || path.startsWith('/api/activity/')) {
+      return this.routeActivity(method, url, req, capability);
     }
 
     // GET /api/workspaces — discovery list (WP1.1, plans/cross-workspace-collaboration.md).
@@ -4062,6 +4120,97 @@ function parseStringArray(v: unknown): string[] | undefined {
   return v as string[];
 }
 
+function parseActivitySnapshot(raw: unknown): ActivitySnapshot {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw Object.assign(new Error('`snapshot` must be an object'), {
+      statusCode: 400,
+      code: 'activity-bad-request',
+    });
+  }
+  const value = raw as Record<string, unknown>;
+  for (const key of ['throughTurnSeq', 'throughFileActivityId', 'capturedAt'] as const) {
+    if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) {
+      throw Object.assign(new Error(`snapshot.${key} must be a non-negative safe integer`), {
+        statusCode: 400,
+        code: 'activity-bad-request',
+      });
+    }
+  }
+  return {
+    throughTurnSeq: Number(value.throughTurnSeq),
+    throughFileActivityId: Number(value.throughFileActivityId),
+    capturedAt: Number(value.capturedAt),
+  };
+}
+
+function parseActivityListRequest(
+  url: URL,
+  workspaceId: string,
+  preview: 'none' | 'sync',
+): ActivityListRequest {
+  const bad = (message: string): never => {
+    throw Object.assign(new Error(message), { statusCode: 400, code: 'activity-bad-request' });
+  };
+  const integer = (name: string, max?: number): number | undefined => {
+    const raw = url.searchParams.get(name);
+    if (raw === null || raw === '') return undefined;
+    if (!/^\d+$/.test(raw)) return bad(`\`${name}\` must be a non-negative integer`);
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || (max !== undefined && value > max)) {
+      return bad(`\`${name}\` is outside the supported range`);
+    }
+    return value;
+  };
+  const boolean = (name: string): boolean | undefined => {
+    const raw = url.searchParams.get(name);
+    if (raw === null || raw === '') return undefined;
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    return bad(`\`${name}\` must be true or false`);
+  };
+  const snapshotTurn = integer('throughTurnSeq');
+  const snapshotFa = integer('throughFileActivityId');
+  const capturedAt = integer('capturedAt');
+  const snapshotParts = [snapshotTurn, snapshotFa, capturedAt].filter((v) => v !== undefined).length;
+  if (snapshotParts !== 0 && snapshotParts !== 3) bad('snapshot query fields must be supplied together');
+  const beforeTurn = integer('beforeTurnSeq');
+  const beforeFa = integer('beforeFileActivityId');
+  const turnsExhausted = boolean('turnsExhausted');
+  const fasExhausted = boolean('fileActivitiesExhausted');
+  const hasBefore = beforeTurn !== undefined || beforeFa !== undefined
+    || turnsExhausted !== undefined || fasExhausted !== undefined;
+  const before: ActivityBefore | undefined = hasBefore ? {
+    turns: { before: beforeTurn ?? null, exhausted: turnsExhausted ?? false },
+    fileActivities: { before: beforeFa ?? null, exhausted: fasExhausted ?? false },
+  } : undefined;
+  const sinceTurn = integer('sinceTurnSeq');
+  const sinceFa = integer('sinceFileActivityId');
+  if ((sinceTurn === undefined) !== (sinceFa === undefined)) {
+    bad('sinceTurnSeq and sinceFileActivityId must be supplied together');
+  }
+  return {
+    workspaceId,
+    preview,
+    limit: integer('limit', 200),
+    fileActivityLimit: integer('fileActivityLimit', 10_000),
+    agentId: url.searchParams.get('agentId') || undefined,
+    planId: url.searchParams.get('planId') || undefined,
+    planItemId: url.searchParams.get('planItemId') || undefined,
+    eligibleOnly: boolean('eligibleOnly'),
+    ...(snapshotParts === 3 ? {
+      snapshot: {
+        throughTurnSeq: snapshotTurn!,
+        throughFileActivityId: snapshotFa!,
+        capturedAt: capturedAt!,
+      },
+    } : {}),
+    ...(before ? { before } : {}),
+    ...(sinceTurn !== undefined && sinceFa !== undefined
+      ? { since: { turnSeq: sinceTurn, fileActivityId: sinceFa } }
+      : {}),
+  };
+}
+
 /** Checkpoint Surface Hardening WP4 — parse + validate the `GET /api/checkpoints`
  *  list filters from the query string. Every invalid value is a hard 400
  *  (`checkpoint-bad-request`) — NO silent clamp. `file` is normalized to the same
@@ -4072,10 +4221,30 @@ function parseStringArray(v: unknown): string[] | undefined {
 function parseListCheckpointsOpts(
   url: URL,
   workspaceRoot: string | undefined,
-): { agentId?: string; since?: number; sinceTime?: number; limit?: number; file?: string } {
+): {
+  agentId?: string;
+  since?: number;
+  sinceTime?: number;
+  until?: number;
+  planId?: string;
+  planItemId?: string;
+  eligibleOnly?: boolean;
+  limit?: number;
+  file?: string;
+} {
   const bad = (msg: string): Error & { statusCode: number; code: string } =>
     Object.assign(new Error(msg), { statusCode: 400, code: 'checkpoint-bad-request' });
-  const opts: { agentId?: string; since?: number; sinceTime?: number; limit?: number; file?: string } = {};
+  const opts: {
+    agentId?: string;
+    since?: number;
+    sinceTime?: number;
+    until?: number;
+    planId?: string;
+    planItemId?: string;
+    eligibleOnly?: boolean;
+    limit?: number;
+    file?: string;
+  } = {};
 
   const agentId = url.searchParams.get('agentId') || undefined;
   if (agentId) opts.agentId = agentId;
@@ -4099,6 +4268,33 @@ function parseListCheckpointsOpts(
     const t = sinceRaw.trim();
     if (!/^-?\d+$/.test(t)) throw bad('`since` must be an integer turn_seq cursor');
     opts.since = Number(t);
+  }
+
+  const untilRaw = url.searchParams.get('until');
+  if (untilRaw !== null && untilRaw.trim() !== '') {
+    const t = untilRaw.trim();
+    if (!/^\d+$/.test(t)) throw bad('`until` must be a non-negative integer turn_seq ceiling');
+    const until = Number(t);
+    if (!Number.isSafeInteger(until)) throw bad('`until` must be a safe integer turn_seq ceiling');
+    opts.until = until;
+  }
+
+  const planId = url.searchParams.get('planId');
+  if (planId !== null) {
+    if (planId.trim() === '') throw bad('`planId` must be non-empty');
+    opts.planId = planId.trim();
+  }
+  const planItemId = url.searchParams.get('planItemId');
+  if (planItemId !== null) {
+    if (planItemId.trim() === '') throw bad('`planItemId` must be non-empty');
+    opts.planItemId = planItemId.trim();
+  }
+  const eligibleOnly = url.searchParams.get('eligibleOnly');
+  if (eligibleOnly !== null) {
+    if (eligibleOnly !== 'true' && eligibleOnly !== 'false') {
+      throw bad('`eligibleOnly` must be true or false');
+    }
+    opts.eligibleOnly = eligibleOnly === 'true';
   }
 
   // sinceTime: epoch-ms integer OR an ISO-8601 timestamp → epoch-ms. Unparseable → 400.

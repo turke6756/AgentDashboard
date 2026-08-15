@@ -19,7 +19,10 @@
 // of the coordinator's live `currentOpenTurnId`/`currentWitnessTarget` state).
 
 import {
+  ACTIVITY_CHANNELS,
   CHECKPOINT_CHANNELS,
+  type ActivityListRequest,
+  type ActivityMarkViewedRequest,
   type CheckpointDiffResult,
   type CheckpointFileHistoryResult,
   type CheckpointListResult,
@@ -31,6 +34,7 @@ import {
   type GitInitResult,
   type RepoWidePurgeResult,
 } from '../../shared/types';
+import { registerActivityRoutes } from '../activity/activity-routes';
 
 /** The force-capable engine surface the IPC layer drives. Built by the engine
  *  bootstrap over the SAME CheckpointService + WP-G2.1 CheckpointRoutes, so the
@@ -177,6 +181,42 @@ async function activeTurnContention(
 }
 
 export function registerCheckpointIpc(ipc: IpcLike, getRoutes: () => HumanCheckpointRoutes | null): void {
+  const activity = registerActivityRoutes({
+    previewRestore: async (workspaceId, turnId) => {
+      const routes = getRoutes();
+      if (!routes) throw new Error('checkpoint-engine-unavailable');
+      return routes.preview(workspaceId, turnId);
+    },
+  });
+  const activityRequest = (raw: unknown): ActivityListRequest => {
+    const request = (raw ?? {}) as Partial<ActivityListRequest>;
+    return { ...request, workspaceId: requireWorkspaceId(request.workspaceId) } as ActivityListRequest;
+  };
+  const push = (event: unknown) => {
+    const sender = (event as { sender?: { send?: (channel: string, payload: unknown) => void } } | null)?.sender;
+    return sender?.send
+      ? (message: import('../activity/activity-routes').ActivityPushEvent) => {
+          sender.send!(message.channel, message.payload);
+        }
+      : undefined;
+  };
+
+  ipc.handle(ACTIVITY_CHANNELS.list, async (event, raw: unknown) => {
+    const request = activityRequest(raw);
+    return activity.list({ ...request, preview: request.preview ?? 'none' }, push(event));
+  });
+  ipc.handle(ACTIVITY_CHANNELS.digest, async (_event, raw: unknown) =>
+    activity.digest({ ...activityRequest(raw), preview: 'sync' }));
+  ipc.handle(ACTIVITY_CHANNELS.heartbeat, async (_event, workspaceId: unknown) =>
+    activity.heartbeat(requireWorkspaceId(workspaceId)));
+  ipc.handle(ACTIVITY_CHANNELS.markViewed, async (_event, raw: unknown) => {
+    const request = (raw ?? {}) as Partial<ActivityMarkViewedRequest>;
+    return activity.markViewed({
+      workspaceId: requireWorkspaceId(request.workspaceId),
+      snapshot: request.snapshot as ActivityMarkViewedRequest['snapshot'],
+    });
+  });
+
   ipc.handle(CHECKPOINT_CHANNELS.list, async (_e, workspaceId: unknown, opts: unknown) => {
     const routes = requireRoutes(getRoutes());
     const wsId = requireWorkspaceId(workspaceId);

@@ -2225,6 +2225,139 @@ export type ActivityItem =
   | ToolUnjoinedRow
   | WindowUnattributedRow;
 
+export interface ActivitySnapshot {
+  throughTurnSeq: number;
+  throughFileActivityId: number;
+  capturedAt: number;
+}
+
+export interface ActivitySourceBefore {
+  /** Null only for the first scan of this source. */
+  before: number | null;
+  exhausted: boolean;
+}
+
+export interface ActivityBefore {
+  turns: ActivitySourceBefore;
+  fileActivities: ActivitySourceBefore;
+}
+
+export interface ActivityScanStats {
+  scanned: number;
+  emitted: number;
+  exhausted: boolean;
+  limit: number;
+  outsideWorkspaceCount?: number;
+}
+
+export interface ActivityPageCursor {
+  snapshot: ActivitySnapshot;
+  nextOlder: ActivityBefore | null;
+}
+
+export type ActivityPreviewMode = 'none' | 'sync';
+
+export interface ActivityListRequest {
+  workspaceId: string;
+  preview?: ActivityPreviewMode;
+  snapshot?: ActivitySnapshot;
+  before?: ActivityBefore;
+  limit?: number;
+  fileActivityLimit?: number;
+  agentId?: string;
+  planId?: string;
+  planItemId?: string;
+  eligibleOnly?: boolean;
+  /** Independent new-since watermarks; neither is derived from emitted rows. */
+  since?: { turnSeq: number; fileActivityId: number };
+}
+
+export interface ActivityPage {
+  workspaceId: string;
+  items: ActivityItem[];
+  cursor: ActivityPageCursor;
+  pageCounts: ActivityCounts;
+  scans: {
+    turns: ActivityScanStats;
+    fileActivities: ActivityScanStats;
+  };
+}
+
+export interface ActivityHeartbeatSnapshot {
+  serverState: 'starting' | 'capture-in-progress' | 'protected' | 'idle-but-healthy'
+    | 'silently-wedged' | 'degraded-visible';
+  serverNow: number;
+  engine: 'absent' | 'bootstrapping' | 'present' | 'failed';
+  engineChangedAt: number;
+  capabilityOk: boolean;
+  capabilityProbedAt: number | null;
+  lastSubsystemBeatAt: number | null;
+  attempts: {
+    oldestPendingAt: number | null;
+    pendingCount: number;
+    overduePendingCount: number;
+    openedCount: number;
+    orphanedOpenedCount: number;
+    latestOutcome: {
+      id: string;
+      workspaceId: string;
+      agentId: string;
+      turnId: string | null;
+      status: 'pending' | 'opened' | 'completed' | 'skipped' | 'failed';
+      reason: string | null;
+      createdAt: number;
+      updatedAt: number;
+      openedAt: number | null;
+      beforeResult: 'unknown' | 'ready' | 'non-ready';
+    } | null;
+  };
+  activeTurns: {
+    openTurnCount: number;
+    verifiedBeforeCount: number;
+    awaitingVerificationCount: number;
+    failedBeforeCount: number;
+    oldestAwaitingSince: number | null;
+  };
+  latestClosedAfterVerification: {
+    turnId: string;
+    turnSeq: number;
+    verifiedAt: number;
+    live: boolean;
+  } | null;
+  reason: string | null;
+}
+
+export interface ActivityDigest {
+  page: ActivityPage;
+  sinceCounts: ActivityCounts;
+  totalCounts?: ActivityCounts;
+  heartbeat: ActivityHeartbeatSnapshot;
+}
+
+export interface ActivityMarkViewedRequest {
+  workspaceId: string;
+  snapshot: ActivitySnapshot;
+}
+
+export interface ActivityViewedResult {
+  workspaceId: string;
+  turnSeq: number;
+  fileActivityId: number;
+  viewedAt: number | null;
+}
+
+export interface ActivityUndoUpdatedEvent {
+  workspaceId: string;
+  turnId: string;
+  undo: ActivityUndoSafety;
+}
+
+export interface ActivityPageCountsEvent {
+  workspaceId: string;
+  snapshot: ActivitySnapshot;
+  pageCounts: ActivityCounts;
+}
+
 /** Renderer → main restore request. `force` (stale-preview override) is IPC-ONLY
  *  and only honored when no active turn witnesses a requested path. */
 export interface CheckpointRestoreRequest {
@@ -3059,6 +3192,16 @@ export const CHECKPOINT_CHANNELS = {
   prune: 'checkpoint:prune',
   pruneRepoWidePlan: 'checkpoint:pruneRepoWidePlan',
   pruneRepoWide: 'checkpoint:pruneRepoWide',
+} as const;
+
+/** Activity query channels plus the two asynchronous preview-walker events. */
+export const ACTIVITY_CHANNELS = {
+  list: 'activity:list',
+  digest: 'activity:digest',
+  heartbeat: 'activity:heartbeat',
+  markViewed: 'activity:markViewed',
+  undoUpdated: 'activity:undo-updated',
+  pageCounts: 'activity:page-counts',
 } as const;
 
 /** WP-G3.5 — outcome of the workspace-scoped prune: both encoded namespaces
