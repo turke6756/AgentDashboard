@@ -3677,40 +3677,49 @@ export function getPlanByWorkspacePath(workspaceId: string, planPath: string): P
   return row ? rowToPlan(row) : null;
 }
 
-/** Independent plan authorship and focus facts for the workspace. */
+/** Formal plan ownership destinations for the workspace's agent cards. */
 export function getAgentPlanBadgeSummary(workspaceId: string): Record<string, AgentPlanBadge> {
   const summary: Record<string, AgentPlanBadge> = {};
-  const ensure = (agentId: string): AgentPlanBadge => {
-    const existing = summary[agentId];
-    if (existing) return existing;
-    const created: AgentPlanBadge = { authored: [], carrying: [] };
-    summary[agentId] = created;
-    return created;
-  };
-
-  for (const row of queryAll(
-    `SELECT DISTINCT f.supervisor_id AS agent_id, p.artifact_id AS plan_artifact_id
-       FROM supervisor_focus f
-       JOIN plans p ON p.id = f.plan_id
-      WHERE p.workspace_id = ? AND p.deleted_at IS NULL AND p.artifact_id IS NOT NULL
-      ORDER BY f.supervisor_id, p.artifact_id`,
-    [workspaceId],
-  )) {
-    ensure(String(row.agent_id)).carrying.push(String(row.plan_artifact_id));
-  }
-
-  for (const row of queryAll(
-    `SELECT DISTINCT pr.author_agent_id AS agent_id, p.artifact_id AS plan_artifact_id
+  const byAgentArtifact = new Map<string, Map<string, AgentPlanBadge[number]>>();
+  const rows = queryAll(
+    `SELECT p.responsible_supervisor_id AS agent_id,
+            p.id AS plan_id, p.artifact_id AS plan_artifact_id,
+            COALESCE(pr.title, p.slug, p.artifact_id) AS title,
+            pr.path AS proposal_path, pr.artifact_id AS proposal_artifact_id
        FROM plans p
-       JOIN proposals pr
+       LEFT JOIN proposals pr
          ON pr.workspace_id = p.workspace_id
         AND pr.id = p.source_proposal_id
+        AND pr.deleted_at IS NULL
       WHERE p.workspace_id = ? AND p.deleted_at IS NULL AND p.artifact_id IS NOT NULL
-        AND pr.author_agent_id IS NOT NULL AND pr.deleted_at IS NULL
-      ORDER BY pr.author_agent_id, p.artifact_id`,
+        AND p.responsible_supervisor_id IS NOT NULL
+      ORDER BY p.responsible_supervisor_id, p.artifact_id`,
     [workspaceId],
-  )) {
-    ensure(String(row.agent_id)).authored.push(String(row.plan_artifact_id));
+  );
+
+  for (const row of rows) {
+    const agentId = String(row.agent_id);
+    const planArtifactId = String(row.plan_artifact_id);
+    let byArtifact = byAgentArtifact.get(agentId);
+    if (!byArtifact) {
+      byArtifact = new Map();
+      byAgentArtifact.set(agentId, byArtifact);
+      summary[agentId] = [] as unknown as AgentPlanBadge;
+    }
+    let destination = byArtifact.get(planArtifactId);
+    if (!destination) {
+      destination = {
+        kind: 'promoted-plan',
+        planId: String(row.plan_id),
+        planArtifactId,
+        title: String(row.title),
+        relationships: ['carrying'],
+        ...(row.proposal_path == null ? {} : { proposalPath: String(row.proposal_path) }),
+        ...(row.proposal_artifact_id == null ? {} : { proposalArtifactId: String(row.proposal_artifact_id) }),
+      };
+      byArtifact.set(planArtifactId, destination);
+      summary[agentId].push(destination);
+    }
   }
 
   return summary;

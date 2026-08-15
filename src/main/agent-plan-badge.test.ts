@@ -30,23 +30,31 @@ tests.push(() => {
   db.initDatabase();
   const ws = db.createWorkspace({ title: 'badge', path: appData, pathType: 'local' });
   const author = db.createAgent({ workspaceId: ws.id, title: 'Author', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
-  const carrier = db.createAgent({ workspaceId: ws.id, title: 'Carrier', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
-  const both = db.createAgent({ workspaceId: ws.id, title: 'Both', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
-  const insertPlan = (id: string, artifact: string, source: string | null = null) => FakeDb.store.run(
-    `INSERT INTO plans (id, workspace_id, path, slug, format, mtime_ms, size_bytes, artifact_id, source_proposal_id) VALUES (?, ?, ?, ?, 'structured', 1, 1, ?, ?)`,
-    [id, ws.id, `.lares/plans/${id}/plan.md`, id, artifact, source]);
-  insertPlan('plan-one', 'plan_one', 'proposal-one');
-  insertPlan('plan-two', 'plan_two', 'proposal-two');
-  db.insertProposalRecord({ id: 'proposal-one', artifactId: 'proposal_one', workspaceId: ws.id, path: '.lares/proposals/one.md', slug: 'one', title: 'one', state: 'promoted', authorAgentId: both.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-one', deletedAt: null });
+  const owner = db.createAgent({ workspaceId: ws.id, title: 'Owner', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
+  const follower = db.createAgent({ workspaceId: ws.id, title: 'Follower', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
+  const unattached = db.createAgent({ workspaceId: ws.id, title: 'Unattached', roleDescription: '', workingDirectory: appData, command: 'test', isSupervisor: true, tmuxSessionName: null, autoRestartEnabled: false, logPath: '' });
+  const insertPlan = (id: string, artifact: string, source: string | null, ownerId: string | null) => FakeDb.store.run(
+    `INSERT INTO plans (id, workspace_id, path, slug, format, mtime_ms, size_bytes, artifact_id, source_proposal_id, responsible_supervisor_id) VALUES (?, ?, ?, ?, 'structured', 1, 1, ?, ?, ?)`,
+    [id, ws.id, `.lares/plans/${id}/plan.md`, id, artifact, source, ownerId]);
+  insertPlan('plan-one', 'plan_one', 'proposal-one', owner.id);
+  insertPlan('plan-two', 'plan_two', 'proposal-two', owner.id);
+  db.insertProposalRecord({ id: 'proposal-one', artifactId: 'proposal_one', workspaceId: ws.id, path: '.lares/proposals/one.md', slug: 'one', title: 'one', state: 'promoted', authorAgentId: follower.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-one', deletedAt: null });
   db.insertProposalRecord({ id: 'proposal-two', artifactId: 'proposal_two', workspaceId: ws.id, path: '.lares/proposals/two.md', slug: 'two', title: 'two', state: 'promoted', authorAgentId: author.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: 'plan-two', deletedAt: null });
-  db.insertProposalRecord({ id: 'proposal-unpromoted', artifactId: 'proposal_unpromoted', workspaceId: ws.id, path: '.lares/proposals/unpromoted.md', slug: 'unpromoted', title: 'u', state: 'proposal', authorAgentId: carrier.id, authorRole: 'worker', authorDisplay: null, authoredAt: null, createdAt: 1, updatedAt: 1, mtimeMs: 1, sizeBytes: 1, promotedToPlanId: null, deletedAt: null });
-  db.upsertSupervisorFocus({ supervisorId: both.id, planId: 'plan-one' });
-  db.upsertSupervisorFocus({ supervisorId: carrier.id, planId: 'plan-two' });
+  db.upsertSupervisorFocus({ supervisorId: follower.id, planId: 'plan-one' });
+  db.upsertSupervisorFocus({ supervisorId: author.id, planId: 'plan-two' });
   const result = db.getAgentPlanBadgeSummary(ws.id);
-  assert.deepEqual(result[both.id], { authored: ['plan_one'], carrying: ['plan_one'] });
-  assert.deepEqual(result[author.id], { authored: ['plan_two'], carrying: [] });
-  assert.deepEqual(result[carrier.id], { authored: [], carrying: ['plan_two'] });
-  assert.equal(result[carrier.id].authored.includes('plan_unpromoted'), false);
+  assert.deepEqual(result[owner.id], [{
+    kind: 'promoted-plan', planId: 'plan-one', planArtifactId: 'plan_one', title: 'one',
+    relationships: ['carrying'], proposalPath: '.lares/proposals/one.md',
+    proposalArtifactId: 'proposal_one',
+  }, {
+    kind: 'promoted-plan', planId: 'plan-two', planArtifactId: 'plan_two', title: 'two',
+    relationships: ['carrying'], proposalPath: '.lares/proposals/two.md',
+    proposalArtifactId: 'proposal_two',
+  }]);
+  assert.equal(result[follower.id], undefined, 'focus and authorship must not confer a card mark');
+  assert.equal(result[author.id], undefined, 'authorship and focus must not confer a card mark');
+  assert.equal(result[unattached.id], undefined);
 });
 
 (async () => {

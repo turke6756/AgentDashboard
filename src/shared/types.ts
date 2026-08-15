@@ -3331,10 +3331,28 @@ export interface TerminalDeadSnapshot {
   historyNotice?: HistoryNotice;
 }
 
-export interface AgentPlanBadge {
-  authored: string[];
-  carrying: string[];
+export interface PromotedPlanBadgeDestination {
+  kind: 'promoted-plan';
+  planId: string;
+  planArtifactId: string;
+  title: string;
+  relationships: Array<'carrying'>;
+  proposalPath?: string;
+  proposalArtifactId?: string;
 }
+
+/** Promoted plans are the only badge destination; unpromoted proposals never confer a badge. */
+export type PlanBadgeDestination = PromotedPlanBadgeDestination;
+
+/**
+ * One normalized destination list per attached agent. The named properties are a
+ * temporary compatibility view for the pre-WP-6 card renderers and are attached
+ * by the renderer store as non-enumerable array properties.
+ */
+export type AgentPlanBadge = PlanBadgeDestination[] & {
+  readonly authored: string[];
+  readonly carrying: string[];
+};
 
 export interface IpcApi {
   workspaces: {

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion, ActivityCounts, ActivityDigest, ActivityHeartbeatSnapshot, ActivityPage, ActivityViewedResult } from '../../shared/types';
+import type { Agent, AgentPlanBadge, AgentStatus, Workspace, HealthCheck, RuntimePrerequisiteReport, FileActivity, QueryResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, UsageLimitsReading, PathType, FileTab, PanelLayout, Team, TeamMessage, CreateTeamInput, DetachedClosedPayload, DetachableView, WriteErrorCode, CheckpointTurnSummary, CheckpointPreviewResult, CheckpointRestoreRequest, CheckpointRevertRequest, CheckpointRestoreResult, CheckpointFileHistoryVersion, ActivityCounts, ActivityDigest, ActivityHeartbeatSnapshot, ActivityPage, ActivityViewedResult } from '../../shared/types';
 import { beginWrite, evictTabCache } from '../components/fileviewer/useFileContentCache';
 import { contentHash } from '../components/fileviewer/markdownSplice';
 import { diag, diagBasename, diagHash } from '../components/fileviewer/editLossDiag';
@@ -24,6 +24,34 @@ interface WorkspaceHeat {
 interface AgentStatusSnapshot {
   workspaceId: string;
   status: AgentStatus;
+}
+
+type AgentBadgeApi = {
+  getAgentPlanBadgeSummary: (workspaceId: string) => Promise<Record<string, AgentPlanBadge>>;
+};
+
+function withLegacyPlanBadgeRoleView(badges: Record<string, AgentPlanBadge>): Record<string, AgentPlanBadge> {
+  for (const destinations of Object.values(badges)) {
+    // Tolerate a stale pre-WP-4 payload during rolling renderer/main upgrades.
+    if (!Array.isArray(destinations)) continue;
+    // AgentCard.tsx and OwnerContainerBar.tsx still read `.authored`/`.carrying`
+    // until WP-6 replaces their label code with destination consumers. Keep the
+    // compatibility view non-enumerable so Object.keys/spreads preserve the
+    // specified destination-array payload; WP-6 must delete this view.
+    Object.defineProperties(destinations, {
+      authored: {
+        enumerable: false,
+        // Authorship is intentionally not a card mark; retain only the empty
+        // property required by the two pre-WP-6 consumers named above.
+        value: [],
+      },
+      carrying: {
+        enumerable: false,
+        value: destinations.map((destination) => destination.planArtifactId),
+      },
+    });
+  }
+  return badges;
 }
 
 // WP4 — a transient request to scroll/highlight a source span when a tab opens or
@@ -201,6 +229,7 @@ export interface ActivityFilter {
 interface DashboardState {
   workspaces: Workspace[];
   agents: Agent[];
+  agentPlanBadges: Record<string, AgentPlanBadge>;
   // WP5 — cross-workspace "@"-mention catalog. A SEPARATE slice from `agents`
   // (which is intentionally selected-workspace-only — `updateAgent` discards
   // foreign events), so the mention picker's workspace rail can target agents in
@@ -351,6 +380,7 @@ interface DashboardState {
   moveWorkspace: (fromId: string, toId: string | null) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
   loadAgents: (workspaceId: string) => Promise<void>;
+  loadAgentPlanBadges: (workspaceId: string) => Promise<void>;
   loadAllAgents: () => Promise<void>;
   /** WP5 — load/refresh the cross-workspace mention catalog. Called when the
    *  "@" picker opens. Uses window.api.agents.listAll() for the agents and the
@@ -466,6 +496,7 @@ interface DashboardState {
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   workspaces: [],
   agents: [],
+  agentPlanBadges: {},
   mentionCatalog: null,
   selectedWorkspaceId: null,
   selectedAgentId: null,
@@ -1464,6 +1495,17 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     get().updateWorkspaceHeat();
   },
 
+  loadAgentPlanBadges: async (workspaceId: string) => {
+    try {
+      const badges = await (window.api.agents as typeof window.api.agents & AgentBadgeApi)
+        .getAgentPlanBadgeSummary(workspaceId);
+      if (get().selectedWorkspaceId !== workspaceId) return;
+      set({ agentPlanBadges: withLegacyPlanBadgeRoleView(badges) });
+    } catch (err) {
+      console.warn('Failed to load agent plan badges:', err);
+    }
+  },
+
   loadAllAgents: async () => {
     // All-workspaces view: same as loadAgents — supervisors are real cards now.
     const agents = await window.api.agents.listAll();
@@ -1709,6 +1751,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (id) {
         get().loadAgents(id);
         get().loadTeams(id);
+        // Re-selecting the current workspace must still refresh plan badges.
+        // They are keyed off durable plan/focus state that changes independently
+        // of the agent roster, so a re-select (and the boot case where the
+        // workspace is already current) has to re-pull them — otherwise the grid
+        // renders no plan roles at all until an actual A→B→A transition.
+        void get().loadAgentPlanBadges(id);
       }
       return;
     }
@@ -1793,6 +1841,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
     if (id) {
       const targetId = id;
+      void get().loadAgentPlanBadges(targetId);
       // loadAgents refreshes `agents` async; once it returns, drop any restored
       // selection/terminal whose agent no longer exists (stopped/removed while
       // away). Guard on the workspace still being current so a fast A→B→A switch
