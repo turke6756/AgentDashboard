@@ -14,7 +14,6 @@ export interface ParsedProposal {
   updatedAt?: number;
   mtimeMs?: number | null;
   sizeBytes?: number | null;
-  promotedToPlanId?: string | null;
   deletedAt?: number | null;
 }
 
@@ -94,27 +93,29 @@ export function upsertProposalByPath(db: Database.Database, workspaceId: string,
   path: string; artifact_id: string | null; author_agent_id: string | null; title: string | null;
   id?: string; slug?: string | null; author_role?: 'supervisor' | 'worker' | 'unknown'; author_display?: string | null;
   authored_at?: number | null; created_at?: number; updated_at?: number; mtime_ms?: number | null; size_bytes?: number | null;
-  promoted_to_plan_id?: string | null; deleted_at?: number | null;
+  deleted_at?: number | null;
 }): void {
   const now = Date.now();
+  // Scan/ingest never owns promoted_to_plan_id. New rows start unlinked;
+  // enrichAdoptedPlanRow and applyPlanSourceProposalProjection are its writers.
   db.prepare(`INSERT INTO proposals
     (id, artifact_id, workspace_id, path, slug, title, state, author_agent_id, author_role, author_display, authored_at,
      created_at, updated_at, mtime_ms, size_bytes, promoted_to_plan_id, deleted_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'proposal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 'proposal', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
     ON CONFLICT(workspace_id, path) DO UPDATE SET artifact_id=excluded.artifact_id, slug=excluded.slug, title=excluded.title,
       author_agent_id=excluded.author_agent_id, author_role=excluded.author_role, author_display=excluded.author_display,
       authored_at=excluded.authored_at, mtime_ms=excluded.mtime_ms, size_bytes=excluded.size_bytes,
-      promoted_to_plan_id=excluded.promoted_to_plan_id, deleted_at=excluded.deleted_at,
+      deleted_at=excluded.deleted_at,
       updated_at=CASE WHEN proposals.artifact_id IS excluded.artifact_id AND proposals.slug IS excluded.slug
         AND proposals.title IS excluded.title AND proposals.author_agent_id IS excluded.author_agent_id
         AND proposals.author_role IS excluded.author_role AND proposals.author_display IS excluded.author_display
         AND proposals.authored_at IS excluded.authored_at AND proposals.mtime_ms IS excluded.mtime_ms
-        AND proposals.size_bytes IS excluded.size_bytes AND proposals.promoted_to_plan_id IS excluded.promoted_to_plan_id
-        AND proposals.deleted_at IS excluded.deleted_at THEN proposals.updated_at ELSE excluded.updated_at END`).run(
+        AND proposals.size_bytes IS excluded.size_bytes AND proposals.deleted_at IS excluded.deleted_at
+        THEN proposals.updated_at ELSE excluded.updated_at END`).run(
     row.id ?? `${workspaceId}:${row.path}`, row.artifact_id, workspaceId, normalized(row.path), row.slug ?? null, row.title,
     row.author_agent_id, row.author_role ?? 'unknown', row.author_display ?? null, row.authored_at ?? null,
     row.created_at ?? now, row.updated_at ?? now, row.mtime_ms ?? null, row.size_bytes ?? null,
-    row.promoted_to_plan_id ?? null, row.deleted_at ?? null,
+    row.deleted_at ?? null,
   );
 }
 
@@ -136,7 +137,7 @@ export function ingestProposalBatch(db: Database.Database, workspaceId: string, 
       const source = files.find((x) => normalized(x.path) === f.path)!;
       db.exec('SAVEPOINT f');
       try {
-        upsertProposalByPath(db, workspaceId, { path: f.path, artifact_id: f.effectiveArtifactId, author_agent_id: source.authorAgentId, title: source.title, id: source.id, slug: source.slug, author_role: source.authorRole, author_display: source.authorDisplay, authored_at: source.authoredAt, created_at: source.createdAt, updated_at: source.updatedAt, mtime_ms: source.mtimeMs, size_bytes: source.sizeBytes, promoted_to_plan_id: source.promotedToPlanId, deleted_at: source.deletedAt });
+        upsertProposalByPath(db, workspaceId, { path: f.path, artifact_id: f.effectiveArtifactId, author_agent_id: source.authorAgentId, title: source.title, id: source.id, slug: source.slug, author_role: source.authorRole, author_display: source.authorDisplay, authored_at: source.authoredAt, created_at: source.createdAt, updated_at: source.updatedAt, mtime_ms: source.mtimeMs, size_bytes: source.sizeBytes, deleted_at: source.deletedAt });
         db.exec('RELEASE f');
         if (f.outcome === 'degraded') { const c = { path: f.path, klass: 'duplicate-artifact-id' as const, oldArtifactId: existing.find((e) => normalized(e.path) === f.path)?.artifactId ?? null, newArtifactId: null, attemptedArtifactId: f.claimedArtifactId, effectiveArtifactId: null, detail: `winner: ${f.conflictWithPath}` }; recordProposalIngestConflict(db, workspaceId, c); conflicts.push(c); }
         if (f.outcome === 'reassigned') { const c = { path: f.path, klass: 'artifact-id-reassigned' as const, oldArtifactId: existing.find((e) => normalized(e.path) === f.path)?.artifactId ?? null, newArtifactId: f.effectiveArtifactId, attemptedArtifactId: null, effectiveArtifactId: f.effectiveArtifactId, detail: null }; recordProposalIngestConflict(db, workspaceId, c); conflicts.push(c); }

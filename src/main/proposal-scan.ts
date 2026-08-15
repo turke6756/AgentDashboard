@@ -53,7 +53,6 @@ function parseProposal(raw: string, relPath: string, name: string, stat: fs.Stat
     updatedAt: now,
     mtimeMs: stat.mtimeMs,
     sizeBytes: stat.size,
-    promotedToPlanId: frontmatter.promoted_to_plan_id ?? frontmatter.promoted_to ?? null,
   };
 }
 

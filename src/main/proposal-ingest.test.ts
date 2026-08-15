@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ingestProposalBatch, type ParsedProposal } from './proposal-ingest';
+import { isCanonicalPlanRowId, PLAN_ROW_ID_RE } from '../shared/planning-artifact-ids';
 
 type SqlJsDatabase = {
   exec(sql: string): unknown;
@@ -98,6 +99,32 @@ const scan = (paths: string[], failed: string[] = []) => ({ seenPaths: new Set(p
     const snapshot = JSON.stringify(db.prepare('SELECT path,artifact_id,title,author_agent_id,updated_at FROM proposals WHERE workspace_id=? ORDER BY path').all(ws));
     ingestProposalBatch(db, ws, [file('z.md', 'ax'), file('a.md', 'ax')], scan(['z.md', 'a.md']));
     assert.equal(JSON.stringify(db.prepare('SELECT path,artifact_id,title,author_agent_id,updated_at FROM proposals WHERE workspace_id=? ORDER BY path').all(ws)), snapshot);
-    console.log('proposal-ingest.test: 5 passed');
+
+    const scanRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-ingest-scan-'));
+    try {
+      const proposalRoot = path.join(scanRoot, '.lares', 'proposals');
+      fs.mkdirSync(proposalRoot, { recursive: true });
+      fs.writeFileSync(path.join(proposalRoot, 'linked.md'), '---\nartifact_id: prop_1234abcd\npromoted_to: 2026-08-14-folder-slug\ntitle: Linked\n---\nBody\n');
+      const workspace = { id: 'ws-scan-link', title: 'scan', path: scanRoot, pathType: 'windows', description: '', defaultCommand: '', createdAt: '', updatedAt: '', lastOpenedAt: null } as any;
+      const { runProposalScan } = require('./proposal-scan') as typeof import('./proposal-scan');
+      runProposalScan(workspace, { db, now: () => 700 });
+      const proposalPath = '.lares/proposals/linked.md';
+      assert.equal((db.prepare('SELECT promoted_to_plan_id FROM proposals WHERE workspace_id=? AND path=?').get(workspace.id, proposalPath) as any).promoted_to_plan_id, null);
+
+      const reconciledPlanId = '12345678-1234-4abc-8def-1234567890ab';
+      db.prepare('UPDATE proposals SET promoted_to_plan_id=? WHERE workspace_id=? AND path=?').run(reconciledPlanId, workspace.id, proposalPath);
+      runProposalScan(workspace, { db, now: () => 800 });
+      assert.equal((db.prepare('SELECT promoted_to_plan_id FROM proposals WHERE workspace_id=? AND path=?').get(workspace.id, proposalPath) as any).promoted_to_plan_id, reconciledPlanId);
+    } finally {
+      fs.rmSync(scanRoot, { recursive: true, force: true });
+    }
+
+    const canonicalPlanId = '12345678-1234-4abc-8def-1234567890ab';
+    assert.equal(PLAN_ROW_ID_RE.test(canonicalPlanId), true);
+    assert.equal(isCanonicalPlanRowId(canonicalPlanId), true);
+    assert.equal(isCanonicalPlanRowId('2026-08-14-folder-slug'), false);
+    assert.equal(isCanonicalPlanRowId(canonicalPlanId.toUpperCase()), false);
+    assert.equal(isCanonicalPlanRowId(canonicalPlanId.slice(0, -1)), false);
+    console.log('proposal-ingest.test: 8 passed');
   } finally { dbm.closeDatabaseForTests(); try { fs.rmSync(appData, { recursive: true, force: true }); } catch { /* best effort */ } }
 })().catch((error) => { console.error(error); process.exitCode = 1; });
