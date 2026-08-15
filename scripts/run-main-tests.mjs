@@ -303,9 +303,9 @@ const TESTS = [
   // foreign finalization-service fail-fast point so this package always enters.
   'dist/main/main/sandbox/provider-redirect-adapters.test.js',
   'dist/main/main/sandbox/researcher-home-factory.test.js',
-  'dist/main/main/sandbox/researcher-home-lifecycle.test.js',
   'dist/main/main/sandbox/researcher-home-untrusted.test.js',
   'dist/main/main/sandbox/outbox-launcher.test.js',
+  'dist/main/main/supervisor/researcher-home-redirect.test.js',
   'dist/main/main/supervisor/log-readers/provider-state-home.test.js',
   // Save-card WP-F2: keep the fallback finalization->sweep composition and the
   // atomic generic save-unit ledger ahead of the known foreign fail-fast point.

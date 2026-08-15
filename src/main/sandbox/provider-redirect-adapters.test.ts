@@ -9,6 +9,7 @@ describe('provider redirect adapter facts', () => {
   test('Claude, Codex, and Antigravity are active, with Claude retaining its named acceptance gate', () => {
     assert.deepStrictEqual(PROVIDER_REDIRECT_ADAPTERS.claude, {
       provider: 'claude',
+      stateDirectory: '.claude',
       redirect: { kind: 'env', name: 'CLAUDE_CONFIG_DIR' },
       auth: {
         kind: 'redirected-home-files',

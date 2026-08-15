@@ -1,4 +1,6 @@
-import type { LaunchableAgentProvider } from '../../shared/types';
+import fs from 'fs';
+import path from 'path';
+import type { AgentProvider, LaunchableAgentProvider } from '../../shared/types';
 
 export type RedirectMechanism =
   | { kind: 'env'; name: string }
@@ -72,6 +74,8 @@ export function formatResearcherLaunchRefusal(
 
 export interface ProviderRedirectAdapter {
   provider: LaunchableAgentProvider;
+  /** Provider state directory under the human account home. */
+  stateDirectory: string;
   redirect: RedirectMechanism;
   auth: AuthSource;
   /** Root-relative paths retained across the default-deny reset. */
@@ -96,6 +100,7 @@ const DEFAULT_DENY_RESET = ['**/*'] as const;
 export const PROVIDER_REDIRECT_ADAPTERS = {
   claude: {
     provider: 'claude',
+    stateDirectory: '.claude',
     redirect: { kind: 'env', name: 'CLAUDE_CONFIG_DIR' },
     auth: {
       kind: 'redirected-home-files',
@@ -120,6 +125,7 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
   },
   codex: {
     provider: 'codex',
+    stateDirectory: '.codex',
     redirect: { kind: 'env', name: 'CODEX_HOME' },
     auth: {
       kind: 'redirected-home-files',
@@ -140,6 +146,7 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
   },
   grok: {
     provider: 'grok',
+    stateDirectory: '.grok',
     redirect: { kind: 'env', name: 'GROK_HOME' },
     auth: {
       kind: 'redirected-home-file-or-env',
@@ -164,6 +171,7 @@ export const PROVIDER_REDIRECT_ADAPTERS = {
   },
   agy: {
     provider: 'agy',
+    stateDirectory: '.gemini',
     redirect: {
       kind: 'argv',
       name: '--gemini_dir',
@@ -210,4 +218,49 @@ export function resolveProviderRedirectAdapter(provider: string): ResolvedProvid
       gate: 'adapter-entry-required',
     },
   };
+}
+
+/** Return the provider's normal state directory under the human account home. */
+export function researcherProviderStateDirectory(provider: AgentProvider): string | null {
+  const adapter = resolveProviderRedirectAdapter(provider);
+  return 'kind' in adapter ? null : adapter.stateDirectory;
+}
+
+/**
+ * Preflight only the credentials that are represented by files. Researchers
+ * use the same provider state root as workers; this check never copies, seeds,
+ * redirects, creates, or removes anything.
+ */
+export function assertResearcherProviderCredentials(
+  provider: AgentProvider,
+  providerStateRoot: string | null,
+): void {
+  const adapter = resolveProviderRedirectAdapter(provider);
+  if ('kind' in adapter) {
+    throw new Error(`Cannot launch ${provider} researcher: no provider adapter exists`);
+  }
+  if (adapter.support.implementation !== 'active') {
+    throw new Error(formatResearcherLaunchRefusal(provider, adapter.support));
+  }
+
+  if (adapter.auth.kind === 'os-keychain') return;
+  if (adapter.auth.kind === 'redirected-home-file-or-env' && process.env[adapter.auth.env]) return;
+
+  const credentialPaths = adapter.auth.kind === 'redirected-home-files'
+    ? adapter.auth.seeds
+      .filter((seed) => seed.strategy === 'copy-trusted')
+      .map((seed) => seed.path)
+    : [adapter.auth.file];
+
+  for (const credentialPath of credentialPaths) {
+    const source = providerStateRoot
+      ? path.join(providerStateRoot, ...credentialPath.split('/'))
+      : path.join(adapter.stateDirectory, ...credentialPath.split('/'));
+    if (!providerStateRoot || !fs.existsSync(source)) {
+      throw new Error(`Cannot launch ${provider} researcher: credential file is missing: ${source}`);
+    }
+    if (!fs.statSync(source).isFile()) {
+      throw new Error(`Cannot launch ${provider} researcher: credential path is not a file: ${source}`);
+    }
+  }
 }

@@ -75,13 +75,11 @@ import { removeGlobalAgyStatusHook } from './agy-hooks';
 import { ensureAgyPermissions, ensureAgyTrust } from './agy-settings';
 import { addProviderAutoApproveFlag } from './provider-auto-approve';
 import { ensureNodeShimDir } from '../node-shim';
-import { resolveResearcherSandboxHome } from '../sandbox/researcher-home-factory';
 import { refuseUnrestrictedLaunchProviderHomes } from '../sandbox/researcher-home-untrusted';
 import {
-  prepareResearcherSandboxHome,
-  purgeResearcherSandboxHome,
-  type PreparedResearcherSandboxHome,
-} from '../sandbox/researcher-home-lifecycle';
+  assertResearcherProviderCredentials,
+  researcherProviderStateDirectory,
+} from '../sandbox/provider-redirect-adapters';
 import { resolveProviderStateHome, resolveWslHomeSubdir } from './log-readers/types';
 import { MEMORY_INDEX_MJS } from '../../shared/generated/memory-index-cli.generated';
 // WP-C — provider-neutral supervisor memory-index launch projection + Codex
@@ -4950,7 +4948,7 @@ export class AgentSupervisor extends EventEmitter {
     return tracker;
   }
 
-  private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string, prePreparedResearcherHome?: PreparedResearcherSandboxHome): Promise<void> {
+  private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
     // WP0.5 — resolve EXACTLY ONE per-agent capability token at method entry,
     // before ANY environment or command construction. `mint()` rotates, so the
     // single token is threaded to the dashboard MCP config, the team MCP config,
@@ -4964,6 +4962,15 @@ export class AgentSupervisor extends EventEmitter {
     const capabilityToken = needsToken
       ? (preMintedToken ?? this.mintAgentCapabilityToken(agent))
       : undefined;
+
+    if (roleLaneOf(agent) === 'researcher') {
+      const accountHome = process.env.USERPROFILE || process.env.HOME || '';
+      const stateDirectory = researcherProviderStateDirectory(agent.provider);
+      assertResearcherProviderCredentials(
+        agent.provider,
+        stateDirectory && accountHome ? path.join(accountHome, stateDirectory) : null,
+      );
+    }
 
     // WP-C — ordinary CODEX supervisor RESUME/relaunch (auto-restart, reconcile
     // re-drive) bypasses launchAgent, so the fresh-launch staging never ran;
@@ -5327,12 +5334,8 @@ export class AgentSupervisor extends EventEmitter {
       // Env-provided (NOT script-dir-relative): the CODEX_HOME copy of the
       // script would otherwise spool to ~/, invisible to the tailer.
       const spoolRoot = getEffectiveWorkspaceRoot(agent);
-      // Researcher child paths are lifecycle-owned and logical (POSIX in WSL).
-      // The tailer's Windows-visible path is derived separately below.
-      if (roleLaneOf(agent) !== 'researcher') {
-        extraEnv.DASHBOARD_SPOOL_PATH = path.join(
-          spoolRoot, workspaceStateDirName(spoolRoot), 'pending-status.jsonl');
-      }
+      extraEnv.DASHBOARD_SPOOL_PATH = path.join(
+        spoolRoot, workspaceStateDirName(spoolRoot), 'pending-status.jsonl');
       // Tail the same file from the dashboard side.
       this.ensureSpoolTailer(agent);
       // Lares-rename regression fix: a pre-rename agent relaunches into its
@@ -5400,43 +5403,6 @@ export class AgentSupervisor extends EventEmitter {
     // give a false impression of per-researcher action scoping. Browser actions
     // for the live test are enabled by the dashboard's GLOBAL toggle; true
     // per-researcher scoping waits on WP-D (scoped tokens).
-    if (roleLaneOf(agent) === 'researcher') {
-      const workspaceRoot = getEffectiveWorkspaceRoot(agent);
-      // Forks supply overrideArgs and enter the factory explicitly at the AU-7
-      // bypass seam. Normal and resume launches enter here.
-      if (!overrideArgs) {
-        const researcherSandbox = resolveResearcherSandboxHome({
-          roleLane: roleLaneOf(agent),
-          workspaceStateRoot: workspaceStateDir(workspaceRoot),
-          agentId: agent.id,
-          provider: agent.provider,
-        });
-        if (!researcherSandbox) {
-          throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
-        }
-        const trustedClaudeRoot = path.join(
-          process.env.USERPROFILE || process.env.HOME || '',
-          '.claude',
-        );
-        const preparedResearcherHome = prepareResearcherSandboxHome({
-          provider: agent.provider,
-          sandboxHome: researcherSandbox,
-          trustedProviderStateRoot: trustedClaudeRoot,
-          accountTempPath: process.env.TEMP || process.env.TMP,
-        });
-        Object.assign(extraEnv, preparedResearcherHome.extraEnv);
-        args.push(...preparedResearcherHome.extraArgs);
-        codexStateRoot = preparedResearcherHome.filesystemHomePath;
-      } else {
-        if (!prePreparedResearcherHome) {
-          throw new Error(`Forked researcher sandbox was not prepared for agent ${agent.id}`);
-        }
-        Object.assign(extraEnv, prePreparedResearcherHome.extraEnv);
-        codexStateRoot = prePreparedResearcherHome.filesystemHomePath;
-      }
-    }
-    // Load-bearing order: derive + reset the per-agent home above, then take
-    // the snapshot and begin DB discovery against that same root.
     if (shouldDiscoverCodexSession({ provider: agent.provider, resume, freshSession })) {
       const gate = await this.codexLaunchGate.acquire('windows');
       this.codexGateReleases.set(agent.id, gate.release);
@@ -5451,13 +5417,11 @@ export class AgentSupervisor extends EventEmitter {
     // gate. Set IMMEDIATELY BEFORE the actual runner launch so no event this
     // launch produces can predate the stamp.
     this.launchStartedAt.set(agent.id, Date.now());
-    if (roleLaneOf(agent) !== 'researcher') {
-      refuseUnrestrictedLaunchProviderHomes([
-        extraEnv.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-        extraEnv.CODEX_HOME ?? process.env.CODEX_HOME,
-        extraEnv.GROK_HOME ?? process.env.GROK_HOME,
-      ]);
-    }
+    refuseUnrestrictedLaunchProviderHomes([
+      extraEnv.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+      extraEnv.CODEX_HOME ?? process.env.CODEX_HOME,
+      extraEnv.GROK_HOME ?? process.env.GROK_HOME,
+    ]);
     runner.launch(agent.workingDirectory, launchCmd, args, agent.logPath || '', useDirectSpawn, extraEnvArg);
     updateAgentPid(agent.id, runner.pid);
     // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle
@@ -5884,6 +5848,12 @@ export class AgentSupervisor extends EventEmitter {
       ? (preMintedToken ?? this.mintAgentCapabilityToken(agent))
       : undefined;
 
+    if (roleLaneOf(agent) === 'researcher') {
+      const stateDirectory = researcherProviderStateDirectory(agent.provider);
+      const providerStateRoot = stateDirectory ? resolveWslHomeSubdir(stateDirectory) : null;
+      assertResearcherProviderCredentials(agent.provider, providerStateRoot);
+    }
+
     // WP-C — ordinary CODEX supervisor RESUME/relaunch bypasses launchAgent, so
     // stage the memory index here on the pending rail (mirrors the Windows path).
     // Only when nothing is already staged this launch (a revive pre-stages
@@ -5963,12 +5933,9 @@ export class AgentSupervisor extends EventEmitter {
       // always-write transport. shQuote'd: workspace paths can contain
       // spaces, and bash command-prefix assignments word-split otherwise.
       const wslSpoolRoot = getEffectiveWorkspaceRoot(agent);
-      // Researcher child paths are supplied once by the lifecycle payload.
-      if (roleLaneOf(agent) !== 'researcher') {
-        const wslSpoolPath = `${wslSpoolRoot}/${workspaceStateDirName(wslSpoolRoot, 'wsl')}/pending-status.jsonl`;
-        wslEnvPrefix.push(
-          `DASHBOARD_SPOOL_PATH=${shQuote(wslSpoolPath)}`);
-      }
+      const wslSpoolPath = `${wslSpoolRoot}/${workspaceStateDirName(wslSpoolRoot, 'wsl')}/pending-status.jsonl`;
+      wslEnvPrefix.push(
+        `DASHBOARD_SPOOL_PATH=${shQuote(wslSpoolPath)}`);
       // Tail the same file from the dashboard side (UNC form).
       this.ensureSpoolTailer(agent);
       // Lares-rename regression fix (mirror of the Windows path above): heal
@@ -6046,30 +6013,6 @@ export class AgentSupervisor extends EventEmitter {
       sysPromptText = `Workspace root: ${persistentWorkspaceRoot}. cd there for project shell work. Use absolute paths for Read/Edit/Glob.`;
     } else if (agent.isResearcher && isClaude && !overrideCommand) {
       persistentWorkspaceRoot = getEffectiveWorkspaceRoot(agent);
-      const wslResearcherSandbox = resolveResearcherSandboxHome({
-        roleLane: roleLaneOf(agent),
-        workspaceStateRoot: workspaceStateDir(persistentWorkspaceRoot, 'wsl'),
-        agentId: agent.id,
-        provider: agent.provider,
-      });
-      if (!wslResearcherSandbox) {
-        throw new Error(`Researcher sandbox construction refused agent ${agent.id}`);
-      }
-      const trustedClaudeRoot = resolveWslHomeSubdir('.claude');
-      if (!trustedClaudeRoot) {
-        throw new Error('Researcher sandbox could not resolve the trusted WSL Claude state root');
-      }
-      const preparedResearcherHome = prepareResearcherSandboxHome({
-        provider: agent.provider,
-        sandboxHome: wslResearcherSandbox,
-        filesystemHomePath: wslToWindowsPath(wslResearcherSandbox.researcherSandboxHomePath),
-        trustedProviderStateRoot: trustedClaudeRoot,
-        accountTempPath: '/tmp',
-      });
-      codexStateRoot = preparedResearcherHome.filesystemHomePath;
-      for (const [name, value] of Object.entries(preparedResearcherHome.extraEnv)) {
-        wslEnvPrefix.push(`${name}=${shQuote(value)}`);
-      }
       const storeStateDir = workspaceStateDirName(persistentWorkspaceRoot, 'wsl');
       const storeDir = `${persistentWorkspaceRoot}/${storeStateDir}/research`;
       wslAddDir = storeDir;
@@ -6589,37 +6532,9 @@ export class AgentSupervisor extends EventEmitter {
     // AU-7 — a forked researcher must also rebuild its native-tool boundary
     // (--tools/--disallowedTools), which the bypassed lane-aware injection would
     // otherwise have added. Without it the fork would be offered Bash/Edit again.
-    // Fork remains deliberately Claude-only: its resume/fork protocol and
-    // provider home preparation are Claude-specific until a later package.
+    // Fork remains deliberately Claude-only: its resume/fork protocol is
+    // Claude-specific until a later package.
     const forkResearcher = forkLane === 'researcher' && newAgent.provider === 'claude';
-    let forkPreparedResearcherHome: PreparedResearcherSandboxHome | undefined;
-    if (forkResearcher) {
-      const forkWorkspaceRoot = getEffectiveWorkspaceRoot(newAgent);
-      const forkResearcherSandbox = resolveResearcherSandboxHome({
-        roleLane: forkLane,
-        workspaceStateRoot: workspaceStateDir(forkWorkspaceRoot, pathType),
-        agentId: newAgent.id,
-        provider: newAgent.provider,
-      });
-      if (!forkResearcherSandbox) {
-        throw new Error(`Researcher sandbox construction refused fork ${newAgent.id}`);
-      }
-      const trustedClaudeRoot = pathType === 'wsl'
-        ? resolveWslHomeSubdir('.claude')
-        : path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude');
-      if (!trustedClaudeRoot) {
-        throw new Error('Forked researcher sandbox could not resolve the trusted Claude state root');
-      }
-      forkPreparedResearcherHome = prepareResearcherSandboxHome({
-        provider: newAgent.provider,
-        sandboxHome: forkResearcherSandbox,
-        filesystemHomePath: pathType === 'wsl'
-          ? wslToWindowsPath(forkResearcherSandbox.researcherSandboxHomePath)
-          : forkResearcherSandbox.researcherSandboxHomePath,
-        trustedProviderStateRoot: trustedClaudeRoot,
-        accountTempPath: pathType === 'wsl' ? '/tmp' : (process.env.TEMP || process.env.TMP),
-      });
-    }
     // WP0.5 — fork bypasses the launch method's lane-aware MCP injection via
     // overrideArgs/overrideCommand, but STILL runs the launch method's child-env
     // block. Mint EXACTLY ONE token here and thread it to both the override MCP
@@ -6636,7 +6551,7 @@ export class AgentSupervisor extends EventEmitter {
         ? ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', 'claude-sonnet-4-6']
         : [];
       const forkArgs = [...parts.slice(1), ...forkMcp, ...forkTools, '--resume', source.resumeSessionId, '--fork-session', '--session-id', newSessionId];
-      await this.launchWindowsAgent(newAgent, false, null, undefined, forkArgs, false, undefined, forkToken, forkPreparedResearcherHome);
+      await this.launchWindowsAgent(newAgent, false, null, undefined, forkArgs, false, undefined, forkToken);
     } else {
       const forkMcp = forkLane !== 'legacy'
         ? ` --mcp-config '${this.buildDashboardMcpConfigForLane(forkLane, 'wsl', this.buildIdentityEnvForAgent(newAgent), forkToken!)}'${forkStrict ? ' --strict-mcp-config' : ''}`
@@ -6644,10 +6559,7 @@ export class AgentSupervisor extends EventEmitter {
       const forkTools = forkResearcher
         ? ` --tools '${RESEARCHER_ALLOWED_TOOLS.join(',')}' --disallowedTools '${RESEARCHER_DISALLOWED_TOOLS.join(',')}' --model claude-sonnet-4-6`
         : '';
-      const forkRedirectEnv = forkPreparedResearcherHome
-        ? `${Object.entries(forkPreparedResearcherHome.extraEnv).map(([name, value]) => `${name}=${shQuote(value)}`).join(' ')} `
-        : '';
-      const forkCommand = `${forkRedirectEnv}${source.command}${forkMcp}${forkTools} --resume ${source.resumeSessionId} --fork-session --session-id ${newSessionId}`;
+      const forkCommand = `${source.command}${forkMcp}${forkTools} --resume ${source.resumeSessionId} --fork-session --session-id ${newSessionId}`;
       await this.launchWslAgent(newAgent, false, null, forkCommand, undefined, false, undefined, forkToken);
     }
 
@@ -7320,17 +7232,6 @@ export class AgentSupervisor extends EventEmitter {
     // agent row is STILL present so the shared-reference scan can exclude this
     // id and detect only *other* agents pointing at the same path.
     if (logPath) reclaimAgentLogFiles(logPath, agentId, this.logsDir);
-    // Derive and purge the persistent home while the agent row still exists.
-    // A purge failure leaves the row intact instead of orphaning its directory.
-    if (agentForDelete && roleLaneOf(agentForDelete) === 'researcher') {
-      const workspaceRoot = getEffectiveWorkspaceRoot(agentForDelete);
-      const pathType = detectPathType(agentForDelete.workingDirectory);
-      const stateRoot = workspaceStateDir(workspaceRoot, pathType);
-      const logicalHome = pathType === 'wsl'
-        ? path.posix.join(stateRoot, 'agent-homes', agentId)
-        : path.win32.join(stateRoot, 'agent-homes', agentId);
-      purgeResearcherSandboxHome(pathType === 'wsl' ? wslToWindowsPath(logicalHome) : logicalHome);
-    }
     dbDeleteAgent(agentId);
     this.emit('agentDeleted', { agentId });
   }
