@@ -4421,6 +4421,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'claude-opus-4-1': DEFAULT_CONTEXT_WINDOW_TOKENS,
   'claude-opus-4-20250514': DEFAULT_CONTEXT_WINDOW_TOKENS,
+  'claude-sonnet-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'claude-sonnet-5': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'claude-haiku-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
   'claude-sonnet-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -4433,6 +4434,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-3-flash': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'gemini-2.5-pro': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'gemini-2.5-flash': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'gpt-5.5': EXTENDED_CONTEXT_WINDOW_TOKENS,
 };
 
 /**
