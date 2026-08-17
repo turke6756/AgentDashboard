@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  AgentSupervisor,
   getEffectiveWorkspaceRoot,
+  RESEARCHER_CODEX_AGENTS_MD_V1,
+  RESEARCHER_CODEX_AGENTS_MD_V2,
   resolveResearcherLaunch,
   resolveResearcherClaudeLaunchDetails,
   resolveResearcherWorkingDirectory,
   researcherScaffoldContent,
   researcherScaffoldPaths,
+  sha256Hex,
 } from './index';
 import { WORKER_CODEX_AGENTS_MD } from '../../shared/constants';
 
@@ -60,5 +64,59 @@ test('Codex researcher scaffold is AGENTS.md-only and states that launch has no 
   assert.match(content, /Do not edit project code, run builds, run tests/);
   assert.match(content, /instructions, not an enforced tool boundary/);
   assert.match(content, /currently load no tool-restriction hook/);
+  assert.match(content, /\.agents\/skills/);
   assert.notEqual(content, WORKER_CODEX_AGENTS_MD);
+});
+
+test('Codex and Agy researcher kits contain only identity and portable skills', () => {
+  const codex = AgentSupervisor.RESEARCHER_FILES_CODEX;
+  const agy = AgentSupervisor.RESEARCHER_FILES_AGY;
+  const skills = [
+    'write-proposal',
+    'read-planning-surface',
+    'create-persona',
+    'read-comments',
+  ];
+  assert.deepEqual(Object.keys(codex).sort(), [
+    '.lares/researcher/codex/AGENTS.md',
+    ...skills.map((name) => `.lares/researcher/codex/.agents/skills/${name}/SKILL.md`),
+  ].sort());
+  assert.deepEqual(Object.keys(agy).sort(), skills
+    .map((name) => `.lares/researcher/agy/.agents/skills/${name}/SKILL.md`)
+    .sort());
+  for (const kit of [codex, agy]) {
+    assert.ok(!Object.keys(kit).some((path) => path.endsWith('settings.json')));
+    assert.ok(!Object.keys(kit).some((path) => path.includes('hook')));
+    assert.ok(!Object.keys(kit).some((path) => path.includes('research-write-guard')));
+  }
+  assert.match(researcherScaffoldContent('agy'), /\.agents\/skills/);
+});
+
+test('Agy identity remains outside its version-migrated skill map', () => {
+  const agy = AgentSupervisor.RESEARCHER_FILES_AGY;
+  assert.ok(!Object.keys(agy).some((path) => path.endsWith('/AGENTS.md')));
+  assert.equal(Object.keys(agy).length, 4);
+  for (const entry of Object.values(agy)) {
+    assert.ok(entry.version >= 2, 'Agy portable skills must use their shared migrated versions');
+    assert.ok(entry.previousHashes && Object.keys(entry.previousHashes).length > 0);
+  }
+});
+
+test('Codex AGENTS.md advances to v3 with cumulative hashes for v1 and v2', () => {
+  const entry = AgentSupervisor.RESEARCHER_FILES_CODEX['.lares/researcher/codex/AGENTS.md'];
+  assert.equal(entry.version, 3);
+  assert.deepEqual(entry.previousHashes, {
+    1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1),
+    2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2),
+  });
+});
+
+test('portable researcher skill versions match between Codex and Agy', () => {
+  for (const name of ['write-proposal', 'read-planning-surface', 'create-persona', 'read-comments']) {
+    const codex = AgentSupervisor.RESEARCHER_FILES_CODEX[`.lares/researcher/codex/.agents/skills/${name}/SKILL.md`];
+    const agy = AgentSupervisor.RESEARCHER_FILES_AGY[`.lares/researcher/agy/.agents/skills/${name}/SKILL.md`];
+    assert.equal(agy.version, codex.version);
+    assert.deepEqual(agy.previousHashes, codex.previousHashes);
+    assert.equal(agy.content, codex.content);
+  }
 });

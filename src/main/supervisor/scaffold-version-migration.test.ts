@@ -62,6 +62,7 @@ import {
   SUPERVISOR_AGENT_MD_V25_HASH,
   RESEARCH_STORE_README_MD_V3_HASH,
   RESEARCHER_CODEX_AGENTS_MD_V1,
+  RESEARCHER_CODEX_AGENTS_MD_V2,
   WORKER_CLAUDE_MD_V9_HASH,
   WORKER_CLAUDE_MD_V10_HASH,
   WORKER_CLAUDE_MD_V11_HASH,
@@ -1224,7 +1225,7 @@ test('precondition: reconstructed v1 remember body hashes to REMEMBER_SKILL_V1_H
   );
 });
 
-test('WP-5 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to v2 honest launch posture', () => {
+test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to v3 with portable-skill pointer', () => {
   const workDir = mktmp('researcher-codex-v1');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1239,8 +1240,53 @@ test('WP-5 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to
     const content = fs.readFileSync(agentsPath, 'utf-8');
     assert.match(content, /instructions, not an enforced tool boundary/);
     assert.match(content, /currently load no tool-restriction hook/);
+    assert.match(content, /\.agents\/skills/);
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 2);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 3);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to v3', () => {
+  const workDir = mktmp('researcher-codex-v2');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const agentsPath = path.join(workDir, '.lares', 'researcher', 'codex', 'AGENTS.md');
+    fs.mkdirSync(path.dirname(agentsPath), { recursive: true });
+    fs.writeFileSync(agentsPath, RESEARCHER_CODEX_AGENTS_MD_V2, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ 'researcher/codex/AGENTS.md': 2 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureResearcherScaffold(workDir, 'codex', 'windows');
+
+    assert.match(fs.readFileSync(agentsPath, 'utf-8'), /\.agents\/skills/);
+    assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 3);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-9 scaffold: Agy preserves seed-once AGENTS.md while version-migrating all four portable skills', () => {
+  const workDir = mktmp('researcher-agy-kit');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const agentsPath = path.join(workDir, '.lares', 'researcher', 'agy', 'AGENTS.md');
+    fs.mkdirSync(path.dirname(agentsPath), { recursive: true });
+    fs.writeFileSync(agentsPath, 'human-owned agy identity\n', 'utf-8');
+
+    supervisor.ensureResearcherScaffold(workDir, 'agy', 'windows');
+
+    assert.equal(fs.readFileSync(agentsPath, 'utf-8'), 'human-owned agy identity\n');
+    const sidecar = readSidecar(workDir);
+    assert.equal(sidecar['researcher/agy/AGENTS.md'], undefined);
+    assert.equal(sidecar['researcher/agy/.agents/skills/write-proposal/SKILL.md'], 3);
+    assert.equal(sidecar['researcher/agy/.agents/skills/read-planning-surface/SKILL.md'], 2);
+    assert.equal(sidecar['researcher/agy/.agents/skills/create-persona/SKILL.md'], 4);
+    assert.equal(sidecar['researcher/agy/.agents/skills/read-comments/SKILL.md'], 5);
   } finally {
     cleanup();
     rmrf(workDir);
