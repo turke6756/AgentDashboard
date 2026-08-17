@@ -36,7 +36,7 @@ import {
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
   TMUX_OPTION_MAX_AGE_MS, TMUX_OPTION_LAUNCH_SKEW_MS, STATUS_POLL_INTERVAL_MS,
   RESEARCH_STORE_README_MD, RESEARCH_STORE_README_MD_V2, RESEARCH_WRITE_GUARD_MJS, RESEARCHER_CLAUDE_SETTINGS_JSON,
-  RESEARCHER_CLAUDE_SETTINGS_JSON_V1, RESEARCHER_CLAUDE_SETTINGS_JSON_V2, RESEARCHER_AGENT_MD,
+  RESEARCHER_CLAUDE_SETTINGS_JSON_V1, RESEARCHER_CLAUDE_SETTINGS_JSON_V2, RESEARCHER_CLAUDE_SETTINGS_JSON_V3, RESEARCHER_AGENT_MD,
   PERSONA_CREATE_PERSONA_SKILL, PERSONA_READ_COMMENTS_SKILL, SCRIPT_READ_COMMENTS_PY,
   PERSONA_CREATE_PERSONA_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V2, PERSONA_READ_COMMENTS_SKILL_V3, PERSONA_READ_COMMENTS_SKILL_V4,
   PERSONA_CREATE_PERSONA_SKILL_V3_HASH,
@@ -1931,12 +1931,26 @@ Findings claim ends in \`[n]\`, and Sources reprints
 documentation pages actually opened. \`## Details\` is optional; keep the other
 four sections.`;
 
-export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V3.replace(
+export const RESEARCHER_CODEX_AGENTS_MD_V4 = RESEARCHER_CODEX_AGENTS_MD_V3.replace(
   '\nThe supervisor is your only human-side interlocutor.',
   `${RESEARCHER_REPORT_TEMPLATE_CODEX}\n\nThe supervisor is your only human-side interlocutor.`,
 );
 /** SHA-256 hex of the v3 Codex researcher contract before the report template. */
 export const RESEARCHER_CODEX_AGENTS_MD_V3_HASH = '84c8f64cfe0ac32983a76c818463055924538dd5de00e43c8ac62a1b0de8fab4';
+
+const RESEARCHER_CODEX_WORKING_DIRECTORY = `## Working directory and scope
+
+Your cwd is \`.lares/researcher/codex/\`, not the workspace. The research store
+\`.lares/research/\` is added to your file scope at launch; the workspace root
+is named in your system prompt for orientation. Resolve
+\`.lares/research/inbox/<id>.md\` against that workspace root and use the
+resulting absolute path for every report write and existence check. **Use
+absolute paths for all filesystem operations.**`;
+
+export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V4.replace(
+  '\nThe supervisor is your only human-side interlocutor.',
+  `\n${RESEARCHER_CODEX_WORKING_DIRECTORY}\n\nThe supervisor is your only human-side interlocutor.`,
+);
 
 export const RESEARCHER_AGY_AGENTS_MD_V1 = `# Researcher Agent
 
@@ -3992,7 +4006,7 @@ export class AgentSupervisor extends EventEmitter {
     ...readPlanningSurfaceEntry('.lares/researcher/claude/.claude/skills/read-planning-surface'),
     [`.lares/researcher/claude/.claude/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },
     [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 7, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH, 6: RESEARCHER_AGENT_MD_V6_HASH } },
-    [`.lares/researcher/claude/.claude/settings.json`]: { content: RESEARCHER_CLAUDE_SETTINGS_JSON, version: 3, previousHashes: { 1: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V2) } },
+    [`.lares/researcher/claude/.claude/settings.json`]: { content: RESEARCHER_CLAUDE_SETTINGS_JSON, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V2), 3: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V3) } },
     [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 8, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH, 6: RESEARCH_WRITE_GUARD_MJS_V6_HASH, 7: RESEARCH_WRITE_GUARD_MJS_V7_HASH }, executable: true },
     // Persona kit (§1.4) — default skills for the researcher lane.
     [`.lares/researcher/claude/.claude/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } }, // v4: `.lares` rename
@@ -4001,7 +4015,7 @@ export class AgentSupervisor extends EventEmitter {
 
   /** Codex researcher identity plus the portable, version-migrated skill kit. */
   static RESEARCHER_FILES_CODEX: Record<string, ScaffoldFile> = {
-    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH } },
+    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 5, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH, 4: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V4) } },
     [`.lares/researcher/codex/.codex/config.toml`]: { content: RESEARCHER_CODEX_CONFIG_TOML, version: 2, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_CONFIG_TOML_V1) } },
     ...writeProposalEntry('.lares/researcher/codex/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/codex/.agents/skills/read-planning-surface'),
@@ -4370,7 +4384,7 @@ export class AgentSupervisor extends EventEmitter {
 
     const lane = laneMatch[1];
     // Every matched lane needs the shared hook script — the lane settings.json
-    // hooks resolve `${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs`
+    // hooks resolve `${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs`
     // (or `../../` for workers/personas) against the agent's ACTUAL cwd.
     const files: Record<string, ScaffoldFile> = { ...AgentSupervisor.WORKSPACE_SCRIPT_FILES };
     if (lane === 'supervisor') Object.assign(files, AgentSupervisor.SUPERVISOR_FILES);

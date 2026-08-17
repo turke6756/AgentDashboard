@@ -5142,7 +5142,7 @@ export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V6.replace(
   RESEARCHER_AGENT_WRITING_V7,
 );
 
-/** Researcher persona settings — .lares/researcher/.claude/settings.json.
+/** Researcher persona settings — .lares/researcher/claude/.claude/settings.json.
  *  Mirrors WORKER_CLAUDE_SETTINGS_JSON's memory/compaction posture AND its
  *  turn-boundary status hooks (Stop / SessionStart / UserPromptSubmit →
  *  dashboard-status.mjs) so the dashboard can detect researcher idle/working
@@ -5150,11 +5150,11 @@ export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V6.replace(
  *  invoking the research-write guard. Bash recognition is a bypassable second
  *  line of defense, not a sandbox boundary.
  *
- *  Relative-depth note: the researcher cwd is .lares/researcher/, ONE level
- *  below .lares/ (vs the worker's two-level .lares/workers/claude/). So
+ *  Relative-depth note: the researcher cwd is .lares/researcher/claude/, TWO
+ *  levels below .lares/ (the same depth as .lares/workers/claude/). So
  *  the shared status script at .lares/scripts/dashboard-status.mjs is
- *  \${CLAUDE_PROJECT_DIR}/../scripts/... (one ..), while the researcher's OWN
- *  write-guard at .lares/researcher/scripts/research-write-guard.mjs is
+ *  \${CLAUDE_PROJECT_DIR}/../../scripts/... (two ..), while the researcher's OWN
+ *  write-guard at .lares/researcher/claude/scripts/research-write-guard.mjs is
  *  \${CLAUDE_PROJECT_DIR}/scripts/... (no ..). */
 export const RESEARCHER_CLAUDE_SETTINGS_JSON_V2 = `{
   "autoMemoryEnabled": false,
@@ -5213,8 +5213,14 @@ export const RESEARCHER_CLAUDE_SETTINGS_JSON_V2 = `{
 /** v3 adds Bash delivery to the existing Write guard. The script's Bash parser
  *  is deliberately heuristic; shell syntax can bypass it and WP-C2B owns the
  *  provider-neutral OS boundary. */
-export const RESEARCHER_CLAUDE_SETTINGS_JSON = RESEARCHER_CLAUDE_SETTINGS_JSON_V2
+export const RESEARCHER_CLAUDE_SETTINGS_JSON_V3 = RESEARCHER_CLAUDE_SETTINGS_JSON_V2
   .replace('"matcher": "Write"', '"matcher": "Write|Bash"');
+
+/** v4 corrects the four shared status/statusLine commands for the provider-
+ *  specific researcher cwd. The in-cwd research-write-guard path stays intact. */
+export const RESEARCHER_CLAUDE_SETTINGS_JSON = RESEARCHER_CLAUDE_SETTINGS_JSON_V3
+  .split('\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status')
+  .join('\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status');
 
 /** Pre-statusLine researcher settings (v1) — the hook block (SessionStart / Stop
  *  / UserPromptSubmit + PreToolUse(Write) guard, NO statusLine) kept verbatim so

@@ -64,6 +64,7 @@ import {
   RESEARCH_STORE_README_MD_V3_HASH,
   RESEARCHER_CODEX_AGENTS_MD_V1,
   RESEARCHER_CODEX_AGENTS_MD_V2,
+  RESEARCHER_CODEX_AGENTS_MD_V4,
   WORKER_CLAUDE_MD_V9_HASH,
   WORKER_CLAUDE_MD_V10_HASH,
   WORKER_CLAUDE_MD_V11_HASH,
@@ -130,6 +131,7 @@ import {
   RESEARCHER_AGENT_MD_V6,
   RESEARCHER_CLAUDE_SETTINGS_JSON,
   RESEARCHER_CLAUDE_SETTINGS_JSON_V2,
+  RESEARCHER_CLAUDE_SETTINGS_JSON_V3,
   REMEMBER_SKILL,
   SUPERVISOR_AGENT_MD,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL,
@@ -1132,16 +1134,41 @@ test('WP-B. researcher scaffold: fresh workspace writes persona CLAUDE.md + sett
     assert.ok(settings.includes('"UserPromptSubmit"'), 'researcher settings must wire UserPromptSubmit');
     assert.ok(settings.includes('"PreToolUse"'), 'researcher settings must keep the PreToolUse write-guard');
     assert.ok(settings.includes('"matcher": "Write|Bash"'), 'researcher settings must deliver the guard for Write and Bash');
-    // Relative depth: status script is one level up (../scripts), write-guard is in-cwd (scripts/).
-    assert.ok(settings.includes('/../scripts/dashboard-status.mjs'), 'status hook path must walk one level up');
+    // Relative depth: shared status scripts are two levels up; write-guard is in-cwd (scripts/).
+    assert.ok(settings.includes('/../../scripts/dashboard-status.mjs'), 'status hook path must walk two levels up');
     assert.ok(settings.includes('/scripts/research-write-guard.mjs'), 'write-guard path must be cwd-relative');
     // v2 (plans/usage-limits-mcp-and-ui.md §1.4) adds the statusLine usage-capture block.
     assert.ok(settings.includes('"statusLine"'), 'researcher settings must wire the statusLine block');
     assert.ok(settings.includes('dashboard-statusline.mjs'), 'statusLine must point at dashboard-statusline.mjs');
 
+    const parsedSettings = JSON.parse(settings);
+    const statusCommands = [
+      parsedSettings.hooks.SessionStart[0].hooks[0].command,
+      parsedSettings.hooks.UserPromptSubmit[0].hooks[0].command,
+      parsedSettings.hooks.Stop[0].hooks[0].command,
+      parsedSettings.statusLine.command,
+    ];
+    const expectedScripts = [
+      path.join(workDir, '.lares', 'scripts', 'dashboard-status.mjs'),
+      path.join(workDir, '.lares', 'scripts', 'dashboard-status.mjs'),
+      path.join(workDir, '.lares', 'scripts', 'dashboard-status.mjs'),
+      path.join(workDir, '.lares', 'scripts', 'dashboard-statusline.mjs'),
+    ];
+    statusCommands.forEach((command: string, index: number) => {
+      const expanded = command.replace('${CLAUDE_PROJECT_DIR}', researcherPath(workDir));
+      const scriptArg = expanded.match(/^node "([^"]+)"/)?.[1];
+      assert.ok(scriptArg, `status command must contain a quoted script path: ${expanded}`);
+      assert.equal(path.resolve(researcherPath(workDir), scriptArg), expectedScripts[index]);
+    });
+    const guardCommand = parsedSettings.hooks.PreToolUse[0].hooks[0].command
+      .replace('${CLAUDE_PROJECT_DIR}', researcherPath(workDir));
+    const guardArg = guardCommand.match(/^node "([^"]+)"/)?.[1];
+    assert.ok(guardArg);
+    assert.equal(path.resolve(researcherPath(workDir), guardArg), path.join(researcherPath(workDir), 'scripts', 'research-write-guard.mjs'));
+
     const sidecar = readSidecar(workDir);
     assert.equal(sidecar['researcher/claude/CLAUDE.md'], 7, `sidecar must record researcher CLAUDE.md v7; got ${JSON.stringify(sidecar)}`);
-    assert.equal(sidecar['researcher/claude/.claude/settings.json'], 3, 'sidecar must record settings v3 (Write|Bash guard delivery)');
+    assert.equal(sidecar['researcher/claude/.claude/settings.json'], 4, 'sidecar must record settings v4 (provider-specific status path depth)');
     assert.equal(sidecar['researcher/claude/scripts/research-write-guard.mjs'], 8, 'sidecar must record write guard v8');
     assert.equal(sidecar['researcher/claude/.claude/skills/research-report/SKILL.md'], 1, 'sidecar must record research-report skill v1');
 
@@ -1251,7 +1278,7 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to
     assert.match(content, /currently load no tool-restriction hook/);
     assert.match(content, /\.agents\/skills/);
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 4);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 5);
     assert.equal(readSidecar(workDir)['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
   } finally {
     cleanup();
@@ -1273,8 +1300,30 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to
 
     assert.match(fs.readFileSync(agentsPath, 'utf-8'), /\.agents\/skills/);
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 4);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 5);
     assert.equal(readSidecar(workDir)['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-13 scaffold: pristine Codex researcher AGENTS.md v4 silently upgrades to absolute-path guidance', () => {
+  const workDir = mktmp('researcher-codex-v4');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const agentsPath = path.join(workDir, '.lares', 'researcher', 'codex', 'AGENTS.md');
+    fs.mkdirSync(path.dirname(agentsPath), { recursive: true });
+    fs.writeFileSync(agentsPath, RESEARCHER_CODEX_AGENTS_MD_V4, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ 'researcher/codex/AGENTS.md': 4 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureResearcherScaffold(workDir, 'codex', 'windows');
+
+    const content = fs.readFileSync(agentsPath, 'utf-8');
+    assert.match(content, /use the\s+resulting absolute path for every report write and existence check/);
+    assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 5);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1291,7 +1340,7 @@ test('WP-12 scaffold: Codex researcher project config is seeded at version 2', (
     assert.equal(fs.readFileSync(configPath, 'utf-8'), RESEARCHER_CODEX_CONFIG_TOML);
     const sidecar = readSidecar(workDir);
     assert.equal(sidecar['researcher/codex/.codex/config.toml'], 2);
-    assert.equal(sidecar['researcher/codex/AGENTS.md'], 4);
+    assert.equal(sidecar['researcher/codex/AGENTS.md'], 5);
     assert.equal(sidecar['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
     assert.equal(sidecar['researcher/codex/.agents/skills/write-proposal/SKILL.md'], 3);
     assert.equal(fs.readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.toml.bak.')).length, 0);
@@ -1636,8 +1685,34 @@ test('C2A scaffold migrations preserve pristine researcher settings v2 and guard
     assert.equal(fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS);
     assert.equal(fs.readdirSync(path.dirname(settingsPath)).filter(n => n.startsWith('settings.json.bak')).length, 0);
     assert.equal(listResearchGuardBackups(workDir).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/claude/.claude/settings.json'], 3);
+    assert.equal(readSidecar(workDir)['researcher/claude/.claude/settings.json'], 4);
     assert.equal(readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 8);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-13 scaffold: pristine Claude researcher settings v3 silently upgrade to corrected shared-script paths', () => {
+  const workDir = mktmp('wp13-researcher-settings-v3');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const settingsPath = researcherPath(workDir, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, RESEARCHER_CLAUDE_SETTINGS_JSON_V3, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
+      'researcher/claude/.claude/settings.json': 3,
+    }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
+
+    const settings = fs.readFileSync(settingsPath, 'utf-8');
+    assert.equal(settings, RESEARCHER_CLAUDE_SETTINGS_JSON);
+    assert.ok(settings.includes('${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs'));
+    assert.ok(settings.includes('${CLAUDE_PROJECT_DIR}/scripts/research-write-guard.mjs'));
+    assert.equal(fs.readdirSync(path.dirname(settingsPath)).filter(n => n.startsWith('settings.json.bak')).length, 0);
+    assert.equal(readSidecar(workDir)['researcher/claude/.claude/settings.json'], 4);
   } finally {
     cleanup();
     rmrf(workDir);
