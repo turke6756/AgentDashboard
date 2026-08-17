@@ -39,6 +39,7 @@ import { WslRunner } from './wsl-runner';
 import { makeAgent } from './test-helpers/fake-bridge-deps';
 import { windowsToWslPath } from '../path-utils';
 import type { Agent, AgentStatus } from '../../shared/types';
+import { RESEARCHER_CLAUDE_MODEL } from '../../shared/constants';
 import {
   __resetProviderObservationsForTest,
   getProviderObservations,
@@ -1657,8 +1658,8 @@ test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --too
     // Model pin — researcher runs on Sonnet (worker/supervisor untouched).
     const modelIdx = capturedArgs.indexOf('--model');
     assert.ok(modelIdx !== -1, 'researcher must pass --model');
-    assert.equal(capturedArgs[modelIdx + 1], 'claude-sonnet-4-6',
-      `researcher --model must be claude-sonnet-4-6; got: ${capturedArgs[modelIdx + 1]}`);
+    assert.equal(capturedArgs[modelIdx + 1], RESEARCHER_CLAUDE_MODEL,
+      `researcher --model must be ${RESEARCHER_CLAUDE_MODEL}; got: ${capturedArgs[modelIdx + 1]}`);
 
     // Belt-and-suspenders --disallowedTools.
     const disIdx = capturedArgs.indexOf('--disallowedTools');
@@ -1734,7 +1735,7 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
       `WSL researcher --tools must be the single-quoted allowlist (browser_* primary + claude-in-chrome fallback); got: ${rendered}`);
     assert.ok(rendered.includes("--disallowedTools 'Bash,Edit,MultiEdit,NotebookEdit'"),
       `WSL researcher --disallowedTools must list the dangerous built-ins; got: ${rendered}`);
-    assert.ok(rendered.includes('--model claude-sonnet-4-6'),
+    assert.ok(rendered.includes(`--model ${RESEARCHER_CLAUDE_MODEL}`),
       `WSL researcher must be pinned to Sonnet; got: ${rendered}`);
     assert.ok(rendered.includes(`--add-dir '${wslWorkspaceRoot}/.lares/research'`),
       `WSL researcher --add-dir must target the research store; got: ${rendered}`);

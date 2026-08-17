@@ -14,7 +14,7 @@ import {
   researcherScaffoldPaths,
   sha256Hex,
 } from './index';
-import { WORKER_CODEX_AGENTS_MD } from '../../shared/constants';
+import { RESEARCHER_CLAUDE_MODEL, WORKER_CODEX_AGENTS_MD } from '../../shared/constants';
 
 test('researcher launch accepts codex and preserves provider-specific Claude gating', () => {
   let failure: unknown;
@@ -47,7 +47,7 @@ test('Claude researchers retain the complete native launch surface', () => {
   assert.ok(details.nativeArgs[1].includes('WebSearch'));
   assert.deepEqual(details.nativeArgs.slice(2, 4), ['--disallowedTools', details.nativeArgs[3]]);
   assert.ok(details.nativeArgs[3].includes('Bash'));
-  assert.deepEqual(details.nativeArgs.slice(4), ['--model', 'claude-sonnet-4-6']);
+  assert.deepEqual(details.nativeArgs.slice(4), ['--model', RESEARCHER_CLAUDE_MODEL]);
 });
 
 test('new Claude researcher sessions classify to their workspace', () => {

@@ -406,6 +406,11 @@ export const PROVIDER_COMMANDS: Record<LaunchableAgentProvider, { windows: strin
  *  explicit `--model`, so custom commands / personas can still override. */
 export const WORKER_CLAUDE_MODEL = 'claude-opus-4-8';
 
+/** Default model pins for researcher-lane agents. Injected at launch (both
+ *  Windows and WSL paths); Codex preserves an explicit command-level override. */
+export const RESEARCHER_CLAUDE_MODEL = 'claude-sonnet-5';
+export const RESEARCHER_CODEX_MODEL = 'gpt-5.5';
+
 /** Display metadata for provider badges */
 export const PROVIDER_META: Record<AgentProvider, { label: string; color: string; bgClass: string; textClass: string }> = {
   claude: { label: 'Claude', color: '#F59E0B', bgClass: 'bg-amber-500/20', textClass: 'text-amber-400' },
@@ -4416,7 +4421,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'claude-opus-4-1': DEFAULT_CONTEXT_WINDOW_TOKENS,
   'claude-opus-4-20250514': DEFAULT_CONTEXT_WINDOW_TOKENS,
-  'claude-sonnet-4-6': EXTENDED_CONTEXT_WINDOW_TOKENS,
+  'claude-sonnet-5': EXTENDED_CONTEXT_WINDOW_TOKENS,
   'claude-haiku-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
   'claude-sonnet-4-5': DEFAULT_CONTEXT_WINDOW_TOKENS,
   'opusplan': DEFAULT_CONTEXT_WINDOW_TOKENS,

@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { afterEach, test } from 'node:test';
 import type { Agent, AgentStatus } from '../../shared/types';
+import { RESEARCHER_CODEX_MODEL } from '../../shared/constants';
 import { AgentSupervisor } from './index';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner } from './wsl-runner';
@@ -255,9 +256,9 @@ test('production Windows codex launches receive their computed lane MCP toolset'
   const supervisor = makeSupervisor();
 
   const cases = [
-    { id: 'codex-supervisor', flags: { isSupervisor: true }, toolsets: 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration' },
-    { id: 'codex-worker', flags: { isSupervised: true }, toolsets: 'comms,observability-core,browser-present,plans-read,memory' },
-    { id: 'codex-researcher', flags: { isResearcher: true }, toolsets: 'browser' },
+    { id: 'codex-supervisor', flags: { isSupervisor: true }, toolsets: 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration', model: null },
+    { id: 'codex-worker', flags: { isSupervised: true }, toolsets: 'comms,observability-core,browser-present,plans-read,memory', model: null },
+    { id: 'codex-researcher', flags: { isResearcher: true }, toolsets: 'browser', model: RESEARCHER_CODEX_MODEL },
   ] as const;
 
   for (const item of cases) {
@@ -291,11 +292,30 @@ test('production Windows codex launches receive their computed lane MCP toolset'
     assert.equal(launch.args.includes('--mcp-config'), false, 'codex must not receive Claude MCP flags');
     assert.equal(launch.args.includes('--strict-mcp-config'), false, 'codex has no strict MCP isolation flag');
     assert.equal(launch.args.includes('--strict-config'), false, '--strict-config is schema strictness, not MCP isolation');
+    const modelIndex = launch.args.indexOf('--model');
+    if (item.model) {
+      assert.equal(launch.args[modelIndex + 1], item.model,
+        'REACHABILITY:codex-researcher-model-pin Windows researcher must enter through the production launcher with its pinned model');
+    } else {
+      assert.equal(modelIndex, -1,
+        `${item.id} must remain unaffected by the researcher-only model pin`);
+    }
     assert.equal(configs.every((value) => value.startsWith('mcp_servers.agent-dashboard.')), true,
       'codex overrides add only the dashboard server and leave shared global MCP servers additive');
   }
   assert.equal(fs.existsSync(path.join(fixture, 'account', '.codex', 'config.toml')), false,
     'per-launch delivery must not write or replace the shared codex config');
+
+  const explicitAgent = makeAgent('codex-researcher-explicit-model', {
+    provider: 'codex', command: 'codex --model gpt-explicit', isResearcher: true,
+    workingDirectory: path.join(fixture, 'workspace', 'codex-researcher-explicit-model'),
+  });
+  fs.mkdirSync(explicitAgent.workingDirectory, { recursive: true });
+  agents.set(explicitAgent.id, explicitAgent);
+  await launchWindows(supervisor, explicitAgent);
+  const explicitModelArgs = launches.at(-1)!.args.filter((arg) => arg === '--model' || arg.startsWith('--model='));
+  assert.deepEqual(explicitModelArgs, ['--model'], 'an explicit Windows --model must not receive a second model option');
+  assert.equal(launches.at(-1)!.args[launches.at(-1)!.args.indexOf('--model') + 1], 'gpt-explicit');
 
   // Exercise Codex's actual config loader, not an absence-of-strict-flags proxy:
   // the shared server and the injected dashboard server must coexist.
@@ -428,6 +448,30 @@ test('production WSL codex researcher preserves MCP bytes on fresh launch and re
     'F9: token value must not enter WSL codex MCP argv');
   assert.ok(resumeCommand.lastIndexOf(`'${CODEX_SESSION_ID}'`) > resumeCommand.lastIndexOf(" '-c' "),
     'WSL resume keeps its established SID-last ordering after MCP injection');
+  assert.match(freshCommand, new RegExp(`(?:^|\\s)--model ${RESEARCHER_CODEX_MODEL}(?:\\s|$)`),
+    'REACHABILITY:codex-researcher-model-pin fresh WSL researcher must enter through the production launcher with its pinned model');
+  assert.match(resumeCommand, new RegExp(`'--model' '${RESEARCHER_CODEX_MODEL}'`),
+    'REACHABILITY:codex-researcher-model-pin resumed WSL researcher must retain its pinned model');
+});
+
+test('production WSL codex researcher preserves an explicit model override', async () => {
+  installProviderCredentials();
+  const agents = new Map<string, Agent>();
+  const wslLaunches: string[] = [];
+  patchDependencies(agents, [], wslLaunches);
+  const agent = makeAgent('codex-researcher-wsl-explicit-model', {
+    provider: 'codex', command: 'ccodex --model=gpt-explicit', isResearcher: true,
+    workingDirectory: '/home/fixture/workspace/.lares/researcher/codex',
+    tmuxSessionName: 'lares-codex-researcher-wsl-explicit-model',
+  });
+  agents.set(agent.id, agent);
+  await (makeSupervisor() as unknown as { launchWslAgent: (value: Agent) => Promise<void> }).launchWslAgent(agent);
+
+  const command = wslLaunches.at(-1) ?? '';
+  assert.equal((command.match(/--model(?:=|\s)/g) ?? []).length, 1,
+    'an explicit WSL --model must not receive a second model option');
+  assert.match(command, /--model=gpt-explicit/);
+  assert.doesNotMatch(command, new RegExp(`--model ${RESEARCHER_CODEX_MODEL}`));
 });
 
 test('Claude worker argv matches the captured f4ca7231 baseline bytes', async () => {

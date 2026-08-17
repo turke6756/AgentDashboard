@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, BulkStopItemResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, ForceContinuationResult, HistoryNotice, LaunchAgentInput, LaunchableAgentProvider, QueryResult, RetentionExecutionResult, SendOutcome, StopEligibilityMode, StopResult, Team, TerminalDeadSnapshot, TerminalLogRange, TerminalLogTail, UsageLimitsReading, hasSupervisorPrivilege, type ResolvedIntentStamp } from '../../shared/types';
 import { assembleGuardSnapshot, evaluateStopEligibility, type AgentBrowserState, type GuardDeps } from '../lifecycle/guards';
 import {
-  TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL,
+  TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL, RESEARCHER_CLAUDE_MODEL, RESEARCHER_CODEX_MODEL,
   SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_MEMORY_MD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON, SUPERVISOR_CLAUDE_SETTINGS_JSON_V1, SUPERVISOR_CLAUDE_SETTINGS_JSON_V2,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V3,
@@ -1852,7 +1852,7 @@ export function resolveResearcherClaudeLaunchDetails(): {
 } {
   return {
     browserFlag: '--chrome',
-    nativeArgs: ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', 'claude-sonnet-4-6'],
+    nativeArgs: ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', RESEARCHER_CLAUDE_MODEL],
   };
 }
 
@@ -5202,7 +5202,7 @@ export class AgentSupervisor extends EventEmitter {
         // `browser` toolset above. Gate-RB live-confirms --tools containment.
         if (lane === 'researcher') {
           args.push(...resolveResearcherClaudeLaunchDetails().nativeArgs);
-          console.log(`[Windows] Researcher native-tool boundary: --tools (${RESEARCHER_ALLOWED_TOOLS.length}) --disallowedTools (${RESEARCHER_DISALLOWED_TOOLS.join(',')}) --model claude-sonnet-4-6`);
+          console.log(`[Windows] Researcher native-tool boundary: --tools (${RESEARCHER_ALLOWED_TOOLS.length}) --disallowedTools (${RESEARCHER_DISALLOWED_TOOLS.join(',')}) --model ${RESEARCHER_CLAUDE_MODEL}`);
         }
 
         // Worker-lane model pin: default workers to Opus rather than the CLI's
@@ -5214,6 +5214,12 @@ export class AgentSupervisor extends EventEmitter {
           console.log(`[Windows] Worker model pin: --model ${WORKER_CLAUDE_MODEL}`);
         }
       } else if (agent.provider === 'codex' && lane !== 'legacy') {
+        // Researcher-only model pin. Keep the shared Codex profile model-free so
+        // worker launches continue to inherit the user's configured model.
+        if (lane === 'researcher' && !args.some((a) => a === '--model' || a.startsWith('--model='))) {
+          args.push('--model', RESEARCHER_CODEX_MODEL);
+          console.log(`[Windows] Codex researcher model pin: --model ${RESEARCHER_CODEX_MODEL}`);
+        }
         const config = this.buildDashboardMcpConfigForLane(
           lane,
           'windows',
@@ -6283,7 +6289,7 @@ export class AgentSupervisor extends EventEmitter {
           command += ` --tools '${researcherDetails.nativeArgs[1]}'`;
           command += ` --disallowedTools '${researcherDetails.nativeArgs[3]}'`;
           command += ` --model ${researcherDetails.nativeArgs[5]}`;
-          console.log(`[WSL] Researcher native-tool boundary: --tools (${RESEARCHER_ALLOWED_TOOLS.length}) --disallowedTools (${RESEARCHER_DISALLOWED_TOOLS.join(',')}) --model claude-sonnet-4-6`);
+          console.log(`[WSL] Researcher native-tool boundary: --tools (${RESEARCHER_ALLOWED_TOOLS.length}) --disallowedTools (${RESEARCHER_DISALLOWED_TOOLS.join(',')}) --model ${RESEARCHER_CLAUDE_MODEL}`);
         }
 
         // Worker-lane model pin: default workers to Opus rather than the CLI's
@@ -6295,6 +6301,12 @@ export class AgentSupervisor extends EventEmitter {
           console.log(`[WSL] Worker model pin: --model ${WORKER_CLAUDE_MODEL}`);
         }
       } else if (agent.provider === 'codex' && lane !== 'legacy') {
+        // Mirror the Windows researcher-only pin without touching the shared
+        // Codex profile or overriding a model explicitly supplied by the user.
+        if (lane === 'researcher' && !/(^|\s)--model(=|\s|$)/.test(command)) {
+          command += ` --model ${RESEARCHER_CODEX_MODEL}`;
+          console.log(`[WSL] Codex researcher model pin: --model ${RESEARCHER_CODEX_MODEL}`);
+        }
         const config = this.buildDashboardMcpConfigForLane(
           lane,
           'wsl',
@@ -6761,7 +6773,7 @@ export class AgentSupervisor extends EventEmitter {
         ? ['--mcp-config', this.buildDashboardMcpConfigForLane(forkLane, 'windows', this.buildIdentityEnvForAgent(newAgent), forkToken!), ...(forkStrict ? ['--strict-mcp-config'] : [])]
         : [];
       const forkTools = forkResearcher
-        ? ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', 'claude-sonnet-4-6']
+        ? ['--tools', RESEARCHER_ALLOWED_TOOLS.join(','), '--disallowedTools', RESEARCHER_DISALLOWED_TOOLS.join(','), '--model', RESEARCHER_CLAUDE_MODEL]
         : [];
       const forkArgs = [...parts.slice(1), ...forkMcp, ...forkTools, '--resume', source.resumeSessionId, '--fork-session', '--session-id', newSessionId];
       await this.launchWindowsAgent(newAgent, false, null, undefined, forkArgs, false, undefined, forkToken);
@@ -6770,7 +6782,7 @@ export class AgentSupervisor extends EventEmitter {
         ? ` --mcp-config '${this.buildDashboardMcpConfigForLane(forkLane, 'wsl', this.buildIdentityEnvForAgent(newAgent), forkToken!)}'${forkStrict ? ' --strict-mcp-config' : ''}`
         : '';
       const forkTools = forkResearcher
-        ? ` --tools '${RESEARCHER_ALLOWED_TOOLS.join(',')}' --disallowedTools '${RESEARCHER_DISALLOWED_TOOLS.join(',')}' --model claude-sonnet-4-6`
+        ? ` --tools '${RESEARCHER_ALLOWED_TOOLS.join(',')}' --disallowedTools '${RESEARCHER_DISALLOWED_TOOLS.join(',')}' --model ${RESEARCHER_CLAUDE_MODEL}`
         : '';
       const forkCommand = `${source.command}${forkMcp}${forkTools} --resume ${source.resumeSessionId} --fork-session --session-id ${newSessionId}`;
       await this.launchWslAgent(newAgent, false, null, forkCommand, undefined, false, undefined, forkToken);
