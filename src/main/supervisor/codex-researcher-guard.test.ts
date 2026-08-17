@@ -4,22 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { CODEX_RESEARCHER_TOOL_DENY_HOOK } from '../../shared/constants';
-
-// Codex 0.145.0's currently observed execution/file-mutation surface. This is
-// deliberately an explicit fixture: a newly exposed tool must be added here,
-// otherwise this test fails rather than silently widening the researcher lane.
-const CODEX_RESEARCHER_TOOL_SURFACE = [
-  'shell_command',
-  'apply_patch',
-] as const;
+import { GUARD_GIT_DISCARD_MJS } from '../../shared/constants';
 
 const RESEARCHER_CWD = 'C:\\workspace\\.lares\\researcher\\codex';
 
 function runHook(payload: Record<string, unknown>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-researcher-hook-'));
   const hook = path.join(dir, 'guard.mjs');
-  fs.writeFileSync(hook, CODEX_RESEARCHER_TOOL_DENY_HOOK, 'utf8');
+  fs.writeFileSync(hook, GUARD_GIT_DISCARD_MJS, 'utf8');
   return spawnSync(process.execPath, [hook], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
@@ -27,62 +19,45 @@ function runHook(payload: Record<string, unknown>) {
   });
 }
 
-function assertCodexDeny(result: ReturnType<typeof runHook>, tool: string) {
-  assert.notEqual(result.stdout, '', 'REACHABILITY:codex-researcher-tool-deny');
+function assertCodexAllow(result: ReturnType<typeof runHook>) {
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '', 'allowed Codex tool payload must not receive a deny response');
+  assert.equal(result.stderr, '');
+}
+
+function assertCodexDeny(result: ReturnType<typeof runHook>) {
+  assert.notEqual(result.stdout, '', 'REACHABILITY:codex-researcher-git-discard-deny');
   assert.equal(result.status, 0, 'Codex deny must exit 0, otherwise Codex fails open');
   assert.equal(result.stderr, '', 'Codex deny must not add stderr');
   const parsed = JSON.parse(result.stdout);
   assert.deepEqual(Object.keys(parsed), ['hookSpecificOutput']);
   assert.equal(parsed.hookSpecificOutput.hookEventName, 'PreToolUse');
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(parsed.hookSpecificOutput.permissionDecisionReason, new RegExp(tool));
+  assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /discards uncommitted work/);
 }
 
-test('dormant Codex researcher hook-body fixture enumerates its exact-name surface', () => {
-  assert.deepEqual(CODEX_RESEARCHER_TOOL_SURFACE, ['shell_command', 'apply_patch']);
-  assert.ok(CODEX_RESEARCHER_TOOL_DENY_HOOK.includes("'shell_command'"));
-  assert.ok(CODEX_RESEARCHER_TOOL_DENY_HOOK.includes("'apply_patch'"));
-});
-
-test('dormant Codex researcher hook body emits a shell-deny response when invoked directly', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-researcher-exec-'));
-  const target = path.join(dir, 'must-not-exist.txt');
-  const command = `node -e "require('fs').writeFileSync(${JSON.stringify(target)}, 'ran')"`;
-  const result = runHook({
-    turn_id: 'turn-shell', model: 'codex', cwd: RESEARCHER_CWD,
-    tool_name: 'shell_command', tool_input: { command, workdir: RESEARCHER_CWD },
-  });
-  assertCodexDeny(result, 'shell_command');
-  // The harness would execute the command only after an allow response. This
-  // observable target is the load-bearing assertion: a payload-only JSON test
-  // would pass even if the hook failed open.
-  if (!JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision) {
-    spawnSync(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(target)}, 'ran')`]);
-  }
-  assert.equal(fs.existsSync(target), false, 'direct hook-body fixture must not run the simulated shell command');
-});
-
-test('dormant Codex researcher hook body emits a direct-mutation deny response by name', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-researcher-edit-'));
-  const target = path.join(dir, 'must-not-exist.txt');
+test('Codex researcher apply_patch payload is not denied by the shared guard', () => {
   const result = runHook({
     turn_id: 'turn-edit', model: 'codex', cwd: RESEARCHER_CWD,
     tool_name: 'apply_patch', tool_input: {
-      patch: `*** Begin Patch\\n*** Add File: ${target}\\n+ran\\n*** End Patch`,
+      patch: '*** Begin Patch\\n*** Add File: report.md\\n+report\\n*** End Patch',
     },
   });
-  assertCodexDeny(result, 'apply_patch');
-  if (!JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision) {
-    fs.writeFileSync(target, 'ran', 'utf8');
-  }
-  assert.equal(fs.existsSync(target), false, 'direct hook-body fixture must not run the simulated file mutation');
+  assertCodexAllow(result);
 });
 
-test('dormant Codex researcher hook body ignores unknown and non-researcher tool calls', () => {
-  const unknown = runHook({ turn_id: 'turn-unknown', model: 'codex', cwd: RESEARCHER_CWD, tool_name: 'future_exec_tool' });
-  assert.equal(unknown.status, 0);
-  assert.equal(unknown.stdout, '');
-  const worker = runHook({ turn_id: 'turn-worker', model: 'codex', cwd: 'C:\\workspace\\.lares\\workers\\codex', tool_name: 'shell_command' });
-  assert.equal(worker.status, 0);
-  assert.equal(worker.stdout, '');
+test('Codex researcher shell_command payload is not denied when it is not a git discard', () => {
+  const result = runHook({
+    turn_id: 'turn-shell', model: 'codex', cwd: RESEARCHER_CWD,
+    tool_name: 'shell_command', tool_input: { command: 'node -e "console.log(1)"', workdir: RESEARCHER_CWD },
+  });
+  assertCodexAllow(result);
+});
+
+test('Codex researcher git-discard command is still denied by the shared guard', () => {
+  const result = runHook({
+    turn_id: 'turn-discard', model: 'codex', cwd: RESEARCHER_CWD,
+    tool_name: 'shell_command', tool_input: { command: 'git reset --hard', workdir: RESEARCHER_CWD },
+  });
+  assertCodexDeny(result);
 });

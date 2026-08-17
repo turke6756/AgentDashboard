@@ -25,9 +25,9 @@ import {
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
   WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7, WORKER_CODEX_CONFIG_TOML_V8,
   WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_BEHAVIORAL_MD,
-  RESEARCHER_CODEX_CONFIG_TOML,
+  RESEARCHER_CODEX_CONFIG_TOML, RESEARCHER_CODEX_CONFIG_TOML_V1,
   WORKER_GROK_AGENTS_MD, WORKER_AGY_AGENTS_MD,
-  GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4,
+  GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4, GUARD_GIT_DISCARD_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS, DASHBOARD_STATUS_SCRIPT_MJS_V3, DASHBOARD_STATUS_SCRIPT_MJS_V4, DASHBOARD_STATUS_SCRIPT_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
   DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
@@ -3915,7 +3915,7 @@ export class AgentSupervisor extends EventEmitter {
     // providers; blocks git commands that discard uncommitted work in the shared
     // working tree. Written on every workspace-script scaffold pass, like
     // dashboard-status.mjs.
-    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 5, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH, 3: GUARD_GIT_DISCARD_MJS_V3_HASH, 4: sha256Hex(GUARD_GIT_DISCARD_MJS_V4) } }, // v5: corrects dormant Codex researcher posture; v4 added the dormant exact-name predicate.
+    [`.lares/scripts/guard-git-discard.mjs`]: { content: GUARD_GIT_DISCARD_MJS, version: 6, executable: true, previousHashes: { 1: GUARD_GIT_DISCARD_MJS_V1_HASH, 2: GUARD_GIT_DISCARD_MJS_V2_HASH, 3: GUARD_GIT_DISCARD_MJS_V3_HASH, 4: sha256Hex(GUARD_GIT_DISCARD_MJS_V4), 5: sha256Hex(GUARD_GIT_DISCARD_MJS_V5) } }, // v6 removes the Codex researcher tool deny; git-discard protection remains intact.
     // Memory-index v2 CLI (WP-A1). Self-contained ESM bundled from
     // scripts/memory-index-cli-entry.ts + src/shared/memory-index-core.ts (one
     // source of logic; main imports the same core in-process). The `remember`
@@ -4002,7 +4002,7 @@ export class AgentSupervisor extends EventEmitter {
   /** Codex researcher identity plus the portable, version-migrated skill kit. */
   static RESEARCHER_FILES_CODEX: Record<string, ScaffoldFile> = {
     [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH } },
-    [`.lares/researcher/codex/.codex/config.toml`]: { content: RESEARCHER_CODEX_CONFIG_TOML, version: 1 },
+    [`.lares/researcher/codex/.codex/config.toml`]: { content: RESEARCHER_CODEX_CONFIG_TOML, version: 2, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_CONFIG_TOML_V1) } },
     ...writeProposalEntry('.lares/researcher/codex/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/codex/.agents/skills/read-planning-surface'),
     [`.lares/researcher/codex/.agents/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },

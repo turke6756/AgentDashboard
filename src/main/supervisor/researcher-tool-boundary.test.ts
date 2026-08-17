@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import type { Agent, AgentStatus } from '../../shared/types';
 import {
-  CODEX_RESEARCHER_TOOL_DENY_HOOK,
   GUARD_GIT_DISCARD_MJS,
   RESEARCHER_CODEX_CONFIG_TOML,
 } from '../../shared/constants';
@@ -347,12 +346,6 @@ test('CONFIGURATION INVARIANT: Codex researcher has a production config consumer
     invariant('Codex researcher launch must opt into the production hook configuration seam'));
   assert.ok(launch.args.includes('--dangerously-bypass-hook-trust'),
     invariant('Codex researcher launch must load hook-capable project config without an interactive trust prompt'));
-  assert.equal(
-    CODEX_RESEARCHER_TOOL_DENY_HOOK,
-    GUARD_GIT_DISCARD_MJS,
-    invariant('CODEX_RESEARCHER_TOOL_DENY_HOOK must remain explicitly recorded as an alias of the shared git-discard guard'),
-  );
-
   const researcherConfig = path.join(agent.workingDirectory, '.codex', 'config.toml');
   const researcherConfigBody = fs.existsSync(researcherConfig) ? fs.readFileSync(researcherConfig, 'utf8') : '';
   const launchArtifact = JSON.stringify({
@@ -373,18 +366,18 @@ test('CONFIGURATION INVARIANT: Codex researcher has a production config consumer
   );
   assert.match(
     launchArtifact,
-    /guard-git-discard|CODEX_RESEARCHER_TOOL_DENY_HOOK|hooks\.PreToolUse|\[\[hooks\.PreToolUse\]\]|dashboard-worker/,
-    invariant('Codex researcher launch artifacts must expose the configured PreToolUse consumer; this does not observe a denial'),
+    /guard-git-discard|hooks\.PreToolUse|\[\[hooks\.PreToolUse\]\]|dashboard-worker/,
+    invariant('Codex researcher launch artifacts must expose the configured git-discard guard consumer'),
   );
   assert.match(
     researcherConfigBody,
-    /failing open[\s\S]*consistency and dependability[\s\S]*never a researcher write boundary/,
-    invariant('Codex researcher config must state the observed fail-open posture without an enforcement claim'),
+    /block git commands that discard uncommitted work[\s\S]*does not restrict researcher tools/,
+    invariant('Codex researcher config must describe git-discard protection without claiming a researcher tool boundary'),
   );
   const sharedGuard = path.join(workspace, '.lares', 'scripts', 'guard-git-discard.mjs');
   assert.equal(
     fs.readFileSync(sharedGuard, 'utf8'),
     GUARD_GIT_DISCARD_MJS,
-    invariant('the configured shared guard artifact must be present; config presence does not establish an observed denial'),
+    invariant('the configured shared git-discard guard artifact must be present'),
   );
 });

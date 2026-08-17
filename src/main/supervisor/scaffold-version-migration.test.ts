@@ -121,6 +121,7 @@ import {
   workerAgyHooksJsonV2,
   GUARD_GIT_DISCARD_MJS,
   GUARD_GIT_DISCARD_MJS_V4,
+  GUARD_GIT_DISCARD_MJS_V5,
   RESEARCH_WRITE_GUARD_MJS,
   RESEARCH_STORE_README_MD,
   RESEARCH_STORE_README_MD_V2,
@@ -189,6 +190,7 @@ import {
   WORKER_CODEX_CONFIG_TOML_V6,
   WORKER_CODEX_CONFIG_TOML_V8,
   RESEARCHER_CODEX_CONFIG_TOML,
+  RESEARCHER_CODEX_CONFIG_TOML_V1,
   WORKER_CLAUDE_SETTINGS_JSON,
   WORKER_CLAUDE_SETTINGS_JSON_V6,
   WORKER_CLAUDE_SETTINGS_JSON_V7,
@@ -1279,8 +1281,8 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to
   }
 });
 
-test('WP-8 scaffold: Codex researcher project config is seeded at version 1', () => {
-  const workDir = mktmp('researcher-codex-config-v1');
+test('WP-12 scaffold: Codex researcher project config is seeded at version 2', () => {
+  const workDir = mktmp('researcher-codex-config-v2');
   const { supervisor, cleanup } = makeSupervisor();
   try {
     supervisor.ensureResearcherScaffold(workDir, 'codex', 'windows');
@@ -1288,10 +1290,33 @@ test('WP-8 scaffold: Codex researcher project config is seeded at version 1', ()
     const configPath = path.join(workDir, '.lares', 'researcher', 'codex', '.codex', 'config.toml');
     assert.equal(fs.readFileSync(configPath, 'utf-8'), RESEARCHER_CODEX_CONFIG_TOML);
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['researcher/codex/.codex/config.toml'], 1);
+    assert.equal(sidecar['researcher/codex/.codex/config.toml'], 2);
     assert.equal(sidecar['researcher/codex/AGENTS.md'], 4);
     assert.equal(sidecar['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
     assert.equal(sidecar['researcher/codex/.agents/skills/write-proposal/SKILL.md'], 3);
+    assert.equal(fs.readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.toml.bak.')).length, 0);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-12 scaffold: pristine Codex researcher config v1 silently upgrades to v2', () => {
+  const workDir = mktmp('researcher-codex-config-v1');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const configPath = path.join(workDir, '.lares', 'researcher', 'codex', '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, RESEARCHER_CODEX_CONFIG_TOML_V1, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
+      'researcher/codex/.codex/config.toml': 1,
+    }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureResearcherScaffold(workDir, 'codex', 'windows');
+
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), RESEARCHER_CODEX_CONFIG_TOML);
+    assert.equal(readSidecar(workDir)['researcher/codex/.codex/config.toml'], 2);
     assert.equal(fs.readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.toml.bak.')).length, 0);
   } finally {
     cleanup();
@@ -1372,7 +1397,13 @@ test('precondition: frozen v2 git-discard-guard body hashes to GUARD_GIT_DISCARD
 
 test('WP-5 scaffold: frozen git-discard guard v4 is pinned and differs from corrected v5 posture wording', () => {
   assert.equal(sha256Hex(GUARD_GIT_DISCARD_MJS_V4), '466233b0ff829e62d417de75964fb9789ac2f4aedf5e79b807c479625e393fec');
-  assert.notEqual(GUARD_GIT_DISCARD_MJS_V4, GUARD_GIT_DISCARD_MJS);
+  assert.notEqual(GUARD_GIT_DISCARD_MJS_V4, GUARD_GIT_DISCARD_MJS_V5);
+});
+
+test('WP-12 scaffold: frozen git-discard guard v5 differs from the live v6 body', () => {
+  assert.notEqual(GUARD_GIT_DISCARD_MJS_V5, GUARD_GIT_DISCARD_MJS);
+  assert.match(GUARD_GIT_DISCARD_MJS_V5, /CODEX_RESEARCHER_TOOL_SURFACE/);
+  assert.doesNotMatch(GUARD_GIT_DISCARD_MJS, /CODEX_RESEARCHER_TOOL_SURFACE/);
 });
 
 test('precondition: frozen v3 research-write-guard body hashes to RESEARCH_WRITE_GUARD_MJS_V3_HASH and differs from the live body', () => {
@@ -1418,8 +1449,8 @@ test('guard-git-discard.mjs v1 + sidecar v1 → silent upgrade to v3, no .bak', 
     );
     assert.equal(listGuardBackups(workDir).length, 0, 'known v1-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 5,
-      `sidecar must record guard v5; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 6,
+      `sidecar must record guard v6; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1427,7 +1458,7 @@ test('guard-git-discard.mjs v1 + sidecar v1 → silent upgrade to v3, no .bak', 
   }
 });
 
-test('WP-5 scaffold: pristine git-discard guard v4 silently upgrades to v5 without a backup', () => {
+test('WP-5 scaffold: pristine git-discard guard v4 silently upgrades to v6 without a backup', () => {
   const workDir = mktmp('guard-known-v4');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1440,7 +1471,27 @@ test('WP-5 scaffold: pristine git-discard guard v4 silently upgrades to v5 witho
 
     assert.equal(fs.readFileSync(guardScriptPath(workDir), 'utf-8'), GUARD_GIT_DISCARD_MJS);
     assert.equal(listGuardBackups(workDir).length, 0);
-    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 5);
+    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 6);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-12 scaffold: pristine git-discard guard v5 silently upgrades to v6 without a backup', () => {
+  const workDir = mktmp('guard-known-v5');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    fs.mkdirSync(path.dirname(guardScriptPath(workDir)), { recursive: true });
+    fs.writeFileSync(guardScriptPath(workDir), GUARD_GIT_DISCARD_MJS_V5, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ 'scripts/guard-git-discard.mjs': 5 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureWorkspaceScripts(workDir, 'windows');
+
+    assert.equal(fs.readFileSync(guardScriptPath(workDir), 'utf-8'), GUARD_GIT_DISCARD_MJS);
+    assert.equal(listGuardBackups(workDir).length, 0);
+    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 6);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1468,8 +1519,8 @@ test('guard-git-discard.mjs v2 (exit-0 unenforcing) + sidecar v2 → silent upgr
     );
     assert.equal(listGuardBackups(workDir).length, 0, 'known v2-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 5,
-      `sidecar must record guard v5; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['scripts/guard-git-discard.mjs'], 6,
+      `sidecar must record guard v6; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1497,7 +1548,7 @@ test('guard-git-discard.mjs locally-edited (unknown-hash) + no sidecar → .bak 
       fs.readFileSync(path.join(workDir, '.lares', 'scripts', backups[0]), 'utf-8'), edited,
       'backup must hold the locally-edited guard content verbatim',
     );
-    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 5, 'sidecar must record guard v5');
+    assert.equal(readSidecar(workDir)['scripts/guard-git-discard.mjs'], 6, 'sidecar must record guard v6');
   } finally {
     cleanup();
     rmrf(workDir);

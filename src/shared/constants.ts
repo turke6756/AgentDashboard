@@ -2793,10 +2793,10 @@ try {
 if (invokedDirectly) main();
 `;
 
-/** v5 only corrects the shipped script's posture comment. Its dormant Codex
- * researcher predicate remains byte-for-byte functional but still has no
- * researcher launch consumer. */
-export const GUARD_GIT_DISCARD_MJS = GUARD_GIT_DISCARD_MJS_V4.replace(
+/** Frozen v5 body. v5 only corrected the shipped script's posture comment;
+ * its Codex researcher exact-name deny became live when the researcher config
+ * supplied a consumer. */
+export const GUARD_GIT_DISCARD_MJS_V5 = GUARD_GIT_DISCARD_MJS_V4.replace(
   `// Codex researcher capability boundary (WP-C). This is intentionally an
 // exact-name deny, not command-string inspection: Codex researchers cannot use
 // the currently enumerated execution/file-mutation tools. This hook is weaker
@@ -2808,14 +2808,12 @@ export const GUARD_GIT_DISCARD_MJS = GUARD_GIT_DISCARD_MJS_V4.replace(
 // denial. A separate wiring package must supply and verify a real consumer.`,
 );
 
-/** Codex researcher PreToolUse source (WP-C).
- *
- * This is deliberately an alias of the shared git-discard guard. The researcher
- * config below names that shared script as a consistency and dependability
- * check. Live acceptance on this host observed its deny failing open, so loading
- * the config establishes neither a write boundary nor an observed denial.
- */
-export const CODEX_RESEARCHER_TOOL_DENY_HOOK = GUARD_GIT_DISCARD_MJS;
+/** v6 removes the Codex-researcher tool deny while preserving the shared
+ * git-discard protection byte-for-byte. */
+export const GUARD_GIT_DISCARD_MJS = GUARD_GIT_DISCARD_MJS_V5
+  .replace(/\/\/ Dormant Codex researcher exact-name logic \(WP-C\)\.[\s\S]*?real consumer\.\n/, '')
+  .replace(/export const CODEX_RESEARCHER_TOOL_SURFACE[\s\S]*?(?=export const DENY_REASON)/, '')
+  .replace(/  const researcherReason = denyCodexResearcherTool\(payload\);[\s\S]*?    process\.exit\(0\);\n  }\n/, '');
 
 /** Codex researcher project config (v1). Codex discovers this file from the
  * trusted researcher cwd. The relative command reaches the workspace-managed
@@ -2823,10 +2821,27 @@ export const CODEX_RESEARCHER_TOOL_DENY_HOOK = GUARD_GIT_DISCARD_MJS;
  * This is a configuration seam for consistency and dependability. On this host
  * the Codex deny failed open even with valid deny JSON, so this is never a write
  * boundary and must not be presented as observed enforcement. */
-export const RESEARCHER_CODEX_CONFIG_TOML = `# Codex researcher consistency config.
+export const RESEARCHER_CODEX_CONFIG_TOML_V1 = `# Codex researcher consistency config.
 # Live acceptance on this host observed the PreToolUse deny failing open even
 # with valid deny JSON. This seam supports consistency and dependability; it is
 # never a researcher write boundary and does not establish an observed denial.
+
+[features]
+hooks = true
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'node "../../scripts/guard-git-discard.mjs"'
+timeout = 30
+`;
+
+/** Codex researcher project config (v2). Loads only the shared git-discard
+ * protection; it does not impose a researcher tool or write boundary. */
+export const RESEARCHER_CODEX_CONFIG_TOML = `# Codex researcher git-discard protection config.
+# Loads the shared guard only to block git commands that discard uncommitted work.
+# It does not restrict researcher tools or provide a general write boundary.
 
 [features]
 hooks = true
