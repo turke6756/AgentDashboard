@@ -30,57 +30,31 @@ than grant admin authority.
 The full threat model — what is dangerous, which boundaries exist today, and which
 do not — is in [docs/security.md](docs/security.md).
 
-## Researcher lane: enforced boundaries and open gaps
+## Researcher lane: shared environment and provider boundaries
 
-The researcher lane already applies capability minimisation in production. Its
-Claude launch uses a `--tools` allowlist and separately disallows `Bash`, `Edit`,
-`MultiEdit`, and `NotebookEdit`, on both Windows and WSL. The researcher therefore
-cannot run a shell through the native Bash tool, so a shell-based exfiltration
-chain such as `curl` is not available. This is a shipped control, not planned
-future work.
+Researchers have no OS-enforced write boundary on any provider. A researcher uses
+the human's normal provider home, so provider settings, credentials, extensions,
+and session history are shared with the human's other sessions. The per-provider
+working directory `.lares/researcher/<provider>/` remains in use; the removed
+paths were the per-agent provider-state HOME redirects under
+`.lares/agent-homes/<agent-id>/`.
 
-That control does not make information read by the researcher confidential. The
-concrete confidentiality paths are **Read → `.lares/research/inbox/` → privileged
-reader** (a supervisor or other unrestricted agent later reads the research), and
-**Read → WebFetch/browser GET**. The inbox is intentionally an untrusted tier that
-privileged agents read. `wrapUntrusted` framing and `trust: untrusted` are software
-controls on agent behaviour; there is no OS boundary preventing persuasive inbox
-text from influencing a privileged reader.
+Provider enforcement is deliberately described separately:
 
-On Windows, the restricted-token cage is a write boundary, not a read boundary.
-WP-8 tightened its restricting SID list to the synthetic capability SID plus the
-logon SID, so its writable set is now **granted roots ∪ logon-SID-granted
-locations**; an Everyone-only write grant no longer makes a location writable by
-the caged process. Everyone remains in the independent token default DACL because
-removing it there prevents Node from initialising. The fail-closed ACL audit walks
-the configured workspace audit root, follows reparse points to canonical targets,
-and rejects logon-SID Allow-write grants outside the canonical grant roots. It
-still reports Everyone-writable directories as non-fatal host-hygiene telemetry.
-The audit is not a whole-host inventory: locations outside its configured roots
-remain unexamined.
+- **Claude:** launches carry `--tools`/`--disallowedTools` and a Claude
+  PreToolUse Write guard. A live launch observed an out-of-shape inbox write
+  denied. These are real tool controls, but they are not an OS filesystem
+  boundary and do not govern unknown provider or MCP routes.
+- **Codex:** researcher launches currently register no hook and have no
+  researcher write boundary. A live launch wrote the same out-of-shape probe
+  path successfully.
+- **Antigravity (`agy`):** researcher launches have no researcher write
+  boundary. Its deny regexes and `write_file` grants do not prevent shell
+  chaining; a live launch wrote the same out-of-shape probe path successfully.
 
-Gate A's machine probe, `2026-08-11-probe-deny-read-ace-synthetic-sid.md`
-(retained in the workspace's untrusted research inbox and deliberately not
-committed because it contains host identifiers), returned **INERT**: a deny-read
-ACE for the synthetic restricting SID did not stop
-the restricted child reading the known bytes, although the controls proved that
-the harness observed a real-user read denial and a synthetic-SID write denial.
-The restricted and unrestricted processes had identical normal-group SIDs for
-read purposes. Plan `plan_7068b26d` is therefore primarily a usability fix and
-does **not** add read isolation. WP-8 is the sole security-hardening exception:
-it removed Everyone from the restricting SID list and measurably reduced the
-writable set, while retaining the logon-SID exposure described above. The
-[reviewed WP-8 probe report](.lares/research/cleared/2026-08-11-probe-wp8-restricting-sid-list.md)
-records the native-payload matrix and the audit correction.
-
-Read-side isolation remains a known gap. The AppContainer feasibility report,
-`2026-08-11-spike-appcontainer-feasibility.md` (retained in the workspace's
-untrusted research inbox and not committed), demonstrated a viable direction:
-an ordinary same-user process read a
-credential-shaped test file, while a verified AppContainer read of the same path
-returned `EPERM`. AppContainer was declined on cost for now and is not a shipped
-feature. The remaining direction and its browser-loopback gate are recorded in an
-[undispatched proposal](.lares/proposals/2026-08-11-appcontainer-read-isolation-browser-loopback-gate.md).
+The research inbox remains untrusted. Frontmatter checks, promotion rules, and
+`wrapUntrusted` framing improve consistency when downstream readers consume an
+artifact; they do not restrict what the researcher process can persist elsewhere.
 
 ## Reporting a vulnerability
 

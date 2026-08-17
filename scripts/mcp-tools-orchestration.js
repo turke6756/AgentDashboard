@@ -21,7 +21,7 @@ function getOrchestrationToolDefinitions() {
           working_directory: { type: 'string', description: 'Working directory for the agent. Defaults to workspace root.' },
           auto_restart: { type: 'boolean', description: 'Auto-restart the agent on crash (default: true).' },
           supervised: { type: 'boolean', description: 'Whether the supervisor is notified on agent status changes (default: true for supervisor-launched workers — set false to opt out).' },
-          is_researcher: { type: 'boolean', description: 'Launch the workspace RESEARCHER role-lane (default: false). The researcher browses + researches the web and writes findings into .lares/research/inbox/, but cannot run Bash, edit code, run notebooks, or launch agents. Claude-only (non-claude is rejected). When true, the app manages cwd/command/tools and the browser MCP — `provider`, `command`, `template_id`, and `persona` are ignored.' },
+          is_researcher: { type: 'boolean', description: 'Launch the workspace RESEARCHER role-lane (default: false) on Claude, Codex, or Antigravity (`agy`); Grok is unsupported. Researchers browse + research the web and write findings into .lares/research/inbox/. Claude launches add a native tool allowlist/denylist and a PreToolUse Write guard. Codex and agy researcher launches have no enforced write boundary. Every provider uses the user\'s normal provider home, including its settings and session history. When true, the app manages the provider-specific researcher cwd and browser toolset.' },
           mode: { type: 'string', enum: ['worker', 'supervisor-peer'], description: 'Launch class (default: worker). `worker` launches an owned child under you. `supervisor-peer` launches a TOP-LEVEL peer supervisor with NO owner edge (renders un-nested), with the supervisor toolset and .lares/supervisor cwd. Peer mode is the ONLY way to launch into a workspace other than your own (pass `workspace_id`), and cross-workspace peer launch requires supervisor privilege. `supervisor-peer` is incompatible with `is_researcher`/`persona`.' },
           fresh_session: { type: 'boolean', description: 'Codex-only hint (default: false). When true, the agent launches without `codex resume` so the codex CLI mints a fresh conversation rather than inheriting any prior rollout in this workspace. The dashboard still discovers and binds the new session id. Use this when you want a clean context but parallel agents in the same workspace. No-op for non-codex providers.' },
           plan_id: { type: 'string', description: 'Planning-surface rail: an existing registered plan id. Frozen onto the agent at launch and injected as AGENT_DASHBOARD_PLAN_ID. The launch route 400s an unknown plan_id.' },
@@ -237,11 +237,10 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
       // env sites. The route validates plan_id existence (400 on unknown).
       if (args.plan_id !== undefined) input.planId = args.plan_id;
       if (args.section_anchor !== undefined) input.planSection = args.section_anchor;
-      // Researcher role-lane (browser-parity-and-capability-isolation §0): a
-      // hardcoded app primitive. The supervisor (AgentSupervisor.launchAgent)
-      // forces provider=claude, the canonical command, the browser MCP toolset,
-      // the --tools/--disallowedTools native boundary, and the
-      // .lares/researcher/ cwd. Just pass the flag through.
+      // Researcher role-lane: a hardcoded app primitive. AgentSupervisor keeps
+      // the requested supported provider, derives .lares/researcher/<provider>/
+      // as the cwd, and applies only the controls that provider actually has.
+      // Just pass the flag through.
       if (args.is_researcher !== undefined) input.isResearcher = args.is_researcher;
       // Peer-supervisor launch class (cross-workspace-collaboration WP4.1). Forward
       // the `mode` enum as `launchMode`; the server canonicalizes it (top of
@@ -265,6 +264,11 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
       }
       const agent = await apiRequest('POST', '/api/agents', input);
       let text = `Launched agent "${agent.title}" (${agent.id}) in workspace ${agent.workspaceId}`;
+      if (args.is_researcher) {
+        const provider = agent.provider || args.provider || 'claude';
+        text += `\nNotice: This researcher uses your normal ${provider} provider home. `
+          + `Settings and session history are shared with your own ${provider} environment.`;
+      }
       if (args.template_id) text += `\nTemplate: ${args.template_id}`;
       if (args.prompt) {
         // Poll until the worker leaves 'launching'/'working' before posting the

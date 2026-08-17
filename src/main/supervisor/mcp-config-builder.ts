@@ -103,9 +103,10 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
  *
  *  `--strict-mcp-config` makes claude ignore EVERY globally-configured MCP
  *  server and see ONLY the servers arriving via inline `--mcp-config` flags.
- *  That is the containment contract we want for the worker and researcher
- *  lanes — they get exactly their injected dashboard toolset (+ team config if
- *  any) and nothing else.
+ *  This is a Claude-only MCP-discovery boundary for worker and researcher
+ *  launches: they get exactly their injected dashboard toolset (+ team config
+ *  if any) and no globally configured Claude MCP servers. Codex has no strict
+ *  equivalent, and agy reads its user-global MCP configuration.
  *
  *  The supervisor MUST NOT be strict: it still gets its inline dashboard
  *  `--mcp-config` (orchestration/teams/comms/observability), but it also relies
@@ -169,8 +170,8 @@ export function shouldDirectSpawn(p: DirectSpawnParams): boolean {
  *
  *  - WebSearch / WebFetch / Read / Grep / Glob / Task / Skill are Claude
  *    built-ins (Task spawns ephemeral in-process subagents, NOT dashboard agents).
- *  - Write is offered but path-confined to .lares/research/inbox/ by the
- *    scaffolded PreToolUse(Write) guard (RESEARCH_WRITE_GUARD_MJS).
+ *  - Write is offered with a Claude PreToolUse(Write) guard that denies paths
+ *    outside .lares/research/inbox/ (RESEARCH_WRITE_GUARD_MJS).
  *  - mcp__agent-dashboard__browser_* are the dashboard browser tools, which
  *    arrive via the injected `browser` MCP toolset (toolsetsForLane).
  *

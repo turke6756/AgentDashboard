@@ -310,6 +310,7 @@ const TESTS = [
   'dist/main/main/sandbox/outbox-launcher.test.js',
   'dist/main/main/supervisor/researcher-home-redirect.test.js',
   'dist/main/main/supervisor/researcher-tool-boundary.test.js',
+  'dist/main/main/supervisor/shared-home-notice.test.js',
   'dist/main/main/supervisor/log-readers/provider-state-home.test.js',
   'dist/main/main/supervisor/log-readers/reader-default-home.test.js',
   // Save-card WP-F2: keep the fallback finalization->sweep composition and the

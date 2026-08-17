@@ -46,6 +46,23 @@ New to the project? See [docs/setup.md](docs/setup.md) for prerequisites
 
 For how these fit together, read [docs/architecture.md](docs/architecture.md).
 
+## Researcher lane posture
+
+The researcher lane runs on three providers: Claude, Codex, and Antigravity
+(agy). Grok researchers are unsupported and refused. No provider has an
+OS-enforced researcher write boundary. The per-provider working directory
+`.lares/researcher/<provider>/` remains active; only the per-agent provider-state
+HOME redirect `.lares/agent-homes/<agent-id>/` was deleted. Researchers use the
+human's normal provider home, including its settings and session history.
+
+Enforcement is provider-specific and uneven. Claude has native CLI tool
+allowlist/denylist enforcement plus a PreToolUse Write guard; a live out-of-shape
+inbox write was denied. Codex researchers register no hook and have no researcher
+write boundary; the identical live write landed. Antigravity's deny regexes and
+`write_file` grants fail open through shell chaining, and its identical live write
+also landed. Inbox promotion and reader rules improve downstream consistency;
+they do not restrict provider-home persistence.
+
 ## Architectural invariant: agents share a working directory
 
 Many agents run from the **same** working directory by design: every supervisor in

@@ -44,6 +44,23 @@ Prerequisites and native-module notes: [docs/setup.md](docs/setup.md).
 - `src/shared/` — shared types and constants
 - `dist/` — compiled output
 
+## Researcher lane posture
+
+The researcher lane runs on Claude, Codex, and Antigravity (agy); Grok is
+unsupported and refused. No provider has an OS-enforced researcher write
+boundary. The per-provider working directory `.lares/researcher/<provider>/`
+remains active; only the per-agent provider-state HOME redirect
+`.lares/agent-homes/<agent-id>/` was deleted. Researchers use the human's normal
+provider home, including its settings and session history.
+
+Enforcement is uneven. Claude has native CLI tool allowlist/denylist enforcement
+plus a PreToolUse Write guard; a live out-of-shape inbox write was denied. Codex
+researchers register no hook and have no researcher write boundary; the identical
+live write landed. Agy's deny regexes and `write_file` grants fail open through
+shell chaining, and its identical live write also landed. Inbox promotion and
+reader rules improve downstream consistency; they do not restrict provider-home
+persistence.
+
 Architecture overview: [docs/architecture.md](docs/architecture.md).
 
 ## Conventions that will bite you

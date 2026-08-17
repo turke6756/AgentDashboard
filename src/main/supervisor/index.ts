@@ -1165,8 +1165,8 @@ export const WORKER_CLAUDE_MD_V5_HASH = 'b8af4dde6335147b3b32a8e057b4f334cfdb8de
 
 /** SHA-256 hex of the v1 `.dashboard/researcher/scripts/research-write-guard.mjs`
  *  (allow-by-default for paths outside .dashboard/research/). v2 inverts that to
- *  default-deny so the researcher's Write tool is hard-confined to
- *  .dashboard/research/inbox/. Used in the v2 file's previousHashes for silent
+ *  default-deny for the Claude researcher's Write hook, which denies targets
+ *  outside .dashboard/research/inbox/. Used in the v2 file's previousHashes for silent
  *  v1→v2 upgrade of pristine workspaces. */
 export const RESEARCH_WRITE_GUARD_MJS_V1_HASH = '3fcfb8db52ae51a1c5c846b10a914fce3a373dc8be20ca1b6a5c4eec172f5145';
 
@@ -1540,7 +1540,7 @@ export const RESEARCH_WRITE_GUARD_MJS_V3_HASH = '828fe6833a8cffd37731f3aa1c7af68
 
 /** SHA-256 hex of the v4 research-write-guard.mjs — the body that emitted the
  *  hookSpecificOutput deny on stdout BUT exited 0. That exit-0 left the deny
- *  UNENFORCING on the Claude-only researcher lane: Claude 2.1.220 does not honor
+ *  UNENFORCING on the Claude researcher hook path: Claude 2.1.220 does not honor
  *  an exit-0 hookSpecificOutput deny (verified — the write still lands). v5 keeps
  *  the identical deny JSON and switches back to `process.exit(2)`, which Claude
  *  does honor — see RESEARCH_WRITE_GUARD_MJS. Used in the v5 file's previousHashes
@@ -6088,8 +6088,8 @@ export class AgentSupervisor extends EventEmitter {
       // .mcp.json auto-discovery" path; that root file is now retired, F9/F11).
       // Mirror the Windows path: every non-legacy lane gets its per-lane toolset
       // grant via an inline --mcp-config (token in-process only); team members
-      // get a second --mcp-config (F2). Only the CONTAINMENT lanes
-      // (worker/researcher) also get --strict-mcp-config, which kills discovery
+      // get a second --mcp-config (F2). Claude worker/researcher launches also
+      // get --strict-mcp-config, which kills discovery
       // inheritance (F1) so they see ONLY their injected config(s); the
       // supervisor is intentionally NOT strict so its globally-configured
       // Gmail/Calendar/Drive/claude-in-chrome MCP servers survive. The JSON is
