@@ -188,6 +188,7 @@ import {
   WORKER_CODEX_CONFIG_TOML_V5,
   WORKER_CODEX_CONFIG_TOML_V6,
   WORKER_CODEX_CONFIG_TOML_V8,
+  RESEARCHER_CODEX_CONFIG_TOML,
   WORKER_CLAUDE_SETTINGS_JSON,
   WORKER_CLAUDE_SETTINGS_JSON_V6,
   WORKER_CLAUDE_SETTINGS_JSON_V7,
@@ -1272,6 +1273,26 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
     assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 4);
     assert.equal(readSidecar(workDir)['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP-8 scaffold: Codex researcher project config is seeded at version 1', () => {
+  const workDir = mktmp('researcher-codex-config-v1');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    supervisor.ensureResearcherScaffold(workDir, 'codex', 'windows');
+
+    const configPath = path.join(workDir, '.lares', 'researcher', 'codex', '.codex', 'config.toml');
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), RESEARCHER_CODEX_CONFIG_TOML);
+    const sidecar = readSidecar(workDir);
+    assert.equal(sidecar['researcher/codex/.codex/config.toml'], 1);
+    assert.equal(sidecar['researcher/codex/AGENTS.md'], 4);
+    assert.equal(sidecar['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
+    assert.equal(sidecar['researcher/codex/.agents/skills/write-proposal/SKILL.md'], 3);
+    assert.equal(fs.readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.toml.bak.')).length, 0);
   } finally {
     cleanup();
     rmrf(workDir);

@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, test } from 'node:test';
 import type { Agent, AgentStatus } from '../../shared/types';
-import { CODEX_RESEARCHER_TOOL_DENY_HOOK, GUARD_GIT_DISCARD_MJS } from '../../shared/constants';
+import {
+  CODEX_RESEARCHER_TOOL_DENY_HOOK,
+  GUARD_GIT_DISCARD_MJS,
+  RESEARCHER_CODEX_CONFIG_TOML,
+} from '../../shared/constants';
 import { patchApplyStatusTransition } from './test-helpers/patch-apply-transition';
 import { AgentSupervisor } from './index';
 import { AGY_GIT_DISCARD_DENY_RULES } from './agy-settings';
@@ -188,33 +191,6 @@ function installCredentialFixtures(accountHome: string): void {
   fs.writeFileSync(path.join(accountHome, '.codex', 'auth.json'), '{}\n');
 }
 
-function resolveRepoRoot(moduleUrl: URL): string {
-  let candidate = path.dirname(fileURLToPath(moduleUrl));
-  for (;;) {
-    if (fs.existsSync(path.join(candidate, 'src', 'shared', 'constants.ts'))) return candidate;
-    const parent = path.dirname(candidate);
-    if (parent === candidate) throw new Error(`CONFIGURATION INVARIANT: ${MARKER} repository root not found above ${moduleUrl.href}`);
-    candidate = parent;
-  }
-}
-
-// tsconfig.main emits CommonJS, where pathToFileURL(__filename) is the runtime
-// equivalent of import.meta.url and remains independent of process.cwd().
-const REPO_ROOT = resolveRepoRoot(pathToFileURL(__filename));
-
-function productionCodexHookReferences(dir: string, repoRoot: string): string[] {
-  const references: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) references.push(...productionCodexHookReferences(fullPath, repoRoot));
-    else if (!entry.name.endsWith('.test.ts') && /\.(?:ts|tsx)$/.test(entry.name)) {
-      const occurrences = fs.readFileSync(fullPath, 'utf8').split('CODEX_RESEARCHER_TOOL_DENY_HOOK').length - 1;
-      for (let index = 0; index < occurrences; index += 1) references.push(path.relative(repoRoot, fullPath));
-    }
-  }
-  return references.sort();
-}
-
 test('CONFIGURATION INVARIANT: Claude native allowlist and denylist reach Windows launch construction', async () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-researcher-tool-boundary-claude-'));
   cleanups.push(() => fs.rmSync(fixture, { recursive: true, force: true }));
@@ -348,7 +324,7 @@ test('REACHABILITY: Grok researcher is refused by the real launch seam before pr
   assert.equal(windowsLaunches.length, 0, 'Grok researcher refusal must happen before WindowsRunner.launch');
 });
 
-test('CONFIGURATION INVARIANT: Codex researcher has no production consumer for CODEX_RESEARCHER_TOOL_DENY_HOOK and no launch restriction', async () => {
+test('CONFIGURATION INVARIANT: Codex researcher has a production config consumer for consistency and dependability', async () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-researcher-tool-boundary-codex-'));
   cleanups.push(() => fs.rmSync(fixture, { recursive: true, force: true }));
   const accountHome = path.join(fixture, 'account');
@@ -362,16 +338,15 @@ test('CONFIGURATION INVARIANT: Codex researcher has no production consumer for C
   patchProcessEdges(windowsLaunches, [], accountHome);
 
   const agent = await makeSupervisor().launchAgent({
-    workspaceId: 'ws-1', title: 'codex absence fixture', provider: 'codex',
+    workspaceId: 'ws-1', title: 'codex config fixture', provider: 'codex',
     command: 'codex', isResearcher: true,
   });
   const launch = windowsLaunches.at(-1);
-  assert.ok(launch, invariant('Codex researcher must reach the process-launch edge before absence is evaluated'));
-  assert.deepEqual(
-    productionCodexHookReferences(path.join(REPO_ROOT, 'src'), REPO_ROOT),
-    [path.join('src', 'shared', 'constants.ts')],
-    invariant('CODEX_RESEARCHER_TOOL_DENY_HOOK must have only its declaration and no production consumer; when wiring lands, update this test and posture language'),
-  );
+  assert.ok(launch, invariant('Codex researcher must reach the process-launch edge before config is evaluated'));
+  assert.equal(agent.wantsCodexHooks, true,
+    invariant('Codex researcher launch must opt into the production hook configuration seam'));
+  assert.ok(launch.args.includes('--dangerously-bypass-hook-trust'),
+    invariant('Codex researcher launch must load hook-capable project config without an interactive trust prompt'));
   assert.equal(
     CODEX_RESEARCHER_TOOL_DENY_HOOK,
     GUARD_GIT_DISCARD_MJS,
@@ -379,29 +354,37 @@ test('CONFIGURATION INVARIANT: Codex researcher has no production consumer for C
   );
 
   const researcherConfig = path.join(agent.workingDirectory, '.codex', 'config.toml');
-  const globalConfig = path.join(accountHome, '.codex', 'config.toml');
-  const globalConfigBody = fs.existsSync(globalConfig) ? fs.readFileSync(globalConfig, 'utf8') : '';
+  const researcherConfigBody = fs.existsSync(researcherConfig) ? fs.readFileSync(researcherConfig, 'utf8') : '';
   const launchArtifact = JSON.stringify({
     command: launch.command,
     args: launch.args,
     env: launch.extraEnv,
-    researcherConfig: fs.existsSync(researcherConfig) ? fs.readFileSync(researcherConfig, 'utf8') : null,
-    globalConfig: globalConfigBody,
+    researcherConfig: researcherConfigBody,
   });
   assert.equal(
     fs.existsSync(researcherConfig),
-    false,
-    invariant('Codex researcher cwd must have no tool-restriction config; when wiring lands, update this test and posture language'),
+    true,
+    invariant('Codex researcher cwd must carry the production project config consumer'),
   );
-  assert.doesNotMatch(
+  assert.equal(
+    researcherConfigBody,
+    RESEARCHER_CODEX_CONFIG_TOML,
+    invariant('Codex researcher config must match the versioned production scaffold body'),
+  );
+  assert.match(
     launchArtifact,
     /guard-git-discard|CODEX_RESEARCHER_TOOL_DENY_HOOK|hooks\.PreToolUse|\[\[hooks\.PreToolUse\]\]|dashboard-worker/,
-    invariant('Codex researcher launch artifacts must expose the current absence of tool-restriction loading; when wiring lands, update this test and posture language'),
+    invariant('Codex researcher launch artifacts must expose the configured PreToolUse consumer; this does not observe a denial'),
+  );
+  assert.match(
+    researcherConfigBody,
+    /failing open[\s\S]*consistency and dependability[\s\S]*never a researcher write boundary/,
+    invariant('Codex researcher config must state the observed fail-open posture without an enforcement claim'),
   );
   const sharedGuard = path.join(workspace, '.lares', 'scripts', 'guard-git-discard.mjs');
   assert.equal(
     fs.readFileSync(sharedGuard, 'utf8'),
     GUARD_GIT_DISCARD_MJS,
-    invariant('the dormant shared guard artifact must be present so absence is not proven with an imaginary fixture'),
+    invariant('the configured shared guard artifact must be present; config presence does not establish an observed denial'),
   );
 });

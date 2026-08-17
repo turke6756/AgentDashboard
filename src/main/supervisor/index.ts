@@ -25,6 +25,7 @@ import {
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
   WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7, WORKER_CODEX_CONFIG_TOML_V8,
   WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_BEHAVIORAL_MD,
+  RESEARCHER_CODEX_CONFIG_TOML,
   WORKER_GROK_AGENTS_MD, WORKER_AGY_AGENTS_MD,
   GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4,
   DASHBOARD_STATUS_SCRIPT_MJS, DASHBOARD_STATUS_SCRIPT_MJS_V3, DASHBOARD_STATUS_SCRIPT_MJS_V4, DASHBOARD_STATUS_SCRIPT_MJS_V5,
@@ -3285,12 +3286,12 @@ export class AgentSupervisor extends EventEmitter {
     // nor the worker hook scaffold (Step 5 wires its own cwd/scaffold).
     const isResearcher = !!resolvedInput.isResearcher;
     const isWorkerLane = !isResearcher && (!!resolvedInput.isSupervised || !!resolvedInput.isWorker);
-    // Codex turn-boundary hooks must reach BOTH native worker-lane codex agents
-    // AND codex-provider personas. The persona scaffold branch below is mutually
-    // exclusive with the worker branch, so a codex persona otherwise skips both
-    // the --profile instrumentation and the CODEX_HOME profile write — running
-    // hookless (no dashboard status), or worse: --profile injected with no file.
-    const wantsCodexHooks = provider === 'codex' && (isWorkerLane || !!resolvedInput.persona);
+    // Codex turn-boundary hooks must reach worker-lane agents, personas, AND the
+    // researcher lane. Researchers now carry a project config for consistency
+    // and dependability; live acceptance on this host observed its deny failing
+    // open, so this config seam is not a write boundary or observed enforcement.
+    const wantsCodexHooks = provider === 'codex' &&
+      (isWorkerLane || isResearcher || !!resolvedInput.persona);
     // Resolve the launch command, reconciling explicit input, the workspace's
     // stored default command, and the requested provider. resolveLaunchCommand:
     //  (1) treats a pristine framework default (incl. a legacy ` --chrome`
@@ -4001,6 +4002,7 @@ export class AgentSupervisor extends EventEmitter {
   /** Codex researcher identity plus the portable, version-migrated skill kit. */
   static RESEARCHER_FILES_CODEX: Record<string, ScaffoldFile> = {
     [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH } },
+    [`.lares/researcher/codex/.codex/config.toml`]: { content: RESEARCHER_CODEX_CONFIG_TOML, version: 1 },
     ...writeProposalEntry('.lares/researcher/codex/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/codex/.agents/skills/read-planning-surface'),
     [`.lares/researcher/codex/.agents/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },

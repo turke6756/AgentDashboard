@@ -2808,14 +2808,36 @@ export const GUARD_GIT_DISCARD_MJS = GUARD_GIT_DISCARD_MJS_V4.replace(
 // denial. A separate wiring package must supply and verify a real consumer.`,
 );
 
-/** Dormant Codex researcher PreToolUse source (WP-C).
+/** Codex researcher PreToolUse source (WP-C).
  *
- * This is deliberately an alias of the shared git-discard guard. The aliased
- * script contains dormant exact-name researcher logic, but no Codex researcher
- * launch config or profile consumes it today. It therefore establishes no
- * launch-time tool restriction and no observed denial.
+ * This is deliberately an alias of the shared git-discard guard. The researcher
+ * config below names that shared script as a consistency and dependability
+ * check. Live acceptance on this host observed its deny failing open, so loading
+ * the config establishes neither a write boundary nor an observed denial.
  */
 export const CODEX_RESEARCHER_TOOL_DENY_HOOK = GUARD_GIT_DISCARD_MJS;
+
+/** Codex researcher project config (v1). Codex discovers this file from the
+ * trusted researcher cwd. The relative command reaches the workspace-managed
+ * shared guard from both `.lares/` and the rename-fallback `.dashboard/` tree.
+ * This is a configuration seam for consistency and dependability. On this host
+ * the Codex deny failed open even with valid deny JSON, so this is never a write
+ * boundary and must not be presented as observed enforcement. */
+export const RESEARCHER_CODEX_CONFIG_TOML = `# Codex researcher consistency config.
+# Live acceptance on this host observed the PreToolUse deny failing open even
+# with valid deny JSON. This seam supports consistency and dependability; it is
+# never a researcher write boundary and does not establish an observed denial.
+
+[features]
+hooks = true
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'node "../../scripts/guard-git-discard.mjs"'
+timeout = 30
+`;
 
 /** Pre-`.lares` Codex worker config (v3) — byte-exact derivation: the v3 → v4
  *  bump ONLY renamed the state folder in the three hook command paths, so the
