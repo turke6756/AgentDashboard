@@ -49,6 +49,7 @@ import {
   RESEARCH_WRITE_GUARD_MJS_V3_HASH,
   RESEARCH_WRITE_GUARD_MJS_V4_HASH,
   RESEARCH_WRITE_GUARD_MJS_V5_HASH,
+  RESEARCH_WRITE_GUARD_MJS_V7_HASH,
   SUPERVISOR_ORCHESTRATION_SPIKE_SKILL_V1_HASH,
   SUPERVISOR_ORCHESTRATION_SPIKE_SKILL_V2_HASH,
   WORKER_CLAUDE_MD_V6_HASH,
@@ -125,6 +126,7 @@ import {
   RESEARCH_STORE_README_MD_V2,
   RESEARCH_STORE_README_MD_V3,
   RESEARCHER_AGENT_MD,
+  RESEARCHER_AGENT_MD_V6,
   RESEARCHER_CLAUDE_SETTINGS_JSON,
   RESEARCHER_CLAUDE_SETTINGS_JSON_V2,
   REMEMBER_SKILL,
@@ -1060,7 +1062,7 @@ test('G3. research store: fresh workspace writes README + inbox/cleared gitkeeps
     assert.equal(fs.readFileSync(readmePath, 'utf-8'), RESEARCH_STORE_README_MD, 'README must be exact bundled content');
 
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['research/README.md'], 4, `sidecar must record README v4; got ${JSON.stringify(sidecar)}`);
+    assert.equal(sidecar['research/README.md'], 5, `sidecar must record README v5; got ${JSON.stringify(sidecar)}`);
 
     // Second pass is a no-op: README unchanged, no backups.
     const beforeMtime = fs.statSync(readmePath).mtimeMs;
@@ -1109,10 +1111,12 @@ test('WP-B. researcher scaffold: fresh workspace writes persona CLAUDE.md + sett
     const mdPath = researcherPath(workDir, 'CLAUDE.md');
     const settingsPath = researcherPath(workDir, '.claude', 'settings.json');
     const guardPath = researcherPath(workDir, 'scripts', 'research-write-guard.mjs');
+    const reportSkillPath = researcherPath(workDir, '.claude', 'skills', 'research-report', 'SKILL.md');
     assert.ok(fs.existsSync(mdPath), 'researcher CLAUDE.md must exist');
     assert.equal(fs.readFileSync(mdPath, 'utf-8'), RESEARCHER_AGENT_MD, 'researcher CLAUDE.md must be exact bundled content');
     assert.equal(fs.readFileSync(settingsPath, 'utf-8'), RESEARCHER_CLAUDE_SETTINGS_JSON, 'researcher settings.json must be exact bundled content');
     assert.ok(fs.existsSync(guardPath), 'research-write-guard.mjs must exist');
+    assert.ok(fs.existsSync(reportSkillPath), 'research-report skill must exist');
 
     // The store is also ensured (ensureResearcherScaffold → ensureResearchStoreScaffold).
     assert.ok(fs.existsSync(researchPath(workDir, 'README.md')), 'research store README must exist');
@@ -1133,8 +1137,10 @@ test('WP-B. researcher scaffold: fresh workspace writes persona CLAUDE.md + sett
     assert.ok(settings.includes('dashboard-statusline.mjs'), 'statusLine must point at dashboard-statusline.mjs');
 
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 6, `sidecar must record researcher CLAUDE.md v6; got ${JSON.stringify(sidecar)}`);
+    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 7, `sidecar must record researcher CLAUDE.md v7; got ${JSON.stringify(sidecar)}`);
     assert.equal(sidecar['researcher/claude/.claude/settings.json'], 3, 'sidecar must record settings v3 (Write|Bash guard delivery)');
+    assert.equal(sidecar['researcher/claude/scripts/research-write-guard.mjs'], 8, 'sidecar must record write guard v8');
+    assert.equal(sidecar['researcher/claude/.claude/skills/research-report/SKILL.md'], 1, 'sidecar must record research-report skill v1');
 
     // Idempotent second pass — no rewrites, no backups.
     const beforeMtime = fs.statSync(mdPath).mtimeMs;
@@ -1225,7 +1231,7 @@ test('precondition: reconstructed v1 remember body hashes to REMEMBER_SKILL_V1_H
   );
 });
 
-test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to v3 with portable-skill pointer', () => {
+test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to current with portable-skill pointer', () => {
   const workDir = mktmp('researcher-codex-v1');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1242,14 +1248,15 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to
     assert.match(content, /currently load no tool-restriction hook/);
     assert.match(content, /\.agents\/skills/);
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 3);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 4);
+    assert.equal(readSidecar(workDir)['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
   } finally {
     cleanup();
     rmrf(workDir);
   }
 });
 
-test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to v3', () => {
+test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to current', () => {
   const workDir = mktmp('researcher-codex-v2');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1263,14 +1270,15 @@ test('WP-9 scaffold: pristine Codex researcher AGENTS.md v2 silently upgrades to
 
     assert.match(fs.readFileSync(agentsPath, 'utf-8'), /\.agents\/skills/);
     assert.equal(fs.readdirSync(path.dirname(agentsPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 3);
+    assert.equal(readSidecar(workDir)['researcher/codex/AGENTS.md'], 4);
+    assert.equal(readSidecar(workDir)['researcher/codex/.agents/skills/research-report/SKILL.md'], 1);
   } finally {
     cleanup();
     rmrf(workDir);
   }
 });
 
-test('WP-9 scaffold: Agy preserves seed-once AGENTS.md while version-migrating all four portable skills', () => {
+test('WP-9 scaffold: Agy preserves seed-once AGENTS.md while version-migrating all five portable skills', () => {
   const workDir = mktmp('researcher-agy-kit');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1287,6 +1295,7 @@ test('WP-9 scaffold: Agy preserves seed-once AGENTS.md while version-migrating a
     assert.equal(sidecar['researcher/agy/.agents/skills/read-planning-surface/SKILL.md'], 2);
     assert.equal(sidecar['researcher/agy/.agents/skills/create-persona/SKILL.md'], 4);
     assert.equal(sidecar['researcher/agy/.agents/skills/read-comments/SKILL.md'], 5);
+    assert.equal(sidecar['researcher/agy/.agents/skills/research-report/SKILL.md'], 1);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1307,7 +1316,7 @@ test('WP-5 scaffold: pristine research README v2 silently upgrades through the p
 
     assert.equal(fs.readFileSync(readmePath, 'utf-8'), RESEARCH_STORE_README_MD);
     assert.equal(fs.readdirSync(path.dirname(readmePath)).filter((name) => name.startsWith('README.md.bak.')).length, 0);
-    assert.equal(readSidecar(workDir)['research/README.md'], 4);
+    assert.equal(readSidecar(workDir)['research/README.md'], 5);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1474,7 +1483,7 @@ test('guard-git-discard.mjs locally-edited (unknown-hash) + no sidecar → .bak 
   }
 });
 
-test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to v5, no .bak', () => {
+test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to current, no .bak', () => {
   const workDir = mktmp('rwguard-known-v3');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1491,12 +1500,12 @@ test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to v5, no .bak
 
     assert.equal(
       fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS,
-      'a pristine v3 research-write-guard must silently upgrade to the exact current (v6) bundled body',
+      'a pristine v3 research-write-guard must silently upgrade to the exact current bundled body',
     );
     assert.equal(listResearchGuardBackups(workDir).length, 0, 'known v3-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 7,
-      `sidecar must record research-write-guard v7; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 8,
+      `sidecar must record research-write-guard v8; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1504,7 +1513,7 @@ test('research-write-guard.mjs v3 + sidecar v3 → silent upgrade to v5, no .bak
   }
 });
 
-test('research-write-guard.mjs v4 (exit-0 unenforcing) + sidecar v4 → silent upgrade to v5, no .bak', () => {
+test('research-write-guard.mjs v4 (exit-0 unenforcing) + sidecar v4 → silent upgrade to current, no .bak', () => {
   const workDir = mktmp('rwguard-known-v4');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1521,12 +1530,12 @@ test('research-write-guard.mjs v4 (exit-0 unenforcing) + sidecar v4 → silent u
 
     assert.equal(
       fs.readFileSync(researchGuardPath(workDir), 'utf-8'), RESEARCH_WRITE_GUARD_MJS,
-      'a pristine v4 research-write-guard (the exit-0 unenforcing body) must silently upgrade to the exact v6 bundled body',
+      'a pristine v4 research-write-guard (the exit-0 unenforcing body) must silently upgrade to the exact current bundled body',
     );
     assert.equal(listResearchGuardBackups(workDir).length, 0, 'known v4-hash upgrade must NOT create a backup');
     assert.equal(
-      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 7,
-      `sidecar must record research-write-guard v7; got: ${JSON.stringify(readSidecar(workDir))}`,
+      readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 8,
+      `sidecar must record research-write-guard v8; got: ${JSON.stringify(readSidecar(workDir))}`,
     );
   } finally {
     cleanup();
@@ -1556,7 +1565,7 @@ test('C2A scaffold migrations preserve pristine researcher settings v2 and guard
     assert.equal(fs.readdirSync(path.dirname(settingsPath)).filter(n => n.startsWith('settings.json.bak')).length, 0);
     assert.equal(listResearchGuardBackups(workDir).length, 0);
     assert.equal(readSidecar(workDir)['researcher/claude/.claude/settings.json'], 3);
-    assert.equal(readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 7);
+    assert.equal(readSidecar(workDir)['researcher/claude/scripts/research-write-guard.mjs'], 8);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -1574,10 +1583,10 @@ test('C2A scaffold migrations preserve pristine researcher settings v2 and guard
 /** The v5 researcher CLAUDE.md — the last pre-`.lares` body — reconstructed by
  *  reverting the state-dir rename (the ONLY v6 change). RN-R0 pins it to
  *  RESEARCHER_AGENT_MD_V5_HASH so any drift fails loudly. */
-const RESEARCHER_AGENT_MD_V5 = RESEARCHER_AGENT_MD.split('.lares').join('.dashboard');
+const RESEARCHER_AGENT_MD_V5 = RESEARCHER_AGENT_MD_V6.split('.lares').join('.dashboard');
 
 test('RN-R0. precondition: reconstructed v5 researcher CLAUDE.md hashes to the shipped constant', () => {
-  assert.notEqual(RESEARCHER_AGENT_MD_V5, RESEARCHER_AGENT_MD, 'the v6 rename must change the body');
+  assert.notEqual(RESEARCHER_AGENT_MD_V5, RESEARCHER_AGENT_MD_V6, 'the v6 rename must change the body');
   assert.equal(sha256Hex(RESEARCHER_AGENT_MD_V5), RESEARCHER_AGENT_MD_V5_HASH,
     'reconstructed v5 researcher CLAUDE.md must hash to RESEARCHER_AGENT_MD_V5_HASH, or pristine v5 workspaces get .bak\'d instead of upgraded');
 });
@@ -1602,7 +1611,7 @@ test('P4-0. precondition: reconstructed v4 researcher CLAUDE.md hashes to the sh
   );
 });
 
-test('P4-1. researcher CLAUDE.md: pristine v4 silently upgrades to v5 carrying the signed-in-sites wording once', () => {
+test('P4-1. researcher CLAUDE.md: pristine v4 silently upgrades to current carrying the signed-in-sites wording once', () => {
   const workDir = mktmp('researcher-v4');
   const { supervisor, cleanup } = makeSupervisor();
   try {
@@ -1619,13 +1628,13 @@ test('P4-1. researcher CLAUDE.md: pristine v4 silently upgrades to v5 carrying t
     supervisor.ensureResearcherScaffold(workDir, 'claude', 'windows');
 
     const content = fs.readFileSync(mdPath, 'utf-8');
-    assert.equal(content, RESEARCHER_AGENT_MD, 'pristine v4 researcher CLAUDE.md must silently upgrade to v5 bundled content');
+    assert.equal(content, RESEARCHER_AGENT_MD, 'pristine v4 researcher CLAUDE.md must silently upgrade to current bundled content');
     assert.equal(countMatches(content, '## Signed-in sites:'), 1, 'the signed-in-sites section appears exactly once (not double-appended)');
     assert.ok(content.includes('a guest view is NOT success') || content.includes('AUTH-VERIFICATION FAILURE'), 'upgraded contract must carry the guest≠success wording');
     const backups = fs.readdirSync(researcherPath(workDir)).filter((n) => n.startsWith('CLAUDE.md.bak.'));
     assert.equal(backups.length, 0, 'known-hash v4→v5 upgrade must NOT create a backup');
     const sidecar = readSidecar(workDir);
-    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 6, `sidecar must record v6; got ${JSON.stringify(sidecar)}`);
+    assert.equal(sidecar['researcher/claude/CLAUDE.md'], 7, `sidecar must record v7; got ${JSON.stringify(sidecar)}`);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -4005,19 +4014,24 @@ test('WP-7. pristine v25/v3 workspace receives honest researcher posture without
     for (const [filePath, expected] of [[supervisorPath, SUPERVISOR_AGENT_MD], [readmePath, RESEARCH_STORE_README_MD]] as const) {
       const content = fs.readFileSync(filePath, 'utf-8');
       assert.equal(content, expected);
-      assert.match(content, /No provider has an\s+OS-enforced researcher write boundary/);
-      assert.match(content, /\.lares\/researcher\/<provider>\/.*remains active/s);
-      assert.match(content, /\.lares\/agent-homes\/<agent-id>\/.*was\s+deleted/s);
-      assert.match(content, /live out-of-shape.*write was\s+denied/s);
-      assert.match(content, /Codex\s+researchers register no hook.*identical live write landed/s);
-      assert.match(content, /Agy's deny regexes.*fail\s+open through shell chaining.*identical live write also landed/s);
       assert.doesNotMatch(content, /state-directory redirect/);
       assert.doesNotMatch(content, /\b(cage|sandbox(?:ed)?|contained|confined|isolated)\b/i);
       const backups = fs.readdirSync(path.dirname(filePath)).filter((name) => name.startsWith(`${path.basename(filePath)}.bak.`));
       assert.equal(backups.length, 0, `pristine previous-version ${filePath} must not create a backup`);
     }
+    const supervisorContent = fs.readFileSync(supervisorPath, 'utf-8');
+    assert.match(supervisorContent, /No provider has an\s+OS-enforced researcher write boundary/);
+    assert.match(supervisorContent, /\.lares\/researcher\/<provider>\/.*remains active/s);
+    assert.match(supervisorContent, /\.lares\/agent-homes\/<agent-id>\/.*was\s+deleted/s);
+    assert.match(supervisorContent, /live out-of-shape.*write was\s+denied/s);
+    assert.match(supervisorContent, /Codex\s+researchers register no hook.*identical live write landed/s);
+    assert.match(supervisorContent, /Agy's deny regexes.*fail\s+open through shell chaining.*identical live write also landed/s);
+    const readmeContent = fs.readFileSync(readmePath, 'utf-8');
+    assert.match(readmeContent, /No\s+provider has an OS-enforced researcher write boundary/);
+    assert.match(readmeContent, /New reports are written flat as `inbox\/<id>\.md`/);
+    assert.match(readmeContent, /filename\/id match/);
     assert.equal(readSidecar(workDir)['supervisor/CLAUDE.md'], 26);
-    assert.equal(readSidecar(workDir)['research/README.md'], 4);
+    assert.equal(readSidecar(workDir)['research/README.md'], 5);
   } finally {
     cleanup();
     rmrf(workDir);
@@ -4599,8 +4613,53 @@ test('precondition: frozen v3 git-discard-guard body is LF-normalized and hashes
   );
 });
 
+function reconstructResearchWriteGuardV7(): string {
+  return RESEARCH_WRITE_GUARD_MJS
+    .replace('return { ok: true, id: parsed.scalars[\'id\'] };', 'return { ok: true };')
+    .replace(
+      `// Naming: inbox/<id>.md. The id check is intentionally write-hook-only;
+// historical reports remain readable even when their filename and id differ.
+const parts = rel.split('/');
+if (parts.length !== 2) {
+  block('research artifacts must use the flat path inbox/<id>.md');
+}
+const filename = parts[1];
+if (!filename.endsWith('.md')) {
+  block('research artifact filename must end in .md');
+}
+
+// Frontmatter schema (untrusted tier).
+const result = validateResearchFrontmatter(content, { expectTrust: 'untrusted' });
+if (!result.ok) block(result.reason);
+const stem = filename.slice(0, -3);
+if (stem !== result.id) {
+  block('filename stem must equal frontmatter id (stem "' + stem + '", id "' + result.id + '")');
+}`,
+      `// Naming: inbox/<topic-slug>/<timestamp>-<slug>.md
+const parts = rel.split('/');
+if (parts.length !== 3) {
+  block('research artifacts must live at inbox/<topic-slug>/<timestamp>-<slug>.md');
+}
+const topicSlug = parts[1];
+const filename = parts[2];
+if (!/^[a-z0-9][a-z0-9-]*$/.test(topicSlug)) {
+  block('inbox topic folder must be a lowercase slug: inbox/<topic-slug>/...');
+}
+if (!filename.endsWith('.md')) {
+  block('research artifact filename must end in .md');
+}
+if (!/^\\d[\\w.:-]*-[a-z0-9][a-z0-9-]*\\.md$/.test(filename)) {
+  block('research artifact filename must be <timestamp>-<slug>.md (timestamp first)');
+}
+
+// Frontmatter schema (untrusted tier).
+const result = validateResearchFrontmatter(content, { expectTrust: 'untrusted' });
+if (!result.ok) block(result.reason);`,
+    );
+}
+
 function reconstructResearchWriteGuardV5(): string {
-  let historicalV5Source = RESEARCH_WRITE_GUARD_MJS
+  let historicalV5Source = reconstructResearchWriteGuardV7()
     .replace(/\/\/ Shell writes are a heuristic restriction[\s\S]*?\/\/ Preserve the existing Write allow\/block behavior unchanged\.\n/, '// Only guard Write.\n')
     .replace(/\/\/ Claude Write-hook restriction[\s\S]*?const norm = filePath\.replace\(\/\\\\\/g, '\/'\);\n/,
       '// Hard containment (default-deny): the researcher\'s Write TOOL may ONLY target\n' +
@@ -4625,7 +4684,9 @@ function reconstructResearchWriteGuardV5(): string {
     );
 }
 
-test('precondition: reconstructed v5 research-write-guard hashes to previousHashes[5] and differs from live v6', () => {
+test('precondition: reconstructed v5 research-write-guard hashes to previousHashes[5] and differs from current', () => {
+  const v7 = reconstructResearchWriteGuardV7();
+  assert.equal(sha256Hex(v7), RESEARCH_WRITE_GUARD_MJS_V7_HASH, 'reconstructed v7 must match previousHashes[7]');
   const v5 = reconstructResearchWriteGuardV5();
   assert.equal(sha256Hex(v5), RESEARCH_WRITE_GUARD_MJS_V5_HASH, 'frozen v5 hash must match the exact pre-C2A body');
   assert.notEqual(v5, RESEARCH_WRITE_GUARD_MJS, 'live v6 guard must differ from reconstructed v5');
