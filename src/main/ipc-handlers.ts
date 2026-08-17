@@ -64,7 +64,12 @@ import {
   checkWorkspaceSecurityOnOpen,
   listPendingSecurityNotices,
   removeLegacyLauncher,
+  workspaceStateDir,
 } from './workspace-state-dir';
+import {
+  listInboxReports,
+  type ClassifiedInboxReport,
+} from './research/classify-inbox-report';
 import { ensureInstallationLauncher } from './installation-descriptor';
 import { recordDemandProbe, isDemandProbeKind, DEMAND_PROBE_RECORD_CHANNEL } from './telemetry/demand-probe';
 import { registerCheckpointIpc, type HumanCheckpointRoutes } from './git-checkpoints/checkpoint-ipc';
@@ -215,11 +220,101 @@ function resolveMutationPathType(primaryPath: string, rootDirectory: string, pat
   return pathType === 'windows' || pathType === 'wsl' ? pathType : primaryType;
 }
 
+export const RESEARCH_LIST_INBOX_REPORTS_CHANNEL = 'research:list-inbox-reports';
+
+export type ResearchInboxReportDto =
+  | {
+    status: 'ok';
+    relPath: string;
+    filePath: string;
+    artifactId: string;
+    topic: string;
+    summary: string;
+    provider?: 'claude' | 'codex' | 'agy';
+  }
+  | {
+    status: 'malformed';
+    relPath: string;
+    filePath: string;
+    reason: string;
+    recovered?: {
+      artifactId?: string;
+      topic?: string;
+      summary?: string;
+      provider?: 'claude' | 'codex' | 'agy';
+    };
+  };
+
+interface ResearchInboxWorkspace {
+  path: string;
+  pathType: PathType;
+}
+
+type ResearchInboxIpc = Pick<typeof ipcMain, 'handle'>;
+
+function joinResearchPath(root: string, relPath: string, pathType: PathType): string {
+  const parts = relPath.split('/');
+  return pathType === 'wsl'
+    ? [root.replace(/\/+$/, ''), ...parts].join('/')
+    : path.join(root, ...parts);
+}
+
+function toResearchInboxDto(
+  report: ClassifiedInboxReport,
+  logicalInboxDir: string,
+  pathType: PathType,
+): ResearchInboxReportDto {
+  const filePath = joinResearchPath(logicalInboxDir, report.relPath, pathType);
+  if (report.status === 'ok') {
+    const { id: artifactId, topic, summary, provider } = report.frontmatter;
+    return {
+      status: 'ok', relPath: report.relPath, filePath, artifactId, topic, summary,
+      ...(provider ? { provider } : {}),
+    };
+  }
+  const recovered = report.recovered;
+  return {
+    status: 'malformed',
+    relPath: report.relPath,
+    filePath,
+    reason: report.reason,
+    ...(recovered ? {
+      recovered: {
+        ...(recovered.id ? { artifactId: recovered.id } : {}),
+        ...(recovered.topic ? { topic: recovered.topic } : {}),
+        ...(recovered.summary ? { summary: recovered.summary } : {}),
+        ...(recovered.provider ? { provider: recovered.provider } : {}),
+      },
+    } : {}),
+  };
+}
+
+export function registerResearchInboxIpc(
+  ipc: ResearchInboxIpc,
+  resolveWorkspace: (workspaceId: string) => ResearchInboxWorkspace | null,
+  listReports: typeof listInboxReports = listInboxReports,
+): void {
+  ipc.handle(RESEARCH_LIST_INBOX_REPORTS_CHANNEL, async (_event, workspaceId: string) => {
+    if (typeof workspaceId !== 'string' || workspaceId.trim() === '') {
+      throw new Error('research:list-inbox-reports requires a non-empty workspaceId');
+    }
+    const workspace = resolveWorkspace(workspaceId);
+    if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+
+    const stateDir = workspaceStateDir(workspace.path, workspace.pathType);
+    const logicalInboxDir = joinResearchPath(stateDir, 'research/inbox', workspace.pathType);
+    const nativeInboxDir = ensureWindowsPath(logicalInboxDir, workspace.pathType);
+    const reports = await listReports(nativeInboxDir);
+    return reports.map((report) => toResearchInboxDto(report, logicalInboxDir, workspace.pathType));
+  });
+}
+
 export function registerIpcHandlers(
   supervisor: AgentSupervisor,
   mainWindow: BrowserWindow,
   detachedWindowDeps: DetachedWindowDeps,
 ): void {
+  registerResearchInboxIpc(ipcMain, getWorkspace);
   ipcMain.handle('prove_reachability', (_event, request: ReachabilityProofRequest) =>
     proveReachability(request));
   registerOrchestrationProviderSettingsIpc(ipcMain, (workspaceId) =>
