@@ -316,6 +316,38 @@ test('CONFIGURATION INVARIANT: Agy deny-regex configuration reaches the real res
   );
 });
 
+test('REACHABILITY: Grok researcher is refused by the real launch seam before process spawn', async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-researcher-tool-boundary-grok-'));
+  cleanups.push(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const accountHome = path.join(fixture, 'account');
+  const workspace = path.join(fixture, 'workspace');
+  fs.mkdirSync(accountHome, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  patchEnvironment(accountHome);
+  const agents: Agent[] = [];
+  const windowsLaunches: WindowsLaunch[] = [];
+  patchDb(workspace, agents);
+  patchProcessEdges(windowsLaunches, [], accountHome);
+
+  await assert.rejects(
+    () => makeSupervisor().launchAgent({
+      workspaceId: 'ws-1', title: 'grok refusal fixture', provider: 'grok',
+      command: 'grok', isResearcher: true,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /researcher lane is not-yet-activated for grok/);
+      assert.match(error.message, /no tool-restriction mechanism exists/);
+      return true;
+    },
+  );
+
+  assert.equal(agents.length, 1, 'fixture must reach production researcher classification before refusal');
+  assert.equal(agents[0].provider, 'grok');
+  assert.equal(agents[0].isResearcher, true);
+  assert.equal(windowsLaunches.length, 0, 'Grok researcher refusal must happen before WindowsRunner.launch');
+});
+
 test('CONFIGURATION INVARIANT: Codex researcher has no production consumer for CODEX_RESEARCHER_TOOL_DENY_HOOK and no launch restriction', async () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-researcher-tool-boundary-codex-'));
   cleanups.push(() => fs.rmSync(fixture, { recursive: true, force: true }));
