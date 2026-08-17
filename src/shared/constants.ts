@@ -846,7 +846,7 @@ export const SUPERVISOR_AGENT_MD_V24 = SUPERVISOR_AGENT_MD_V23.replace(
 
 /** v25 corrects the researcher provider posture: no Codex researcher launch
  * currently loads a tool-restriction hook or equivalent provider control. */
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V24.replace(
+export const SUPERVISOR_AGENT_MD_V25 = SUPERVISOR_AGENT_MD_V24.replace(
   `Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
 enforcement and is strongest. Codex has a weaker PreToolUse deny matching exact
 tool names, so unknown or future tools and MCP routes are not covered. Agy has
@@ -860,6 +860,43 @@ git-discard script, but no researcher config or profile loads it. Agy has deny
 regexes plus \`write_file\` grants whose own comments record fail-open shell
 chaining; its terminal sandbox is not OS-enforced. Agy is a \`degraded\`
 configuration reading, never an observed denial.`,
+);
+
+/** v26 records the live, provider-specific researcher posture and distinguishes
+ * the still-active per-provider cwd from the deleted per-agent HOME redirect. */
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V25.replace(
+  'writes findings to `.lares/research/inbox/` (a sandboxed, untrusted tier);',
+  'writes findings to `.lares/research/inbox/` (an untrusted tier);',
+).replace(
+  `The researcher lane runs on three providers — Claude, Codex, and Antigravity
+(agy). Grok researchers are unsupported and refused. No OS-enforced researcher
+write containment remains: the per-provider researcher home is a default
+state-directory redirect, not a cage, sandbox, or containment boundary.
+
+Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
+enforcement and is strongest. Codex researchers currently have no tool
+restriction wired into launch; dormant exact-name logic exists inside the shared
+git-discard script, but no researcher config or profile loads it. Agy has deny
+regexes plus \`write_file\` grants whose own comments record fail-open shell
+chaining; its terminal sandbox is not OS-enforced. Agy is a \`degraded\`
+configuration reading, never an observed denial. No live researcher launch was
+performed during the plan, including no Codex \`CODEX_HOME\` check or agy
+inbox/outside-inbox mutation attempt. Inbox promotion and reader constraints
+protect downstream report consumption, not provider-home persistence.`,
+  `The researcher lane runs on three providers — Claude, Codex, and Antigravity
+(agy). Grok researchers are unsupported and refused. No provider has an
+OS-enforced researcher write boundary. The per-provider working directory
+\`.lares/researcher/<provider>/\` remains active; only the per-agent provider-state
+HOME redirect \`.lares/agent-homes/<agent-id>/\` was deleted. Researchers use the
+human's normal provider home, including its settings and session history.
+
+Enforcement is not uniform. Claude has native CLI tool allowlist/denylist
+enforcement plus a PreToolUse Write guard; a live out-of-shape inbox write was
+denied. Codex researchers register no hook and have no researcher write boundary;
+the identical live write landed. Agy's deny regexes and \`write_file\` grants fail
+open through shell chaining, and its identical live write also landed. Inbox
+promotion and reader rules improve downstream consistency; they do not restrict
+provider-home persistence.`,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
@@ -4467,7 +4504,7 @@ persistence or make the other providers' enforcement equivalent.
 `;
 
 /** v3 corrects the Codex researcher launch posture. */
-export const RESEARCH_STORE_README_MD = RESEARCH_STORE_README_MD_V2.replace(
+export const RESEARCH_STORE_README_MD_V3 = RESEARCH_STORE_README_MD_V2.replace(
   `enforcement is uneven: Claude has native CLI tool allowlist/denylist controls;
 Codex has a weaker exact-tool-name PreToolUse deny; and agy has deny regexes
 plus \`write_file\` grants that fail open on shell chaining, with no OS-enforced
@@ -4478,6 +4515,30 @@ Codex researchers currently have no tool restriction wired into launch; and agy
 has deny regexes plus \`write_file\` grants that fail open on shell chaining,
 with no OS-enforced terminal sandbox. Agy is a degraded configuration reading,
 not a live observation.`,
+);
+
+/** v4 records the live provider results and the cwd-versus-HOME distinction. */
+export const RESEARCH_STORE_README_MD = RESEARCH_STORE_README_MD_V3.replace(
+  `This store is a downstream trust boundary, not researcher write containment.
+No OS-enforced researcher write cage remains; the provider-specific researcher
+home is only a default state-directory redirect. The lane runs on Claude,
+Codex, and Antigravity (agy); Grok is unsupported and refused. Provider
+enforcement is uneven: Claude has native CLI tool allowlist/denylist controls;
+Codex researchers currently have no tool restriction wired into launch; and agy
+has deny regexes plus \`write_file\` grants that fail open on shell chaining,
+with no OS-enforced terminal sandbox. Agy is a degraded configuration reading,
+not a live observation. No live researcher launch or provider-home mutation attempt was
+performed during the plan.`,
+  `This store is an untrusted downstream handoff, not a researcher write boundary.
+No provider has an OS-enforced researcher write boundary. The per-provider
+working directory \`.lares/researcher/<provider>/\` remains active; only the
+per-agent provider-state HOME redirect \`.lares/agent-homes/<agent-id>/\` was
+deleted. Researchers use the human's normal provider home, including its settings
+and session history. Claude has native CLI tool allowlist/denylist controls plus
+a PreToolUse Write guard, and a live out-of-shape write was denied. Codex
+researchers register no hook and have no researcher write boundary; their
+identical live write landed. Agy's deny regexes and \`write_file\` grants fail
+open through shell chaining, and its identical live write also landed.`,
 );
 
 /** PreToolUse(Write) guard for the researcher persona — scaffolded to

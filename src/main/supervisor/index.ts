@@ -1520,6 +1520,10 @@ export function proveProductionEntryPointEntry(rootPrefix: string): Record<strin
 /** SHA-256 hex of the v5 `.dashboard/researcher/CLAUDE.md` (pre-`.lares`
  *  rename). Used in the v6 file's previousHashes. */
 export const RESEARCHER_AGENT_MD_V5_HASH = '90e26bca4b533513c0c59e0fffb7fad431ddff9695cdd327d29f54e15a0c7bad';
+/** SHA-256 of the shipped supervisor v25 body, before the honest live posture. */
+export const SUPERVISOR_AGENT_MD_V25_HASH = '4bceb0c2113aca7a934cd5aa274b6f6e1e5fcb87ec035d1c5ed3215286733d15';
+/** SHA-256 of the shipped research-store README v3 body. */
+export const RESEARCH_STORE_README_MD_V3_HASH = 'b6581d5568d26f317a8cdf61248c1fbe385f4cd40bec929124641db88c523fe4';
 /** SHA-256 hex of the v2 research-write-guard.mjs (single `.dashboard/research/`
  *  marker). v3 accepts BOTH markers (rename-failed fallback sessions still
  *  write under `.dashboard/`). Used in the v3 file's previousHashes. */
@@ -3654,8 +3658,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 25, // v25 corrects the Codex researcher launch posture.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24) },
+      version: 26, // v26 records the live provider posture and cwd-versus-HOME distinction.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -3854,7 +3858,7 @@ export class AgentSupervisor extends EventEmitter {
    *  fresh checkout. README is managed (version-migrated); the .gitkeeps are
    *  empty placeholders. */
   private static RESEARCH_STORE_FILES: Record<string, ScaffoldFile> = {
-    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 3, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1', 2: sha256Hex(RESEARCH_STORE_README_MD_V2) } },
+    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 4, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1', 2: sha256Hex(RESEARCH_STORE_README_MD_V2), 3: RESEARCH_STORE_README_MD_V3_HASH } },
     [`.lares/research/inbox/.gitkeep`]:   { content: '', version: 1 },
     [`.lares/research/cleared/.gitkeep`]: { content: '', version: 1 },
   };
