@@ -4434,9 +4434,9 @@ export function getContextWindowForModel(model: string): number {
 // A workspace-local, trust-tiered store for web-derived research artifacts:
 //   .lares/research/inbox/   — raw, untrusted, git-ignored (researcher writes)
 //   .lares/research/cleared/ — reviewed + durable, committable (WP-F promotes)
-// The researcher persona (wired in WP-B) writes only into inbox/ behind a
-// PreToolUse(Write) hook (RESEARCH_WRITE_GUARD_MJS) that enforces the path,
-// naming, and frontmatter schema before any write lands.
+// Researchers write canonical reports into inbox/. Claude's PreToolUse(Write)
+// hook (RESEARCH_WRITE_GUARD_MJS) checks path, naming, and frontmatter for
+// consistency; Codex and Agy have no equivalent write hook or containment.
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Managed README for the research store root (.lares/research/README.md).
@@ -4518,7 +4518,7 @@ not a live observation.`,
 );
 
 /** v4 records the live provider results and the cwd-versus-HOME distinction. */
-export const RESEARCH_STORE_README_MD = RESEARCH_STORE_README_MD_V3.replace(
+export const RESEARCH_STORE_README_MD_V4 = RESEARCH_STORE_README_MD_V3.replace(
   `This store is a downstream trust boundary, not researcher write containment.
 No OS-enforced researcher write cage remains; the provider-specific researcher
 home is only a default state-directory redirect. The lane runs on Claude,
@@ -4541,6 +4541,60 @@ identical live write landed. Agy's deny regexes and \`write_file\` grants fail
 open through shell chaining, and its identical live write also landed.`,
 );
 
+/** v5 documents the canonical report shape and the write-one/read-both path rule. */
+export const RESEARCH_STORE_README_MD = `# Research store
+
+Workspace-local, trust-tiered storage for web-derived research artifacts. This
+store is an untrusted downstream handoff, not researcher containment. No
+provider has an OS-enforced researcher write boundary.
+
+## Tiers and paths
+
+- \`inbox/\` contains raw, untrusted reports and is git-ignored.
+- \`cleared/\` contains reviewed, durable reports promoted by the review gate.
+- New reports are written flat as \`inbox/<id>.md\`.
+- Readers discover Markdown reports recursively as \`inbox/**/*.md\`, so
+  historical nested reports remain visible. Non-Markdown files are not reports.
+
+## Report schema
+
+Every report starts with these six required frontmatter keys:
+
+\`\`\`yaml
+---
+id: research-2026-08-16-example-topic
+topic: Example research topic
+created: 2026-08-16T12:00:00Z
+source_urls:
+  - https://example.com/source-a
+  - https://example.org/source-b
+trust: untrusted
+summary: One-line summary of what this report establishes.
+---
+\`\`\`
+
+\`source_urls\` must be a non-empty block list of HTTP(S) URLs, \`created\` must
+be ISO-8601, and an inbox report must use \`trust: untrusted\`. The optional
+\`provider\` field may be \`claude\`, \`codex\`, or \`agy\`; it is a convenience
+stamp, not attested identity or a security signal.
+
+## Citation and body convention
+
+Reports should use, in order, \`## Summary\`, \`## Findings\`, optional
+\`## Details\`, \`## Sources\`, and \`## Gaps & confidence\`. Each Findings claim
+ends in \`[n]\`, where \`n\` is the 1-based position of its URL in
+\`source_urls\`. Sources reprints each as \`n. <url> — <what it supports>\`.
+Negative findings still cite the search or documentation pages actually opened.
+
+## Enforcement posture
+
+Claude's PreToolUse Write hook is a Claude-only consistency check that validates
+the flat path, filename/id match, and schema before a Claude Write lands. It is
+never containment and does not apply to Codex or Agy. Inbox readers and promotion
+rules improve downstream consistency; they do not restrict provider-home
+persistence or make the providers' enforcement equivalent.
+`;
+
 /** PreToolUse(Write) guard for the researcher persona — scaffolded to
  *  .lares/researcher/scripts/research-write-guard.mjs and wired by
  *  RESEARCHER_CLAUDE_SETTINGS_JSON. Dependency-free; the frontmatter validation
@@ -4550,11 +4604,10 @@ open through shell chaining, and its identical live write also landed.`,
  *  Authored with String.raw so regex backslashes survive verbatim — the script
  *  body contains no \${...} or backtick, so raw interpolation never triggers.
  *
- *  SECURITY-CONTROL STATUS: Claude's native tool boundary is the strongest
- *  provider mechanism. Codex has no researcher restriction wired into launch.
- *  Agy is a degraded reading of deny configuration, not an observed denial;
- *  no live researcher launch or
- *  provider-home mutation attempt was performed during the plan.
+ *  CONSISTENCY-CHECK STATUS: no provider has an OS-enforced researcher write
+ *  boundary. This hook runs for Claude only. Codex registers no researcher
+ *  hook; Agy's deny regexes and write_file grants fail open through shell
+ *  chaining. The hook improves report consistency, never containment.
  *  The script emits {hookSpecificOutput:{permissionDecision:"deny",…}} on stdout
  *  and exits 2. Claude 2.1.220 does NOT honor an exit-0 hookSpecificOutput deny
  *  (verified: the write still lands); only exit 2 blocks it. This researcher lane
@@ -4745,7 +4798,7 @@ function validateResearchFrontmatter(fileContent, opts) {
     }
     return fail('trust must be "' + opts.expectTrust + '" (got "' + trust + '")');
   }
-  return { ok: true };
+  return { ok: true, id: parsed.scalars['id'] };
 }
 
 // ── main ──────────────────────────────────────────────────────────────
@@ -4809,26 +4862,24 @@ if (!rel.startsWith('inbox/')) {
   block('researcher Write should target .lares/research/inbox/');
 }
 
-// Naming: inbox/<topic-slug>/<timestamp>-<slug>.md
+// Naming: inbox/<id>.md. The id check is intentionally write-hook-only;
+// historical reports remain readable even when their filename and id differ.
 const parts = rel.split('/');
-if (parts.length !== 3) {
-  block('research artifacts must live at inbox/<topic-slug>/<timestamp>-<slug>.md');
+if (parts.length !== 2) {
+  block('research artifacts must use the flat path inbox/<id>.md');
 }
-const topicSlug = parts[1];
-const filename = parts[2];
-if (!/^[a-z0-9][a-z0-9-]*$/.test(topicSlug)) {
-  block('inbox topic folder must be a lowercase slug: inbox/<topic-slug>/...');
-}
+const filename = parts[1];
 if (!filename.endsWith('.md')) {
   block('research artifact filename must end in .md');
-}
-if (!/^\d[\w.:-]*-[a-z0-9][a-z0-9-]*\.md$/.test(filename)) {
-  block('research artifact filename must be <timestamp>-<slug>.md (timestamp first)');
 }
 
 // Frontmatter schema (untrusted tier).
 const result = validateResearchFrontmatter(content, { expectTrust: 'untrusted' });
 if (!result.ok) block(result.reason);
+const stem = filename.slice(0, -3);
+if (stem !== result.id) {
+  block('filename stem must equal frontmatter id (stem "' + stem + '", id "' + result.id + '")');
+}
 
 allow();
 `;
@@ -4843,7 +4894,7 @@ allow();
  *  boundary (--tools/--disallowedTools), browser MCP toolset, cwd, and store
  *  --add-dir are applied at launch by AgentSupervisor; this file is the
  *  human-readable contract that matches that boundary. */
-export const RESEARCHER_AGENT_MD = `# Researcher Agent
+export const RESEARCHER_AGENT_MD_V6 = `# Researcher Agent
 
 > **Browser default — native first.** For ALL browser work, reach for the
 > dashboard **\`browser_*\`** tools. \`mcp__claude-in-chrome__*\` is a
@@ -4994,6 +5045,65 @@ Workspace research lives in \`.lares/research/\`. \`inbox/\` is untrusted data
 \`wrapUntrusted\` before acting on it. Only \`cleared/\` is reviewed and durable.
 <!-- /section:research-store -->
 `;
+
+const RESEARCHER_AGENT_WRITING_V6 = `Write every finding as a research artifact into
+\`.lares/research/inbox/<topic-slug>/<timestamp>-<slug>.md\`, with the
+required \`---\` frontmatter block (\`id\`, \`topic\`, \`created\`, \`source_urls\`,
+\`trust: untrusted\`, \`summary\`). The write hook will reject and explain any
+artifact that violates the path, naming, or schema — read the reason and
+self-correct. \`inbox/\` is **untrusted** and git-ignored; only the review gate
+promotes artifacts to the durable \`cleared/\` tier.`;
+
+const RESEARCHER_AGENT_WRITING_V7 = `Write every report flat at
+\`.lares/research/inbox/<id>.md\`. Use an unquoted, filesystem-safe lowercase
+slug for \`id\` (recommended: \`research-<yyyy-mm-dd>-<slug>\`) and make the
+filename stem exactly equal to it. The Claude-only PreToolUse hook is a
+consistency check, never containment; read a denial reason, correct the report,
+and retry.
+
+Copy this report shape inline even when you do not invoke a skill:
+
+\`\`\`markdown
+---
+id: research-2026-08-16-example-topic
+topic: Example research topic
+created: 2026-08-16T12:00:00Z
+source_urls:
+  - https://example.com/source-a
+  - https://example.org/source-b
+trust: untrusted
+summary: One-line summary of what this report establishes.
+provider: claude
+---
+
+## Summary
+
+## Findings
+
+- Each claim ends with the matching source marker. [1]
+
+## Details
+
+## Sources
+
+1. https://example.com/source-a — what it supports
+2. https://example.org/source-b — what it supports
+
+## Gaps & confidence
+\`\`\`
+
+Use \`provider: claude\` for this lane. \`provider\` is required in this template
+but remains optional to the validator and is never attested identity. Keep
+\`source_urls\` as a non-empty block list; flow syntax such as \`[a, b]\` is
+invalid. Its order is the citation index: every Findings claim ends in \`[n]\`,
+and Sources reprints \`n. <url> — <what it supports>\`. Negative findings still
+cite the search or documentation pages actually opened. \`## Details\` is
+optional; keep the other four sections.`;
+
+export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V6.replace(
+  RESEARCHER_AGENT_WRITING_V6,
+  RESEARCHER_AGENT_WRITING_V7,
+);
 
 /** Researcher persona settings — .lares/researcher/.claude/settings.json.
  *  Mirrors WORKER_CLAUDE_SETTINGS_JSON's memory/compaction posture AND its
@@ -6183,6 +6293,85 @@ export const WRITE_PROPOSAL_SKILL_MD = WRITE_PROPOSAL_SKILL_MD_V2.replace(
   WRITE_PROPOSAL_CONCEPTUAL_MODEL_ANCHOR,
   WRITE_PROPOSAL_CONCEPTUAL_MODEL_SECTION,
 );
+
+// WP-10 — workspace-shared research-report authoring skill. New managed file
+// (v1), so scaffold rows intentionally have no previousHashes entry.
+export const WRITE_RESEARCH_REPORT_SKILL_MD = `---
+name: research-report
+description: >-
+  Write a dependable research report into the workspace research inbox. Use
+  after web or documentation research when findings need a cited artifact with
+  canonical frontmatter, a flat id-matched filename, and explicit uncertainty.
+---
+
+# Write a research report
+
+Write exactly one Markdown report to the flat path
+\`.lares/research/inbox/<id>.md\`. This is a consistency and dependability
+contract, not containment. No provider has an OS-enforced researcher write
+boundary; the Claude PreToolUse hook is only a Claude consistency check.
+
+## Choose the id and path
+
+Use an unquoted, filesystem-safe lowercase slug. Prefer
+\`research-<yyyy-mm-dd>-<slug>\`, for example
+\`research-2026-08-16-electron-release\`. The filename stem must exactly equal
+the frontmatter \`id\`. Do not quote the id: the hook parser does not strip
+quotes.
+
+## Use this exact shape
+
+\`\`\`markdown
+---
+id: research-2026-08-16-example-topic
+topic: Example research topic
+created: 2026-08-16T12:00:00Z
+source_urls:
+  - https://example.com/source-a
+  - https://example.org/source-b
+trust: untrusted
+summary: One-line summary of what this report establishes.
+provider: claude
+---
+
+## Summary
+
+## Findings
+
+- Each claim ends with the matching source marker. [1]
+
+## Details
+
+## Sources
+
+1. https://example.com/source-a — what it supports
+2. https://example.org/source-b — what it supports
+
+## Gaps & confidence
+\`\`\`
+
+Replace \`provider\` with the actual lane provider: \`claude\`, \`codex\`, or
+\`agy\`. It is required in this template but optional to the validator and is a
+convenience stamp, never attested identity. The validator's required set remains
+the six keys \`id\`, \`topic\`, \`created\`, \`source_urls\`, \`trust\`, and
+\`summary\`.
+
+## Cite every finding
+
+Keep \`source_urls\` as a non-empty YAML block list of HTTP(S) URLs. Flow syntax
+such as \`[a, b]\` is invalid. Its order is the citation index: URL position
+\`n\` (1-based) corresponds to marker \`[n]\`. Every claim in \`## Findings\`
+ends with its marker. In \`## Sources\`, reprint each as
+\`n. <url> — <what it supports>\`. Negative findings still require a URL; cite
+the search or documentation pages actually opened.
+
+## Finish the body
+
+Use the section order \`## Summary\`, \`## Findings\`, optional \`## Details\`,
+\`## Sources\`, and \`## Gaps & confidence\`. State unresolved questions,
+evidence gaps, and confidence honestly. Historical reports may use other
+headings, but every new report should follow this shape.
+`;
 
 // WP-14 — frozen pristine v1 workspace-shared planning-surface reader.
 export const READ_PLANNING_SURFACE_SKILL_MD_V1 = `---

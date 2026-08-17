@@ -17,17 +17,21 @@
 
 const assert = require('assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { RESEARCH_WRITE_GUARD_MJS } = require('../dist/main/shared/constants.js');
+const constantsModule = process.env.RESEARCH_CONSTANTS_MODULE
+  ? path.resolve(process.env.RESEARCH_CONSTANTS_MODULE)
+  : path.resolve(__dirname, '../dist/main/shared/constants.js');
+const { RESEARCH_STORE_README_MD, RESEARCH_WRITE_GUARD_MJS } = require(constantsModule);
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
 // Materialize the guard once.
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'research-guard-'));
+const cacheDir = path.resolve(__dirname, '../node_modules/.cache');
+fs.mkdirSync(cacheDir, { recursive: true });
+const tmpDir = fs.mkdtempSync(path.join(cacheDir, 'research-guard-'));
 const guardPath = path.join(tmpDir, 'research-write-guard.mjs');
 fs.writeFileSync(guardPath, RESEARCH_WRITE_GUARD_MJS, 'utf-8');
 
@@ -48,14 +52,15 @@ const INBOX = `${WS}/.lares/research/inbox`;
 // Legacy spelling — exercises the guard's `.dashboard/research/` fallback marker
 // (rename-blocked sessions still write there).
 const LEGACY_INBOX = `${WS}/.dashboard/research/inbox`;
-const VALID_PATH = `${INBOX}/my-topic/2026-06-14T120000-findings.md`;
+const VALID_ID = 'r-2026-06-14-abc123';
+const VALID_PATH = `${INBOX}/${VALID_ID}.md`;
 
 function artifact(over) {
   over = over || {};
   const trust = over.trust || 'untrusted';
   const lines = [
     '---',
-    `id: ${over.id || 'r-2026-06-14-abc123'}`,
+    `id: ${over.id || VALID_ID}`,
     `topic: ${over.topic || 'Some research topic'}`,
     `created: ${over.created || '2026-06-14T12:00:00Z'}`,
   ];
@@ -91,14 +96,14 @@ function assertAllowed(res) {
 
 // ── Allow paths ──────────────────────────────────────────────────────
 
-test('valid artifact in inbox/ is allowed', () => {
+test('flat id-matched artifact in inbox/ is allowed', () => {
   assertAllowed(runGuard(writePayload(VALID_PATH, artifact())));
 });
 
-test('write outside the research store is blocked (default-deny containment)', () => {
+test('write outside the research store is blocked by the Claude consistency hook', () => {
   assertBlocked(
     runGuard(writePayload(`${WS}/src/foo.ts`, 'export const x = 1;\n')),
-    /confined to \.lares\/research\/inbox\/ \(path is outside the research store\)/,
+    /intended for \.lares\/research\/inbox\/ \(path is outside the research store\)/,
   );
 });
 
@@ -146,40 +151,59 @@ test('write under research/ but outside inbox/ is blocked', () => {
   const clearedPath = `${WS}/.lares/research/cleared/my-topic/2026-06-14T120000-findings.md`;
   assertBlocked(
     runGuard(writePayload(clearedPath, artifact())),
-    /researcher may only write under \.lares\/research\/inbox\//,
+    /researcher Write should target \.lares\/research\/inbox\//,
   );
 });
 
 test('write directly under research/ root is blocked (outside inbox)', () => {
   assertBlocked(
     runGuard(writePayload(`${WS}/.lares/research/notes.md`, artifact())),
-    /researcher may only write under \.lares\/research\/inbox\//,
+    /researcher Write should target \.lares\/research\/inbox\//,
   );
 });
 
-test('malformed filename (no timestamp prefix) is blocked', () => {
+test('historical nested report path is now rejected on write', () => {
   assertBlocked(
-    runGuard(writePayload(`${INBOX}/my-topic/findings.md`, artifact())),
-    /filename must be <timestamp>-<slug>\.md/,
+    runGuard(writePayload(`${INBOX}/my-topic/2026-06-14T120000-findings.md`, artifact())),
+    /flat path inbox\/<id>\.md/,
+  );
+});
+
+test('flat filename stem must equal the unquoted frontmatter id', () => {
+  assertBlocked(
+    runGuard(writePayload(`${INBOX}/different-id.md`, artifact())),
+    /filename stem must equal frontmatter id \(stem "different-id", id "r-2026-06-14-abc123"\)/,
   );
 });
 
 test('Windows-style backslash path is normalized and validated', () => {
-  const winPath = 'C:\\ws\\.lares\\research\\inbox\\my-topic\\2026-06-14T120000-findings.md';
+  const winPath = `C:\\ws\\.lares\\research\\inbox\\${VALID_ID}.md`;
   assertAllowed(runGuard(writePayload(winPath, artifact())));
 });
 
 // ── Legacy `.dashboard/research/` marker (rename-blocked fallback session) ──
 
 test('valid artifact in the LEGACY .dashboard inbox is still allowed', () => {
-  assertAllowed(runGuard(writePayload(`${LEGACY_INBOX}/my-topic/2026-06-14T120000-findings.md`, artifact())));
+  assertAllowed(runGuard(writePayload(`${LEGACY_INBOX}/${VALID_ID}.md`, artifact())));
 });
 
 test('legacy .dashboard research/ write outside inbox/ is still blocked', () => {
   assertBlocked(
     runGuard(writePayload(`${WS}/.dashboard/research/notes.md`, artifact())),
-    /researcher may only write under \.lares\/research\/inbox\//,
+    /researcher Write should target \.lares\/research\/inbox\//,
   );
+});
+
+// ── Managed README contract ───────────────────────────────────────────
+
+test('research README documents six keys, flat writes, recursive reads, and Claude-only consistency', () => {
+  for (const key of ['id', 'topic', 'created', 'source_urls', 'trust', 'summary']) {
+    assert.match(RESEARCH_STORE_README_MD, new RegExp(`\\b${key}\\b`));
+  }
+  assert.match(RESEARCH_STORE_README_MD, /inbox\/<id>\.md/);
+  assert.match(RESEARCH_STORE_README_MD, /inbox\/\*\*\/\*\.md/);
+  assert.match(RESEARCH_STORE_README_MD, /Claude-only consistency check/);
+  assert.match(RESEARCH_STORE_README_MD, /never containment/);
 });
 
 // ── Runner ───────────────────────────────────────────────────────────

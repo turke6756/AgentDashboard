@@ -47,6 +47,7 @@ import {
   LARES_DIR_NAME, LEGACY_LARES_DIR_NAME,
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2,
+  WRITE_RESEARCH_REPORT_SKILL_MD,
   READ_PLANNING_SURFACE_SKILL_MD,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   PROPOSAL_TO_PLAN_SKILL_MD,
@@ -1520,10 +1521,14 @@ export function proveProductionEntryPointEntry(rootPrefix: string): Record<strin
 /** SHA-256 hex of the v5 `.dashboard/researcher/CLAUDE.md` (pre-`.lares`
  *  rename). Used in the v6 file's previousHashes. */
 export const RESEARCHER_AGENT_MD_V5_HASH = '90e26bca4b533513c0c59e0fffb7fad431ddff9695cdd327d29f54e15a0c7bad';
+/** SHA-256 hex of the v6 Claude researcher contract before the report template. */
+export const RESEARCHER_AGENT_MD_V6_HASH = 'bfbb7c65eebc502994ff48921793fbab0a44a930d8ca442e53d06bc0577a24b6';
 /** SHA-256 of the shipped supervisor v25 body, before the honest live posture. */
 export const SUPERVISOR_AGENT_MD_V25_HASH = '4bceb0c2113aca7a934cd5aa274b6f6e1e5fcb87ec035d1c5ed3215286733d15';
 /** SHA-256 of the shipped research-store README v3 body. */
 export const RESEARCH_STORE_README_MD_V3_HASH = 'b6581d5568d26f317a8cdf61248c1fbe385f4cd40bec929124641db88c523fe4';
+/** SHA-256 hex of the v4 research-store README before the report contract. */
+export const RESEARCH_STORE_README_MD_V4_HASH = '6883dddc186682d0a608ed944d6ddf9c2380f567777d69c74bf0d886cd049f2a';
 /** SHA-256 hex of the v2 research-write-guard.mjs (single `.dashboard/research/`
  *  marker). v3 accepts BOTH markers (rename-failed fallback sessions still
  *  write under `.dashboard/`). Used in the v3 file's previousHashes. */
@@ -1562,6 +1567,8 @@ export const RESEARCH_WRITE_GUARD_MJS_V4_HASH = 'ee18176d996fa25e8e06c445b8f7d33
 export const RESEARCH_WRITE_GUARD_MJS_V5_HASH = '37a7ccdbda2779ccb4d155dced9191643e0556c2037cdb5843914d09fc97c8ec';
 /** SHA-256 hex of the v6 guard before the honest non-containment wording bump. */
 export const RESEARCH_WRITE_GUARD_MJS_V6_HASH = '4cb10fec25f6345b555a33b2a1ecd768a34201121ea0083fc79c2b13b04db8ef';
+/** SHA-256 hex of the v7 guard before flat id-matched report paths. */
+export const RESEARCH_WRITE_GUARD_MJS_V7_HASH = '8d5720e3ca97ea61ab449bc1b8684a5b489171531abd9cc234c2a1caf6869883';
 
 /** SHA-256 hex of the v1 `.lares/scripts/guard-git-discard.mjs` — the pre-
  *  per-provider body that emitted a single deny shape for every caller. v2
@@ -1871,14 +1878,66 @@ export const RESEARCHER_CODEX_AGENTS_MD_V2 = RESEARCHER_CODEX_AGENTS_MD_V1.repla
   `These are instructions, not an enforced tool boundary. Codex researcher launches currently load no tool-restriction hook or equivalent provider control.\n\nThe supervisor is your only human-side interlocutor.`,
 );
 
-export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V2.replace(
+export const RESEARCHER_CODEX_AGENTS_MD_V3 = RESEARCHER_CODEX_AGENTS_MD_V2.replace(
   'The supervisor is your only human-side interlocutor.',
   `Portable researcher skills are installed under \`.agents/skills/\`. Read the matching \`SKILL.md\` there before using write-proposal, read-planning-surface, create-persona, or read-comments.\n\nThe supervisor is your only human-side interlocutor.`,
 );
 
-export function researcherScaffoldContent(provider: LaunchableAgentProvider): string {
-  if (provider === 'codex') return RESEARCHER_CODEX_AGENTS_MD;
-  if (provider === 'agy') return `# Researcher Agent
+const RESEARCHER_REPORT_TEMPLATE_CODEX = `
+
+Write every report flat at \`.lares/research/inbox/<id>.md\`. Use an unquoted,
+filesystem-safe lowercase slug for \`id\` (recommended:
+\`research-<yyyy-mm-dd>-<slug>\`) and make the filename stem exactly equal to it.
+No OS-enforced researcher write boundary exists; Codex registers no researcher
+write hook.
+
+Copy this report shape even when you do not invoke a skill:
+
+\`\`\`markdown
+---
+id: research-2026-08-16-example-topic
+topic: Example research topic
+created: 2026-08-16T12:00:00Z
+source_urls:
+  - https://example.com/source-a
+  - https://example.org/source-b
+trust: untrusted
+summary: One-line summary of what this report establishes.
+provider: codex
+---
+
+## Summary
+
+## Findings
+
+- Each claim ends with the matching source marker. [1]
+
+## Details
+
+## Sources
+
+1. https://example.com/source-a — what it supports
+2. https://example.org/source-b — what it supports
+
+## Gaps & confidence
+\`\`\`
+
+\`provider\` is required in this template but optional to the validator and is
+never attested identity. Keep \`source_urls\` as a non-empty block list; flow
+syntax such as \`[a, b]\` is invalid. Its order is the citation index: every
+Findings claim ends in \`[n]\`, and Sources reprints
+\`n. <url> — <what it supports>\`. Negative findings still cite the search or
+documentation pages actually opened. \`## Details\` is optional; keep the other
+four sections.`;
+
+export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V3.replace(
+  '\nThe supervisor is your only human-side interlocutor.',
+  `${RESEARCHER_REPORT_TEMPLATE_CODEX}\n\nThe supervisor is your only human-side interlocutor.`,
+);
+/** SHA-256 hex of the v3 Codex researcher contract before the report template. */
+export const RESEARCHER_CODEX_AGENTS_MD_V3_HASH = '84c8f64cfe0ac32983a76c818463055924538dd5de00e43c8ac62a1b0de8fab4';
+
+export const RESEARCHER_AGY_AGENTS_MD_V1 = `# Researcher Agent
 
 You are the workspace researcher: investigate across the web, documentation, and the repository, then produce reliable research findings.
 
@@ -1888,6 +1947,58 @@ Antigravity's protection is limited to regex denies for reviewed destructive git
 
 Portable researcher skills are installed under \`.agents/skills/\`. Read the matching \`SKILL.md\` there before using write-proposal, read-planning-surface, create-persona, or read-comments.
 `;
+
+export const RESEARCHER_AGY_AGENTS_MD = `${RESEARCHER_AGY_AGENTS_MD_V1.trimEnd()}
+
+Write every report flat at \`.lares/research/inbox/<id>.md\`. Use an unquoted,
+filesystem-safe lowercase slug for \`id\` (recommended:
+\`research-<yyyy-mm-dd>-<slug>\`) and make the filename stem exactly equal to it.
+No OS-enforced researcher write boundary exists; Agy registers no researcher
+write hook, and its configuration checks can fail open through shell chaining.
+
+Copy this report shape even when you do not invoke a skill:
+
+\`\`\`markdown
+---
+id: research-2026-08-16-example-topic
+topic: Example research topic
+created: 2026-08-16T12:00:00Z
+source_urls:
+  - https://example.com/source-a
+  - https://example.org/source-b
+trust: untrusted
+summary: One-line summary of what this report establishes.
+provider: agy
+---
+
+## Summary
+
+## Findings
+
+- Each claim ends with the matching source marker. [1]
+
+## Details
+
+## Sources
+
+1. https://example.com/source-a — what it supports
+2. https://example.org/source-b — what it supports
+
+## Gaps & confidence
+\`\`\`
+
+\`provider\` is required in this template but optional to the validator and is
+never attested identity. Keep \`source_urls\` as a non-empty block list; flow
+syntax such as \`[a, b]\` is invalid. Its order is the citation index: every
+Findings claim ends in \`[n]\`, and Sources reprints
+\`n. <url> — <what it supports>\`. Negative findings still cite the search or
+documentation pages actually opened. \`## Details\` is optional; keep the other
+four sections.
+`;
+
+export function researcherScaffoldContent(provider: LaunchableAgentProvider): string {
+  if (provider === 'codex') return RESEARCHER_CODEX_AGENTS_MD;
+  if (provider === 'agy') return RESEARCHER_AGY_AGENTS_MD;
   return '';
 }
 
@@ -3865,7 +3976,7 @@ export class AgentSupervisor extends EventEmitter {
    *  fresh checkout. README is managed (version-migrated); the .gitkeeps are
    *  empty placeholders. */
   private static RESEARCH_STORE_FILES: Record<string, ScaffoldFile> = {
-    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 4, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1', 2: sha256Hex(RESEARCH_STORE_README_MD_V2), 3: RESEARCH_STORE_README_MD_V3_HASH } },
+    [`.lares/research/README.md`]:        { content: RESEARCH_STORE_README_MD, version: 5, previousHashes: { 1: 'c92b38ce97b699f36472aec83cde968db559cfc7e6df33349ae8fba93499abe1', 2: sha256Hex(RESEARCH_STORE_README_MD_V2), 3: RESEARCH_STORE_README_MD_V3_HASH, 4: RESEARCH_STORE_README_MD_V4_HASH } },
     [`.lares/research/inbox/.gitkeep`]:   { content: '', version: 1 },
     [`.lares/research/cleared/.gitkeep`]: { content: '', version: 1 },
   };
@@ -3878,9 +3989,10 @@ export class AgentSupervisor extends EventEmitter {
   private static RESEARCHER_FILES: Record<string, ScaffoldFile> = {
     ...writeProposalEntry('.lares/researcher/claude/.claude/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/claude/.claude/skills/read-planning-surface'),
-    [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 6, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH } },
+    [`.lares/researcher/claude/.claude/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },
+    [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 7, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH, 6: RESEARCHER_AGENT_MD_V6_HASH } },
     [`.lares/researcher/claude/.claude/settings.json`]: { content: RESEARCHER_CLAUDE_SETTINGS_JSON, version: 3, previousHashes: { 1: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V2) } },
-    [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 7, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH, 6: RESEARCH_WRITE_GUARD_MJS_V6_HASH }, executable: true },
+    [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 8, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH, 6: RESEARCH_WRITE_GUARD_MJS_V6_HASH, 7: RESEARCH_WRITE_GUARD_MJS_V7_HASH }, executable: true },
     // Persona kit (§1.4) — default skills for the researcher lane.
     [`.lares/researcher/claude/.claude/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } }, // v4: `.lares` rename
     [`.lares/researcher/claude/.claude/skills/read-comments/SKILL.md`]:  { content: PERSONA_READ_COMMENTS_SKILL, version: 5, previousHashes: { 1: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V1), 2: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V2), 3: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V3), 4: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V4) } }, // v5: Python fallback removed (honest on a Python-free clean VM)
@@ -3888,9 +4000,10 @@ export class AgentSupervisor extends EventEmitter {
 
   /** Codex researcher identity plus the portable, version-migrated skill kit. */
   static RESEARCHER_FILES_CODEX: Record<string, ScaffoldFile> = {
-    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 3, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2) } },
+    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH } },
     ...writeProposalEntry('.lares/researcher/codex/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/codex/.agents/skills/read-planning-surface'),
+    [`.lares/researcher/codex/.agents/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },
     [`.lares/researcher/codex/.agents/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } },
     [`.lares/researcher/codex/.agents/skills/read-comments/SKILL.md`]: { content: PERSONA_READ_COMMENTS_SKILL, version: 5, previousHashes: { 1: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V1), 2: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V2), 3: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V3), 4: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V4) } },
   };
@@ -3899,6 +4012,7 @@ export class AgentSupervisor extends EventEmitter {
   static RESEARCHER_FILES_AGY: Record<string, ScaffoldFile> = {
     ...writeProposalEntry('.lares/researcher/agy/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/agy/.agents/skills/read-planning-surface'),
+    [`.lares/researcher/agy/.agents/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },
     [`.lares/researcher/agy/.agents/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } },
     [`.lares/researcher/agy/.agents/skills/read-comments/SKILL.md`]: { content: PERSONA_READ_COMMENTS_SKILL, version: 5, previousHashes: { 1: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V1), 2: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V2), 3: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V3), 4: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V4) } },
   };
