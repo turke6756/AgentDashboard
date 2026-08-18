@@ -108,13 +108,21 @@ function makeClient(): DashboardClient {
   const { getOrchestrationDispatch } = require('../orchestration/groupthink-v2') as typeof import('../orchestration/groupthink-v2');
 
   const workspace = db.createWorkspace({ title: 'P2L runs', path: workspaceRoot, pathType: 'windows' });
+  const foreignWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'p2l-runs-foreign-ws-'));
+  const foreignWorkspace = db.createWorkspace({
+    title: 'P2L runs foreign', path: foreignWorkspaceRoot, pathType: 'windows',
+  });
   let fixtureSeq = 0;
-  function planFixture(intentId: string) {
+  function planFixture(
+    intentId: string,
+    targetWorkspace = workspace,
+    targetWorkspaceRoot = workspaceRoot,
+  ) {
     const seq = ++fixtureSeq;
     const artifactHex = seq.toString(16).padStart(8, '0');
     const artifactId = `plan_${artifactHex}`;
     const folderRelPath = `.lares/plans/p2l-runs-${seq}`;
-    const folderAbs = path.join(workspaceRoot, '.lares', 'plans', `p2l-runs-${seq}`);
+    const folderAbs = path.join(targetWorkspaceRoot, '.lares', 'plans', `p2l-runs-${seq}`);
     fs.mkdirSync(folderAbs, { recursive: true });
     fs.writeFileSync(path.join(folderAbs, 'plan.json'), JSON.stringify({
       schema_version: 1, plan_artifact_id: artifactId, plan_sku: `p2l-runs-${seq}`,
@@ -126,11 +134,11 @@ function makeClient(): DashboardClient {
     })}\n-->`;
     fs.writeFileSync(path.join(folderAbs, 'plan.md'), marker);
     const plan = db.adoptStructuredPlan({
-      workspaceId: workspace.id, artifactId, folderRelPath,
+      workspaceId: targetWorkspace.id, artifactId, folderRelPath,
       planPath: `${folderRelPath}/plan.md`, mtimeMs: 1, sizeBytes: Buffer.byteLength(marker),
     });
     const scan = () => ledger.scanPlanIntentLedger({
-      workspaceId: workspace.id, workspaceRoot, planId: plan.planId,
+      workspaceId: targetWorkspace.id, workspaceRoot: targetWorkspaceRoot, planId: plan.planId,
       folderAbs, folderRelPath,
     });
     scan();
@@ -169,21 +177,74 @@ function makeClient(): DashboardClient {
       'composite ran join uses idx_orchestrations_plan_intent');
   });
 
-  test('inactive and foreign intents are rejected before an orchestration row exists', () => {
+  test('intent-runs-distinguishes-every-rung', () => {
+    type ExpectedPlanRefError = { statusCode: number; code: string; message: string };
+    const expectPlanRefError = (action: () => unknown, expected: ExpectedPlanRefError): void => {
+      let actual: ExpectedPlanRefError | undefined;
+      try {
+        action();
+      } catch (error) {
+        const candidate = error as Partial<ExpectedPlanRefError>;
+        actual = {
+          statusCode: candidate.statusCode as number,
+          code: candidate.code as string,
+          message: candidate.message as string,
+        };
+      }
+      assert.deepEqual(actual, expected, 'REACHABILITY:intent-runs-rung-conflation');
+    };
+
     const inactive = planFixture('int_22222222');
     db.getDb().prepare(`UPDATE plan_intents SET status = 'withdrawn' WHERE plan_id = ? AND intent_id = ?`)
       .run(inactive.planId, inactive.intentId);
-    const foreign = planFixture('int_33333333');
-    const target = planFixture('int_44444444');
+    const target = planFixture('int_33333333');
+    const foreign = planFixture('int_44444444', foreignWorkspace, foreignWorkspaceRoot);
+    const deleted = planFixture('int_55555555');
+    db.softDeletePlan(deleted.planId);
+    const malformedRef = 'plan_nothex';
+    const unknownPlanId = '00000000-0000-4000-8000-000000000001';
+    const unknownIntentId = 'int_66666666';
     const before = db.listOrchestrationRuns().length;
-    assert.throws(() => service.start_run({
+
+    const start = (planId: string, planningIntentId: string) => () => service.start_run({
       name: 'groupthink', workspaceId: workspace.id, supervisorId: 'supervisor-fixture',
-      planId: inactive.planId, planningIntentId: inactive.intentId,
-    }), /not active in the requested plan/);
-    assert.throws(() => service.start_run({
-      name: 'groupthink', workspaceId: workspace.id, supervisorId: 'supervisor-fixture',
-      planId: target.planId, planningIntentId: foreign.intentId,
-    }), /not active in the requested plan/);
+      planId, planningIntentId,
+    });
+    expectPlanRefError(start(malformedRef, target.intentId), {
+      statusCode: 400,
+      code: 'plan_ref_malformed',
+      message: `plan_id '${malformedRef}' must be a plan row UUID or a portable plan artifact id matching plan_<8hex>.`,
+    });
+    expectPlanRefError(start(unknownPlanId, target.intentId), {
+      statusCode: 404,
+      code: 'plan_not_found',
+      message: `No plan matching plan_id '${unknownPlanId}' exists in the requested workspace scope.`,
+    });
+    expectPlanRefError(start(deleted.planId, deleted.intentId), {
+      statusCode: 409,
+      code: 'plan_deleted',
+      message: `Plan '${deleted.planId}' resolves to a deleted plan row; deleted plans are not a valid target.`,
+    });
+    expectPlanRefError(start(foreign.planId, foreign.intentId), {
+      statusCode: 403,
+      code: 'plan_wrong_workspace',
+      message: `Plan '${foreign.planId}' does not belong to workspace '${workspace.id}'.`,
+    });
+    expectPlanRefError(start(target.artifactId, unknownIntentId), {
+      statusCode: 404,
+      code: 'planning_intent_not_found',
+      message: `Planning intent '${unknownIntentId}' is not recorded for plan '${target.planId}' (resolved from '${target.artifactId}').`,
+    });
+    expectPlanRefError(start(inactive.artifactId, inactive.intentId), {
+      statusCode: 409,
+      code: 'planning_intent_not_active',
+      message: `Planning intent '${inactive.intentId}' for plan '${inactive.planId}' has status 'withdrawn'; expected 'active'.`,
+    });
+    expectPlanRefError(start(foreign.artifactId, foreign.intentId), {
+      statusCode: 404,
+      code: 'plan_not_found',
+      message: `No plan matching plan_id '${foreign.artifactId}' exists in the requested workspace scope.`,
+    });
     assert.equal(db.listOrchestrationRuns().length, before, 'rejection creates no run row');
   });
 
@@ -242,6 +303,7 @@ function makeClient(): DashboardClient {
   }
   try { db.closeDatabase(); } catch { /* best effort */ }
   try { fs.rmSync(workspaceRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(foreignWorkspaceRoot, { recursive: true, force: true }); } catch { /* best effort */ }
   try { fs.rmSync(appData, { recursive: true, force: true }); } catch { /* best effort */ }
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
