@@ -11,13 +11,13 @@ import {
 } from './types';
 import { LAUNCHABLE_AGENT_PROVIDERS, isLaunchableAgentProvider } from '../../shared/types';
 import {
-  getWorkspace, getPlan,
-  getActivePlanningIntentForLaunch,
+  getWorkspace,
   insertOrchestration, updateOrchestration, getOrchestrationRun, listOrchestrationRuns,
   insertOrchestrationEvent, insertOrchestrationMember, markActiveRunsAborted,
 } from '../database';
 import { getOrchestrationProviderSettingsCached } from './orchestration-provider-settings';
 import { isPlanningIntentId } from '../../shared/planning-artifact-ids';
+import { PlanRefError, resolveActivePlanRef, resolvePlanRef } from '../plans/resolve-plan-ref';
 
 const READY_STATUSES = new Set(['idle', 'waiting']);
 
@@ -100,7 +100,7 @@ export class OrchestrationService extends EventEmitter {
 
   /** Fire-and-detach. Validates, persists the run row, kicks off execution,
    *  returns the runId synchronously. */
-  start_run(req: RunOrchestrationRequest): { runId: string } {
+  start_run(req: RunOrchestrationRequest): { runId: string; planId: string | null } {
     if (req.name !== 'groupthink') throw httpErr(400, `Unknown orchestration: ${req.name}`);
 
     // Fold a legacy command string into structured resume params. Re-pin the
@@ -121,6 +121,16 @@ export class OrchestrationService extends EventEmitter {
       if (req.planningIntentId !== undefined && req.planningIntentId !== prior.planningIntentId) {
         throw httpErr(409, 'A resumed orchestration cannot change its frozen planning intent');
       }
+      if (req.planId !== undefined) {
+        const { planId } = resolvePlanRef(prior.workspaceId, req.planId);
+        if (planId !== prior.planId) {
+          throw new PlanRefError(
+            409,
+            'plan_ref_resume_mismatch',
+            `Resume plan_id '${req.planId}' resolves to '${planId}', which is not this run's frozen plan '${prior.planId}'.`,
+          );
+        }
+      }
       if (req.leadProvider && req.leadProvider !== prior.leadProvider)
         throw httpErr(409, 'A resumed orchestration cannot change its lead provider.');
       if (req.reviewerProvider && req.reviewerProvider !== prior.reviewerProvider)
@@ -137,11 +147,7 @@ export class OrchestrationService extends EventEmitter {
       if (!isPlanningIntentId(req.planningIntentId)) {
         throw httpErr(400, 'planningIntentId must match int_[0-9a-f]{8}');
       }
-      if (!getActivePlanningIntentForLaunch(
-        req.workspaceId, req.planId, req.planningIntentId,
-      )) {
-        throw httpErr(409, 'Planning intent is not active in the requested plan');
-      }
+      const resolved = resolveActivePlanRef(req.workspaceId, req.planId, req.planningIntentId);
       // WP6 / planning-surface demo fix (2026-07-06): a plan-rail run (planId
       // set) edits an EXISTING plan surface, so its planPath MUST be that plan
       // row's real `path` — not the legacy `plans/new-plan.md` default. The
@@ -150,9 +156,8 @@ export class OrchestrationService extends EventEmitter {
       // run.planPath), forcing the Lead to self-correct; a sloppier model would
       // have written a stray file. Resolve the row here so every downstream
       // consumer (writebackClause, prompt mentions, completion event) is honest.
-      const planRow = getPlan(req.planId);
-      if (!planRow?.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
-      const planRel = planRow.path;
+      if (!resolved.plan.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
+      const planRel = resolved.plan.path;
       const prov = getOrchestrationProviderSettingsCached(ws.path).groupthink;
       run = {
         runId: uuidv4().slice(0, 8),
@@ -163,7 +168,7 @@ export class OrchestrationService extends EventEmitter {
         supervisorId: req.supervisorId,
         topic: req.topic || 'Research and plan a feature.',
         planPath: path.isAbsolute(planRel) ? planRel : path.join(ws.path, planRel),
-        planId: req.planId,
+        planId: resolved.planId,
         planningIntentId: req.planningIntentId,
         sectionAnchor: req.sectionAnchor,
         leadProvider: req.leadProvider || prov.defaultLeadProvider,
@@ -187,7 +192,7 @@ export class OrchestrationService extends EventEmitter {
     }
     insertOrchestration(run);            // upsert
     void this.execute(run, !!req.keepAgents);
-    return { runId: run.runId };
+    return { runId: run.runId, planId: run.planId ?? null };
   }
 
   abort(runId: string): { ok: boolean } {

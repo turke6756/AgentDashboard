@@ -107,6 +107,7 @@ import {
 import type { ActivityBefore, ActivityListRequest, ActivitySnapshot } from '../shared/types';
 import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
+import { PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
   resolveRequestedPlanBinding,
   withResolvedPlanStamp,
@@ -229,6 +230,7 @@ function getExecutingSupervisorPlan(supervisorId: string | null): ExecutingSuper
  *  allowlists instead of forwarding any string. Add new dashboard API codes
  *  here deliberately when a route starts setting them. */
 const API_ERROR_CODES = new Set<string>([
+  ...PLAN_REF_ERROR_CODES,
   'submit-not-confirmed', 'delivery-failed', 'browser-policy-denied',
   'invalid-plan-binding',
   // Context-brick Inc 1 identity layer — resolveIdentity / resolveWorkspaceScope
@@ -2465,11 +2467,16 @@ export class ApiServer {
           { statusCode: 400 },
         );
       }
+      const workspaceId = this.resolveWorkspaceScope(identity, params.workspaceId);
+      if (!workspaceId) {
+        throw Object.assign(new Error('params.workspaceId required'), { statusCode: 400 });
+      }
+      params.workspaceId = workspaceId;
       const run = this.orchestration!.start_run({ name, ...params });
       // Planning-surface P1: a plan-bound orchestration run auto-subscribes the
       // dispatching supervisor to that plan (best-effort; no-op for non-supervisors).
-      if (params.planId) this.autoFocusPlan(identity, params.planId as string);
-      return run;
+      if (run.planId) this.autoFocusPlan(identity, run.planId);
+      return { runId: run.runId };
     }
 
     const orchOne = path.match(/^\/api\/orchestrations\/([^/]+)$/);

@@ -14,8 +14,12 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { ApiServer } from '../api-server';
+import { getApiToken } from '../security/api-auth';
+import type { AgentSupervisor } from '../supervisor';
 import { assertGroupthinkProvider, OrchestrationService } from './service';
 import { DashboardClient, OrchestrationRun, OrchestrationRunContext, OrchestrationRunner } from './types';
 import {
@@ -35,6 +39,13 @@ const workspaceRoots = {
   defaulted: path.join(providerSettingsRoot, 'defaulted'),
   builtIn: path.join(providerSettingsRoot, 'built-in'),
 };
+const PLAN_UUID = '11111111-1111-4111-8111-111111111111';
+const SECOND_PLAN_UUID = '22222222-2222-4222-8222-222222222222';
+const FOREIGN_PLAN_UUID = '33333333-3333-4333-8333-333333333333';
+const DELETED_PLAN_UUID = '44444444-4444-4444-8444-444444444444';
+const BUILT_IN_PLAN_UUID = '55555555-5555-4555-8555-555555555555';
+const PLAN_ARTIFACT_ID = 'plan_a1b2c3d4';
+const SECOND_PLAN_ARTIFACT_ID = 'plan_b1c2d3e4';
 
 db.getWorkspace = (id: string) => {
   if (id === 'ws-1') return { id: 'ws-1', path: workspaceRoots.defaulted };
@@ -44,13 +55,24 @@ db.getWorkspace = (id: string) => {
 // Fix 3 (planning-surface demo): start_run now resolves getPlan(planId).path for
 // rail runs. These lifecycle tests don't assert path resolution, so a plans store
 // keyed by id suffices; unknown ids fall back to null → the legacy planPath default.
-const plansStore = new Map<string, { id: string; workspaceId: string; path: string; format?: string }>();
-db.getPlan = (id: string) => (plansStore.has(id) ? clone(plansStore.get(id)!) : {
-  id, workspaceId: 'ws-1', path: `.lares/plans/${id}/plan.md`, format: 'structured',
-});
-db.getActivePlanningIntentForLaunch = (_workspaceId: string, planId: string, intentId: string) => (
-  planId && intentId === 'int_1234abcd' ? { planId, intentId, status: 'active' } : null
-);
+const planRows = new Map([
+  [PLAN_UUID, { id: PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/primary/plan.md', deletedAt: null, artifactId: PLAN_ARTIFACT_ID }],
+  [SECOND_PLAN_UUID, { id: SECOND_PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/second/plan.md', deletedAt: null, artifactId: SECOND_PLAN_ARTIFACT_ID }],
+  [FOREIGN_PLAN_UUID, { id: FOREIGN_PLAN_UUID, workspaceId: 'ws-2', path: '.lares/plans/foreign/plan.md', deletedAt: null, artifactId: 'plan_c1d2e3f4' }],
+  [DELETED_PLAN_UUID, { id: DELETED_PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/deleted/plan.md', deletedAt: '2026-08-17T00:00:00.000Z', artifactId: 'plan_d1e2f3a4' }],
+  [BUILT_IN_PLAN_UUID, { id: BUILT_IN_PLAN_UUID, workspaceId: 'ws-built-in', path: '.lares/plans/built-in/plan.md', deletedAt: null, artifactId: PLAN_ARTIFACT_ID }],
+]);
+db.getPlan = (id: string) => planRows.has(id) ? clone(planRows.get(id)!) : null;
+db.getPlanByWorkspaceArtifactId = (workspaceId: string, artifactId: string) => {
+  const row = [...planRows.values()].find((candidate) =>
+    candidate.workspaceId === workspaceId && candidate.artifactId === artifactId);
+  return row ? clone(row) : null;
+};
+db.getPlanIntentRow = (_workspaceId: string, planId: string, intentId: string) => {
+  if (intentId === 'int_1234abcd') return { planId, intentId, status: 'active' };
+  if (intentId === 'int_deadbeef') return { planId, intentId, status: 'withdrawn' };
+  return null;
+};
 db.insertOrchestration = (r: OrchestrationRun) => { runsStore.set(r.runId, clone(r)); };
 db.updateOrchestration = (r: OrchestrationRun) => { runsStore.set(r.runId, clone(r)); };
 db.getOrchestrationRun = (id: string) => (runsStore.has(id) ? clone(runsStore.get(id)!) : null);
@@ -68,6 +90,18 @@ db.markActiveRunsAborted = (reason: string) => {
   }
   return affected;
 };
+db.getAgent = (id: string) => id === 'sup-1'
+  ? { id, workspaceId: 'ws-1', isSupervisor: true, title: 'Supervisor', provider: 'claude', status: 'idle' }
+  : null;
+db.getSupervisorAgent = () => null;
+let lastFocusUpsert: { supervisorId: string; planId: string; notes: string | null } | null = null;
+db.upsertSupervisorFocus = (input: typeof lastFocusUpsert) => {
+  lastFocusUpsert = input;
+  return input;
+};
+function focusUpserted(): { supervisorId: string; planId: string; notes: string | null } | null {
+  return lastFocusUpsert;
+}
 
 const getRun = (runId: string): OrchestrationRun | null => db.getOrchestrationRun(runId);
 const eventsFor = (runId: string) => eventsStore.filter((e) => e.runId === runId);
@@ -123,7 +157,7 @@ function baseReq(extra: Record<string, unknown> = {}) {
     supervisorId: 'sup-1',
     topic: 'Plan a thing',
     mode: 'serial' as const,
-    planId: 'plan-fixture',
+    planId: PLAN_ARTIFACT_ID,
     planningIntentId: 'int_1234abcd',
     ...extra,
   };
@@ -132,6 +166,30 @@ function baseReq(extra: Record<string, unknown> = {}) {
     if (!Object.prototype.hasOwnProperty.call(extra, 'planningIntentId')) delete req.planningIntentId;
   }
   return req as any;
+}
+
+interface HttpResult { status: number; body: string; }
+function request(port: number, body: Record<string, unknown>, workspaceId = 'ws-1'): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request({
+      hostname: '127.0.0.1', port, path: '/api/orchestrations', method: 'POST', agent: false,
+      headers: {
+        Authorization: `Bearer ${getApiToken()}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload).toString(),
+        'X-Workspace-Id': workspaceId,
+        'X-Supervisor-Id': 'sup-1',
+      },
+    }, (res) => {
+      let responseBody = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: responseBody }));
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -301,6 +359,175 @@ test('historical Gemini runs remain readable but cannot be resumed', () => {
   );
 });
 
+test('orchestration-start-run-resolves-plan-ref', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const result = svc.start_run(baseReq({ planId: PLAN_ARTIFACT_ID }));
+  const persisted = getRun(result.runId)!;
+  assert.equal(
+    persisted.planId,
+    PLAN_UUID,
+    'REACHABILITY:orchestration-start-run-plan-ref',
+  );
+  assert.equal(result.planId, PLAN_UUID, 'start_run returns the canonical UUID');
+});
+
+test('new-launch plan and intent failures preserve the settled rung codes and exact messages', () => {
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn);
+  const cases = [
+    {
+      req: { planId: 'plan_ffffffff' }, statusCode: 404, code: 'plan_not_found',
+      message: "No plan matching plan_id 'plan_ffffffff' exists in the requested workspace scope.",
+    },
+    {
+      req: { planId: DELETED_PLAN_UUID }, statusCode: 409, code: 'plan_deleted',
+      message: `Plan '${DELETED_PLAN_UUID}' resolves to a deleted plan row; deleted plans are not a valid target.`,
+    },
+    {
+      req: { planId: FOREIGN_PLAN_UUID }, statusCode: 403, code: 'plan_wrong_workspace',
+      message: `Plan '${FOREIGN_PLAN_UUID}' does not belong to workspace 'ws-1'.`,
+    },
+    {
+      req: { planningIntentId: 'int_00000000' }, statusCode: 404, code: 'planning_intent_not_found',
+      message: `Planning intent 'int_00000000' is not recorded for plan '${PLAN_UUID}' (resolved from '${PLAN_ARTIFACT_ID}').`,
+    },
+    {
+      req: { planningIntentId: 'int_deadbeef' }, statusCode: 409, code: 'planning_intent_not_active',
+      message: `Planning intent 'int_deadbeef' for plan '${PLAN_UUID}' has status 'withdrawn'; expected 'active'.`,
+    },
+  ];
+
+  for (const expected of cases) {
+    assert.throws(() => svc.start_run(baseReq(expected.req)), (err: unknown) => {
+      const typed = err as { statusCode?: number; code?: string; message?: string };
+      assert.equal(typed.statusCode, expected.statusCode);
+      assert.equal(typed.code, expected.code);
+      assert.equal(typed.message, expected.message);
+      return true;
+    });
+  }
+});
+
+test('resume resolves an explicit alias, rejects a different plan, and skips resolution when omitted', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const frozen = {
+    ...priorRun('resume-plan-ref'),
+    planId: PLAN_UUID,
+    planningIntentId: 'int_1234abcd',
+  };
+  db.insertOrchestration(frozen);
+
+  const matched = svc.start_run(baseReq({
+    resumeRunId: frozen.runId,
+    planId: PLAN_ARTIFACT_ID,
+    planningIntentId: frozen.planningIntentId,
+  }));
+  assert.equal(matched.planId, PLAN_UUID);
+
+  db.insertOrchestration({ ...frozen, runId: 'resume-plan-mismatch' });
+  assert.throws(
+    () => svc.start_run(baseReq({
+      resumeRunId: 'resume-plan-mismatch',
+      planId: SECOND_PLAN_ARTIFACT_ID,
+      planningIntentId: frozen.planningIntentId,
+    })),
+    (err: unknown) => {
+      const typed = err as { statusCode?: number; code?: string; message?: string };
+      assert.equal(typed.statusCode, 409);
+      assert.equal(typed.code, 'plan_ref_resume_mismatch');
+      assert.equal(
+        typed.message,
+        `Resume plan_id '${SECOND_PLAN_ARTIFACT_ID}' resolves to '${SECOND_PLAN_UUID}', which is not this run's frozen plan '${PLAN_UUID}'.`,
+      );
+      return true;
+    },
+  );
+
+  db.insertOrchestration({ ...frozen, runId: 'resume-plan-omitted' });
+  const getPlan = db.getPlan;
+  const getPlanByWorkspaceArtifactId = db.getPlanByWorkspaceArtifactId;
+  db.getPlan = () => { throw new Error('resume without planId must not resolve'); };
+  db.getPlanByWorkspaceArtifactId = () => { throw new Error('resume without planId must not resolve'); };
+  try {
+    const omitted = svc.start_run(baseReq({ resumeRunId: 'resume-plan-omitted' }));
+    assert.equal(omitted.planId, PLAN_UUID);
+  } finally {
+    db.getPlan = getPlan;
+    db.getPlanByWorkspaceArtifactId = getPlanByWorkspaceArtifactId;
+  }
+});
+
+test('orchestration route binds workspace before start_run and preserves resolver status/code', async () => {
+  let startCalls = 0;
+  const stubOrchestration = {
+    start_run: () => { startCalls++; return { runId: 'must-not-run', planId: null }; },
+  } as unknown as ConstructorParameters<typeof ApiServer>[2];
+  const supervisor = { getUsageLimits: () => ({ available: false }) } as unknown as AgentSupervisor;
+  const server = new ApiServer(supervisor, 0, stubOrchestration, '127.0.0.1');
+  const port = await server.start();
+  try {
+    const denied = await request(port, {
+      name: 'groupthink',
+      params: { workspaceId: 'ws-built-in', supervisorId: 'sup-1', planId: PLAN_ARTIFACT_ID },
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(startCalls, 0, 'unauthorized workspace is rejected before start_run');
+  } finally {
+    server.stop();
+  }
+
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, {
+    serial: async () => {}, parallel: async () => {},
+  });
+  const liveServer = new ApiServer(supervisor, 0, svc, '127.0.0.1');
+  const livePort = await liveServer.start();
+  try {
+    const missing = await request(livePort, {
+      name: 'groupthink',
+      params: {
+        workspaceId: 'ws-1', supervisorId: 'sup-1', planId: 'plan_ffffffff',
+        planningIntentId: 'int_1234abcd',
+      },
+    });
+    assert.equal(missing.status, 404);
+    assert.deepEqual(JSON.parse(missing.body), {
+      error: "No plan matching plan_id 'plan_ffffffff' exists in the requested workspace scope.",
+      code: 'plan_not_found',
+    });
+  } finally {
+    liveServer.stop();
+  }
+});
+
+test('orchestration-route-autofocus-uses-canonical-uuid', async () => {
+  lastFocusUpsert = null;
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, {
+    serial: async () => {}, parallel: async () => {},
+  });
+  const supervisor = { getUsageLimits: () => ({ available: false }) } as unknown as AgentSupervisor;
+  const server = new ApiServer(supervisor, 0, svc, '127.0.0.1');
+  const port = await server.start();
+  try {
+    const response = await request(port, {
+      name: 'groupthink',
+      params: {
+        workspaceId: 'ws-1', supervisorId: 'sup-1', planId: PLAN_ARTIFACT_ID,
+        planningIntentId: 'int_1234abcd',
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.body), { runId: JSON.parse(response.body).runId });
+    assert.equal(
+      focusUpserted()?.planId,
+      PLAN_UUID,
+      'REACHABILITY:orchestration-autofocus-uuid',
+    );
+  } finally {
+    server.stop();
+  }
+});
+
 test('detached start_run returns a runId before the runner completes; status starts running', async () => {
   const gate = deferred();
   const runner: OrchestrationRunner = async () => { await gate.promise; };
@@ -416,15 +643,15 @@ test('boot reconcile marks orphaned running rows aborted + emits a resume hint',
 
 // ── WP6: planning-surface rail persistence ──────────────────────────────────
 
-test('WP6: start_run persists planId + sectionAnchor onto the run row', async () => {
+test('WP6: start_run persists the canonical planId + sectionAnchor onto the run row', async () => {
   const gate = deferred();
   const runner: OrchestrationRunner = async () => { await gate.promise; };
   const { fn } = makeDeliver();
   const svc = new OrchestrationService(makeClient(), fn, { serial: runner, parallel: runner });
 
-  const { runId } = svc.start_run(baseReq({ planId: 'plan-abc', sectionAnchor: 'sec_x1' }));
+  const { runId } = svc.start_run(baseReq({ planId: PLAN_ARTIFACT_ID, sectionAnchor: 'sec_x1' }));
   const run = getRun(runId)!;
-  assert.equal(run.planId, 'plan-abc', 'planId frozen on the run');
+  assert.equal(run.planId, PLAN_UUID, 'planId frozen on the run as the row UUID');
   assert.equal(run.sectionAnchor, 'sec_x1', 'sectionAnchor frozen on the run');
   gate.resolve();
   await waitFor(() => getRun(runId)?.status === 'complete');
@@ -436,9 +663,9 @@ test('WP-P8B: concurrent dispatches may target the same plan after HTML writebac
   const { fn } = makeDeliver();
   const svc = new OrchestrationService(makeClient(), fn, { serial: runner, parallel: runner });
 
-  const first = svc.start_run(baseReq({ planId: 'plan-shared', sectionAnchor: 'sec_a' }));
+  const first = svc.start_run(baseReq({ planId: PLAN_ARTIFACT_ID, sectionAnchor: 'sec_a' }));
   await waitFor(() => getRun(first.runId)?.status === 'running');
-  const second = svc.start_run(baseReq({ planId: 'plan-shared', sectionAnchor: 'sec_b' }));
+  const second = svc.start_run(baseReq({ planId: PLAN_ARTIFACT_ID, sectionAnchor: 'sec_b' }));
   await waitFor(() => getRun(second.runId)?.status === 'running');
   assert.notEqual(first.runId, second.runId);
 
@@ -455,7 +682,7 @@ test('new launches reject missing or mismatched plan/intent bindings before pers
   const before = runsStore.size;
   assert.throws(() => svc.start_run(baseReq({ planId: undefined })), /require both/);
   assert.throws(() => svc.start_run(baseReq({ planningIntentId: undefined })), /require both/);
-  assert.throws(() => svc.start_run(baseReq({ planningIntentId: 'int_deadbeef' })), /not active/);
+  assert.throws(() => svc.start_run(baseReq({ planningIntentId: 'int_deadbeef' })), /status 'withdrawn'; expected 'active'/);
   assert.throws(() => svc.start_run(baseReq({ planningIntentId: 'intent_bad' })), /must match/);
   assert.equal(runsStore.size, before, 'rejected launches write no orchestration row');
 });
@@ -470,7 +697,7 @@ test('a rail run skips legacy stampPlanMembers', async () => {
   let stampCalled = false;
   (svc as any).stampPlanMembers = () => { stampCalled = true; };
 
-  const { runId } = svc.start_run(baseReq({ planId: 'plan-t1', sectionAnchor: 'sec_z' }));
+  const { runId } = svc.start_run(baseReq({ planId: PLAN_ARTIFACT_ID, sectionAnchor: 'sec_z' }));
   await waitFor(() => getRun(runId)?.status === 'running');
   gate.resolve();
   await waitFor(() => getRun(runId)?.status === 'complete');
