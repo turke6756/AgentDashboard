@@ -11546,6 +11546,19 @@ export function insertOrchestration(r: OrchestrationRun): void {
 
 /** Trusted launch-boundary lookup for a requested planning intent. Identity is
  * composite: the same intent_id may exist in another plan or workspace. */
+export function getPlanIntentRow(
+  workspaceId: string,
+  planId: string,
+  intentId: string,
+): { status: string } | null {
+  const row = queryOne(
+    `SELECT status FROM plan_intents
+     WHERE workspace_id = ? AND plan_id = ? AND intent_id = ?`,
+    [workspaceId, planId, intentId],
+  );
+  return row ? { status: row.status } : null;
+}
+
 export function getActivePlanningIntentForLaunch(
   workspaceId: string,
   planId: string,
