@@ -41,6 +41,7 @@ import {
   SUPERVISOR_AGENT_MD_V18_HASH,
   SUPERVISOR_AGENT_MD_V19_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH,
+  SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH,
   WORKER_CLAUDE_MD_V8_HASH,
   WORKER_CODEX_AGENTS_MD_V1_HASH,
   GUARD_GIT_DISCARD_MJS_V1_HASH,
@@ -5763,8 +5764,28 @@ const RUN_ORCHESTRATION_V5_AVAILABILITY_RULE = `> Resolve the desired lead and r
 > \`unavailable\`, do not launch and report the reasons. Same-provider pairs remain valid. No
 > persisted fallback order exists in v5; when one is introduced, it governs substitute ranking.`;
 
-function reconstructRunOrchestrationSkillV4(): string {
+function reconstructRunOrchestrationSkillV5(): string {
   return SUPERVISOR_RUN_ORCHESTRATION_SKILL
+    .replace(
+      '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
+      '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_path`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
+    )
+    .replace(
+      "| `groupthink` | `run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})` |",
+      "| `groupthink` | `run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_path, mode})` |",
+    )
+    .replace(
+      "\n\nEvery new launch also needs `plan_id` and `planning_intent_id`. `plan_id` accepts either the registered plan row UUID or the portable plan artifact id (`plan_<8hex>`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan `int_<8hex>` value for `planning_intent_id`; the plan's path is derived from the resolved plan row and is not a launch parameter.",
+      '',
+    )
+    .replace(
+      "  plan_id: 'plan_1234abcd',             // portable id or registered row UUID\n  planning_intent_id: 'int_1234abcd',   // active same-plan intent",
+      "  plan_path: 'plans/x-migration.md',   // relative to workspace root",
+    );
+}
+
+function reconstructRunOrchestrationSkillV4(): string {
+  return reconstructRunOrchestrationSkillV5()
     .replace(
       '\n\nResumes keep the original lead and reviewer. Supplying a different `lead_provider` or `reviewer_provider` on resume is rejected with 409; omit both unless restating the matching original values.',
       '',
@@ -5785,15 +5806,18 @@ function reconstructRunOrchestrationSkillV4(): string {
     );
 }
 
-test('WP-B5-0. frozen v4 hash matches the pristine pre-provider-preflight body', () => {
+test('WP-B5-0. frozen v4 and v5 hashes match both pristine historical bodies', () => {
+  const v5 = reconstructRunOrchestrationSkillV5();
   const v4 = reconstructRunOrchestrationSkillV4();
   assert.equal(sha256Hex(v4), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
+  assert.equal(sha256Hex(v5), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH);
+  assert.notEqual(sha256Hex(v5), sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL));
   assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
 });
 
-test('WP-B5-1. v5 skill carries the exact availability and provider-preflight contract', () => {
+test('WP-B5-1. current skill retains provider preflight and teaches only the two accepted plan_id namespaces', () => {
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes(RUN_ORCHESTRATION_V5_AVAILABILITY_RULE),
-    'v5 must carry the Decision 5 availability rule verbatim as a blockquote');
+    'current skill must retain the Decision 5 availability rule verbatim as a blockquote');
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('If every provider is\n> `unavailable`, do not launch'),
     'launch is blocked only when every provider is unavailable');
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('a `degraded` provider may be proposed with its caveat'),
@@ -5803,31 +5827,42 @@ test('WP-B5-1. v5 skill carries the exact availability and provider-preflight co
   }
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('Same-provider pairs remain valid.'),
     'availability resolution must preserve legal same-provider pairs');
+  assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('registered plan row UUID or the portable plan artifact id (`plan_<8hex>`)'),
+    'new-launch guidance must name both accepted plan_id namespaces');
+  assert.ok(!SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('plan_path'),
+    'new-launch guidance must not retain the path-based plan target');
+  assert.ok(!SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('plans/new-plan.md'),
+    'new-launch guidance must not retain the old default path');
 });
 
-test('WP-B5-2. pristine v4 run-orchestration skill silently upgrades to v5', () => {
-  const workDir = mktmp('run-orchestration-v4');
-  const { supervisor, cleanup } = makeSupervisor();
-  try {
-    const skillPath = path.join(workDir, '.lares', 'supervisor', '.claude', 'skills', 'run-orchestration', 'SKILL.md');
-    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
-    fs.writeFileSync(skillPath, reconstructRunOrchestrationSkillV4(), 'utf-8');
-    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
-    fs.writeFileSync(
-      sidecarPath(workDir),
-      JSON.stringify({ 'supervisor/.claude/skills/run-orchestration/SKILL.md': 4 }, null, 2) + '\n',
-      'utf-8',
-    );
+test('WP-B5-2. pristine v4 and v5 run-orchestration skills silently upgrade to v6', () => {
+  for (const [oldVersion, oldBody] of [
+    [4, reconstructRunOrchestrationSkillV4()],
+    [5, reconstructRunOrchestrationSkillV5()],
+  ] as const) {
+    const workDir = mktmp(`run-orchestration-v${oldVersion}`);
+    const { supervisor, cleanup } = makeSupervisor();
+    try {
+      const skillPath = path.join(workDir, '.lares', 'supervisor', '.claude', 'skills', 'run-orchestration', 'SKILL.md');
+      fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+      fs.writeFileSync(skillPath, oldBody, 'utf-8');
+      fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+      fs.writeFileSync(
+        sidecarPath(workDir),
+        JSON.stringify({ 'supervisor/.claude/skills/run-orchestration/SKILL.md': oldVersion }, null, 2) + '\n',
+        'utf-8',
+      );
 
-    supervisor.ensureSupervisorScaffold(workDir, 'windows');
+      supervisor.ensureSupervisorScaffold(workDir, 'windows');
 
-    assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_RUN_ORCHESTRATION_SKILL);
-    assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0,
-      'a pristine v4 skill must upgrade without a backup');
-    assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 5);
-  } finally {
-    cleanup();
-    rmrf(workDir);
+      assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_RUN_ORCHESTRATION_SKILL);
+      assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0,
+        `a pristine v${oldVersion} skill must upgrade without a backup`);
+      assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 6);
+    } finally {
+      cleanup();
+      rmrf(workDir);
+    }
   }
 });
 

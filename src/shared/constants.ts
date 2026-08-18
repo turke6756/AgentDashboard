@@ -3598,7 +3598,7 @@ Orchestrations now run **in-process inside the dashboard** and are controlled th
 
 ## MCP tools
 
-- **run_orchestration** — Start a run (detached). Returns \`{ runId }\` synchronously. Args: \`name\`, \`workspace_id\`, \`supervisor_id\`, plus orchestration params (\`topic\`, \`plan_path\`, \`mode\`, \`lead_provider\`, \`reviewer_provider\`, \`turn_timeout_ms\`). Resume with \`resume_run_id\` (preferred) or \`legacy_command\` (paste a whole old \`node scripts/groupthink-v2.js …\` line).
+- **run_orchestration** — Start a run (detached). Returns \`{ runId }\` synchronously. Args: \`name\`, \`workspace_id\`, \`supervisor_id\`, plus orchestration params (\`topic\`, \`plan_id\`, \`planning_intent_id\`, \`section_anchor\`, \`mode\`, \`lead_provider\`, \`reviewer_provider\`, \`turn_timeout_ms\`). Resume with \`resume_run_id\` (preferred) or \`legacy_command\` (paste a whole old \`node scripts/groupthink-v2.js …\` line).
 - **get_orchestration_run** — Pull current status/progress for a \`run_id\` (status, turn/round, members, last error).
 - **abort_orchestration** — Abort a run by \`run_id\`; cleans up member agents and emits \`orchestration.groupthink.aborted\`.
 
@@ -3606,7 +3606,7 @@ Orchestrations now run **in-process inside the dashboard** and are controlled th
 
 | Name | How to run | Purpose |
 |---|---|---|
-| \`groupthink\` | \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_path, mode})\` | Cross-provider deliberation that writes a worker-ready plan. \`mode:'serial'\` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes plan) or \`mode:'parallel'\` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes plan). |
+| \`groupthink\` | \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})\` | Cross-provider deliberation that writes a worker-ready plan. \`mode:'serial'\` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes plan) or \`mode:'parallel'\` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes plan). |
 
 **Legacy resume.** Older plans/\`.runs\` may carry a \`node scripts/groupthink-v2.js … --resume-lead-id=… --resume-reviewer-id=…\` resume_hint. Don't run that script — pass the whole line through \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, legacy_command:"<the whole old line>"})\`. The dashboard parses it into structured resume params and runs the in-process runner. (\`scripts/groupthink-v2.js\` still exists only as a thin compat shim that forwards to this same tool.)
 
@@ -3623,6 +3623,8 @@ The user will name one (e.g., "run a GroupThink on X") or describe a goal that m
 ### 2. Discover IDs and preflight context
 
 Every run needs a \`workspace_id\` and a \`supervisor_id\`. You are the supervisor: use \`list_agents\` to find your own agent record (the supervisor for this workspace) and read its \`id\` (→ \`supervisor_id\`) and \`workspaceId\` (→ \`workspace_id\`). If exactly one active supervisor for the current workspace isn't identifiable, stop and report the ambiguity.
+
+Every new launch also needs \`plan_id\` and \`planning_intent_id\`. \`plan_id\` accepts either the registered plan row UUID or the portable plan artifact id (\`plan_<8hex>\`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan \`int_<8hex>\` value for \`planning_intent_id\`; the plan's path is derived from the resolved plan row and is not a launch parameter.
 
 Before constructing the call, use \`get_my_context\` and read both \`orchestrationProviderDefaults.groupthink\` and \`availableProviders\`. Resolve each desired slot from an explicit run override, otherwise its workspace default, otherwise the built-in default (lead \`claude\`, reviewer \`codex\`). An omitted \`lead_provider\` or \`reviewer_provider\` inherits the workspace default; pass the argument only to override that default.
 
@@ -3647,7 +3649,8 @@ run_orchestration({
   workspace_id: '<ws-id>',
   supervisor_id: '<sup-id>',
   topic: 'Plan the X migration',
-  plan_path: 'plans/x-migration.md',   // relative to workspace root
+  plan_id: 'plan_1234abcd',             // portable id or registered row UUID
+  planning_intent_id: 'int_1234abcd',   // active same-plan intent
   mode: 'serial',                       // or 'parallel'
   lead_provider: 'agy',                 // optional explicit override
 })
