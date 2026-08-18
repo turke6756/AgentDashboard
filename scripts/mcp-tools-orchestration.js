@@ -176,7 +176,6 @@ function getOrchestrationToolDefinitions() {
           supervisor_id:      { type: 'string', description: 'Your own supervisor agent id.' },
           mode:               { type: 'string', description: 'serial | parallel (groupthink).' },
           topic:              { type: 'string', description: 'One-line deliberation topic.' },
-          plan_path:          { type: 'string', description: 'Output plan path relative to workspace root.' },
           lead_provider:      { type: 'string', enum: ['claude', 'codex', 'grok', 'agy'], description: 'Lead/Synthesizer writer provider responsible for producing the final deliverable; omit to inherit the workspace default.' },
           reviewer_provider:  { type: 'string', enum: ['claude', 'codex', 'grok', 'agy'], description: 'Reviewer/peer provider responsible for critique and independent review; omit to inherit the workspace default.' },
           turn_timeout_ms:    { type: 'number', description: 'Per-turn stall timeout, default 600000.' },
@@ -404,7 +403,7 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
     case 'run_orchestration': {
       const params = {
         workspaceId: args.workspace_id, supervisorId: args.supervisor_id,
-        mode: args.mode, topic: args.topic, planPath: args.plan_path,
+        mode: args.mode, topic: args.topic,
         planId: args.plan_id, planningIntentId: args.planning_intent_id,
         sectionAnchor: args.section_anchor,
         leadProvider: args.lead_provider, reviewerProvider: args.reviewer_provider,

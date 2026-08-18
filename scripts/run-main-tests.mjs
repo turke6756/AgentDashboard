@@ -721,6 +721,16 @@ const TESTS = [
   'dist/main/main/plans/plan-intent-runs.test.js',
   // WP-P2L-proj: derived plan-intent confidence projection + IPC.
   'dist/main/main/plans/plan-intent-proj.test.js',
+  // Plan progress projection: bounded package counts, summaries, and HTTP surface.
+  'dist/main/main/plans/plan-progress-projection.test.js',
+  // plan_2811306d WP-1: dual-namespace plan-reference resolver.
+  'dist/main/main/plans/resolve-plan-ref.test.js',
+  // plan_2811306d WP-3: plan references on the production agent-launch seam.
+  'dist/main/main/plans/plan-launch-binding.test.js',
+  // plan_2811306d WP-4: plan references on read, focus, and filter HTTP seams.
+  'dist/main/main/plans/plan-ref-read-surfaces.test.js',
+  // plan_2811306d WP-5: Plan DTO observability and agent-facing schema parity.
+  'dist/main/main/plans/plan-ref-schema-parity.test.js',
   // Planning-surface Stage P4 (gate P4Z) — folder-native tabbed document home +
   // intent lifecycle + overviews + comments.
   // WP-P4A: folder-native tab-model projection (ARC→overview; plan.json/.gitkeep
