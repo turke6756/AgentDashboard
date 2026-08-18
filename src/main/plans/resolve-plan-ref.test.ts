@@ -236,6 +236,8 @@ void (async () => {
     const workspaceId = workspace('plan-rungs');
     const otherWorkspace = workspace('plan-rungs-other');
     const foreignPlanId = plan(otherWorkspace, 'plan_abcdef01', 'foreign');
+    const deletedForeignPlanId = plan(otherWorkspace, 'plan_abcdef02', 'deleted-foreign');
+    db.softDeletePlan(deletedForeignPlanId);
     const unknownUuid = '00000000-0000-4000-8000-000000000001';
     const malformed = 'plan_nothex';
 
@@ -250,6 +252,13 @@ void (async () => {
       404,
       'plan_not_found',
       `No plan matching plan_id '${unknownUuid}' exists in the requested workspace scope.`,
+    );
+    // Both later guards apply; only checking liveness before ownership yields plan_deleted.
+    expectError(
+      () => resolver.resolvePlanRef(workspaceId, deletedForeignPlanId),
+      409,
+      'plan_deleted',
+      `Plan '${deletedForeignPlanId}' resolves to a deleted plan row; deleted plans are not a valid target.`,
     );
     expectError(
       () => resolver.resolvePlanRef(workspaceId, foreignPlanId),
