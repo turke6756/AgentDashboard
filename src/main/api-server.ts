@@ -107,6 +107,7 @@ import {
 import type { ActivityBefore, ActivityListRequest, ActivitySnapshot } from '../shared/types';
 import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
+import { resolvePlanRef } from './plans/resolve-plan-ref';
 import { PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
   resolveRequestedPlanBinding,
@@ -2296,17 +2297,6 @@ export class ApiServer {
       if (input && input.plan_section !== undefined && input.planSection === undefined) {
         input.planSection = input.plan_section;
       }
-      // Validate the plan binding before launch: an unknown plan_id is a 400 (a
-      // plans row must exist so agents.plan_id's FK resolves and the frozen stamp
-      // is meaningful). Empty/omitted planId is fine — the rail is optional.
-      if (input && input.planId !== undefined && input.planId !== null && input.planId !== '') {
-        if (typeof input.planId !== 'string' || getPlan(input.planId) === null) {
-          throw Object.assign(
-            new Error(`Unknown plan_id '${input.planId}' — a plan surface must exist before launching an agent bound to it`),
-            { statusCode: 400 },
-          );
-        }
-      }
       // WP4 (plans/cross-workspace-collaboration.md) — normalize the snake_case
       // `mode` launch class to the camelCase `launchMode` LaunchAgentInput field
       // (the launch_agent MCP tool already sends launchMode; a raw HTTP caller may
@@ -2357,6 +2347,13 @@ export class ApiServer {
         // + no workspaceId → unchanged (launchAgent enforces as before).
         const scopedWorkspaceId = this.resolveWorkspaceScope(identity, (input?.workspaceId as string) ?? null);
         if (scopedWorkspaceId) input.workspaceId = scopedWorkspaceId;
+      }
+      // Resolve only after the launch scope above has been authorized. Downstream
+      // persistence, child-env injection, and auto-focus all consume the canonical
+      // plans.id UUID; an omitted binding remains optional exactly as before.
+      if (input && input.planId !== undefined && input.planId !== null && input.planId !== '') {
+        const { planId } = resolvePlanRef(input.workspaceId as string, input.planId);
+        input.planId = planId;
       }
       const agent = await this.supervisor.launchAgent(input);
       // Planning-surface P1: a plan-bound dispatch auto-subscribes the dispatching
