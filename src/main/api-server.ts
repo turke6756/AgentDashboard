@@ -1030,6 +1030,7 @@ export class ApiServer {
       const routes = this.requireCheckpointRoutes();
       const workspaceRoot = getWorkspaceRecord(workspaceId)?.path;
       const opts = parseListCheckpointsOpts(url, workspaceRoot);
+      if (opts.planId) opts.planId = resolvePlanRef(workspaceId, opts.planId).planId;
       const turns = await routes.list(workspaceId, opts);
       return { workspaceId, turns };
     }
@@ -1140,10 +1141,14 @@ export class ApiServer {
     const { workspaceId } = this.authorizeCheckpoint(req, capability, url);
     const path = url.pathname;
     if (method === 'GET' && path === '/api/activity') {
-      return this.activityRoutes.list(parseActivityListRequest(url, workspaceId, 'none'));
+      const request = parseActivityListRequest(url, workspaceId, 'none');
+      if (request.planId) request.planId = resolvePlanRef(workspaceId, request.planId).planId;
+      return this.activityRoutes.list(request);
     }
     if (method === 'GET' && path === '/api/activity/digest') {
-      return this.activityRoutes.digest(parseActivityListRequest(url, workspaceId, 'sync'));
+      const request = parseActivityListRequest(url, workspaceId, 'sync');
+      if (request.planId) request.planId = resolvePlanRef(workspaceId, request.planId).planId;
+      return this.activityRoutes.digest(request);
     }
     if (method === 'GET' && path === '/api/activity/heartbeat') {
       return this.activityRoutes.heartbeat(workspaceId);
@@ -3835,14 +3840,8 @@ export class ApiServer {
       if (detail !== 'card' && detail !== 'packages') {
         throw Object.assign(new Error("detail must be 'card' or 'packages'"), { statusCode: 400 });
       }
-      const planId = decodeURIComponent(planProgress[1]);
-      const plan = getPlan(planId);
-      if (!plan || plan.deletedAt !== null) {
-        throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
-      }
-      if (plan.workspaceId !== identity.workspaceId) {
-        throw Object.assign(new Error('Plan does not belong to the caller workspace'), { statusCode: 403 });
-      }
+      const { planId } = resolvePlanRef(identity.workspaceId, decodeURIComponent(planProgress[1]));
+      const plan = getPlan(planId)!;
       const workspace = getWorkspace(identity.workspaceId);
       if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
       const packages = listPlanWorkPackagesOrdered(planId)
@@ -3855,7 +3854,8 @@ export class ApiServer {
       return buildPlanProgressProjection({ detail, plan, card, packages });
     }
 
-    // GET /api/plans/:id
+    // GET /api/plans/:id deliberately remains UUID-only: this route has no
+    // authoritative workspace identity from which to scope a portable lookup.
     const planGet = path.match(/^\/api\/plans\/([^/]+)$/);
     if (method === 'GET' && planGet) {
       const p = getPlan(planGet[1]);
@@ -3889,7 +3889,9 @@ export class ApiServer {
       });
     }
 
-    // PATCH /api/plans/:id  { run_state?, mtime_ms?, size_bytes?, format?, path?, slug? }
+    // PATCH /api/plans/:id deliberately remains UUID-only: this route has no
+    // authoritative workspace identity from which to scope a portable lookup.
+    // { run_state?, mtime_ms?, size_bytes?, format?, path?, slug? }
     const planPatch = path.match(/^\/api\/plans\/([^/]+)$/);
     if (method === 'PATCH' && planPatch) {
       const b = JSON.parse(await readBody(req));
@@ -3909,7 +3911,8 @@ export class ApiServer {
       return update.plan;
     }
 
-    // DELETE /api/plans/:id  (soft)
+    // DELETE /api/plans/:id deliberately remains UUID-only: this route has no
+    // authoritative workspace identity from which to scope a portable lookup. (soft)
     const planDel = path.match(/^\/api\/plans\/([^/]+)$/);
     if (method === 'DELETE' && planDel) {
       const deletion = softDeletePlanIfLive(planDel[1]);
@@ -3927,7 +3930,9 @@ export class ApiServer {
       });
     }
 
-    // POST /api/supervisor-focus  { supervisor_id|supervisorId, plan_id|planId, notes? }
+    // POST /api/supervisor-focus deliberately remains UUID-only: its request-supplied
+    // supervisor id on this no-ACL route is not an authoritative workspace identity.
+    // { supervisor_id|supervisorId, plan_id|planId, notes? }
     if (method === 'POST' && path === '/api/supervisor-focus') {
       const b = JSON.parse(await readBody(req));
       const supervisorId = pickBody<string>(b, 'supervisor_id', 'supervisorId');
@@ -3952,9 +3957,9 @@ export class ApiServer {
           { statusCode: 403, code: 'not-a-supervisor' });
       }
       const b = JSON.parse(await readBody(req));
-      const planId = pickBody<string>(b, 'plan_id', 'planId');
-      if (!planId) throw Object.assign(new Error('Missing plan_id'), { statusCode: 400 });
-      if (!getPlan(planId)) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
+      const planRef = pickBody<string>(b, 'plan_id', 'planId');
+      if (!planRef) throw Object.assign(new Error('Missing plan_id'), { statusCode: 400 });
+      const { planId } = resolvePlanRef(identity.workspaceId!, planRef);
       return upsertSupervisorFocus({ supervisorId: identity.supervisorId, planId, notes: pickBody(b, 'notes', 'notes') });
     }
 
@@ -3967,12 +3972,14 @@ export class ApiServer {
         throw Object.assign(new Error('supervisor identity required to unfocus a plan (send X-Supervisor-Id header)'),
           { statusCode: 403, code: 'not-a-supervisor' });
       }
-      const planId = decodeURIComponent(focusSelfDel[1]);
+      const { planId } = resolvePlanRef(identity.workspaceId!, decodeURIComponent(focusSelfDel[1]));
       deleteSupervisorFocus(identity.supervisorId, planId);
       return { ok: true, supervisorId: identity.supervisorId, planId };
     }
 
-    // DELETE /api/supervisor-focus/:supervisor_id/:plan_id
+    // DELETE /api/supervisor-focus/:supervisor_id/:plan_id deliberately remains
+    // UUID-only: its request-supplied supervisor id on this no-ACL route is not an
+    // authoritative workspace identity from which to scope a portable lookup.
     const focusDel = path.match(/^\/api\/supervisor-focus\/([^/]+)\/([^/]+)$/);
     if (method === 'DELETE' && focusDel) {
       deleteSupervisorFocus(decodeURIComponent(focusDel[1]), decodeURIComponent(focusDel[2]));
