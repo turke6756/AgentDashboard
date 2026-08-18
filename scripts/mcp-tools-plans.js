@@ -20,6 +20,9 @@
 // `plan_id` is optional in every schema here: supervisors normally pass it
 // explicitly, but an omitted plan_id falls back to AGENT_DASHBOARD_PLAN_ID (the
 // dispatched plan) at handler time; still-falsy yields a clear error.
+const PLAN_ID_PATTERN = '^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|plan_[0-9a-f]{8})$';
+const PLAN_ID_DESCRIPTION = 'The registered plan row id (uuid) or the portable plan artifact id (plan_<8hex>) from the plan\'s own files';
+
 const READ_DEFS = [
   {
     name: 'read_plan_progress',
@@ -30,7 +33,7 @@ const READ_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        plan_id: { type: 'string', description: 'Plan ID (optional — defaults to AGENT_DASHBOARD_PLAN_ID).' },
+        plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} (optional — defaults to AGENT_DASHBOARD_PLAN_ID).` },
         detail: { type: 'string', enum: ['card', 'packages'] },
       },
       required: ['detail'],
@@ -56,7 +59,7 @@ const FOCUS_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        plan_id: { type: 'string', description: 'The plan ID to subscribe to (optional — defaults to the dispatched plan in AGENT_DASHBOARD_PLAN_ID).' },
+        plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} (optional — defaults to the dispatched plan in AGENT_DASHBOARD_PLAN_ID).` },
         notes: { type: 'string', description: 'Optional free-text note stored on the subscription (why you are watching this plan).' },
       },
       required: [],
@@ -71,7 +74,7 @@ const FOCUS_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        plan_id: { type: 'string', description: 'The plan ID to unsubscribe from (optional — defaults to the dispatched plan in AGENT_DASHBOARD_PLAN_ID).' },
+        plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} (optional — defaults to the dispatched plan in AGENT_DASHBOARD_PLAN_ID).` },
       },
       required: [],
     },

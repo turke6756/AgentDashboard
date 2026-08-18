@@ -387,6 +387,8 @@ export type PlanFormat = 'html' | 'md' | string;
 
 export interface Plan {
   id: string;            // stable uuid; never slug/path-derived (D-01)
+  /** Database-produced DTOs always populate this; optional keeps hand-built legacy fixtures compatible. */
+  artifactId?: string | null; // portable plan_<8hex> id; null for legacy rows
   workspaceId: string;
   path: string;          // mutable; relative to workspace root, e.g. "plans/auth.html"
   slug: string | null;   // mutable display/lookup alias; never the PK

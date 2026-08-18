@@ -1,5 +1,8 @@
 const { decidePollAction } = require('./mcp-supervisor-poll');
 
+const PLAN_ID_PATTERN = '^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|plan_[0-9a-f]{8})$';
+const PLAN_ID_DESCRIPTION = 'The registered plan row id (uuid) or the portable plan artifact id (plan_<8hex>) from the plan\'s own files.';
+
 function getOrchestrationToolDefinitions() {
   return [
     {
@@ -24,7 +27,7 @@ function getOrchestrationToolDefinitions() {
           is_researcher: { type: 'boolean', description: 'Launch the workspace RESEARCHER role-lane (default: false) on Claude, Codex, or Antigravity (`agy`); Grok is unsupported. Researchers browse + research the web and write findings into .lares/research/inbox/. Claude launches add a native tool allowlist/denylist and a PreToolUse Write guard. Codex and agy researcher launches have no enforced write boundary. Every provider uses the user\'s normal provider home, including its settings and session history. When true, the app manages the provider-specific researcher cwd and browser toolset.' },
           mode: { type: 'string', enum: ['worker', 'supervisor-peer'], description: 'Launch class (default: worker). `worker` launches an owned child under you. `supervisor-peer` launches a TOP-LEVEL peer supervisor with NO owner edge (renders un-nested), with the supervisor toolset and .lares/supervisor cwd. Peer mode is the ONLY way to launch into a workspace other than your own (pass `workspace_id`), and cross-workspace peer launch requires supervisor privilege. `supervisor-peer` is incompatible with `is_researcher`/`persona`.' },
           fresh_session: { type: 'boolean', description: 'Codex-only hint (default: false). When true, the agent launches without `codex resume` so the codex CLI mints a fresh conversation rather than inheriting any prior rollout in this workspace. The dashboard still discovers and binds the new session id. Use this when you want a clean context but parallel agents in the same workspace. No-op for non-codex providers.' },
-          plan_id: { type: 'string', description: 'Planning-surface rail: an existing registered plan id. Frozen onto the agent at launch and injected as AGENT_DASHBOARD_PLAN_ID. The launch route 400s an unknown plan_id.' },
+          plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} Frozen onto the agent at launch and injected as AGENT_DASHBOARD_PLAN_ID.` },
           section_anchor: { type: 'string', description: 'Planning-surface rail: the section this agent is dispatched to update. Frozen at launch and injected as AGENT_DASHBOARD_PLAN_SECTION. The plan-bound brief must identify the owned write target and required durable writeback.' },
         },
         required: ['title'],
@@ -177,7 +180,7 @@ function getOrchestrationToolDefinitions() {
           lead_provider:      { type: 'string', enum: ['claude', 'codex', 'grok', 'agy'], description: 'Lead/Synthesizer writer provider responsible for producing the final deliverable; omit to inherit the workspace default.' },
           reviewer_provider:  { type: 'string', enum: ['claude', 'codex', 'grok', 'agy'], description: 'Reviewer/peer provider responsible for critique and independent review; omit to inherit the workspace default.' },
           turn_timeout_ms:    { type: 'number', description: 'Per-turn stall timeout, default 600000.' },
-          plan_id:            { type: 'string', description: 'Required for a new launch: an existing registered plan id. Legacy unbound runs may only be resumed.' },
+          plan_id:            { type: 'string', pattern: PLAN_ID_PATTERN, description: `Required for a new launch: ${PLAN_ID_DESCRIPTION} Legacy unbound runs may only be resumed.` },
           planning_intent_id: { type: 'string', pattern: '^int_[0-9a-f]{8}$', description: 'Required for a new launch: the active same-plan PLAN-INTENT id served by this deliberation.' },
           section_anchor:     { type: 'string', description: 'Plan rail: the section this run updates (required with plan_id).' },
           resume_run_id:      { type: 'string', description: 'Resume a prior stalled run by its runId.' },

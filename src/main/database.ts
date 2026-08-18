@@ -3607,6 +3607,7 @@ export function derivePlanSlug(planPath: string, _html?: string | null): string 
 function rowToPlan(row: any): Plan {
   return {
     id: row.id,
+    artifactId: row.artifact_id ?? null,
     workspaceId: row.workspace_id,
     path: row.path,
     slug: row.slug ?? null,
@@ -3633,6 +3634,7 @@ function rowToSupervisorFocus(row: any): SupervisorFocus {
   if (row.plan_id_j !== undefined && row.plan_id_j !== null) {
     focus.plan = rowToPlan({
       id: row.plan_id_j,
+      artifact_id: row.plan_artifact_id,
       workspace_id: row.plan_workspace_id,
       path: row.plan_path,
       slug: row.plan_slug,
@@ -3940,6 +3942,7 @@ type FocusInput = { supervisorId: string; planId: string; notes?: string | null 
 const FOCUS_JOIN_SELECT = `
   SELECT f.supervisor_id, f.plan_id, f.focused_at, f.last_attended_at, f.notes,
          p.id AS plan_id_j, p.workspace_id AS plan_workspace_id, p.path AS plan_path,
+         p.artifact_id AS plan_artifact_id,
          p.slug AS plan_slug, p.format AS plan_format, p.run_state AS plan_run_state,
          p.mtime_ms AS plan_mtime_ms, p.size_bytes AS plan_size_bytes,
          p.created_at AS plan_created_at, p.updated_at AS plan_updated_at,
@@ -11544,8 +11547,7 @@ export function insertOrchestration(r: OrchestrationRun): void {
   );
 }
 
-/** Trusted launch-boundary lookup for a requested planning intent. Identity is
- * composite: the same intent_id may exist in another plan or workspace. */
+/** Point read for one planning intent at the canonical plan-row boundary. */
 export function getPlanIntentRow(
   workspaceId: string,
   planId: string,
@@ -11559,6 +11561,8 @@ export function getPlanIntentRow(
   return row ? { status: row.status } : null;
 }
 
+/** Trusted launch-boundary lookup for a requested planning intent. Identity is
+ * composite: the same intent_id may exist in another plan or workspace. */
 export function getActivePlanningIntentForLaunch(
   workspaceId: string,
   planId: string,
