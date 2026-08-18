@@ -19,7 +19,7 @@ function pkg(id: string, state: PlanWorkPackage['state'], order: number, title =
   return {
     id,
     workspaceId: 'ws-a',
-    planId: 'plan-local',
+    planId: '00000000-0000-4000-8000-000000000001',
     intentId: null,
     schemaVersion: 2,
     contentHash: null,
@@ -34,12 +34,12 @@ function pkg(id: string, state: PlanWorkPackage['state'], order: number, title =
   };
 }
 
-const plan = { id: 'plan-local', slug: 'local-plan', runState: 'executing', updatedAt: '2026-08-09 20:00:00' };
+const plan = { id: '00000000-0000-4000-8000-000000000001', slug: 'local-plan', runState: 'executing', updatedAt: '2026-08-09 20:00:00' };
 
 function card(overrides: Partial<PromotedPlanFolder> = {}): PromotedPlanFolder {
   return {
     planArtifactId: 'plan_artifact_local',
-    planId: 'plan-local',
+    planId: '00000000-0000-4000-8000-000000000001',
     folderName: 'local-plan',
     title: 'Local plan',
     status: 'executing',
@@ -149,12 +149,12 @@ test('real API registration derives workspace from caller and rejects a cross-wo
   const workspace = { id: 'ws-a', title: 'A', path: 'C:/fixture/a', pathType: 'windows' };
   db.getWorkspace = (id: string) => id === 'ws-a' ? workspace : null;
   db.getSupervisorAgent = () => null;
-  db.getPlan = (id: string) => id === 'plan-local'
+  db.getPlan = (id: string) => id === '00000000-0000-4000-8000-000000000001'
     ? { ...plan, workspaceId: 'ws-a', path: 'plans/local.md', format: 'structured', mtimeMs: 1, sizeBytes: 1, createdAt: 't', deletedAt: null }
-    : id === 'plan-foreign'
+    : id === '00000000-0000-4000-8000-000000000002'
       ? { ...plan, id, workspaceId: 'ws-b', path: 'plans/foreign.md', format: 'structured', mtimeMs: 1, sizeBytes: 1, createdAt: 't', deletedAt: null }
       : null;
-  db.listPlanWorkPackagesOrdered = (id: string) => id === 'plan-local' ? [pkg('WP-1', 'executing', 1)] : [];
+  db.listPlanWorkPackagesOrdered = (id: string) => id === '00000000-0000-4000-8000-000000000001' ? [pkg('WP-1', 'executing', 1)] : [];
   let cardReads = 0;
   planIpc.listPromotedPlanFolders = () => { cardReads++; return { plans: [card()], warnings: [] }; };
 
@@ -163,14 +163,14 @@ test('real API registration derives workspace from caller and rejects a cross-wo
   const port = await server.start();
   try {
     assert.equal(
-      (await request(port, '/api/plans/plan-local/progress?detail=card')).status,
+      (await request(port, '/api/plans/00000000-0000-4000-8000-000000000001/progress?detail=card')).status,
       400,
       'REACHABILITY:wp13-plan-progress real listener must register the authenticated plan-progress route',
     );
-    const local = await request(port, '/api/plans/plan-local/progress?detail=card', 'ws-a');
+    const local = await request(port, '/api/plans/00000000-0000-4000-8000-000000000001/progress?detail=card', 'ws-a');
     assert.equal(local.status, 200, 'REACHABILITY:wp13-plan-progress real listener must register the plan-progress route');
     assert.equal(JSON.parse(local.body).activityTier, 'active');
-    const foreign = await request(port, '/api/plans/plan-foreign/progress?detail=card', 'ws-a');
+    const foreign = await request(port, '/api/plans/00000000-0000-4000-8000-000000000002/progress?detail=card', 'ws-a');
     assert.equal(foreign.status, 403);
     assert.equal(cardReads, 1, 'foreign plan must be rejected before any card projection read');
   } finally {
