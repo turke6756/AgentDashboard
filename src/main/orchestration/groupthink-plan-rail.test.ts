@@ -40,13 +40,13 @@ import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './ty
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require('../database') as Record<string, any>;
 const svcRunsStore = new Map<string, OrchestrationRun>();
-const svcPlansStore = new Map<string, { id: string; workspaceId: string; path: string }>();
+const svcPlansStore = new Map<string, { id: string; workspaceId: string; path: string; deletedAt: null }>();
 const svcEvents: Array<{ runId: string; kind: string; payload: unknown }> = [];
 const svcClone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', path: os.tmpdir() } : null);
 db.getPlan = (id: string) => (svcPlansStore.has(id) ? svcClone(svcPlansStore.get(id)!) : null);
-db.getActivePlanningIntentForLaunch = (_workspaceId: string, planId: string, intentId: string) =>
-  planId === 'plan-demo' && intentId === 'int_1234abcd'
+db.getPlanIntentRow = (_workspaceId: string, planId: string, intentId: string) =>
+  planId === '00000000-0000-4000-8000-000000000001' && intentId === 'int_1234abcd'
     ? { planId, intentId, status: 'active' }
     : null;
 db.insertOrchestration = (r: OrchestrationRun) => { svcRunsStore.set(r.runId, svcClone(r)); };
@@ -268,7 +268,7 @@ const REAL_PLAN_REL = 'plans/demo-plan-planning-surface-acceptance.html';
 const REAL_PLAN_BASENAME = 'demo-plan-planning-surface-acceptance.html';
 
 test('rail dispatch resolves the plan row path into run.planPath (never plans/new-plan.md)', async () => {
-  svcPlansStore.set('plan-demo', { id: 'plan-demo', workspaceId: 'ws-1', path: REAL_PLAN_REL });
+  svcPlansStore.set('00000000-0000-4000-8000-000000000001', { id: '00000000-0000-4000-8000-000000000001', workspaceId: 'ws-1', path: REAL_PLAN_REL, deletedAt: null });
   const realPlanPath = path.join(os.tmpdir(), REAL_PLAN_REL);
   const { client, state } = makeFake({
     onTurn: (a) => {
@@ -284,7 +284,7 @@ test('rail dispatch resolves the plan row path into run.planPath (never plans/ne
   const { runId } = svc.start_run({
     name: 'groupthink', workspaceId: 'ws-1', supervisorId: 'sup-1',
     topic: 'Plan the acceptance demo', mode: 'serial',
-    planId: 'plan-demo', planningIntentId: 'int_1234abcd', sectionAnchor: 'sec_demo',
+    planId: '00000000-0000-4000-8000-000000000001', planningIntentId: 'int_1234abcd', sectionAnchor: 'sec_demo',
   } as any);
 
   await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
