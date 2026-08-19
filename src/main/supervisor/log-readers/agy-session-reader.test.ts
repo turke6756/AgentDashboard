@@ -63,6 +63,7 @@ function assistantPayload(text: string, kind = 2, ms = CREATED_MS + 2_000, withU
 }
 function toolPayload(opts: {
   id?: string; name?: string; input?: unknown; output?: string; status?: number; ms?: number;
+  stepType?: number;
 } = {}): Encoded {
   const id = opts.id ?? 'tool-1';
   const name = opts.name ?? 'run_command';
@@ -70,7 +71,7 @@ function toolPayload(opts: {
   const tool = msg(by(1, id), by(2, name), by(3, input), by(9, name));
   const output = msg(by(21, msg(by(1, opts.output ?? 'hello\n'))));
   return msg(
-    vi(1, 21), vi(4, opts.status ?? 3),
+    vi(1, opts.stepType ?? 21), vi(4, opts.status ?? 3),
     by(5, commonMeta(opts.ms ?? CREATED_MS + 3_000, [by(4, tool)])),
     by(28, output),
   );
@@ -237,6 +238,69 @@ test('terminal tool row maps structured input and canonical output', () => {
     assert.ok(result?.type === 'tool-result');
     assert.equal(result.content, 'hello\n');
     assert.equal(result.isError, false);
+  } finally { cleanup(root); }
+});
+
+test('native write rows enter through pollSession and add only the canonical path key', () => {
+  const root = tempRoot();
+  try {
+    createFixture(root, { rows: [
+      {
+        idx: 3,
+        type: 132,
+        status: 3,
+        payload: toolPayload({
+          stepType: 132,
+          id: 'native-write',
+          name: 'write_to_file',
+          input: {
+            TargetFile: 'src/native-write.ts',
+            CodeContent: 'export {};',
+            Overwrite: true,
+          },
+        }),
+      },
+      {
+        idx: 4,
+        type: 132,
+        status: 3,
+        payload: toolPayload({
+          stepType: 132,
+          id: 'canonical-write',
+          name: 'write_to_file',
+          input: {
+            TargetFile: 'src/must-not-win.ts',
+            file_path: 'src/already-canonical.ts',
+            CodeContent: 'existing canonical path wins',
+            Overwrite: false,
+          },
+        }),
+      },
+    ] });
+
+    const events = readerAt(root).pollSession(session());
+    const uses = events.filter((event) => event.type === 'tool-use');
+    assert.equal(uses.length, 2, 'REACHABILITY:agy-session-reader-step-type-132');
+
+    const native = uses.find((event) => event.toolUseId === 'native-write');
+    assert.ok(native?.type === 'tool-use');
+    assert.equal(native.toolName, 'write_to_file');
+    assert.deepEqual(native.input, {
+      TargetFile: 'src/native-write.ts',
+      CodeContent: 'export {};',
+      Overwrite: true,
+      file_path: 'src/native-write.ts',
+    });
+
+    const canonical = uses.find((event) => event.toolUseId === 'canonical-write');
+    assert.ok(canonical?.type === 'tool-use');
+    assert.equal(canonical.toolName, 'write_to_file');
+    assert.deepEqual(canonical.input, {
+      TargetFile: 'src/must-not-win.ts',
+      file_path: 'src/already-canonical.ts',
+      CodeContent: 'existing canonical path wins',
+      Overwrite: false,
+    });
   } finally { cleanup(root); }
 });
 

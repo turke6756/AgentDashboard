@@ -26,7 +26,7 @@ const TERMINAL_STEP_STATUSES = new Set([3, 7]);
 const COMPLETED_STEP_STATUS = 3;
 const USER_STEP_TYPE = 14;
 const ASSISTANT_STEP_TYPE = 15;
-const TOOL_STEP_TYPE = 21;
+const TOOL_STEP_TYPES = new Set([21, 132]);
 const FINAL_ASSISTANT_KIND = 2;
 const AGY_MODEL = 'antigravity';
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -62,8 +62,9 @@ export interface AgyConversationMetadata {
  * Antigravity 1.1.10 store schema (verified 2026-08-03): one WAL-mode SQLite
  * database per conversation under ~/.gemini/antigravity-cli/conversations.
  * `steps` is the ordered turn stream; idx is stable, step_type 14 is user text,
- * 15 is an assistant generation, 21 is a tool execution, 23 is recap noise,
- * and 98 is executor setup. Status 3 is completed and 7 is terminal failure.
+ * 15 is an assistant generation, 21 is a terminal tool execution, 132 is a
+ * native tool execution, 23 is recap noise, and 98 is executor setup. Status 3
+ * is completed and 7 is terminal failure.
  * Payload/metadata columns are protobuf wire messages: the top-level payload's
  * field 5 is step metadata (field 1 Timestamp, field 9 usage, field 4 tool
  * call), while fields 19/20/28 carry user/assistant/tool-result content.
@@ -224,6 +225,13 @@ function parseJsonInput(raw: string): unknown {
   }
 }
 
+function canonicalizeToolInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const fields = input as Record<string, unknown>;
+  if (typeof fields.TargetFile !== 'string' || typeof fields.file_path === 'string') return input;
+  return { ...fields, file_path: fields.TargetFile };
+}
+
 function printableStrings(message: WireMessage | null, depth = 0): string[] {
   if (!message || depth > 5) return [];
   const out: string[] = [];
@@ -352,11 +360,11 @@ function parseStep(
     return out;
   }
 
-  if (row.step_type === TOOL_STEP_TYPE) {
+  if (TOOL_STEP_TYPES.has(row.step_type)) {
     const tool = messageField(metadata, 4);
     const toolUseId = stringField(tool, 1) || `step-${row.idx}`;
     const toolName = stringField(tool, 2) || stringField(tool, 9) || 'tool';
-    const input = parseJsonInput(stringField(tool, 3));
+    const input = canonicalizeToolInput(parseJsonInput(stringField(tool, 3)));
     const fullResult = extractToolResult(payload, row.error_details);
     const truncated = truncateForChat(fullResult);
     toolResults.set(toolUseId, fullResult);

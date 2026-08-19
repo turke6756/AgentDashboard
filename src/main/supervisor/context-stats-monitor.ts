@@ -72,7 +72,9 @@ const PROVIDER_TOOL_MAP: Record<AgentProvider, Readonly<Record<string, FileOpera
     'write': 'create',
   },
   // WP-2 owns Antigravity's structured write vocabulary.
-  agy: {},
+  agy: {
+    'write_to_file': 'create',
+  },
 };
 
 const SHELL_TOOL_NAMES = new Set([

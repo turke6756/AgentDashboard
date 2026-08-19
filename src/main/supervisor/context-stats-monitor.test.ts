@@ -173,6 +173,18 @@ test('Grok native write is classified in its own namespace using the raw tool na
   ], 'REACHABILITY:context-stats-monitor-provider-scope');
 });
 
+test('Antigravity native write is classified from its raw tool name and canonical path', () => {
+  const { reader, emitted } = makeHarness(undefined, 'agy');
+  reader.emit('tool-use', toolUse(
+    'write_to_file',
+    { TargetFile: 'src/agy-native-write.ts', file_path: 'src/agy-native-write.ts' },
+    'agy-native-write',
+  ));
+  assert.deepEqual(emitted, [
+    { agentId: 'agent-1', filePath: 'src/agy-native-write.ts', operation: 'create' },
+  ]);
+});
+
 test('provider-scoped structured classification has no cross-provider bleed', () => {
   const grok = makeHarness(undefined, 'grok');
   const gemini = makeHarness(undefined, 'gemini');
