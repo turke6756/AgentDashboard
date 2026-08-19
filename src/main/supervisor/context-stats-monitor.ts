@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import path from 'path';
-import { ContextStats, FileOperation } from '../../shared/types';
+import { AgentProvider, ContextStats, FileOperation } from '../../shared/types';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS, getContextWindowForModel } from '../../shared/constants';
 import type { UsageEvent, ToolUseEvent, ToolResultEvent } from '../../shared/session-events';
 import { SessionLogReader } from './session-log-reader';
@@ -44,24 +44,35 @@ const PENDING_SHELL_MAX = 6000;
 const PENDING_CELL_MAX = 6000;
 const WAIT_CALL_MAX = 6000;
 
-const TOOL_MAP: Record<string, FileOperation> = {
-  // Claude
-  'Read': 'read',
-  'Edit': 'write',
-  'MultiEdit': 'write',
-  'NotebookEdit': 'write',
-  'Write': 'create',
-  'Glob': 'read',
-  'Grep': 'read',
-  // Gemini — args field is `file_path`, passed through as `input` by the reader.
-  // (`glob` and `search_file_content` omitted: their args have no specific path.)
-  'read_file': 'read',
-  'read_many_files': 'read',
-  'write_file': 'create',
-  'replace': 'write',
-  // Grok Build — read_file is shared with Gemini but uses `target_file`;
-  // list_dir reports its directory through `target_directory`.
-  'list_dir': 'read',
+const PROVIDER_TOOL_MAP: Record<AgentProvider, Readonly<Record<string, FileOperation>>> = {
+  claude: {
+    'Read': 'read',
+    'Edit': 'write',
+    'MultiEdit': 'write',
+    'NotebookEdit': 'write',
+    'Write': 'create',
+    'Glob': 'read',
+    'Grep': 'read',
+  },
+  // Gemini args are passed through as `input` by the reader. `glob` and
+  // `search_file_content` are omitted because their args have no specific path.
+  gemini: {
+    'read_file': 'read',
+    'read_many_files': 'read',
+    'write_file': 'create',
+    'replace': 'write',
+  },
+  // Codex file activity flows through exec/shell/apply_patch, not this table.
+  codex: {},
+  // Shared spellings are deliberately repeated per provider: Grok's read_file
+  // uses `target_file`, while list_dir uses `target_directory`.
+  grok: {
+    'read_file': 'read',
+    'list_dir': 'read',
+    'write': 'create',
+  },
+  // WP-2 owns Antigravity's structured write vocabulary.
+  agy: {},
 };
 
 const SHELL_TOOL_NAMES = new Set([
@@ -109,16 +120,19 @@ export class ContextStatsMonitor extends EventEmitter {
   // (and any non-wired caller) get raw pass-through.
   private resolveWorkspaceRoot?: (agentId: string) => string | null;
   private persistence?: ContextStatsPersistence;
+  private resolveProvider?: (agentId: string) => AgentProvider | null;
 
   constructor(
     reader: SessionLogReader,
     resolveWorkspaceRoot?: (agentId: string) => string | null,
     persistence?: ContextStatsPersistence,
+    resolveProvider?: (agentId: string) => AgentProvider | null,
   ) {
     super();
     this.reader = reader;
     this.resolveWorkspaceRoot = resolveWorkspaceRoot;
     this.persistence = persistence;
+    this.resolveProvider = resolveProvider;
   }
 
   start(): void {
@@ -376,8 +390,12 @@ export class ContextStatsMonitor extends EventEmitter {
       return;
     }
 
-    // Claude/Gemini structured tools — emit immediately.
-    const operation = TOOL_MAP[e.toolName];
+    // Provider-scoped structured tools — emit immediately. An unresolved or
+    // out-of-contract provider declines; it never consults another provider's
+    // vocabulary or a provider-neutral fallback.
+    const provider = this.resolveProvider?.(e.agentId);
+    if (!provider || !Object.prototype.hasOwnProperty.call(PROVIDER_TOOL_MAP, provider)) return;
+    const operation = PROVIDER_TOOL_MAP[provider][e.toolName];
     if (!operation) return;
 
     const filePaths = extractStructuredToolPaths(e.input);

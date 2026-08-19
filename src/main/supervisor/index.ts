@@ -2677,6 +2677,8 @@ export class AgentSupervisor extends EventEmitter {
     // Fix rec-4: hand the monitor the agent's FROZEN launch workspace root so
     // relative structured-tool paths are canonicalized to absolute at capture
     // time (before addFileActivity), not inferred later from the shared cwd.
+    const resolveProvider = (agentId: string): AgentProvider | null =>
+      getAgent(agentId)?.provider ?? null;
     this.contextStatsMonitor = new ContextStatsMonitor(
       this.sessionLogReader,
       (agentId) => {
@@ -2688,6 +2690,7 @@ export class AgentSupervisor extends EventEmitter {
         save: saveAgentContextStats,
         delete: deleteAgentContextStats,
       },
+      resolveProvider,
     );
     this.chatService = new AgentChatService(this.sessionLogReader);
 

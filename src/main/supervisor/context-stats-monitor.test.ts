@@ -5,8 +5,11 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ContextStatsMonitor, normalizeCapturedPath, type JsonlFileActivity } from './context-stats-monitor';
 import type { ToolResultEvent, ToolUseEvent, UsageEvent } from '../../shared/session-events';
+import type { AgentProvider } from '../../shared/types';
 
 class FakeReader extends EventEmitter {
   pollNow(): void {}
@@ -22,13 +25,18 @@ function test(name: string, fn: () => void | Promise<void>): void {
   tests.push({ name, run: fn });
 }
 
-function makeHarness(workspaceRoot?: string): {
+function makeHarness(workspaceRoot?: string, provider: AgentProvider = 'gemini'): {
   reader: FakeReader;
   monitor: ContextStatsMonitor;
   emitted: JsonlFileActivity[];
 } {
   const reader = new FakeReader();
-  const monitor = new ContextStatsMonitor(reader as any, workspaceRoot ? () => workspaceRoot : undefined);
+  const monitor = new ContextStatsMonitor(
+    reader as any,
+    workspaceRoot ? () => workspaceRoot : undefined,
+    undefined,
+    () => provider,
+  );
   const emitted: JsonlFileActivity[] = [];
   monitor.on('fileActivity', (a) => emitted.push(a));
   monitor.start();
@@ -67,7 +75,7 @@ test('Gemini read_file with file_path emits one read', () => {
 });
 
 test('Claude MultiEdit and NotebookEdit JSONL tool calls emit witnessed writes', () => {
-  const { reader, emitted } = makeHarness();
+  const { reader, emitted } = makeHarness(undefined, 'claude');
   reader.emit('tool-use', toolUse(
     'MultiEdit',
     { file_path: 'src/multi.ts', edits: [{ old_string: 'before', new_string: 'after' }] },
@@ -103,7 +111,7 @@ test('Gemini read_many_files with file_paths ignores non-string members', () => 
 });
 
 test('Grok structured and terminal tools capture a read and a write', () => {
-  const { reader, emitted } = makeHarness('C:\\repo');
+  const { reader, emitted } = makeHarness('C:\\repo', 'grok');
   reader.emit('tool-use', toolUse('read_file', { target_file: 'src/grok-read.ts' }, 'grok-read'));
   reader.emit('tool-use', toolUse('list_dir', { target_directory: 'src/grok-dir' }, 'grok-list'));
   reader.emit('tool-use', toolUse(
@@ -146,6 +154,68 @@ test('newer Codex shell alias captures file activity', () => {
   assert.deepEqual(emitted, [
     { agentId: 'agent-1', filePath: 'C:\\repo\\src\\codex-read.ts', operation: 'read' },
   ]);
+});
+
+test('Grok native write is classified in its own namespace using the raw tool name', () => {
+  const { reader, emitted } = makeHarness(undefined, 'grok');
+  reader.emit('tool-use', toolUse(
+    'write',
+    { file_path: 'src/grok-native-write.ts', content: 'export {};' },
+    'grok-native-write',
+  ));
+  reader.emit('tool-use', toolUse(
+    'Write',
+    { file_path: 'src/normalized-away.ts', content: 'must not classify' },
+    'grok-wrong-case',
+  ));
+  assert.deepEqual(emitted, [
+    { agentId: 'agent-1', filePath: 'src/grok-native-write.ts', operation: 'create' },
+  ], 'REACHABILITY:context-stats-monitor-provider-scope');
+});
+
+test('provider-scoped structured classification has no cross-provider bleed', () => {
+  const grok = makeHarness(undefined, 'grok');
+  const gemini = makeHarness(undefined, 'gemini');
+  grok.reader.emit('tool-use', toolUse('list_dir', { target_directory: 'src' }, 'grok-list-dir'));
+  gemini.reader.emit('tool-use', toolUse('list_dir', { target_directory: 'src' }, 'gemini-list-dir'));
+  assert.equal(grok.emitted.length, 1);
+  assert.deepEqual(gemini.emitted, []);
+});
+
+test('unresolved and unknown providers decline structured classification', () => {
+  const unresolvedReader = new FakeReader();
+  const unresolved = new ContextStatsMonitor(unresolvedReader as any);
+  const unresolvedEmitted: JsonlFileActivity[] = [];
+  unresolved.on('fileActivity', (a) => unresolvedEmitted.push(a));
+  unresolved.start();
+  unresolvedReader.emit('tool-use', toolUse('read_file', { file_path: 'src/a.ts' }, 'unresolved'));
+
+  const unknownReader = new FakeReader();
+  const unknown = new ContextStatsMonitor(
+    unknownReader as any,
+    undefined,
+    undefined,
+    (() => 'future-provider') as unknown as (agentId: string) => AgentProvider | null,
+  );
+  const unknownEmitted: JsonlFileActivity[] = [];
+  unknown.on('fileActivity', (a) => unknownEmitted.push(a));
+  unknown.start();
+  unknownReader.emit('tool-use', toolUse('Read', { file_path: 'src/b.ts' }, 'unknown'));
+
+  assert.deepEqual(unresolvedEmitted, []);
+  assert.deepEqual(unknownEmitted, []);
+});
+
+test('production ContextStatsMonitor construction wires resolveProvider as argument four', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src/main/supervisor/index.ts'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /const resolveProvider = \(agentId: string\): AgentProvider \| null =>[\s\S]*?getAgent\(agentId\)\?\.provider \?\? null;[\s\S]*?new ContextStatsMonitor\([\s\S]*?resolveProvider,\s*\);/,
+    'REACHABILITY:context-stats-monitor-resolver-unwired',
+  );
 });
 
 // Claude Code 2.1.225/2.1.220/2.1.217 shapes below are sanitized from real
@@ -499,7 +569,7 @@ test('last context reading survives monitor recreation and is cleared on session
 
 test('BUG-26: invalidateAgent does NOT emit statsChanged (next legitimate usage will)', () => {
   const reader = new FakeReader();
-  const monitor = new ContextStatsMonitor(reader as any);
+  const monitor = new ContextStatsMonitor(reader as any, undefined, undefined, () => 'gemini');
   let statsChangedCount = 0;
   monitor.on('statsChanged', () => { statsChangedCount += 1; });
   monitor.start();
@@ -520,7 +590,7 @@ test('BUG-26: invalidateAgent does NOT emit statsChanged (next legitimate usage 
 
 test('BUG-26: invalidateAgent clears seenFiles dedupe set (SAME tool-use id re-emits after rebind)', () => {
   const reader = new FakeReader();
-  const monitor = new ContextStatsMonitor(reader as any);
+  const monitor = new ContextStatsMonitor(reader as any, undefined, undefined, () => 'gemini');
   const emitted: JsonlFileActivity[] = [];
   monitor.on('fileActivity', (a) => emitted.push(a));
   monitor.start();
@@ -596,7 +666,7 @@ function makeHarnessWithRoot(root: string | null): {
   emitted: JsonlFileActivity[];
 } {
   const reader = new FakeReader();
-  const monitor = new ContextStatsMonitor(reader as any, () => root);
+  const monitor = new ContextStatsMonitor(reader as any, () => root, undefined, () => 'gemini');
   const emitted: JsonlFileActivity[] = [];
   monitor.on('fileActivity', (a) => emitted.push(a));
   monitor.start();
