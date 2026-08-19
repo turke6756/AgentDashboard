@@ -337,6 +337,11 @@ export function projectTurnActivity(input: TurnProjectionInput): TurnProjectionR
   for (const turn of turns) {
     const window = input.windowPaths?.get(turn.turnId);
     if (window === undefined) continue;
+    // A window row states provenance relative to its host turn: a path can be witnessed by
+    // turn A while remaining present-but-unwitnessed in turn B's window. Do not subtract
+    // paths witnessed by other turns (even when windows or checkpoint OIDs match). That would
+    // hide genuine shared-working-directory contention and make projection depend on which
+    // bounded page of turns happened to load.
     const witnessed = new Set(turn.witnessedPaths.map((entry) => entry.repoPath));
     const paths = uniquePaths(window.paths
       .filter((repoPath) => !witnessed.has(repoPath))

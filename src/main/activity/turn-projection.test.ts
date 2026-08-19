@@ -323,6 +323,49 @@ test('P8/P9: window rows subtract witnessed repo paths and preserve omission fla
   ]);
 });
 
+test('WP-3: window attribution is host-turn-local and independent of turn input order', () => {
+  const turns = [
+    turn(2, {
+      agentId: 'agent-a',
+      touched: [{ path: 'packages/app/src/shared.ts', op: 'write' }],
+    }),
+    turn(1, {
+      agentId: 'agent-b',
+      touched: [{ path: 'packages/app/src/other.ts', op: 'write' }],
+    }),
+  ];
+  const windowPaths = new Map<string, WindowPathList>([
+    ['turn-1', {
+      available: true,
+      reason: 'ok',
+      paths: ['packages/app/src/shared.ts'],
+      omittedPathCount: 0,
+      hasOmittedPaths: false,
+      truncated: false,
+    }],
+  ]);
+
+  const project = (orderedTurns: readonly TurnRecord[]) => projectTurnActivity({
+    ...baseInput,
+    turns: orderedTurns,
+    windowPaths,
+  });
+  const forward = project(turns);
+  const reversed = project([...turns].reverse());
+  const row = forward.items.find((item) => item.kind === 'window-unattributed');
+
+  assert.deepEqual(row, {
+    kind: 'window-unattributed',
+    id: 'win:turn-1',
+    hostTurnId: 'turn-1',
+    hostTurnSeq: 1,
+    paths: [{ repoPath: 'packages/app/src/shared.ts', displayPath: 'src/shared.ts' }],
+    omittedPathCount: 0,
+    hasOmittedPaths: false,
+  });
+  assert.deepEqual(reversed, forward);
+});
+
 async function main(): Promise<void> {
   let failed = 0;
   for (const entry of tests) {
