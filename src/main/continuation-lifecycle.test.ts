@@ -594,7 +594,7 @@ test('WP2 pre-stage: a successful continuationRelaunch seeds pendingInitialPromp
 
   const pending = (s.pendingInitialPrompts as Map<string, { text: string; expiresAt: number }>).get(agent.id);
   assert.ok(pending, 'relaunch seeds a pending initial prompt for the successor');
-  assert.match(pending!.text, /\[DASHBOARD\] Continuation pre-stage/,
+  assert.match(pending!.text, /\[DASHBOARD\] Continuation resume/,
     'the kickoff builder text rides the initial-prompt rail');
   assert.ok(pending!.expiresAt > Date.now(), 'the seed carries a live (future) TTL');
 });
@@ -620,7 +620,7 @@ test('WP2 pre-stage §4.1: the boot-reconcile re-drive ALSO seeds the kickoff (r
       pendingInitialPrompts: Map<string, { text: string; expiresAt: number }>;
     }).pendingInitialPrompts.get(agent.id);
     assert.ok(pending, 'the reconciled re-drive re-seeds the kickoff (§4.1: yes)');
-    assert.match(pending!.text, /\[DASHBOARD\] Continuation pre-stage/);
+    assert.match(pending!.text, /\[DASHBOARD\] Continuation resume/);
     assert.ok(pending!.expiresAt > Date.now(), 'the seed carries a live (future) TTL');
   } finally {
     h.restore();

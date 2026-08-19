@@ -223,9 +223,9 @@ export function decidePostNoteProceed(
 /** BUG-39 (WP2) — the successor pre-stage kickoff. Auto-submitted as a
  *  `[DASHBOARD]`-labelled initial USER message the instant the fresh
  *  continuation session boots, so it orients itself (and is WARM) before the
- *  human arrives. The hard stop is load-bearing: pre-stage spends ORIENTATION
- *  tokens, never ACTION tokens — acting before the human replies would repeat
- *  the exact class of surprise this removes. Unit-testable (fixed text). */
+ *  human arrives. It orients first and then RESUMES the work on its own:
+ *  a continuation handoff must not park the workspace waiting for a human who
+ *  never asked to be involved. Unit-testable (fixed text). */
 /** Which active agents ride the auto continuation watcher on each monitor tick:
  *  supervisor-PRIVILEGED (the structural workspace supervisor OR a
  *  privilegeLane:'supervisor' persona, #19) AND claude-provider (continuation is
@@ -239,14 +239,27 @@ export function isContinuationWatchEligible(
 
 export function buildContinuationKickoffMessage(): string {
   return (
-    `[DASHBOARD] Continuation pre-stage (automatic — the human has not spoken yet).\n` +
-    `You are a fresh continuation session; your predecessor's note is in your system prompt.\n` +
-    `Orient NOW so you are warm when the human arrives:\n` +
-    `1. get_my_context; 2. read memory/MEMORY.md's top/active block; 3. verify the note's\n` +
-    `in-flight claims with cheap reads (git log/status, list_agents) — trust tools over the note.\n` +
-    `Then post a short readiness summary (≤10 lines: state verified, discrepancies, what you\n` +
-    `will do on the human's go) and END YOUR TURN. Do NOT start or resume work, do NOT\n` +
-    `dispatch/message workers, do NOT edit files until the human speaks.`
+    `[DASHBOARD] Continuation resume (automatic — the human has not spoken yet).
+` +
+    `You are a fresh continuation session; your predecessor's note is in your system prompt.
+` +
+    `Orient FIRST, then keep going — do NOT wait for the human:
+` +
+    `1. get_my_context; 2. read memory/MEMORY.md's top/active block; 3. verify the note's
+` +
+    `in-flight claims with cheap reads (git log/status, list_agents) — trust tools over the note.
+` +
+    `Then post a short readiness summary (≤10 lines: state verified, discrepancies, next step)
+` +
+    `and CONTINUE THE WORK yourself: if the note or the plan surface leaves obvious next steps
+` +
+    `— remaining work packages, a worker mid-turn, an unfinished gate — resume them now
+` +
+    `WITHOUT asking permission. Stop and wait only if the work is finished, or if the next step
+` +
+    `truly requires the human (a decision only they can make, or a risky/irreversible action).
+` +
+    `If you do stop, say plainly why you are waiting.`
   );
 }
 

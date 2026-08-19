@@ -855,22 +855,28 @@ test('committedReady retry path re-runs the post-note grace loop before relaunch
 
 // ── BUG-39 WP2: successor pre-stage kickoff builder ───────────────────
 
-test('kickoff message: [DASHBOARD]-labelled, orientation-only, hard stop before action', () => {
+test('kickoff message: [DASHBOARD]-labelled, orients then resumes without the human', () => {
   const msg = buildContinuationKickoffMessage();
-  assert.ok(msg.startsWith('[DASHBOARD] Continuation pre-stage'), 'clearly dashboard-labelled');
+  assert.ok(msg.startsWith('[DASHBOARD] Continuation resume'), 'clearly dashboard-labelled');
   assert.ok(msg.includes('get_my_context'), 'orientation step present');
-  assert.ok(msg.includes('END YOUR TURN'), 'hard stop present');
-  assert.ok(/Do NOT start or resume work/.test(msg), 'action is forbidden until the human speaks');
+  assert.ok(/do NOT wait for the human/.test(msg), 'the successor is told not to park');
+  assert.ok(/CONTINUE THE WORK/.test(msg), 'resuming obvious next steps is mandated');
+  assert.ok(/WITHOUT asking permission/.test(msg), 'no permission round-trip for obvious work');
+  assert.ok(/Stop and wait only if/.test(msg), 'the narrow stop condition is stated');
+  assert.ok(!/END YOUR TURN/.test(msg), 'the old hard stop is gone');
   // Snapshot the exact text so an accidental reword is caught.
   assert.equal(msg, [
-    '[DASHBOARD] Continuation pre-stage (automatic — the human has not spoken yet).',
+    '[DASHBOARD] Continuation resume (automatic \u2014 the human has not spoken yet).',
     "You are a fresh continuation session; your predecessor's note is in your system prompt.",
-    'Orient NOW so you are warm when the human arrives:',
+    'Orient FIRST, then keep going \u2014 do NOT wait for the human:',
     "1. get_my_context; 2. read memory/MEMORY.md's top/active block; 3. verify the note's",
-    'in-flight claims with cheap reads (git log/status, list_agents) — trust tools over the note.',
-    'Then post a short readiness summary (≤10 lines: state verified, discrepancies, what you',
-    'will do on the human\'s go) and END YOUR TURN. Do NOT start or resume work, do NOT',
-    'dispatch/message workers, do NOT edit files until the human speaks.',
+    'in-flight claims with cheap reads (git log/status, list_agents) \u2014 trust tools over the note.',
+    'Then post a short readiness summary (\u226410 lines: state verified, discrepancies, next step)',
+    'and CONTINUE THE WORK yourself: if the note or the plan surface leaves obvious next steps',
+    '\u2014 remaining work packages, a worker mid-turn, an unfinished gate \u2014 resume them now',
+    'WITHOUT asking permission. Stop and wait only if the work is finished, or if the next step',
+    'truly requires the human (a decision only they can make, or a risky/irreversible action).',
+    'If you do stop, say plainly why you are waiting.',
   ].join('\n'));
 });
 
