@@ -5,10 +5,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { IpcApi } from '../../shared/types';
+import type { CheckpointPreviewResult, IpcApi } from '../../shared/types';
 import { CHECKPOINT_CHANNELS } from '../../shared/types';
+import { createCheckpointInvokeApi } from '../../preload/index';
 import RestoreDialog from '../components/checkpoints/RestoreDialog';
 import { useDashboardStore } from '../stores/dashboard-store';
+
+vi.mock('electron', () => ({
+  contextBridge: null,
+  ipcRenderer: { invoke: vi.fn() },
+  webUtils: {},
+}));
 
 // WP-G2.2 — contract coverage for the human checkpoint IPC channels. Two failure
 // modes, both of which pass every pure unit test and both of which surface in the
@@ -56,6 +63,9 @@ const CONTRACT_WITNESS: CheckpointApi = {
   }),
   fileHistory: async (workspaceId, path) => ({ workspaceId, path, versions: [] }),
   gitInit: async () => ({ ok: false, status: 'error', message: '' }),
+  prune: async (_workspaceId) => { throw new Error('type witness only'); },
+  pruneRepoWidePlan: async (_workspaceId) => { throw new Error('type witness only'); },
+  pruneRepoWide: async (_req) => { throw new Error('type witness only'); },
 };
 
 describe('checkpoint IPC contract (WP-G2.2)', () => {
@@ -84,11 +94,46 @@ describe('checkpoint IPC contract (WP-G2.2)', () => {
     }
   });
 
-  it('preload routes checkpoint IPC through ipcRenderer.invoke (request/response, not fire-and-forget)', () => {
+  it('production builds the checkpoint surface with the pure invoke API over ipcRenderer.invoke', () => {
     const preload = read('src/preload/index.ts');
-    for (const key of Object.keys(CHECKPOINT_CHANNELS)) {
-      expect(preload).toContain(`ipcRenderer.invoke(CHECKPOINT_CHANNELS.${key}`);
-    }
+    expect(preload).toMatch(
+      /checkpoints:\s*createCheckpointInvokeApi\(\(channel, \.\.\.args\)\s*=>\s*ipcRenderer\.invoke\(channel, \.\.\.args\)\)/,
+    );
+  });
+
+  it('the pure invoke API preserves every checkpoint channel and payload shape', async () => {
+    const calls: Array<{ channel: string; args: unknown[] }> = [];
+    const api = createCheckpointInvokeApi(async <T>(channel: string, ...args: unknown[]): Promise<T> => {
+      calls.push({ channel, args });
+      return undefined as T;
+    });
+    const restore = { workspaceId: 'ws', turnId: 'turn', paths: ['src/a.ts'], strategy: 'merge-undo' as const, mergePreviewToken: 'opaque' };
+    const revert = { workspaceId: 'ws', turnId: 'turn', strategy: 'merge-undo' as const, mergePreviewToken: 'opaque' };
+    const purge = { workspaceId: 'ws', confirm: true };
+
+    await api.list('ws', { agentId: 'agent' });
+    await api.diff('ws', 'turn');
+    await api.preview('ws', 'turn', { strategy: 'merge-undo', paths: ['src/a.ts'] });
+    await api.restore(restore);
+    await api.revert(revert);
+    await api.fileHistory('ws', 'src/a.ts', { agentId: 'agent' });
+    await api.gitInit('ws');
+    await api.prune('ws');
+    await api.pruneRepoWidePlan('ws');
+    await api.pruneRepoWide(purge);
+
+    expect(calls).toEqual([
+      { channel: CHECKPOINT_CHANNELS.list, args: ['ws', { agentId: 'agent' }] },
+      { channel: CHECKPOINT_CHANNELS.diff, args: ['ws', 'turn'] },
+      { channel: CHECKPOINT_CHANNELS.preview, args: ['ws', 'turn', { strategy: 'merge-undo', paths: ['src/a.ts'] }] },
+      { channel: CHECKPOINT_CHANNELS.restore, args: [restore] },
+      { channel: CHECKPOINT_CHANNELS.revert, args: [revert] },
+      { channel: CHECKPOINT_CHANNELS.fileHistory, args: ['ws', 'src/a.ts', { agentId: 'agent' }] },
+      { channel: CHECKPOINT_CHANNELS.gitInit, args: ['ws'] },
+      { channel: CHECKPOINT_CHANNELS.prune, args: ['ws'] },
+      { channel: CHECKPOINT_CHANNELS.pruneRepoWidePlan, args: ['ws'] },
+      { channel: CHECKPOINT_CHANNELS.pruneRepoWide, args: [purge] },
+    ]);
   });
 });
 
@@ -96,7 +141,7 @@ describe('RestoreDialog refusal contract (WP-G5)', () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
-  const overlapPreview = {
+  const overlapPreview: CheckpointPreviewResult = {
     available: false,
     reason: 'after-snapshot-overlap',
     turnId: 't1',
@@ -126,7 +171,7 @@ describe('RestoreDialog refusal contract (WP-G5)', () => {
     },
   };
 
-  function apiWithPreview(preview: typeof overlapPreview | Omit<typeof overlapPreview, 'overlap'>) {
+  function apiWithPreview(preview: CheckpointPreviewResult) {
     return {
       checkpoints: {
         preview: vi.fn(async () => preview),
@@ -146,7 +191,7 @@ describe('RestoreDialog refusal contract (WP-G5)', () => {
     };
   }
 
-  async function mount(preview: typeof overlapPreview | Omit<typeof overlapPreview, 'overlap'>) {
+  async function mount(preview: CheckpointPreviewResult) {
     (window as any).api = apiWithPreview(preview);
     await act(async () => {
       root = createRoot(container);
