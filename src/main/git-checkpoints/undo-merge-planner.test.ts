@@ -27,6 +27,8 @@ const runGit = (cwd: string, args: string[], options: RunGitOptions) => exec(cwd
 const runGitBytes = (cwd: string, args: string[], options: RunGitOptions) => exec(cwd, args, options, true);
 const deps: UndoMergePlannerDeps = { runGit, runGitBytes };
 const git = (cwd: string, ...args: string[]) => String(execFileSync('git', args, { cwd, windowsHide: true })).trim();
+const gitInput = (cwd: string, args: string[], input: Buffer | string) =>
+  String(execFileSync('git', args, { cwd, input, windowsHide: true })).trim();
 
 function createRepo(autocrlf = false): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-undo-plan-test-'));
@@ -48,10 +50,21 @@ function lines(changes: Record<number, string> = {}, eol = '\n'): string {
   return `${Array.from({ length: 40 }, (_, index) => changes[index + 1] ?? `line-${index + 1}`).join(eol)}${eol}`;
 }
 
+function longLines(changes: Record<number, string> = {}, eol = '\n'): string {
+  return `${Array.from({ length: 1_500 }, (_, index) => changes[index + 1] ?? `line-${index + 1}`).join(eol)}${eol}`;
+}
+
 function write(root: string, repoPath: string, content: string): void {
   const destination = path.join(root, ...repoPath.split('/'));
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, content);
+}
+
+function rawCheckpoint(root: string, repoPath: string, content: string, parent?: string): string {
+  write(root, repoPath, content);
+  const blobOid = git(root, 'hash-object', '-w', '--no-filters', '--', repoPath);
+  const treeOid = gitInput(root, ['mktree', '-z'], Buffer.from(`100644 blob ${blobOid}\t${repoPath}\0`));
+  return git(root, 'commit-tree', treeOid, ...(parent ? ['-p', parent] : []), '-m', 'raw checkpoint');
 }
 
 function pathState(result: Awaited<ReturnType<typeof planUndoMerge>>, repoPath: string): string {
@@ -60,15 +73,13 @@ function pathState(result: Awaited<ReturnType<typeof planUndoMerge>>, repoPath: 
   return found.state;
 }
 
-test('autocrlf cleans CRLF worktree content and preserves a distant staged edit', async (t) => {
+test('autocrlf cleans raw CRLF checkpoint blobs and preserves a distant staged edit', async (t) => {
   const root = createRepo(true); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  write(root, 'shared.txt', lines({}, '\r\n'));
-  const before = commit(root, 'before', ['shared.txt']);
-  write(root, 'shared.txt', lines({ 1: 'TURN' }, '\r\n'));
-  const after = commit(root, 'after', ['shared.txt']);
-  git(root, 'read-tree', '--reset', '-u', after);
-  assert.match(fs.readFileSync(path.join(root, 'shared.txt'), 'utf8'), /\r\n/);
-  write(root, 'shared.txt', lines({ 1: 'TURN', 40: 'LATER' }, '\r\n'));
+  const before = rawCheckpoint(root, 'shared.txt', longLines({}, '\r\n'));
+  const after = rawCheckpoint(root, 'shared.txt', longLines({ 1_020: 'TURN' }, '\r\n'), before);
+  assert.match(git(root, 'cat-file', 'blob', `${after}:shared.txt`), /\r\n/,
+    'checkpoint fixture deliberately stores raw CRLF bytes');
+  write(root, 'shared.txt', longLines({ 1_020: 'TURN', 1_460: 'LATER' }, '\r\n'));
   git(root, 'add', '--', 'shared.txt');
 
   const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
@@ -76,20 +87,22 @@ test('autocrlf cleans CRLF worktree content and preserves a distant staged edit'
   assert.equal(result.kind, 'ready');
   assert.equal(pathState(result, 'shared.txt'), 'merged');
   if (result.kind !== 'ready') return;
-  const content = git(root, 'show', `${result.resultTreeOid}:shared.txt`);
-  assert.match(content, /^line-1/);
-  assert.match(content, /LATER$/);
+  const content = git(root, 'show', `${result.resultTreeOid}:shared.txt`).split(/\r?\n/);
+  assert.equal(content[1_019], 'line-1020');
+  assert.equal(content[1_459], 'LATER');
   assert.notEqual(result.paths[0].current?.rawWorktreeOid, result.paths[0].current?.blobOid,
     'raw CRLF and clean LF identities stay distinct');
+  const cleanAfterOid = gitInput(root, ['hash-object', '-w', '--path=shared.txt', '--stdin'],
+    Buffer.from(longLines({ 1_020: 'TURN' }, '\r\n')));
+  assert.equal(result.paths[0].after?.blobOid, cleanAfterOid,
+    'captured AFTER is represented in the same clean domain as current content');
 });
 
-test('autocrlf same-line later edit is a conflict and exit-1 tree is diagnostic only', async (t) => {
+test('autocrlf same-line conflict from raw checkpoints names the true narrow line range', async (t) => {
   const root = createRepo(true); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  write(root, 'shared.txt', lines({}, '\r\n'));
-  const before = commit(root, 'before', ['shared.txt']);
-  write(root, 'shared.txt', lines({ 1: 'TURN' }, '\r\n'));
-  const after = commit(root, 'after', ['shared.txt']);
-  write(root, 'shared.txt', lines({ 1: 'LATER-SAME-LINE' }, '\r\n'));
+  const before = rawCheckpoint(root, 'shared.txt', longLines({}, '\r\n'));
+  const after = rawCheckpoint(root, 'shared.txt', longLines({ 1_020: 'TURN' }, '\r\n'), before);
+  write(root, 'shared.txt', longLines({ 1_020: 'LATER-SAME-LINE' }, '\r\n'));
   git(root, 'add', '--', 'shared.txt');
   const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
     requestedPaths: ['shared.txt'], witnessedPaths: ['shared.txt'] }, deps);
@@ -97,7 +110,9 @@ test('autocrlf same-line later edit is a conflict and exit-1 tree is diagnostic 
   assert.equal(pathState(result, 'shared.txt'), 'conflicted');
   if (result.kind === 'conflicted') {
     assert.ok(result.paths[0].conflictStages.length >= 3);
-    assert.match(result.paths[0].patch ?? '', /^@@ -1,1 \+1,1 @@ current\/base\/inverse conflict/m);
+    assert.match(result.paths[0].patch ?? '', /^@@ -1020,1 \+1020,1 @@ current\/base\/inverse conflict/m);
+    assert.doesNotMatch(result.paths[0].patch ?? '', /^@@ -1,460 \+1,460 @@/m);
+    assert.doesNotMatch(result.paths[0].patch ?? '', /^@@ .*\+1460,/m);
     assert.match(result.paths[0].patch ?? '', /<<<<<<< current:shared\.txt/);
     assert.match(result.paths[0].patch ?? '', /\|\|\|\|\|\|\| base:shared\.txt/);
     assert.match(result.paths[0].patch ?? '', />>>>>>> inverse:shared\.txt/);

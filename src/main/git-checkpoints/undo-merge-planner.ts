@@ -193,6 +193,23 @@ function unsupportedMode(...entries: (MergeUndoTreeEntry | null)[]): MergeUndoPa
   return null;
 }
 
+async function cleanCapturedEntry(
+  entry: MergeUndoTreeEntry | null,
+  cwd: string,
+  repoPath: string,
+  runGit: RunGit,
+  runGitBytes: RunGitBytes,
+  deps: UndoMergePlannerDeps,
+): Promise<MergeUndoTreeEntry | null> {
+  if (!entry || !REGULAR_MODES.has(entry.mode)) return entry;
+  const raw = await runGitBytes(cwd, ['cat-file', 'blob', entry.blobOid], opts(deps));
+  if (raw.code !== 0) throw new Error(raw.stderr.trim() || 'merge-undo-captured-blob-read-failed');
+  const clean = await runGit(cwd, ['hash-object', '-w', `--path=${repoPath}`, '--stdin'], opts(deps, { stdin: raw.stdout }));
+  const blobOid = clean.stdout.trim();
+  if (clean.code !== 0 || !OID_RE.test(blobOid)) throw new Error(clean.stderr.trim() || 'merge-undo-captured-clean-hash-failed');
+  return { mode: entry.mode, blobOid };
+}
+
 async function inspectPath(
   cwd: string,
   repoPath: string,
@@ -258,7 +275,13 @@ async function inspectPath(
   else if (occupantRefusal) refusal = occupantRefusal;
   else if (modeRefusal) refusal = modeRefusal;
   else if (!parsedIndex.coherentShape || !sameEntry(parsedIndex.entry, current)) refusal = 'index-worktree-diverged';
-  return { before, after, current, index: parsedIndex.entry, normalizationFingerprint: fingerprint, refusal };
+  const [cleanBefore, cleanAfter] = !refusal
+    ? await Promise.all([
+        cleanCapturedEntry(before, cwd, repoPath, runGit, runGitBytes, deps),
+        cleanCapturedEntry(after, cwd, repoPath, runGit, runGitBytes, deps),
+      ])
+    : [before, after];
+  return { before: cleanBefore, after: cleanAfter, current, index: parsedIndex.entry, normalizationFingerprint: fingerprint, refusal };
 }
 
 function parseEdges(stdout: Buffer): Edge[] {
@@ -495,9 +518,11 @@ export async function planUndoMerge(input: UndoMergePlannerInput, deps: UndoMerg
   try {
     const currentEntries = new Map(requestedPaths.map((repoPath) => [repoPath, inspected.get(repoPath)!.current]));
     const beforeEntries = new Map(requestedPaths.map((repoPath) => [repoPath, inspected.get(repoPath)!.before]));
-    const currentTreeOid = await writeSyntheticTree(input.cwd, input.afterOid, requestedPaths, currentEntries, path.join(tempDir, 'current-index'), runGit, deps);
-    const inverseTreeOid = await writeSyntheticTree(input.cwd, input.afterOid, requestedPaths, beforeEntries, path.join(tempDir, 'inverse-index'), runGit, deps);
-    const merged = await mergeTree({ cwd: input.cwd, baseOid: input.afterOid, currentOid: currentTreeOid, incomingOid: inverseTreeOid }, {
+    const afterEntries = new Map(requestedPaths.map((repoPath) => [repoPath, inspected.get(repoPath)!.after]));
+    const baseTreeOid = await writeSyntheticTree(input.cwd, input.afterOid, requestedPaths, afterEntries, path.join(tempDir, 'base-index'), runGit, deps);
+    const currentTreeOid = await writeSyntheticTree(input.cwd, baseTreeOid, requestedPaths, currentEntries, path.join(tempDir, 'current-index'), runGit, deps);
+    const inverseTreeOid = await writeSyntheticTree(input.cwd, baseTreeOid, requestedPaths, beforeEntries, path.join(tempDir, 'inverse-index'), runGit, deps);
+    const merged = await mergeTree({ cwd: input.cwd, baseOid: baseTreeOid, currentOid: currentTreeOid, incomingOid: inverseTreeOid }, {
       gitExe: deps.gitExe, runGit, runGitBytes, tmpDir: tempDir,
     });
     if (merged.kind === 'failed' || merged.kind === 'resolved') {
