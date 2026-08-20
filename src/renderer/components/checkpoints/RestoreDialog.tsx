@@ -25,6 +25,8 @@ import type {
   CheckpointPreviewResult,
   CheckpointDiffEntry,
   CheckpointRestoreResult,
+  MergeUndoPathPreview,
+  RestoreStrategy,
 } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
@@ -41,11 +43,50 @@ export interface RestoreDialogProps {
   paths: string[];
   onClose: () => void;
   onDone?: (result: CheckpointRestoreResult) => void;
+  /** Activity's exact background preview can open directly into the safer merge flow. */
+  initialStrategy?: RestoreStrategy;
 }
 
 /** The exact content-semantics warning copy (plan §2.4). */
 export const FILTER_BYPASS_WARNING =
   'Restoring writes on-disk bytes; the LFS/git-crypt-managed form is not reconstructed.';
+
+const ELIGIBLE_MERGE_STATES = new Set<MergeUndoPathPreview['state']>(['clean', 'merged']);
+
+function reasonCopy(reason: string | undefined): string {
+  switch (reason) {
+    case 'merge-undo-conflict': return 'Undo conflicts with later edits.';
+    case 'active-turn-witnesses-path': return 'An active turn is editing this path. Wait for it to finish or stop the agent, then preview again.';
+    case 'index-worktree-diverged': return 'This path has unstaged or partially staged changes. Stage or commit it, or restore its staging state, then preview again.';
+    case 'rename-pair-incomplete': return 'Both sides of this rename must be selected together.';
+    case 'not-witnessed-for-undo': return 'This path was not witnessed for this turn and cannot be undone.';
+    case 'unsupported-content-conversion': return 'This path uses an unsupported content filter or working-tree encoding.';
+    case 'unsupported-entry': return 'This Git entry type is not supported for merged undo.';
+    case 'unsupported-symlink': return 'Symbolic links are not supported for merged undo.';
+    case 'ignored': return 'This path is ignored and cannot be changed by merged undo.';
+    default: return reason ? `Merged undo refused: ${reason}.` : 'Merged undo is unavailable for this path.';
+  }
+}
+
+function patchRanges(patch: string | undefined): string[] {
+  if (!patch) return [];
+  return Array.from(patch.matchAll(/^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@/gm), (match) => {
+    const start = Number(match[1]);
+    const count = Number(match[2] ?? '1');
+    return count <= 1 ? `line ${start}` : `lines ${start}-${start + count - 1}`;
+  });
+}
+
+function renamePairs(paths: MergeUndoPathPreview[] | undefined): string[][] {
+  const pairs = new Map<string, string[]>();
+  for (const item of paths ?? []) {
+    const match = item.patch?.match(/^rename from (.+)\r?\nrename to (.+)$/m);
+    if (!match) continue;
+    const pair = [match[1], match[2]].sort();
+    pairs.set(pair.join('\0'), pair);
+  }
+  return Array.from(pairs.values());
+}
 
 export default function RestoreDialog({
   workspaceId,
@@ -55,6 +96,7 @@ export default function RestoreDialog({
   paths,
   onClose,
   onDone,
+  initialStrategy = 'exact',
 }: RestoreDialogProps) {
   const previewCheckpointRestore = useDashboardStore((s) => s.previewCheckpointRestore);
   const restoreCheckpointPaths = useDashboardStore((s) => s.restoreCheckpointPaths);
@@ -62,8 +104,11 @@ export default function RestoreDialog({
 
   // For a path-scoped restore the human can trim the candidate set; a revert always
   // acts on the whole witnessed set, so the checkboxes are display-only there.
+  const [strategy, setStrategy] = useState<RestoreStrategy>(initialStrategy);
   const [selected, setSelected] = useState<Set<string>>(new Set(paths));
-  const effectivePaths = mode === 'revert' ? turn.witnessedPaths : Array.from(selected);
+  const [knownRenamePairs, setKnownRenamePairs] = useState<string[][]>([]);
+  const selectable = strategy === 'merge-undo' || mode === 'restore';
+  const effectivePaths = selectable ? Array.from(selected).sort() : turn.witnessedPaths;
 
   const [preview, setPreview] = useState<CheckpointPreviewResult | null>(null);
   const [windowDiff, setWindowDiff] = useState<CheckpointDiffEntry | null>(null);
@@ -76,28 +121,40 @@ export default function RestoreDialog({
   const rejected = preview?.rejectedPaths ?? [];
   // The server owns the safety verdict. The dialog only honors and explains it;
   // runRestore will recheck authoritatively under its lock.
-  const gateRefused = !!preview && (
+  const exactGateRefused = !!preview && strategy === 'exact' && (
     !!preview.overlap
     || preview.reason === 'after-snapshot-overlap'
     || preview.reason === 'after-edge-unusable'
     || preview.reason === 'current-hash-failed'
     || preview.reason === 'active-turn-witnesses-path'
   );
+  const mergeStates = preview?.pathStates ?? [];
+  const mergeAllEligible = strategy === 'merge-undo'
+    && mergeStates.length > 0
+    && mergeStates.every((item) => ELIGIBLE_MERGE_STATES.has(item.state));
   const canConfirm = !!preview
-    && !gateRefused
+    && !exactGateRefused
     && !confirming
-    && (mode === 'revert' || effectivePaths.length > 0);
+    && effectivePaths.length > 0
+    && (strategy === 'exact' || (mergeAllEligible && !!preview.mergePreviewToken));
 
-  async function handlePreview() {
+  async function handlePreview(nextStrategy: RestoreStrategy = strategy) {
     setPreviewing(true);
     setError(null);
     setResult(null);
     try {
       const [pv, diff] = await Promise.all([
-        previewCheckpointRestore(workspaceId, turn.turnId, effectivePaths),
+        nextStrategy === 'exact'
+          ? previewCheckpointRestore(workspaceId, turn.turnId, effectivePaths)
+          : window.api.checkpoints.preview(workspaceId, turn.turnId, {
+              paths: effectivePaths,
+              strategy: 'merge-undo',
+            }),
         window.api.checkpoints.diff(workspaceId, turn.turnId),
       ]);
+      setStrategy(nextStrategy);
       setPreview(pv);
+      setKnownRenamePairs(renamePairs(pv.pathStates));
       setWindowDiff(diff.window);
     } catch (err) {
       setError(`Preview failed: ${String(err)}`);
@@ -114,18 +171,24 @@ export default function RestoreDialog({
     try {
       // Echo back only the tokens for the paths we are actually restoring.
       const tokens: Record<string, string> = {};
-      const scope = mode === 'revert' ? turn.witnessedPaths : effectivePaths;
+      const scope = strategy === 'merge-undo' ? effectivePaths : mode === 'revert' ? turn.witnessedPaths : effectivePaths;
       for (const p of scope) {
         if (preview.tokens[p] !== undefined) tokens[p] = preview.tokens[p];
       }
+      const wholeTurn = mode === 'revert'
+        && scope.length === turn.witnessedPaths.length
+        && turn.witnessedPaths.every((path) => scope.includes(path));
+      const mergeFields = strategy === 'merge-undo'
+        ? { strategy, mergePreviewToken: preview.mergePreviewToken }
+        : {};
       const out =
-        mode === 'revert'
+        wholeTurn
           ? await revertCheckpointTurn(
-              { workspaceId, turnId: turn.turnId, previewTokens: tokens },
+              { workspaceId, turnId: turn.turnId, previewTokens: tokens, ...mergeFields },
               agentId,
             )
           : await restoreCheckpointPaths(
-              { workspaceId, turnId: turn.turnId, paths: effectivePaths, previewTokens: tokens },
+              { workspaceId, turnId: turn.turnId, paths: effectivePaths, previewTokens: tokens, ...mergeFields },
               agentId,
             );
       setResult(out);
@@ -140,8 +203,12 @@ export default function RestoreDialog({
   function togglePath(p: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(p)) next.delete(p);
-      else next.add(p);
+      const group = knownRenamePairs.find((pair) => pair.includes(p)) ?? [p];
+      const remove = group.every((path) => next.has(path));
+      for (const path of group) {
+        if (remove) next.delete(path);
+        else next.add(path);
+      }
       return next;
     });
     // Any change to the selection invalidates the preview (its tokens are
@@ -200,8 +267,8 @@ export default function RestoreDialog({
               <li key={p} className="flex items-center gap-1.5 font-mono">
                 <input
                   type="checkbox"
-                  checked={mode === 'revert' ? true : selected.has(p)}
-                  disabled={mode === 'revert'}
+                  checked={selectable ? selected.has(p) : true}
+                  disabled={!selectable}
                   onChange={() => togglePath(p)}
                 />
                 <span className="truncate" title={p}>{p}</span>
@@ -213,8 +280,8 @@ export default function RestoreDialog({
 
       <div className="flex items-center gap-2 mb-2">
         <button
-          onClick={handlePreview}
-          disabled={previewing || (mode === 'restore' && effectivePaths.length === 0)}
+          onClick={() => void handlePreview()}
+          disabled={previewing || effectivePaths.length === 0}
           className="ui-btn ui-btn-ghost px-2 py-1 text-[11px] font-semibold"
         >
           {previewing ? 'Previewing…' : preview ? 'Re-preview' : 'Preview changes'}
@@ -223,6 +290,33 @@ export default function RestoreDialog({
           <span className="text-gray-500 text-[11px]">A preview is required before restoring.</span>
         )}
       </div>
+
+      {preview && strategy === 'exact' && (preview.reason === 'after-snapshot-overlap' || preview.overlap?.reason === 'after-snapshot-overlap') && (
+        <div className="mb-2 rounded border border-accent-blue/30 bg-accent-blue/10 p-2" data-testid="merge-undo-offer">
+          <p className="text-[11px] text-gray-300">This file changed since the turn. Exact restore would overwrite those changes; preview merged undo instead.</p>
+          <button type="button" className="ui-btn ui-btn-ghost mt-1 px-2 py-1 text-[11px]" onClick={() => void handlePreview('merge-undo')}>Preview merged undo</button>
+        </div>
+      )}
+
+      {preview && strategy === 'merge-undo' && (
+        <div className="mb-2 space-y-2" data-testid="merge-undo-preview">
+          <p className="text-[11px] text-accent-orange">Merged undo updates both the working tree and the staging area for every selected path.</p>
+          {mergeStates.map((item) => {
+            const ranges = item.state === 'conflicted' ? patchRanges(item.patch) : [];
+            return (
+              <article key={item.path} className="rounded border border-surface-3 p-2" data-testid={`merge-path-${item.path}`}>
+                <div className="flex justify-between gap-2"><span className="font-mono text-[11px]">{item.path}</span><span className="text-[10px] uppercase text-gray-500">{item.state}</span></div>
+                {item.state === 'conflicted' && <p className="mt-1 text-[11px] text-accent-red">Undo conflicts with later edits — {ranges.length > 0 ? ranges.join(', ') : 'binary or structural conflict (no text line range)'}</p>}
+                {!ELIGIBLE_MERGE_STATES.has(item.state) && item.state !== 'conflicted' && <p className="mt-1 text-[11px] text-accent-red">{reasonCopy(item.reason ?? item.state)}</p>}
+                {item.patch && <pre className="log-surface mt-1 max-h-40 overflow-auto whitespace-pre-wrap border border-surface-3 p-2 text-[11px]">{item.patch}</pre>}
+                {item.patchTruncated && <p className="mt-1 text-[10px] text-accent-orange">Patch preview is bounded; {item.omittedBytes ?? 0} bytes omitted for this path.</p>}
+              </article>
+            );
+          })}
+          {(preview.omittedPathCount ?? 0) > 0 && <p className="text-[10px] text-accent-orange">{preview.omittedPathCount} path previews omitted by the total preview limit.</p>}
+          {!preview.mergePreviewToken && <p className="text-[11px] text-accent-red">This preview cannot be confirmed. Select only eligible paths, then re-preview that exact subset.</p>}
+        </div>
+      )}
 
       {/* Current conflicts — open-turn contention + non-witnessed rejects. */}
       {preview && (contention.length > 0 || rejected.length > 0) && (
@@ -244,7 +338,7 @@ export default function RestoreDialog({
         </div>
       )}
 
-      {preview && gateRefused && (
+      {preview && exactGateRefused && (
         <div
           role="alert"
           data-testid="restore-refusal"

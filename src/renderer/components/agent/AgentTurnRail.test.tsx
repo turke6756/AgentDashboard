@@ -138,4 +138,15 @@ describe('AgentTurnRail — WP-G2.4', () => {
     await render();
     expect((window as any).api.checkpoints.list).toHaveBeenCalledWith('ws', { agentId: 'a1' });
   });
+
+  it('opens whole-turn undo in merge-preview mode', async () => {
+    useDashboardStore.setState({ checkpointTurns: { a1: [turn()] } } as any);
+    await render();
+    await act(async () => { buttonByText('Undo this turn')!.click(); });
+    await act(async () => { buttonByText('Preview changes')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect((window as any).api.checkpoints.preview).toHaveBeenCalledWith('ws', 't1', {
+      paths: ['src/config.ts'], strategy: 'merge-undo',
+    });
+  });
 });

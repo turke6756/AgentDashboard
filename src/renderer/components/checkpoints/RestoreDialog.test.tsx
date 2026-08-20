@@ -146,4 +146,63 @@ describe('RestoreDialog — WP-G2.4', () => {
     expect(win?.textContent).toContain('unattributed changes in this window');
     expect(win?.textContent).toContain('RAW');
   });
+
+  it('renders bounded merge patches, names conflict ranges, and refuses a mixed preview', async () => {
+    (window as any).api.checkpoints.preview = vi.fn(async () => ({
+      ...previewOk, available: false, strategy: 'merge-undo', reason: 'merge-undo-conflict',
+      mergePreviewToken: undefined,
+      pathStates: [
+        { path: 'src/config.ts', state: 'merged', patch: '@@ -8,2 +8,2 @@\n-old\n+new', patchTruncated: true, omittedBytes: 12 },
+        { path: 'src/live.ts', state: 'conflicted', reason: 'merge-undo-conflict', patch: '@@ -10,3 +10,4 @@\n-conflict', patchTruncated: false },
+        { path: 'src/index.ts', state: 'index-worktree-diverged', reason: 'index-worktree-diverged' },
+      ],
+    }));
+    await render({ mode: 'revert', paths: ['src/config.ts', 'src/live.ts', 'src/index.ts'], turn: turn({ witnessedPaths: ['src/config.ts', 'src/live.ts', 'src/index.ts'] }), initialStrategy: 'merge-undo' });
+    await act(async () => { previewBtn()!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain('lines 10-13');
+    expect(container.textContent).toContain('unstaged or partially staged changes');
+    expect(container.textContent).toContain('12 bytes omitted');
+    expect(container.textContent).toContain('updates both the working tree and the staging area');
+    expect(confirmBtn()?.disabled).toBe(true);
+  });
+
+  it('executes only with the fresh token for an all-eligible selected subset', async () => {
+    (window as any).api.checkpoints.preview = vi.fn(async (_ws: string, _turn: string, options: any) => ({
+      ...previewOk, strategy: 'merge-undo', witnessedSet: ['old.ts', 'new.ts', 'blocked.ts'],
+      validatedPaths: options.paths, mergePreviewToken: options.paths.includes('blocked.ts') ? undefined : 'fresh-subset-token',
+      pathStates: options.paths.map((path: string) => path === 'blocked.ts'
+        ? { path, state: 'unsupported-entry', reason: 'unsupported-entry' }
+        : { path, state: 'merged', patch: 'rename from old.ts\nrename to new.ts' }),
+    }));
+    await render({ mode: 'revert', paths: ['old.ts', 'new.ts', 'blocked.ts'], turn: turn({ witnessedPaths: ['old.ts', 'new.ts', 'blocked.ts'] }), initialStrategy: 'merge-undo' });
+    await act(async () => { previewBtn()!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(confirmBtn()?.disabled).toBe(true);
+    const blocked = Array.from(container.querySelectorAll('li')).find((li) => li.textContent?.includes('blocked.ts'))?.querySelector('input') as HTMLInputElement;
+    act(() => blocked.click());
+    expect(confirmBtn()?.disabled).toBe(true);
+    await act(async () => { previewBtn()!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect((window as any).api.checkpoints.preview).toHaveBeenLastCalledWith('ws', 't1', { paths: ['new.ts', 'old.ts'], strategy: 'merge-undo' });
+    expect(confirmBtn()?.disabled).toBe(false);
+    await act(async () => { confirmBtn()!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect((window as any).api.checkpoints.restore).toHaveBeenCalledWith(expect.objectContaining({
+      paths: ['new.ts', 'old.ts'], strategy: 'merge-undo', mergePreviewToken: 'fresh-subset-token',
+    }));
+  });
+
+  it('selects both endpoints of a rename atomically after preview', async () => {
+    (window as any).api.checkpoints.preview = vi.fn(async () => ({
+      ...previewOk, strategy: 'merge-undo', mergePreviewToken: 'token',
+      pathStates: ['old.ts', 'new.ts'].map((path) => ({ path, state: 'merged', patch: 'rename from old.ts\nrename to new.ts' })),
+    }));
+    await render({ paths: ['old.ts', 'new.ts'], turn: turn({ witnessedPaths: ['old.ts', 'new.ts'] }), initialStrategy: 'merge-undo' });
+    await act(async () => { previewBtn()!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    const boxes = Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
+    act(() => boxes[0].click());
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+  });
 });

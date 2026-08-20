@@ -7,12 +7,16 @@ import type { ActivityItem, ActivityPage, TurnActivityRow } from '../../../share
 import ActivityTab, { activityBadge, OtherRow } from './ActivityTab';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
-function row(state: TurnActivityRow['undo']['state'], status: TurnActivityRow['status'] = 'accepted'): TurnActivityRow {
+function row(
+  state: TurnActivityRow['undo']['state'],
+  status: TurnActivityRow['status'] = 'accepted',
+  reason: string | null = null,
+): TurnActivityRow {
   return {
     kind: 'turn', turnId: 'turn-1', turnSeq: 1, agentId: 'agent-1', agentTitle: 'Worker', taskLabel: 'Build',
     planId: null, planItemId: null, planStampStatus: 'unstamped', status, startedAt: 1, endedAt: 2,
     witnessedPaths: [], writeCount: 0,
-    undo: { state, basis: 'stored-hints', reason: null, contention: [] },
+    undo: { state, basis: 'stored-hints', reason, contention: [] },
     beforeReady: state === 'restorable', afterReady: state === 'restorable', beforeQuality: null, afterQuality: null,
     failureReason: null, beforePrunedAt: null, afterPrunedAt: null, commitOids: [],
   };
@@ -22,9 +26,43 @@ describe('Activity row copy', () => {
   it('uses the settled compact badge vocabulary', () => {
     expect(activityBadge(row('restorable'))).toBe('Restorable');
     expect(activityBadge(row('no-checkpoint'))).toBe('No restore point');
-    expect(activityBadge(row('blocked-overlap'))).toBe('Undo blocked by later overlap');
+    expect(activityBadge(row('blocked-overlap', 'accepted', 'after-snapshot-overlap'))).toBe('Changed since turn');
+    expect(activityBadge(row('blocked-overlap', 'accepted', 'active-turn-witnesses-path'))).toBe('Agent still editing');
+    expect(activityBadge(row('blocked-overlap', 'accepted', 'merge-undo-conflict'))).toBe('Undo has conflicts');
     expect(activityBadge(row('checking'))).toBe('In progress');
     expect(activityBadge(row('restorable', 'open'))).toBe('In progress');
+  });
+
+  it('offers merged undo for exact drift without claiming a line conflict', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const drift = row('blocked-overlap', 'accepted', 'after-snapshot-overlap');
+    drift.witnessedPaths = [{ repoPath: 'src/config.ts', displayPath: 'src/config.ts' }];
+    const page = {
+      workspaceId: 'ws', items: [drift],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityFilter: {}, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(container.textContent).toContain('Exact restore would overwrite those changes');
+    expect(container.textContent).not.toContain('line conflict');
+    const offer = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview merged undo')) as HTMLButtonElement;
+    act(() => offer.click());
+    expect(container.querySelector('[data-testid="restore-dialog"]')).not.toBeNull();
+    act(() => root.unmount());
+  });
+
+  it('tells the user to wait or stop the active agent for live contention', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const live = row('blocked-overlap', 'accepted', 'active-turn-witnesses-path');
+    const page = { workspaceId: 'ws', items: [live], cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null }, pageCounts: { turnCount: 1, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } }, scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } } } as ActivityPage;
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityFilter: {}, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(container.textContent).toContain('Wait for it to finish or stop the agent');
+    act(() => root.unmount());
   });
 
   it('renders tool-unjoined with its own honest source copy', () => {

@@ -8,13 +8,17 @@ import GitInitConsent from '../onboarding/GitInitConsent';
 export function activityBadge(row: TurnActivityRow): string {
   if (row.status === 'open' || row.undo.state === 'checking') return 'In progress';
   if (row.undo.state === 'restorable') return 'Restorable';
-  if (row.undo.state === 'blocked-overlap') return 'Undo blocked by later overlap';
+  if (row.undo.state === 'blocked-overlap' && row.undo.reason === 'after-snapshot-overlap') return 'Changed since turn';
+  if (row.undo.state === 'blocked-overlap' && row.undo.reason === 'active-turn-witnesses-path') return 'Agent still editing';
+  if (row.undo.state === 'blocked-overlap' && row.undo.reason === 'merge-undo-conflict') return 'Undo has conflicts';
+  if (row.undo.state === 'blocked-overlap') return 'Undo unavailable';
   return 'No restore point';
 }
 
 function badgeTone(label: string): string {
   if (label === 'Restorable') return 'text-accent-green bg-accent-green/10';
-  if (label === 'Undo blocked by later overlap') return 'text-accent-red bg-accent-red/10';
+  if (label === 'Changed since turn') return 'text-accent-blue bg-accent-blue/10';
+  if (label === 'Agent still editing' || label === 'Undo has conflicts' || label === 'Undo unavailable') return 'text-accent-red bg-accent-red/10';
   if (label === 'In progress') return 'text-accent-blue bg-accent-blue/10';
   return 'text-accent-orange bg-accent-orange/10';
 }
@@ -47,7 +51,7 @@ function asCheckpointTurn(row: TurnActivityRow): CheckpointTurnSummary {
   };
 }
 
-function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActivityRow) => void }): React.ReactElement {
+function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void }): React.ReactElement {
   const badge = activityBadge(row);
   return (
     <article className="ui-card p-3" data-testid={`activity-turn-${row.turnId}`}>
@@ -63,12 +67,17 @@ function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActi
         <div className="flex items-center gap-2 shrink-0">
           <span className={`rounded px-1.5 py-0.5 text-[10px] ${badgeTone(badge)}`}>{badge}</span>
           {row.undo.state === 'restorable' && (
-            <button type="button" onClick={() => onUndo(row)} className="ui-btn ui-btn-ghost px-2 py-1 text-[11px]" aria-label={`Undo ${row.taskLabel || `Turn ${row.turnSeq}`}`}>
+            <button type="button" onClick={() => onUndo(row, 'exact')} className="ui-btn ui-btn-ghost px-2 py-1 text-[11px]" aria-label={`Undo ${row.taskLabel || `Turn ${row.turnSeq}`}`}>
               <RotateCcw className="w-3 h-3" /> Undo
             </button>
           )}
+          {row.undo.state === 'blocked-overlap' && row.undo.reason === 'after-snapshot-overlap' && (
+            <button type="button" onClick={() => onUndo(row, 'merge-undo')} className="ui-btn ui-btn-ghost px-2 py-1 text-[11px]">Preview merged undo</button>
+          )}
         </div>
       </div>
+      {row.undo.state === 'blocked-overlap' && row.undo.reason === 'after-snapshot-overlap' && <p className="mt-2 text-[11px] text-gray-400">This file changed since the turn. Exact restore would overwrite those changes; merged undo can preserve later edits.</p>}
+      {row.undo.state === 'blocked-overlap' && row.undo.reason === 'active-turn-witnesses-path' && <p className="mt-2 text-[11px] text-accent-red">An active turn is editing this path. Wait for it to finish or stop the agent, then try again.</p>}
       {row.witnessedPaths.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-1" aria-label="Changed files">
           {row.witnessedPaths.map((path) => <li key={path.repoPath} className="rounded bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-mono text-gray-500">{path.displayPath}</li>)}
@@ -104,7 +113,7 @@ export default function ActivityTab(): React.ReactElement {
   const loadOlderActivity = useDashboardStore((state) => state.loadOlderActivity);
   const showActivity = useDashboardStore((state) => state.showActivity);
   const prerequisites = useDashboardStore((state) => state.prerequisites);
-  const [undoRow, setUndoRow] = useState<TurnActivityRow | null>(null);
+  const [undoDialog, setUndoDialog] = useState<{ row: TurnActivityRow; strategy: 'exact' | 'merge-undo' } | null>(null);
 
   useEffect(() => {
     if (workspaceId) void loadActivity(workspaceId, filter, true);
@@ -145,10 +154,10 @@ export default function ActivityTab(): React.ReactElement {
         {loading && items.length === 0 ? <div className="text-gray-500">Loading activity…</div> : (
           <div className="space-y-2">
             {items.length === 0 && <div className="ui-card p-6 text-center text-gray-500">No activity observed on this page.</div>}
-            {items.map((item) => item.kind === 'turn' ? <TurnRow key={item.turnId} row={item} onUndo={setUndoRow} /> : item.kind === 'plan-group' ? (
+            {items.map((item) => item.kind === 'turn' ? <TurnRow key={item.turnId} row={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'plan-group' ? (
               <section key={`plan:${item.planId}:${item.latestTurnSeq}`} className="space-y-2">
                 <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
-                {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={setUndoRow} />)}
+                {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={(selectedRow, strategy) => setUndoDialog({ row: selectedRow, strategy })} />)}
               </section>
             ) : <OtherRow key={item.id} item={item} />)}
             {page?.cursor.nextOlder && (
@@ -159,7 +168,7 @@ export default function ActivityTab(): React.ReactElement {
           </div>
         )}
       </div>
-      {undoRow && <RestoreDialog workspaceId={workspaceId} agentId={undoRow.agentId ?? ''} turn={asCheckpointTurn(undoRow)} mode="revert" paths={undoRow.witnessedPaths.map((path) => path.repoPath)} onClose={() => setUndoRow(null)} onDone={() => void loadActivity(workspaceId, filter, false)} />}
+      {undoDialog && <RestoreDialog workspaceId={workspaceId} agentId={undoDialog.row.agentId ?? ''} turn={asCheckpointTurn(undoDialog.row)} mode="revert" paths={undoDialog.row.witnessedPaths.map((path) => path.repoPath)} initialStrategy={undoDialog.strategy} onClose={() => setUndoDialog(null)} onDone={() => void loadActivity(workspaceId, filter, false)} />}
     </section>
   );
 }

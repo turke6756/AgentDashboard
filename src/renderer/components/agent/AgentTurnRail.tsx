@@ -58,6 +58,7 @@ interface DialogState {
   turn: CheckpointTurnSummary;
   mode: 'restore' | 'revert';
   paths: string[];
+  strategy: 'exact' | 'merge-undo';
 }
 
 export default function AgentTurnRail({
@@ -175,7 +176,7 @@ export default function AgentTurnRail({
                 </button>
                 <button
                   onClick={() =>
-                    setDialog({ turn: t, mode: 'restore', paths: t.witnessedPaths })
+                    setDialog({ turn: t, mode: 'restore', paths: t.witnessedPaths, strategy: 'exact' })
                   }
                   disabled={t.witnessedPaths.length === 0}
                   className="ui-btn ui-btn-ghost px-1.5 py-0.5 text-[10px]"
@@ -183,7 +184,7 @@ export default function AgentTurnRail({
                   Restore a file…
                 </button>
                 <button
-                  onClick={() => setDialog({ turn: t, mode: 'revert', paths: t.witnessedPaths })}
+                  onClick={() => setDialog({ turn: t, mode: 'revert', paths: t.witnessedPaths, strategy: 'merge-undo' })}
                   disabled={t.witnessedPaths.length === 0}
                   className="ui-btn ui-btn-ghost px-1.5 py-0.5 text-[10px] text-accent-orange"
                 >
@@ -246,6 +247,7 @@ export default function AgentTurnRail({
           turn={dialog.turn}
           mode={dialog.mode}
           paths={dialog.paths}
+          initialStrategy={dialog.strategy}
           onClose={() => setDialog(null)}
         />
       )}
