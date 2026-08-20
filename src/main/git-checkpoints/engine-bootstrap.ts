@@ -139,6 +139,69 @@ function canonicalDir(p: string): string {
   }
 }
 
+/** Merge-aware portion of the human checkpoint adapter. Kept as a pure factory so
+ *  tests can prove the shipping adapter forwards every contract field into the
+ *  single production CheckpointService instead of stopping at an IPC mock. */
+export function buildHumanCheckpointMergeRoutes(deps: {
+  service: Pick<CheckpointService, 'previewRestore' | 'restorePaths' | 'revertTurn'>;
+  requireCapability: (workspaceId: string) => Promise<GitCapability>;
+}): Pick<HumanCheckpointRoutes, 'preview' | 'restore' | 'revert'> {
+  return {
+    preview: async (workspaceId, turnId, paths, strategy) => {
+      const capability = await deps.requireCapability(workspaceId);
+      return deps.service.previewRestore({
+        turnId,
+        workspaceId,
+        capability,
+        requestedPaths: paths,
+        strategy,
+      });
+    },
+    restore: async ({
+      workspaceId,
+      turnId,
+      paths,
+      previewTokens,
+      force,
+      strategy,
+      mergePreviewToken,
+    }) => {
+      const capability = await deps.requireCapability(workspaceId);
+      return deps.service.restorePaths({
+        turnId,
+        requestedPaths: paths,
+        workspaceId,
+        actor: 'human-ipc',
+        capability,
+        previewTokens,
+        force,
+        strategy,
+        mergePreviewToken,
+      });
+    },
+    revert: async ({
+      workspaceId,
+      turnId,
+      previewTokens,
+      force,
+      strategy,
+      mergePreviewToken,
+    }) => {
+      const capability = await deps.requireCapability(workspaceId);
+      return deps.service.revertTurn({
+        turnId,
+        workspaceId,
+        actor: 'human-ipc',
+        capability,
+        previewTokens,
+        force,
+        strategy,
+        mergePreviewToken,
+      });
+    },
+  };
+}
+
 /**
  * Build the checkpoint engine. Returns null when no internal git can be resolved
  * (the checkpoint feature is simply off; delivery + the app are unaffected).
@@ -323,31 +386,8 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
       const d = await checkpointRoutes.diff(turnId, workspaceId);
       return { workspaceId, turnId, witnessed: d.witnessed, window: d.window };
     },
-    preview: (workspaceId, turnId, paths) => checkpointRoutes.preview(turnId, workspaceId, paths),
+    ...buildHumanCheckpointMergeRoutes({ service, requireCapability }),
     listWindowPaths: (turnId, repoRoot) => checkpointRoutes.listWindowPaths!(turnId, repoRoot),
-    restore: async ({ workspaceId, turnId, paths, previewTokens, force }) => {
-      const cap = await requireCapability(workspaceId);
-      return service.restorePaths({
-        turnId,
-        requestedPaths: paths,
-        workspaceId,
-        actor: 'human-ipc',
-        capability: cap,
-        previewTokens,
-        force,
-      });
-    },
-    revert: async ({ workspaceId, turnId, previewTokens, force }) => {
-      const cap = await requireCapability(workspaceId);
-      return service.revertTurn({
-        turnId,
-        workspaceId,
-        actor: 'human-ipc',
-        capability: cap,
-        previewTokens,
-        force,
-      });
-    },
     // WP-G3.4 — the human-only `git init` consent action. It lives here, next to the
     // per-workspace `capabilityCache` + probe, because the ONLY thing it adds over
     // the pure init in git-init.ts is the invalidation of the two existing seams on
