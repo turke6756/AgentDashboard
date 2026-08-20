@@ -2090,6 +2090,52 @@ export interface CheckpointDiffResult {
   window: CheckpointDiffEntry;
 }
 
+export type RestoreStrategy = 'exact' | 'merge-undo';
+
+export type MergeUndoReason =
+  | 'merge-undo-conflict'
+  | 'active-turn-witnesses-path'
+  | 'rename-pair-incomplete'
+  | 'not-witnessed-for-undo'
+  | 'unsupported-content-conversion'
+  | 'unsupported-entry'
+  | 'unsupported-symlink'
+  | 'ignored'
+  | 'index-worktree-diverged'
+  | 'merge-preview-token-invalid'
+  | 'merge-preview-token-expired'
+  | 'merge-force-refused';
+
+export type MergeUndoPathState =
+  | 'clean'
+  | 'merged'
+  | 'conflicted'
+  | 'refused-live-contention'
+  | 'rename-pair-incomplete'
+  | 'not-witnessed-for-undo'
+  | 'unsupported-content-conversion'
+  | 'unsupported-entry'
+  | 'unsupported-symlink'
+  | 'ignored'
+  | 'index-worktree-diverged';
+
+export const CHECKPOINT_PATCH_PATH_LIMIT_BYTES = 64 * 1024;
+export const CHECKPOINT_PATCH_TOTAL_LIMIT_BYTES = 256 * 1024;
+
+export interface MergeUndoPathPreview {
+  path: string;
+  state: MergeUndoPathState;
+  reason?: MergeUndoReason;
+  patch?: string;
+  patchTruncated?: boolean;
+  omittedBytes?: number;
+}
+
+export interface CheckpointPreviewOptions {
+  paths?: string[];
+  strategy?: RestoreStrategy;
+}
+
 /** Restore preview: the witnessed set + per-path anti-TOCTOU tokens (current
  *  worktree OID, or an ABSENT sentinel) the renderer echoes back to restore/revert.
  *  `contention` lists any OTHER open turn currently witnessing a requested path —
@@ -2104,6 +2150,11 @@ export interface CheckpointPreviewResult {
   rejectedPaths: string[];
   contention: { path: string; turnId: string }[];
   overlap?: CheckpointRestoreOverlap;
+  strategy?: RestoreStrategy;
+  mergePreviewToken?: string;
+  pathStates?: MergeUndoPathPreview[];
+  omittedBytes?: number;
+  omittedPathCount?: number;
 }
 
 export type CheckpointRestoreBlocker =
@@ -2131,7 +2182,7 @@ export interface CheckpointRestoreOverlap {
 export interface CheckpointRestoreResult {
   status: 'completed' | 'partial' | 'failed';
   operationId: string;
-  kind: 'restore_paths' | 'revert_turn';
+  kind: 'restore_paths' | 'revert_turn' | 'merge_undo_paths' | 'merge_undo_turn';
   preRef: string | null;
   preOid: string | null;
   requestedPaths: string[];
@@ -2395,6 +2446,8 @@ export interface CheckpointRestoreRequest {
   paths: string[];
   /** path → OID seen at preview time (the anti-TOCTOU tokens). */
   previewTokens?: Record<string, string>;
+  strategy?: RestoreStrategy;
+  mergePreviewToken?: string;
   force?: boolean;
 }
 
@@ -2403,6 +2456,8 @@ export interface CheckpointRevertRequest {
   workspaceId: string;
   turnId: string;
   previewTokens?: Record<string, string>;
+  strategy?: RestoreStrategy;
+  mergePreviewToken?: string;
   force?: boolean;
 }
 
@@ -4107,7 +4162,11 @@ export interface IpcApi {
   checkpoints: {
     list: (workspaceId: string, opts?: { agentId?: string }) => Promise<CheckpointListResult>;
     diff: (workspaceId: string, turnId: string) => Promise<CheckpointDiffResult>;
-    preview: (workspaceId: string, turnId: string, paths?: string[]) => Promise<CheckpointPreviewResult>;
+    preview: (
+      workspaceId: string,
+      turnId: string,
+      options?: string[] | CheckpointPreviewOptions,
+    ) => Promise<CheckpointPreviewResult>;
     restore: (req: CheckpointRestoreRequest) => Promise<CheckpointRestoreResult>;
     revert: (req: CheckpointRevertRequest) => Promise<CheckpointRestoreResult>;
     /** WP-G3.1 — versions of ONE canonical path across retained, live-verified

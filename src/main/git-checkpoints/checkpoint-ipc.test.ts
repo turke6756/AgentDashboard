@@ -16,12 +16,23 @@
 //   node dist/main/main/git-checkpoints/checkpoint-ipc.test.js
 
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   registerCheckpointIpc,
+  createCheckpointRecoverySurface,
   FORCE_REFUSED_ACTIVE_TURN,
   type HumanCheckpointRoutes,
   type IpcLike,
 } from './checkpoint-ipc';
+import {
+  CheckpointService,
+  MERGE_UNDO_PREVIEW_TTL_MS,
+  MergeUndoPreviewRegistry,
+  type MergeUndoPreviewIdentity,
+} from './checkpoint-service';
+import { CheckpointQueue } from './checkpoint-queue';
+import { createCheckpointInvokeApi } from '../../preload/index';
 import { CHECKPOINT_CHANNELS } from '../../shared/types';
 import type {
   CheckpointPreviewResult,
@@ -137,9 +148,9 @@ function makeRoutes(cfg: FakeCfg = {}): HumanCheckpointRoutes & { state: FakeSta
         window: { available: true, reason: null, label: 'unattributed changes in this window', text: 'R', provenance: 'raw-window' },
       };
     },
-    preview: async (workspaceId, turnId, paths) => {
-      rec('preview', [workspaceId, turnId, paths]);
-      return previewOf(turnId);
+    preview: async (workspaceId, turnId, paths, strategy) => {
+      rec('preview', [workspaceId, turnId, paths, strategy]);
+      return { ...previewOf(turnId), strategy: strategy ?? 'exact' };
     },
     restore: async (args) => {
       rec('restore', [args]);
@@ -215,7 +226,7 @@ test('list/diff/preview delegate with the workspace + turn, scoped', async () =>
   assert.deepEqual(routes.state.calls.at(-1), { method: 'diff', args: ['ws-1', 't1'] });
 
   await ipc.invoke(CHECKPOINT_CHANNELS.preview, 'ws-1', 't1', ['a.txt']);
-  assert.deepEqual(routes.state.calls.at(-1), { method: 'preview', args: ['ws-1', 't1', ['a.txt']] });
+  assert.deepEqual(routes.state.calls.at(-1), { method: 'preview', args: ['ws-1', 't1', ['a.txt'], 'exact'] });
 });
 
 test('file-history delegates workspace-scoped with the canonical path + optional agent filter', async () => {
@@ -395,7 +406,7 @@ test('force revert is refused while an active turn witnesses the turn set', asyn
   assert.equal(res.failureReason, FORCE_REFUSED_ACTIVE_TURN);
   // preview called with no paths (full witnessed set); no revert mutation.
   const pv = routes.state.calls.find((c) => c.method === 'preview');
-  assert.deepEqual(pv!.args, ['ws-1', 't1', undefined]);
+  assert.deepEqual(pv!.args, ['ws-1', 't1', undefined, 'exact']);
   assert.equal(routes.state.calls.filter((c) => c.method === 'revert').length, 0);
 });
 
@@ -424,6 +435,119 @@ test('force restore is accepted once no active turn witnesses the path, overridi
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────────
+
+test('omitted strategy remains exact across preview, restore, and revert', async () => {
+  const { ipc, routes } = wire();
+  const preview = await ipc.invoke(CHECKPOINT_CHANNELS.preview, 'ws-1', 't1', ['a.txt']) as CheckpointPreviewResult;
+  assert.equal(preview.strategy, 'exact');
+  await ipc.invoke(CHECKPOINT_CHANNELS.restore, {
+    workspaceId: 'ws-1', turnId: 't1', paths: ['a.txt'], previewTokens: { 'a.txt': 'oid-at-preview' },
+  });
+  assert.equal((routes.state.calls.filter((c) => c.method === 'restore').at(-1)!.args[0] as { strategy?: string }).strategy, 'exact');
+  await ipc.invoke(CHECKPOINT_CHANNELS.revert, { workspaceId: 'ws-1', turnId: 't1' });
+  assert.equal((routes.state.calls.filter((c) => c.method === 'revert').at(-1)!.args[0] as { strategy?: string }).strategy, 'exact');
+});
+
+test('merge force is rejected before preview or restore/revert route dispatch', async () => {
+  const { ipc, routes } = wire();
+  let rejected = 0;
+  for (const [channel, request] of [
+    [CHECKPOINT_CHANNELS.restore, { workspaceId: 'ws-1', turnId: 't1', paths: ['a.txt'], strategy: 'merge-undo', force: true }],
+    [CHECKPOINT_CHANNELS.revert, { workspaceId: 'ws-1', turnId: 't1', strategy: 'merge-undo', force: true }],
+  ] as const) {
+    try {
+      await ipc.invoke(channel, request);
+    } catch (err) {
+      assert.match(String(err), /cannot be forced/);
+      rejected++;
+    }
+  }
+  assert.equal(rejected, 2, 'REACHABILITY:checkpoint-ipc-strategy');
+  assert.equal(routes.state.calls.length, 0, 'merge force must not dispatch any route');
+});
+
+function mergeIdentity(state: MergeUndoPreviewIdentity['paths'][number]['state']): MergeUndoPreviewIdentity {
+  return {
+    workspaceId: 'ws-1', turnId: 't1', strategy: 'merge-undo',
+    beforeCommitOid: 'b', afterCommitOid: 'a', requestedPaths: ['a.txt'],
+    renameGroups: [], resultTreeOid: 'tree', mergeExitCode: state === 'conflicted' ? 1 : 0,
+    hasUnmergedRecords: state === 'conflicted',
+    paths: [{
+      path: 'a.txt', state, currentRawOid: 'raw', currentCleanOid: 'clean', currentMode: '100644',
+      indexCleanOid: 'clean', indexMode: '100644', normalizationFingerprint: 'norm',
+      resultBlobOid: 'result', resultMode: '100644',
+    }],
+  };
+}
+
+test('mixed, conflicted, live-contended, and refused previews mint no token', () => {
+  const registry = new MergeUndoPreviewRegistry(() => 10, () => 'opaque');
+  for (const state of [
+    'conflicted', 'refused-live-contention', 'unsupported-entry', 'ignored', 'index-worktree-diverged',
+  ] as const) assert.equal(registry.mint(mergeIdentity(state)), null, `${state} must not mint`);
+  const mixed = mergeIdentity('merged');
+  mixed.paths.push({ ...mixed.paths[0], path: 'b.txt', state: 'conflicted' });
+  assert.equal(registry.mint(mixed), null, 'mixed eligible/conflicted set must not mint');
+});
+
+test('eligible token is opaque, mechanical-only, single-use, and expires after five minutes', () => {
+  let now = 100;
+  let serial = 0;
+  const registry = new MergeUndoPreviewRegistry(() => now, () => `opaque-${++serial}`);
+  const identity = mergeIdentity('merged');
+  Object.assign(identity, { patch: 'rendered-global-text' });
+  Object.assign(identity.paths[0], { patch: 'rendered-path-text' });
+  const token = registry.mint(identity)!;
+  assert.equal(token, 'opaque-1');
+  const record = registry.consume(token)!;
+  assert.equal(record.resultTreeOid, 'tree');
+  assert.equal(JSON.stringify(record).includes('rendered-'), false, 'rendered patch text is never stored');
+  assert.equal(registry.consume(token), null, 'token is consumed once');
+  const expiring = registry.mint(mergeIdentity('clean'))!;
+  now += MERGE_UNDO_PREVIEW_TTL_MS;
+  assert.equal(registry.consume(expiring), null, 'five-minute token expires at its boundary');
+});
+
+test('recovery-surface factory constructs one engine/service and preserves its one registry', async () => {
+  let engineConstructions = 0;
+  const registry = new MergeUndoPreviewRegistry(() => 0, () => 'only-token');
+  const service = new CheckpointService({ queue: new CheckpointQueue(), gitExe: 'git', mergeUndoPreviewRegistry: registry });
+  const routes = makeRoutes();
+  const surface = await createCheckpointRecoverySurface({
+    createEngine: async () => {
+      engineConstructions++;
+      return { humanCheckpointRoutes: routes, service };
+    },
+  });
+  assert.equal(engineConstructions, 1);
+  assert.equal(surface?.service, service);
+  assert.equal(surface?.service.mergeUndoPreviewRegistry, registry);
+  assert.notEqual(surface?.humanCheckpointRoutes, routes, 'factory installs the production adapter');
+  await surface?.humanCheckpointRoutes.preview('ws-1', 't1', ['a.txt'], 'merge-undo');
+  assert.deepEqual(routes.state.calls.at(-1), {
+    method: 'preview', args: ['ws-1', 't1', ['a.txt'], 'merge-undo'],
+  });
+  const bootstrap = fs.readFileSync(path.join(process.cwd(), 'src/main/index.ts'), 'utf8');
+  assert.match(
+    bootstrap,
+    /createCheckpointRecoverySurface\(\{ createEngine: createCheckpointEngine \}\)/,
+    'REACHABILITY:recovery-surface-factory',
+  );
+});
+
+test('pure preload invoke factory uses the production checkpoint channels and argument shape', async () => {
+  const calls: Array<{ channel: string; args: unknown[] }> = [];
+  const api = createCheckpointInvokeApi(async <T>(channel: string, ...args: unknown[]): Promise<T> => {
+    calls.push({ channel, args });
+    return undefined as T;
+  });
+  await api.preview('ws-1', 't1', { strategy: 'merge-undo', paths: ['a.txt'] });
+  await api.restore({ workspaceId: 'ws-1', turnId: 't1', paths: ['a.txt'], strategy: 'merge-undo', mergePreviewToken: 'opaque' });
+  assert.deepEqual(calls, [
+    { channel: CHECKPOINT_CHANNELS.preview, args: ['ws-1', 't1', { strategy: 'merge-undo', paths: ['a.txt'] }] },
+    { channel: CHECKPOINT_CHANNELS.restore, args: [{ workspaceId: 'ws-1', turnId: 't1', paths: ['a.txt'], strategy: 'merge-undo', mergePreviewToken: 'opaque' }] },
+  ]);
+});
 
 (async () => {
   let failed = 0;

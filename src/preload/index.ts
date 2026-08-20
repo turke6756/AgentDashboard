@@ -22,6 +22,24 @@ import type {
   SigninResolved,
 } from '../shared/browser';
 
+export type CheckpointInvoke = <T>(channel: string, ...args: unknown[]) => Promise<T>;
+
+/** Pure checkpoint binding: production and acceptance tests use the same invoke shape. */
+export function createCheckpointInvokeApi(invoke: CheckpointInvoke): IpcApi['checkpoints'] {
+  return {
+    list: (workspaceId, opts) => invoke(CHECKPOINT_CHANNELS.list, workspaceId, opts),
+    diff: (workspaceId, turnId) => invoke(CHECKPOINT_CHANNELS.diff, workspaceId, turnId),
+    preview: (workspaceId, turnId, options) => invoke(CHECKPOINT_CHANNELS.preview, workspaceId, turnId, options),
+    restore: (req) => invoke(CHECKPOINT_CHANNELS.restore, req),
+    revert: (req) => invoke(CHECKPOINT_CHANNELS.revert, req),
+    fileHistory: (workspaceId, filePath, opts) => invoke(CHECKPOINT_CHANNELS.fileHistory, workspaceId, filePath, opts),
+    gitInit: (workspaceId) => invoke(CHECKPOINT_CHANNELS.gitInit, workspaceId),
+    prune: (workspaceId) => invoke(CHECKPOINT_CHANNELS.prune, workspaceId),
+    pruneRepoWidePlan: (workspaceId) => invoke(CHECKPOINT_CHANNELS.pruneRepoWidePlan, workspaceId),
+    pruneRepoWide: (req) => invoke(CHECKPOINT_CHANNELS.pruneRepoWide, req),
+  };
+}
+
 const api: IpcApi = {
   workspaces: {
     list: () => ipcRenderer.invoke('workspace:list'),
@@ -207,27 +225,7 @@ const api: IpcApi = {
   // restore/revert). Handlers live in git-checkpoints/checkpoint-ipc.ts (registered
   // from ipc-handlers.ts). `restore`/`revert` carry an IPC-only `force` on their
   // request object; main refuses it while an active turn witnesses a path.
-  checkpoints: {
-    list: (workspaceId, opts) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.list, workspaceId, opts),
-    diff: (workspaceId, turnId) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.diff, workspaceId, turnId),
-    preview: (workspaceId, turnId, paths) =>
-      ipcRenderer.invoke(CHECKPOINT_CHANNELS.preview, workspaceId, turnId, paths),
-    restore: (req) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.restore, req),
-    revert: (req) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.revert, req),
-    // WP-G3.1 — per-path version history (file right-click → History).
-    fileHistory: (workspaceId, path, opts) =>
-      ipcRenderer.invoke(CHECKPOINT_CHANNELS.fileHistory, workspaceId, path, opts),
-    // WP-G3.4 — human-only `git init` consent action (enable checkpoints on a
-    // non-repo workspace). Handler in git-checkpoints/checkpoint-ipc.ts.
-    gitInit: (workspaceId) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.gitInit, workspaceId),
-    // WP-G3.5 — explicit prune (delete this workspace's checkpoint + recovery refs)
-    // and the DISTINCT human-only, confirmed pre-`filter-repo` repo-wide purge that
-    // names every affected workspace first. Handlers in checkpoint-ipc.ts.
-    prune: (workspaceId) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.prune, workspaceId),
-    pruneRepoWidePlan: (workspaceId) =>
-      ipcRenderer.invoke(CHECKPOINT_CHANNELS.pruneRepoWidePlan, workspaceId),
-    pruneRepoWide: (req) => ipcRenderer.invoke(CHECKPOINT_CHANNELS.pruneRepoWide, req),
-  },
+  checkpoints: createCheckpointInvokeApi((channel, ...args) => ipcRenderer.invoke(channel, ...args)),
   activity: {
     list: (request) => ipcRenderer.invoke(ACTIVITY_CHANNELS.list, request),
     digest: (request) => ipcRenderer.invoke(ACTIVITY_CHANNELS.digest, request),
@@ -824,4 +822,4 @@ const api: IpcApi = {
   proveReachability: (request: unknown) => Promise<unknown>;
 }).proveReachability = (request) => ipcRenderer.invoke('prove_reachability', request);
 
-contextBridge.exposeInMainWorld('api', api);
+contextBridge?.exposeInMainWorld('api', api);

@@ -51,7 +51,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { TextDecoder } from 'util';
 
 import {
@@ -60,7 +60,7 @@ import {
   FINALIZE_ALLOWANCE_MS,
   CLEANUP_ALLOWANCE_MS,
 } from '../../shared/constants';
-import type { GitCapability } from '../../shared/types';
+import type { GitCapability, MergeUndoPathState, RestoreStrategy } from '../../shared/types';
 import type { TurnRecord, RecoveryOperation, InsertRecoveryOperationFields } from '../database';
 import {
   getTurnRecord as dbGetTurnRecord,
@@ -226,6 +226,96 @@ export interface CheckpointServiceOptions {
     lstat?: LstatFn;
   }) => Promise<EnumerationOutcome>;
   platform?: NodeJS.Platform;
+  mergeUndoPreviewRegistry?: MergeUndoPreviewRegistry;
+}
+
+export const MERGE_UNDO_PREVIEW_TTL_MS = 5 * 60 * 1000;
+
+export interface MergeUndoMechanicalPathIdentity {
+  path: string;
+  state: MergeUndoPathState;
+  currentRawOid: string | null;
+  currentCleanOid: string | null;
+  currentMode: string | null;
+  indexCleanOid: string | null;
+  indexMode: string | null;
+  normalizationFingerprint: string;
+  resultBlobOid: string | null;
+  resultMode: string | null;
+}
+
+export interface MergeUndoPreviewIdentity {
+  workspaceId: string;
+  turnId: string;
+  strategy: 'merge-undo';
+  beforeCommitOid: string;
+  afterCommitOid: string;
+  requestedPaths: string[];
+  renameGroups: string[][];
+  resultTreeOid: string;
+  mergeExitCode: 0 | 1;
+  hasUnmergedRecords: boolean;
+  paths: MergeUndoMechanicalPathIdentity[];
+}
+
+export interface MergeUndoPreviewRecord extends MergeUndoPreviewIdentity {
+  issuedAt: number;
+  expiresAt: number;
+}
+
+export class MergeUndoPreviewRegistry {
+  private readonly records = new Map<string, MergeUndoPreviewRecord>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly randomToken: () => string = () => randomBytes(32).toString('hex'),
+  ) {}
+
+  mint(identity: MergeUndoPreviewIdentity): string | null {
+    if (
+      identity.mergeExitCode !== 0
+      || identity.hasUnmergedRecords
+      || identity.paths.length === 0
+      || identity.paths.some((p) => p.state !== 'clean' && p.state !== 'merged')
+    ) return null;
+    const issuedAt = this.now();
+    const token = this.randomToken();
+    this.records.set(token, {
+      workspaceId: identity.workspaceId,
+      turnId: identity.turnId,
+      strategy: 'merge-undo',
+      beforeCommitOid: identity.beforeCommitOid,
+      afterCommitOid: identity.afterCommitOid,
+      requestedPaths: [...identity.requestedPaths].sort(),
+      renameGroups: identity.renameGroups.map((group) => [...group].sort()),
+      resultTreeOid: identity.resultTreeOid,
+      mergeExitCode: identity.mergeExitCode,
+      hasUnmergedRecords: identity.hasUnmergedRecords,
+      paths: identity.paths.map((p) => ({
+        path: p.path,
+        state: p.state,
+        currentRawOid: p.currentRawOid,
+        currentCleanOid: p.currentCleanOid,
+        currentMode: p.currentMode,
+        indexCleanOid: p.indexCleanOid,
+        indexMode: p.indexMode,
+        normalizationFingerprint: p.normalizationFingerprint,
+        resultBlobOid: p.resultBlobOid,
+        resultMode: p.resultMode,
+      })),
+      issuedAt,
+      expiresAt: issuedAt + MERGE_UNDO_PREVIEW_TTL_MS,
+    });
+    return token;
+  }
+
+  consume(token: string): MergeUndoPreviewRecord | null {
+    const record = this.records.get(token);
+    if (!record) return null;
+    this.records.delete(token);
+    if (record.expiresAt <= this.now()) return null;
+    return record;
+  }
 }
 
 /** Verified after-image input consumed by the supervisor restore authority. */
@@ -427,6 +517,7 @@ export class CheckpointService {
   private readonly now: () => number;
   private readonly enumerate: NonNullable<CheckpointServiceOptions['enumerate']>;
   private readonly platform: NodeJS.Platform;
+  readonly mergeUndoPreviewRegistry: MergeUndoPreviewRegistry;
   /** Fire-and-forget cleanup promises — awaitable by tests via settleCleanups(). */
   private readonly cleanups: Promise<void>[] = [];
 
@@ -445,6 +536,7 @@ export class CheckpointService {
     this.now = opts.now ?? Date.now;
     this.enumerate = opts.enumerate ?? ((o) => enumerateScope(o));
     this.platform = opts.platform ?? process.platform;
+    this.mergeUndoPreviewRegistry = opts.mergeUndoPreviewRegistry ?? new MergeUndoPreviewRegistry(this.now);
   }
 
   // ── public: capture one edge ──────────────────────────────────────────────────
@@ -1160,6 +1252,7 @@ export class CheckpointService {
     workspaceId: string;
     capability: GitCapability;
     requestedPaths?: string[];
+    strategy?: RestoreStrategy;
   }): Promise<CheckpointPreviewResult> {
     const { turnId, workspaceId, capability } = params;
     const repoRoot = capability.repoRoot;
@@ -1177,6 +1270,7 @@ export class CheckpointService {
       validatedPaths: validation.validatedPaths,
       rejectedPaths: validation.rejectedPaths,
       contention: validation.contention,
+      strategy: params.strategy ?? 'exact',
     };
 
     if (!repoRoot) return { ...base, reason: 'missing-repo' };
@@ -1396,7 +1490,18 @@ export class CheckpointService {
     previewTokens?: Record<string, string>;
     /** Human-force bypass of a preview-token mismatch. */
     force?: boolean;
+    strategy?: RestoreStrategy;
+    mergePreviewToken?: string;
   }): Promise<RestoreOutcome> {
+    if ((params.strategy ?? 'exact') === 'merge-undo') {
+      return this.failedOutcome(
+        'merge_undo_paths',
+        params.operationId ?? '',
+        dedupe(params.requestedPaths),
+        [],
+        params.force ? 'merge-force-refused' : 'merge-undo-not-implemented',
+      );
+    }
     const validation = this.validateRestorePaths(params.turnId, params.requestedPaths, params.workspaceId);
     if (!validation.ok) {
       // Non-witnessed paths never reach a mutation; fail visibly WITHOUT a lock/row.
@@ -1433,8 +1538,19 @@ export class CheckpointService {
     operationId?: string;
     previewTokens?: Record<string, string>;
     force?: boolean;
+    strategy?: RestoreStrategy;
+    mergePreviewToken?: string;
   }): Promise<RestoreOutcome> {
     const paths = this.revertTurnPathSet(params.turnId).paths;
+    if ((params.strategy ?? 'exact') === 'merge-undo') {
+      return this.failedOutcome(
+        'merge_undo_turn',
+        params.operationId ?? '',
+        paths,
+        [],
+        params.force ? 'merge-force-refused' : 'merge-undo-not-implemented',
+      );
+    }
     // Surface same-path open-turn contention for symmetry with restorePaths.
     const validation = this.validateRestorePaths(params.turnId, paths, params.workspaceId);
     return this.executeRestore('revert_turn', {
@@ -2036,7 +2152,7 @@ export class CheckpointService {
   }
 
   private failedOutcome(
-    kind: 'restore_paths' | 'revert_turn',
+    kind: RestoreOutcome['kind'],
     operationId: string,
     paths: string[],
     contention: { path: string; turnId: string }[],
@@ -2111,6 +2227,8 @@ export interface CheckpointPreviewResult {
   rejectedPaths: string[];
   contention: { path: string; turnId: string }[];
   overlap?: AfterSnapshotOverlap;
+  strategy?: RestoreStrategy;
+  mergePreviewToken?: string;
 }
 
 export interface RestorePathValidation {
@@ -2158,7 +2276,7 @@ interface SafetyPreOutcome {
 export interface RestoreOutcome {
   status: 'completed' | 'partial' | 'failed';
   operationId: string;
-  kind: 'restore_paths' | 'revert_turn';
+  kind: 'restore_paths' | 'revert_turn' | 'merge_undo_paths' | 'merge_undo_turn';
   /** The path-scoped safety `pre` ref (usable to roll the restore back). */
   preRef: string | null;
   preOid: string | null;

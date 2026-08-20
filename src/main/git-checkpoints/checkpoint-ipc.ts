@@ -27,12 +27,14 @@ import {
   type CheckpointFileHistoryResult,
   type CheckpointListResult,
   type CheckpointPreviewResult,
+  type CheckpointPreviewOptions,
   type CheckpointPruneResult,
   type CheckpointRestoreRequest,
   type CheckpointRestoreResult,
   type CheckpointRevertRequest,
   type GitInitResult,
   type RepoWidePurgeResult,
+  type RestoreStrategy,
 } from '../../shared/types';
 import { registerActivityRoutes } from '../activity/activity-routes';
 import type { WindowPathList } from './checkpoint-service';
@@ -47,7 +49,12 @@ export interface HumanCheckpointRoutes {
   /** WP-G3.1 — versions of one canonical path across retained, live-verified turns. */
   fileHistory(workspaceId: string, path: string, opts?: { agentId?: string }): Promise<CheckpointFileHistoryResult>;
   diff(workspaceId: string, turnId: string): Promise<CheckpointDiffResult>;
-  preview(workspaceId: string, turnId: string, paths?: string[]): Promise<CheckpointPreviewResult>;
+  preview(
+    workspaceId: string,
+    turnId: string,
+    paths?: string[],
+    strategy?: RestoreStrategy,
+  ): Promise<CheckpointPreviewResult>;
   listWindowPaths?(turnId: string, repoRoot: string): Promise<WindowPathList>;
   restore(args: {
     workspaceId: string;
@@ -55,12 +62,16 @@ export interface HumanCheckpointRoutes {
     paths: string[];
     previewTokens?: Record<string, string>;
     force?: boolean;
+    strategy?: RestoreStrategy;
+    mergePreviewToken?: string;
   }): Promise<CheckpointRestoreResult>;
   revert(args: {
     workspaceId: string;
     turnId: string;
     previewTokens?: Record<string, string>;
     force?: boolean;
+    strategy?: RestoreStrategy;
+    mergePreviewToken?: string;
   }): Promise<CheckpointRestoreResult>;
   /** WP-G3.4 — the human-only `git init` consent action. Creates a repository at a
    *  non-repo workspace root (refusing an already-repo / protected root / unusable
@@ -91,6 +102,34 @@ export interface IpcLike {
 /** Failure reason stamped on a restore/revert refused because an active turn
  *  witnesses a requested path (Open #4). */
 export const FORCE_REFUSED_ACTIVE_TURN = 'active-turn-witnesses-path';
+export const MERGE_FORCE_REFUSED = 'merge-force-refused';
+
+export function buildHumanCheckpointRoutes(deps: { routes: HumanCheckpointRoutes }): HumanCheckpointRoutes {
+  const routes = deps.routes;
+  return {
+    list: (workspaceId, opts) => routes.list(workspaceId, opts),
+    fileHistory: (workspaceId, filePath, opts) => routes.fileHistory(workspaceId, filePath, opts),
+    diff: (workspaceId, turnId) => routes.diff(workspaceId, turnId),
+    preview: (workspaceId, turnId, paths, strategy) => routes.preview(workspaceId, turnId, paths, strategy),
+    ...(routes.listWindowPaths
+      ? { listWindowPaths: (turnId: string, repoRoot: string) => routes.listWindowPaths!(turnId, repoRoot) }
+      : {}),
+    restore: (args) => routes.restore(args),
+    revert: (args) => routes.revert(args),
+    initRepo: (workspaceId) => routes.initRepo(workspaceId),
+    prune: (workspaceId) => routes.prune(workspaceId),
+    repoWidePurgePlan: (workspaceId) => routes.repoWidePurgePlan(workspaceId),
+    repoWidePurge: (args) => routes.repoWidePurge(args),
+  };
+}
+
+export async function createCheckpointRecoverySurface<
+  T extends { humanCheckpointRoutes: HumanCheckpointRoutes },
+>(deps: { createEngine: () => Promise<T | null> }): Promise<T | null> {
+  const engine = await deps.createEngine();
+  if (!engine) return null;
+  return { ...engine, humanCheckpointRoutes: buildHumanCheckpointRoutes({ routes: engine.humanCheckpointRoutes }) };
+}
 
 class CheckpointIpcError extends Error {
   constructor(message: string, readonly code: string) {
@@ -177,8 +216,9 @@ async function activeTurnContention(
   workspaceId: string,
   turnId: string,
   paths: string[] | undefined,
+  strategy: RestoreStrategy,
 ): Promise<{ path: string; turnId: string }[]> {
-  const pv = await routes.preview(workspaceId, turnId, paths);
+  const pv = await routes.preview(workspaceId, turnId, paths, strategy);
   return pv.contention ?? [];
 }
 
@@ -246,10 +286,19 @@ export function registerCheckpointIpc(ipc: IpcLike, getRoutes: () => HumanCheckp
     return routes.diff(requireWorkspaceId(workspaceId), requireTurnId(turnId));
   });
 
-  ipc.handle(CHECKPOINT_CHANNELS.preview, async (_e, workspaceId: unknown, turnId: unknown, paths: unknown) => {
+  ipc.handle(CHECKPOINT_CHANNELS.preview, async (_e, workspaceId: unknown, turnId: unknown, rawOptions: unknown) => {
     const routes = requireRoutes(getRoutes());
-    const p = normalizePaths(paths);
-    return routes.preview(requireWorkspaceId(workspaceId), requireTurnId(turnId), p.length > 0 ? p : undefined);
+    const options = Array.isArray(rawOptions)
+      ? { paths: normalizePaths(rawOptions), strategy: 'exact' as const }
+      : (rawOptions ?? {}) as Partial<CheckpointPreviewOptions>;
+    const p = normalizePaths(options.paths);
+    const strategy: RestoreStrategy = options.strategy === 'merge-undo' ? 'merge-undo' : 'exact';
+    return routes.preview(
+      requireWorkspaceId(workspaceId),
+      requireTurnId(turnId),
+      p.length > 0 ? p : undefined,
+      strategy,
+    );
   });
 
   ipc.handle(CHECKPOINT_CHANNELS.restore, async (_e, raw: unknown) => {
@@ -266,12 +315,19 @@ export function registerCheckpointIpc(ipc: IpcLike, getRoutes: () => HumanCheckp
     }
     const previewTokens = normalizeTokens(req.previewTokens);
     const force = req.force === true;
+    const strategy: RestoreStrategy = req.strategy === 'merge-undo' ? 'merge-undo' : 'exact';
+    if (strategy === 'merge-undo' && force) {
+      throw new CheckpointIpcError('merge undo cannot be forced', MERGE_FORCE_REFUSED);
+    }
     if (force) {
       // Open #4: refuse a force while an active turn witnesses any requested path.
-      const contention = await activeTurnContention(routes, workspaceId, turnId, paths);
+      const contention = await activeTurnContention(routes, workspaceId, turnId, paths, strategy);
       if (contention.length > 0) return refusal('restore_paths', paths, contention);
     }
-    return routes.restore({ workspaceId, turnId, paths, previewTokens, force });
+    return routes.restore({
+      workspaceId, turnId, paths, previewTokens, force, strategy,
+      mergePreviewToken: typeof req.mergePreviewToken === 'string' ? req.mergePreviewToken : undefined,
+    });
   });
 
   ipc.handle(CHECKPOINT_CHANNELS.revert, async (_e, raw: unknown) => {
@@ -281,13 +337,20 @@ export function registerCheckpointIpc(ipc: IpcLike, getRoutes: () => HumanCheckp
     const turnId = requireTurnId(req.turnId);
     const previewTokens = normalizeTokens(req.previewTokens);
     const force = req.force === true;
+    const strategy: RestoreStrategy = req.strategy === 'merge-undo' ? 'merge-undo' : 'exact';
+    if (strategy === 'merge-undo' && force) {
+      throw new CheckpointIpcError('merge undo cannot be forced', MERGE_FORCE_REFUSED);
+    }
     if (force) {
       // Full-turn revert: the gate consults the turn's whole witnessed set
       // (preview with no paths defaults to it).
-      const contention = await activeTurnContention(routes, workspaceId, turnId, undefined);
+      const contention = await activeTurnContention(routes, workspaceId, turnId, undefined, strategy);
       if (contention.length > 0) return refusal('revert_turn', [], contention);
     }
-    return routes.revert({ workspaceId, turnId, previewTokens, force });
+    return routes.revert({
+      workspaceId, turnId, previewTokens, force, strategy,
+      mergePreviewToken: typeof req.mergePreviewToken === 'string' ? req.mergePreviewToken : undefined,
+    });
   });
 
   // WP-G3.4 — the human-only `git init` consent action. Registered here alongside

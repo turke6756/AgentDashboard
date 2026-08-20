@@ -33,6 +33,7 @@ import { AgentSupervisor } from './supervisor';
 import { startContinuationWatcher } from './supervisor/continuation-watcher-wiring';
 import { runCheckpointStartupMaintenance } from './git-checkpoints/reconciler';
 import { createCheckpointEngine } from './git-checkpoints/engine-bootstrap';
+import { createCheckpointRecoverySurface } from './git-checkpoints/checkpoint-ipc';
 import { captureHealthManager } from './activity/capture-health';
 import { RETENTION_CYCLE_INTERVAL_MS } from '../shared/constants';
 import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSaveCardPreviewRoutes, setSaveCardMintRoutes, setSaveCardFinalizeRoutes, setCommitCoordinatorRoutes, setSaveSweepService, setSaveCardAttentionProvider, setActivityMergeService } from './ipc-handlers';
@@ -910,7 +911,7 @@ app.whenReady().then(async () => {
     void (async () => {
       captureHealthManager.markBootstrapping();
       try {
-        const engine = await createCheckpointEngine();
+        const engine = await createCheckpointRecoverySurface({ createEngine: createCheckpointEngine });
         if (engine && supervisor) {
           supervisor.attachCheckpointEngine(engine);
           setWitnessObserver(engine.witnessObserve);
