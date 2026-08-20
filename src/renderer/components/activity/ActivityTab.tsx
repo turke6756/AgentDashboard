@@ -3,6 +3,7 @@ import { RotateCcw, X } from 'lucide-react';
 import type { ActivityItem, CheckpointTurnSummary, TurnActivityRow } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
+import GitInitConsent from '../onboarding/GitInitConsent';
 
 export function activityBadge(row: TurnActivityRow): string {
   if (row.status === 'open' || row.undo.state === 'checking') return 'In progress';
@@ -102,6 +103,7 @@ export default function ActivityTab(): React.ReactElement {
   const loadActivity = useDashboardStore((state) => state.loadActivity);
   const loadOlderActivity = useDashboardStore((state) => state.loadOlderActivity);
   const showActivity = useDashboardStore((state) => state.showActivity);
+  const prerequisites = useDashboardStore((state) => state.prerequisites);
   const [undoRow, setUndoRow] = useState<TurnActivityRow | null>(null);
 
   useEffect(() => {
@@ -110,6 +112,7 @@ export default function ActivityTab(): React.ReactElement {
 
   const newCount = counts?.turnCount ?? 0;
   const items = useMemo(() => page?.items ?? [], [page]);
+  const gitCapability = prerequisites?.optional.find((check) => check.id === 'git')?.git;
   if (!workspaceId) return <div className="flex-1 p-6 text-gray-500">Select a workspace to view activity.</div>;
 
   return (
@@ -121,6 +124,22 @@ export default function ActivityTab(): React.ReactElement {
             <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={() => { showActivity({}); void loadActivity(workspaceId, {}); }}><X className="w-3 h-3" /> Clear filter</button>
           )}
         </div>
+        {gitCapability?.protectedRoot ? (
+          <div className="ui-card mb-4 border-accent-orange/30 p-4" data-testid="checkpoints-protected-root">
+            <h3 className="text-[13px] font-medium text-gray-200">Checkpoints are unavailable for this workspace</h3>
+            <p className="mt-1 text-[12px] text-gray-400">
+              This folder is a protected root. Lares will not create a Git repository in your home folder, Desktop,
+              Documents, Downloads, or a drive/filesystem root. Open a specific project subfolder instead.
+            </p>
+          </div>
+        ) : gitCapability?.repoState === 'non-repo' ? (
+          <div className="ui-card mb-4 p-4" data-testid="checkpoints-non-repo">
+            <p className="text-[12px] text-gray-300">
+              Checkpoints are unavailable because this folder is not a Git repository.
+            </p>
+            <GitInitConsent />
+          </div>
+        ) : null}
         {newCount > 0 && <div role="status" className="mb-4 rounded border border-accent-blue/30 bg-accent-blue/10 p-3 text-[12px] text-accent-blue">{newCount} new activity {newCount === 1 ? 'item' : 'items'} since you last viewed this workspace</div>}
         {error && <div role="alert" className="mb-4 text-[12px] text-accent-red">Activity unavailable: {error}</div>}
         {loading && items.length === 0 ? <div className="text-gray-500">Loading activity…</div> : (

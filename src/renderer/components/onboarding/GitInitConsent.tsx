@@ -67,7 +67,7 @@ export default function GitInitConsent() {
     >
       <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-200">
         <Icons.GitBranchPlus className="w-3.5 h-3.5 text-accent-blue" />
-        Git checkpoints for “{workspace.name}”
+        Git checkpoints for “{workspace.title}”
       </div>
       <p className="mt-1 text-[12px] text-gray-400">
         Checkpoints need a Git repository at the workspace root. If this workspace isn’t a

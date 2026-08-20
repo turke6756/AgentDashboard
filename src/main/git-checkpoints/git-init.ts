@@ -22,6 +22,9 @@
 //     resolved internal git exe — never a raw child_process, never a shell.
 
 import type { GitInitResult } from '../../shared/types';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { getWorkspaces } from '../database';
 import { probeWorkspaceGit } from '../git/git-runtime';
 import { runGit, GitCommandError } from './git-command';
 
@@ -36,10 +39,25 @@ const INIT_MAX_BYTES = 64 * 1024;
 export interface InitDeps {
   probe?: typeof probeWorkspaceGit;
   runGitFn?: typeof runGit;
+  listKnownWorkspaceDirs?: () => readonly string[];
 }
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function canonicalDir(dir: string): string {
+  try {
+    return fs.realpathSync.native(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
+function isStrictlyInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative !== '' && !path.isAbsolute(relative)
+    && relative !== '..' && !relative.startsWith(`..${path.sep}`);
 }
 
 /**
@@ -100,6 +118,37 @@ export async function initWorkspaceGitRepo(
       ok: false,
       status: 'already-repo',
       message: 'This workspace is already a Git repository — checkpoints are already enabled.',
+    };
+  }
+
+  // Initializing a parent of another registered workspace would silently fold
+  // that workspace (and potentially its siblings) into one repository. The
+  // workspace registry is the authority for this guard; exact-path matches are
+  // the candidate workspace itself and are intentionally ignored.
+  let containedWorkspace: string | undefined;
+  try {
+    const listKnownWorkspaceDirs = deps.listKnownWorkspaceDirs
+      ?? (() => getWorkspaces().map((workspace) => workspace.path));
+    const candidate = canonicalDir(canonicalWorkspaceDir);
+    containedWorkspace = listKnownWorkspaceDirs()
+      .map(canonicalDir)
+      .find((known) => isStrictlyInside(candidate, known));
+  } catch (err) {
+    return {
+      ok: false,
+      status: 'error',
+      message: 'Lares could not check this folder against known workspaces before initializing Git. Nothing was created.',
+      detail: errMsg(err),
+    };
+  }
+
+  if (containedWorkspace) {
+    return {
+      ok: false,
+      status: 'error',
+      message:
+        'Lares will not create a Git repository here because this folder contains another known workspace. Open that workspace or choose a narrower folder instead.',
+      detail: containedWorkspace,
     };
   }
 

@@ -70,7 +70,7 @@ test('initializes a non-repo workspace and it re-probes as an available repo', a
   assert.equal(before.repoState, 'non-repo');
   assert.equal(before.repoRoot, null);
 
-  const res = await initWorkspaceGitRepo(dir, EXE);
+  const res = await initWorkspaceGitRepo(dir, EXE, { listKnownWorkspaceDirs: () => [dir] });
   assert.equal(res.ok, true);
   assert.equal(res.status, 'initialized');
   assert.ok(fs.existsSync(path.join(dir, '.git')), '.git must exist after init');
@@ -90,7 +90,7 @@ test('refuses a workspace that is already a Git repository', async () => {
   execFileSync(EXE, ['init', '-q'], { cwd: dir });
   const headBefore = fs.statSync(path.join(dir, '.git')).ctimeMs;
 
-  const res = await initWorkspaceGitRepo(dir, EXE);
+  const res = await initWorkspaceGitRepo(dir, EXE, { listKnownWorkspaceDirs: () => [dir] });
   assert.equal(res.ok, false);
   assert.equal(res.status, 'already-repo');
   // No second init ran against the existing repo.
@@ -104,6 +104,7 @@ test('a git failure returns a typed error and creates no partial .git', async ()
   const dir = mkTmpDir();
   const res = await initWorkspaceGitRepo(dir, EXE, {
     // Real probe (a real non-repo) but a git that fails the init call.
+    listKnownWorkspaceDirs: () => [dir],
     runGitFn: async () => { throw new GitCommandError('spawn', 'boom', null, 'fatal: could not create work tree'); },
   });
   assert.equal(res.ok, false);
@@ -119,6 +120,7 @@ test('refuses a protected root without attempting init', async () => {
   let ran = false;
   const res = await initWorkspaceGitRepo(dir, EXE, {
     probe: async () => cap({ protectedRoot: true, detail: 'home folder' }),
+    listKnownWorkspaceDirs: () => [dir],
     runGitFn: async () => { ran = true; throw new Error('should not run'); },
   });
   assert.equal(res.ok, false);
@@ -132,11 +134,30 @@ test('refuses when git is unusable for the workspace (degraded reason)', async (
   let ran = false;
   const res = await initWorkspaceGitRepo(dir, EXE, {
     probe: async () => cap({ reason: 'unsupported-path', detail: 'WSL path' }),
+    listKnownWorkspaceDirs: () => [dir],
     runGitFn: async () => { ran = true; throw new Error('should not run'); },
   });
   assert.equal(res.ok, false);
   assert.equal(res.status, 'unusable-git');
   assert.equal(ran, false);
+});
+
+test('refuses a non-repo folder that contains another known workspace', async () => {
+  const dir = mkTmpDir();
+  const nestedWorkspace = path.join(dir, 'projects', 'nested-workspace');
+  fs.mkdirSync(nestedWorkspace, { recursive: true });
+  let ran = false;
+  const res = await initWorkspaceGitRepo(dir, EXE, {
+    listKnownWorkspaceDirs: () => [dir, nestedWorkspace],
+    runGitFn: async () => { ran = true; throw new Error('should not run'); },
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 'error');
+  assert.match(res.message, /contains another known workspace/i);
+  assert.equal(res.detail, fs.realpathSync.native(nestedWorkspace));
+  assert.equal(ran, false, 'git init must not run for a workspace parent');
+  assert.ok(!fs.existsSync(path.join(dir, '.git')), 'the refusal must leave no repository behind');
 });
 
 // ── 5. HUMAN-ONLY: not an agent MCP tool, not a lane grant, not an HTTP route ─────

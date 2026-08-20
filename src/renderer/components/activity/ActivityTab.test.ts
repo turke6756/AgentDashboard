@@ -83,4 +83,57 @@ describe('Activity row copy', () => {
     act(() => root.unmount());
     useDashboardStore.setState({ loadActivity: originalLoad, loadOlderActivity: originalLoadOlder });
   });
+
+  it('explains a non-repo workspace and enables checkpoints through the existing consent flow', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const gitInit = vi.fn(async () => ({
+      ok: true as const,
+      status: 'initialized' as const,
+      message: 'Created a Git repository at the workspace root.',
+    }));
+    (window as any).api = { checkpoints: { gitInit } };
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws',
+      workspaces: [{ id: 'ws', title: 'plain-folder' }] as any,
+      prerequisites: {
+        optional: [{ id: 'git', status: 'available', git: { repoState: 'non-repo', protectedRoot: false } }],
+      } as any,
+      activityPage: null,
+      activityReturnCounts: null,
+      activityFilter: {}, activityLoading: false, activityError: null,
+      loadActivity: vi.fn(async () => undefined),
+      loadPrerequisites: vi.fn(async () => null),
+      checkHealth: vi.fn(async () => undefined),
+    } as any);
+
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(container.textContent).toContain('Checkpoints are unavailable because this folder is not a Git repository.');
+    const enable = container.querySelector('[data-testid="git-init-enable"]') as HTMLButtonElement;
+    expect(enable).not.toBeNull();
+    await act(async () => enable.click());
+    expect(gitInit).toHaveBeenCalledWith('ws');
+    act(() => root.unmount());
+  });
+
+  it('explains the protected-root refusal without offering a dead Enable action', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws',
+      prerequisites: {
+        optional: [{ id: 'git', status: 'missing', git: { repoState: 'non-repo', protectedRoot: true } }],
+      } as any,
+      activityPage: null,
+      activityReturnCounts: null,
+      activityFilter: {}, activityLoading: false, activityError: null,
+      loadActivity: vi.fn(async () => undefined),
+    } as any);
+
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(container.textContent).toContain('This folder is a protected root.');
+    expect(container.textContent).toContain('Open a specific project subfolder instead.');
+    expect(container.querySelector('[data-testid="git-init-enable"]')).toBeNull();
+    act(() => root.unmount());
+  });
 });

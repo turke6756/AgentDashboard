@@ -22,7 +22,7 @@ function gitCheck(status: 'available' | 'missing') {
 function seedStore(over: { gitStatus?: 'available' | 'missing'; selected?: string | null } = {}) {
   useDashboardStore.setState({
     prerequisites: { optional: [gitCheck(over.gitStatus ?? 'available')] } as any,
-    workspaces: [{ id: 'ws1', name: 'demo-project' }] as any,
+    workspaces: [{ id: 'ws1', title: 'demo-project' }] as any,
     selectedWorkspaceId: over.selected === undefined ? 'ws1' : over.selected,
     loadPrerequisites: vi.fn(async () => null),
     checkHealth: vi.fn(async () => {}),
