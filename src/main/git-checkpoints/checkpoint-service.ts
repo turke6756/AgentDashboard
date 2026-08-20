@@ -1328,8 +1328,10 @@ export class CheckpointService {
       const pathStates: SharedMergeUndoPathPreview[] = planned.paths.map((entry) => ({
         path: entry.path,
         state: entry.state,
-        ...(entry.state === 'clean' || entry.state === 'merged' || entry.state === 'conflicted'
-          ? {}
+        ...(entry.state === 'conflicted'
+          ? { reason: 'merge-undo-conflict' as const }
+          : entry.state === 'clean' || entry.state === 'merged'
+            ? {}
           : { reason: entry.state === 'refused-live-contention' ? 'active-turn-witnesses-path' : entry.state }),
         ...(entry.patch === null ? {} : { patch: entry.patch }),
         patchTruncated: entry.patchTruncated,

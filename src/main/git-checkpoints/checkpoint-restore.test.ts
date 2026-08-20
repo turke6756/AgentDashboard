@@ -1084,6 +1084,35 @@ test('merge undo refuses index/worktree divergence before PRE or mutation', asyn
   assertNoPre(repo, s.recoveryStore, result);
 });
 
+test('merge conflict diagnostic survives the production preview projection with named ranges', async () => {
+  const repo = mkRepo();
+  const base = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${base.join('\n')}\n`);
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  const after = [...base]; after[9] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${after.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...after]; later[9] = 'later-same-line-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${later.join('\n')}\n`);
+  git(repo, ['add', '--', 'a.txt']);
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, false);
+  assert.equal(preview.reason, 'merge-undo-conflict');
+  assert.equal(preview.mergePreviewToken, undefined);
+  const conflicted = preview.pathStates?.[0];
+  assert.equal(conflicted?.state, 'conflicted');
+  assert.equal(conflicted?.reason, 'merge-undo-conflict');
+  assert.match(conflicted?.patch ?? '', /^@@ -10,1 \+10,1 @@ current\/base\/inverse conflict/m,
+    'REACHABILITY:merge-conflict-preview-diagnostic');
+  assert.match(conflicted?.patch ?? '', /<<<<<<< current:a\.txt/);
+  assert.match(conflicted?.patch ?? '', />>>>>>> inverse:a\.txt/);
+});
+
 test('merge execution revalidates live contention and stale bytes before every apply primitive', async () => {
   const repo = mkRepo();
   const base = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);

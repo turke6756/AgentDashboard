@@ -97,8 +97,51 @@ test('autocrlf same-line later edit is a conflict and exit-1 tree is diagnostic 
   assert.equal(pathState(result, 'shared.txt'), 'conflicted');
   if (result.kind === 'conflicted') {
     assert.ok(result.paths[0].conflictStages.length >= 3);
+    assert.match(result.paths[0].patch ?? '', /^@@ -1,1 \+1,1 @@ current\/base\/inverse conflict/m);
+    assert.match(result.paths[0].patch ?? '', /<<<<<<< current:shared\.txt/);
+    assert.match(result.paths[0].patch ?? '', /\|\|\|\|\|\|\| base:shared\.txt/);
+    assert.match(result.paths[0].patch ?? '', />>>>>>> inverse:shared\.txt/);
     assert.equal('resultTreeOid' in result, false);
   }
+});
+
+test('conflict diagnostics enforce per-path and total UTF-8 bounds', async (t) => {
+  const root = createRepo(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = Array.from({ length: 5 }, (_, index) => `large-${index}.txt`);
+  for (const repoPath of paths) write(root, repoPath, `base-${'x'.repeat(70_000)}\n`);
+  const before = commit(root, 'large before', paths);
+  for (const repoPath of paths) write(root, repoPath, `turn-${'y'.repeat(70_000)}\n`);
+  const after = commit(root, 'large turn', paths);
+  for (const repoPath of paths) write(root, repoPath, `later-${'z'.repeat(70_000)}\n`);
+  git(root, 'add', '--', ...paths);
+
+  const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
+    requestedPaths: paths, witnessedPaths: paths }, deps);
+  assert.equal(result.kind, 'conflicted');
+  if (result.kind !== 'conflicted') return;
+  const patchBytes = result.paths.map((entry) => Buffer.byteLength(entry.patch ?? '', 'utf8'));
+  assert.ok(patchBytes.every((bytes) => bytes <= 64 * 1024), `per-path bounds: ${patchBytes.join(',')}`);
+  assert.ok(patchBytes.reduce((sum, bytes) => sum + bytes, 0) <= 256 * 1024);
+  assert.equal(result.patchTruncated, true);
+  assert.ok(result.omittedBytes > 0);
+  assert.ok(result.omittedPathCount > 0);
+  assert.ok(result.paths.some((entry) => entry.patchTruncated && entry.omittedBytes > 0));
+});
+
+test('binary conflicts report an honest no-line-range diagnostic', async (t) => {
+  const root = createRepo(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'binary.dat'), Buffer.from([0, 1, 2, 3]));
+  const before = commit(root, 'binary before', ['binary.dat']);
+  fs.writeFileSync(path.join(root, 'binary.dat'), Buffer.from([0, 4, 2, 3]));
+  const after = commit(root, 'binary turn', ['binary.dat']);
+  fs.writeFileSync(path.join(root, 'binary.dat'), Buffer.from([0, 5, 2, 3]));
+  git(root, 'add', '--', 'binary.dat');
+  const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
+    requestedPaths: ['binary.dat'], witnessedPaths: ['binary.dat'] }, deps);
+  assert.equal(result.kind, 'conflicted');
+  if (result.kind !== 'conflicted') return;
+  assert.match(result.paths[0].patch ?? '', /^Binary conflict; text line ranges unavailable\./);
+  assert.doesNotMatch(result.paths[0].patch ?? '', /^@@/m);
 });
 
 test('turn add plans deletion and turn delete plans inverse addition', async (t) => {

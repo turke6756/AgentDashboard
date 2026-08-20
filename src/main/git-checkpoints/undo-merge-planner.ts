@@ -346,24 +346,120 @@ function emptyPreview(repoPath: string, state: MergeUndoPathState, inspected?: I
   };
 }
 
+function findLineSequence(haystack: readonly string[], needle: readonly string[], from: number): number {
+  if (needle.length === 0) return from;
+  for (let start = from; start + needle.length <= haystack.length; start += 1) {
+    if (needle.every((line, offset) => haystack[start + offset] === line)) return start;
+  }
+  return from;
+}
+
+function conflictHunks(diff3: string, currentText: string, inverseText: string): string | null {
+  const lines = diff3.replace(/\r\n/g, '\n').split('\n');
+  const currentLines = currentText.replace(/\r\n/g, '\n').split('\n');
+  const inverseLines = inverseText.replace(/\r\n/g, '\n').split('\n');
+  const hunks: string[] = [];
+  let currentCursor = 0;
+  let inverseCursor = 0;
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!lines[start].startsWith('<<<<<<< current:')) continue;
+    const baseMarker = lines.findIndex((line, index) => index > start && line.startsWith('||||||| base:'));
+    const divider = lines.findIndex((line, index) => index > baseMarker && line === '=======');
+    const end = lines.findIndex((line, index) => index > divider && line.startsWith('>>>>>>> inverse:'));
+    if (baseMarker < 0 || divider < 0 || end < 0) return null;
+    const currentPart = lines.slice(start + 1, baseMarker);
+    const inversePart = lines.slice(divider + 1, end);
+    const currentIndex = findLineSequence(currentLines, currentPart, currentCursor);
+    const inverseIndex = findLineSequence(inverseLines, inversePart, inverseCursor);
+    currentCursor = currentIndex + currentPart.length;
+    inverseCursor = inverseIndex + inversePart.length;
+    const currentCount = Math.max(1, currentPart.length);
+    const inverseCount = Math.max(1, inversePart.length);
+    hunks.push([
+      `@@ -${currentIndex + 1},${currentCount} +${inverseIndex + 1},${inverseCount} @@ current/base/inverse conflict`,
+      ...lines.slice(start, end + 1),
+    ].join('\n'));
+    start = end;
+  }
+  return hunks.length > 0 ? hunks.join('\n') + '\n' : null;
+}
+
+async function conflictDiagnostic(
+  preview: MergeUndoPathPreview,
+  cwd: string,
+  tempDir: string,
+  runGitBytes: RunGitBytes,
+  deps: UndoMergePlannerDeps,
+): Promise<Buffer> {
+  const byStage = new Map(preview.conflictStages.map((stage) => [stage.stage, stage]));
+  const base = byStage.get(1);
+  const current = byStage.get(2);
+  const inverse = byStage.get(3);
+  if (!base || !current || !inverse || [base, current, inverse].some((stage) => !REGULAR_MODES.has(stage.mode))) {
+    return Buffer.from('Binary or structural conflict; text line ranges unavailable.\n');
+  }
+  const blobs = await Promise.all([base, current, inverse].map(async (stage) => {
+    const result = await runGitBytes(cwd, ['cat-file', 'blob', stage.blobOid], opts(deps));
+    if (result.code !== 0) throw new Error(result.stderr.trim() || 'merge-undo-conflict-blob-read-failed');
+    return result.stdout;
+  }));
+  if (blobs.some((blob) => blob.includes(0))) {
+    return Buffer.from('Binary conflict; text line ranges unavailable.\n');
+  }
+  let texts: string[];
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    texts = blobs.map((blob) => decoder.decode(blob));
+  } catch {
+    return Buffer.from('Binary conflict; text line ranges unavailable.\n');
+  }
+  const stem = createHash('sha256').update(preview.path).digest('hex').slice(0, 16);
+  const currentFile = path.join(tempDir, `${stem}-current`);
+  const baseFile = path.join(tempDir, `${stem}-base`);
+  const inverseFile = path.join(tempDir, `${stem}-inverse`);
+  await Promise.all([
+    fs.promises.writeFile(currentFile, blobs[1]),
+    fs.promises.writeFile(baseFile, blobs[0]),
+    fs.promises.writeFile(inverseFile, blobs[2]),
+  ]);
+  const merged = await runGitBytes(cwd, [
+    'merge-file', '-p', '--diff3',
+    '-L', `current:${preview.path}`, '-L', `base:${preview.path}`, '-L', `inverse:${preview.path}`,
+    currentFile, baseFile, inverseFile,
+  ], opts(deps));
+  const hunks = conflictHunks(merged.stdout.toString('utf8'), texts[1], texts[2]);
+  return Buffer.from(hunks ?? 'Binary or structural conflict; text line ranges unavailable.\n');
+}
+
+function boundedUtf8(bytes: Buffer, allowance: number): { text: string; includedBytes: number } {
+  if (bytes.length <= allowance) return { text: bytes.toString('utf8'), includedBytes: bytes.length };
+  const decoder = new TextDecoder('utf-8');
+  const text = decoder.decode(bytes.subarray(0, allowance), { stream: true });
+  return { text, includedBytes: Buffer.byteLength(text, 'utf8') };
+}
+
 async function addPatches(
   previews: MergeUndoPathPreview[], cwd: string, currentTreeOid: string, resultTreeOid: string,
-  runGit: RunGit, deps: UndoMergePlannerDeps,
+  tempDir: string, runGit: RunGit, runGitBytes: RunGitBytes, deps: UndoMergePlannerDeps,
 ): Promise<{ patchTruncated: boolean; omittedBytes: number; omittedPathCount: number }> {
   let remaining = PATCH_TOTAL_LIMIT;
   let omittedBytes = 0;
   let omittedPathCount = 0;
   for (const preview of previews) {
-    if (preview.state !== 'clean' && preview.state !== 'merged') continue;
-    const diff = await runGit(cwd, ['diff', '--no-ext-diff', '--no-color', '--binary', currentTreeOid, resultTreeOid, '--', preview.path], opts(deps));
-    if (diff.code !== 0) throw new Error(diff.stderr.trim() || 'merge-undo-patch-failed');
-    const bytes = Buffer.from(diff.stdout, 'utf8');
+    let bytes: Buffer;
+    if (preview.state === 'conflicted') {
+      bytes = await conflictDiagnostic(preview, cwd, tempDir, runGitBytes, deps);
+    } else if (preview.state === 'clean' || preview.state === 'merged') {
+      const diff = await runGit(cwd, ['diff', '--no-ext-diff', '--no-color', '--binary', currentTreeOid, resultTreeOid, '--', preview.path], opts(deps));
+      if (diff.code !== 0) throw new Error(diff.stderr.trim() || 'merge-undo-patch-failed');
+      bytes = Buffer.from(diff.stdout, 'utf8');
+    } else continue;
     const allowance = Math.min(PATCH_PATH_LIMIT, remaining);
-    const included = Math.min(bytes.length, allowance);
-    preview.patch = bytes.subarray(0, included).toString('utf8');
-    preview.omittedBytes = bytes.length - included;
+    const bounded = boundedUtf8(bytes, allowance);
+    preview.patch = bounded.text;
+    preview.omittedBytes = bytes.length - bounded.includedBytes;
     preview.patchTruncated = preview.omittedBytes > 0;
-    remaining -= included;
+    remaining -= bounded.includedBytes;
     omittedBytes += preview.omittedBytes;
     if (preview.patchTruncated) omittedPathCount += 1;
   }
@@ -423,7 +519,7 @@ export async function planUndoMerge(input: UndoMergePlannerInput, deps: UndoMerg
       const state: MergeUndoPathState = conflictStages.length > 0 ? 'conflicted' : sameEntry(value.current, value.after) ? 'clean' : 'merged';
       previews.push({ ...emptyPreview(repoPath, state, value), result, conflictStages });
     }
-    const patchSummary = await addPatches(previews, input.cwd, currentTreeOid, previewTreeOid, runGit, deps);
+    const patchSummary = await addPatches(previews, input.cwd, currentTreeOid, previewTreeOid, tempDir, runGit, runGitBytes, deps);
     if (merged.kind === 'conflicted') {
       return { kind: 'conflicted', reason: 'merge-undo-conflict', paths: previews, renameGroups: classified.renameGroups,
         currentTreeOid, inverseTreeOid, diagnosticTreeOid: merged.diagnosticTreeOid, ...patchSummary };
