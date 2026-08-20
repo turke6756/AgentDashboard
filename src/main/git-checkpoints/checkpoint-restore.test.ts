@@ -1014,6 +1014,169 @@ test('open-turn contention is recomputed and refuses matching bytes before PRE',
   assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), Buffer.from('target-after\n'));
 });
 
+test('merge undo reaches runRestore before the exact after-snapshot gate and preserves distant staged work', async () => {
+  const repo = mkRepo({ config: [['core.autocrlf', 'true']] });
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt text\n');
+  const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${base.join('\n')}\n`);
+  commitAll(repo, 'base');
+  const head = git(repo, ['rev-parse', 'HEAD']).trim();
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  const after = [...base];
+  after[3] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${after.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...after];
+  later[35] = 'later-staged-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${later.join('\n')}\n`);
+  git(repo, ['add', '--', 'a.txt']);
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, true, `merge preview failed: ${preview.reason}`);
+  assert.equal(preview.pathStates?.[0]?.state, 'merged');
+  assert.ok(preview.mergePreviewToken);
+
+  const result = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: preview.mergePreviewToken,
+  });
+  await s.svc.settleCleanups();
+  assert.equal(result.status, 'completed', `REACHABILITY:run-restore-merge-branch ${result.failureReason}`);
+  const worktree = fs.readFileSync(path.join(repo, 'a.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  const index = git(repo, ['show', ':a.txt']).trimEnd().split('\n');
+  assert.equal(worktree[3], base[3]);
+  assert.equal(worktree[35], 'later-staged-change');
+  assert.deepEqual(worktree, index, 'merge undo updates coherent index and worktree together');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), head);
+  const pre = s.recoveryStore.rows.get(result.operationId)!.preIncludedPaths as PreIncludedPath[];
+  assert.equal(pre[0].indexState, 'present');
+  assert.ok(pre[0].indexOid);
+  assert.ok(pre[0].oid);
+});
+
+test('merge undo refuses index/worktree divergence before PRE or mutation', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\ntwo\nthree\n');
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'turn\ntwo\nthree\n');
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'turn\ntwo\nlater-unstaged\n');
+  const beforeBytes = fs.readFileSync(path.join(repo, 'a.txt'));
+  const beforeIndex = git(repo, ['ls-files', '--stage', '--', 'a.txt']);
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, false);
+  assert.equal(preview.reason, 'index-worktree-diverged');
+  assert.equal(preview.mergePreviewToken, undefined);
+  const result = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: 'fabricated',
+  });
+  assert.equal(result.failureReason, 'merge-preview-token-invalid');
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), beforeBytes);
+  assert.equal(git(repo, ['ls-files', '--stage', '--', 'a.txt']), beforeIndex);
+  assertNoPre(repo, s.recoveryStore, result);
+});
+
+test('merge execution revalidates live contention and stale bytes before every apply primitive', async () => {
+  const repo = mkRepo();
+  const base = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${base.join('\n')}\n`);
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  const after = [...base]; after[1] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${after.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...after]; later[18] = 'later-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${later.join('\n')}\n`);
+  git(repo, ['add', '--', 'a.txt']);
+  const previewOne = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  const previewTwo = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  assert.ok(previewOne.mergePreviewToken && previewTwo.mergePreviewToken);
+  const original = fs.readFileSync(path.join(repo, 'a.txt'));
+  s.store.seedOpen('T2', 'WS', {
+    turnSeq: 2, touched: [{ path: 'a.txt', op: 'write' }],
+  });
+  const live = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: previewOne.mergePreviewToken,
+  });
+  assert.equal(live.failureReason, 'active-turn-witnesses-path');
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), original);
+  assertNoPre(repo, s.recoveryStore, live);
+
+  s.store.rows.get('T2')!.status = 'accepted';
+  const changed = [...later]; changed[17] = 'changed-after-preview';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${changed.join('\n')}\n`);
+  git(repo, ['add', '--', 'a.txt']);
+  const changedBytes = fs.readFileSync(path.join(repo, 'a.txt'));
+  const stale = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: previewTwo.mergePreviewToken,
+  });
+  assert.equal(stale.failureReason, 'merge-preview-token-invalid');
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), changedBytes);
+  assertNoPre(repo, s.recoveryStore, stale);
+});
+
+test('merge undo records recoverable PRE when real-index update fails after worktree apply', async () => {
+  const repo = mkRepo();
+  const base = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${base.join('\n')}\n`);
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  const after = [...base]; after[1] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${after.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...after]; later[18] = 'later-change';
+  fs.writeFileSync(path.join(repo, 'a.txt'), `${later.join('\n')}\n`);
+  git(repo, ['add', '--', 'a.txt']);
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['a.txt'], strategy: 'merge-undo',
+  });
+  assert.ok(preview.mergePreviewToken);
+  const failingGit: RunGitLike = async (cwd, args, opts) => {
+    if (args[0] === 'update-index' && !opts.indexFile) {
+      return { code: 1, stdout: '', stderr: 'injected real-index failure' };
+    }
+    return realRunGit(cwd, args, opts);
+  };
+  const svc = mkService({
+    store: s.store, recoveryStore: s.recoveryStore, queue: s.queue,
+    mergeUndoPreviewRegistry: s.svc.mergeUndoPreviewRegistry,
+    runGit: failingGit,
+  });
+  const result = await svc.restorePaths({
+    turnId: 'T', requestedPaths: ['a.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: preview.mergePreviewToken,
+  });
+  await svc.settleCleanups();
+  assert.equal(result.status, 'partial');
+  assert.deepEqual(result.completedPaths, []);
+  assert.equal(result.failures[0]?.reason, 'index-update-failed');
+  const worktree = fs.readFileSync(path.join(repo, 'a.txt'), 'utf8').trimEnd().split(/\r?\n/);
+  assert.equal(worktree[1], base[1], 'worktree write happened before injected index failure');
+  assert.equal(worktree[18], 'later-change');
+  const pre = s.recoveryStore.rows.get(result.operationId)!.preIncludedPaths as PreIncludedPath[];
+  assert.equal(pre[0].indexState, 'present');
+  assert.ok(pre[0].indexOid && pre[0].oid, 'both prior states are durable recovery evidence');
+  assert.ok(result.preRef && result.preOid);
+  assert.equal(git(repo, ['rev-parse', '--verify', `${result.preRef}^{commit}`]).trim(), result.preOid);
+});
+
 test('a concurrent BEFORE checkpoint enqueued during a restore does not start until the restore releases the lock', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'orig\n');

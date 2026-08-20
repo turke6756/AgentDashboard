@@ -60,7 +60,12 @@ import {
   FINALIZE_ALLOWANCE_MS,
   CLEANUP_ALLOWANCE_MS,
 } from '../../shared/constants';
-import type { GitCapability, MergeUndoPathState, RestoreStrategy } from '../../shared/types';
+import type {
+  GitCapability,
+  MergeUndoPathPreview as SharedMergeUndoPathPreview,
+  MergeUndoPathState,
+  RestoreStrategy,
+} from '../../shared/types';
 import type { TurnRecord, RecoveryOperation, InsertRecoveryOperationFields } from '../database';
 import {
   getTurnRecord as dbGetTurnRecord,
@@ -103,6 +108,11 @@ import {
   checkAfterSnapshot,
   type AfterSnapshotOverlap,
 } from './after-snapshot-gate';
+import {
+  planUndoMerge as realPlanUndoMerge,
+  type UndoMergePlannerInput,
+  type UndoMergePlannerResult,
+} from './undo-merge-planner';
 
 // ── injectable seams ──────────────────────────────────────────────────────────
 
@@ -227,6 +237,8 @@ export interface CheckpointServiceOptions {
   }) => Promise<EnumerationOutcome>;
   platform?: NodeJS.Platform;
   mergeUndoPreviewRegistry?: MergeUndoPreviewRegistry;
+  /** Planner seam used by focused restore tests; production always uses the real planner. */
+  planUndoMerge?: (input: UndoMergePlannerInput) => Promise<UndoMergePlannerResult>;
 }
 
 export const MERGE_UNDO_PREVIEW_TTL_MS = 5 * 60 * 1000;
@@ -310,11 +322,18 @@ export class MergeUndoPreviewRegistry {
   }
 
   consume(token: string): MergeUndoPreviewRecord | null {
+    const result = this.consumeDetailed(token);
+    return result.kind === 'ok' ? result.record : null;
+  }
+
+  consumeDetailed(token: string):
+    | { kind: 'ok'; record: MergeUndoPreviewRecord }
+    | { kind: 'invalid' | 'expired' } {
     const record = this.records.get(token);
-    if (!record) return null;
+    if (!record) return { kind: 'invalid' };
     this.records.delete(token);
-    if (record.expiresAt <= this.now()) return null;
-    return record;
+    if (record.expiresAt <= this.now()) return { kind: 'expired' };
+    return { kind: 'ok', record };
   }
 }
 
@@ -517,6 +536,7 @@ export class CheckpointService {
   private readonly now: () => number;
   private readonly enumerate: NonNullable<CheckpointServiceOptions['enumerate']>;
   private readonly platform: NodeJS.Platform;
+  private readonly planUndoMerge: (input: UndoMergePlannerInput) => Promise<UndoMergePlannerResult>;
   readonly mergeUndoPreviewRegistry: MergeUndoPreviewRegistry;
   /** Fire-and-forget cleanup promises — awaitable by tests via settleCleanups(). */
   private readonly cleanups: Promise<void>[] = [];
@@ -536,6 +556,12 @@ export class CheckpointService {
     this.now = opts.now ?? Date.now;
     this.enumerate = opts.enumerate ?? ((o) => enumerateScope(o));
     this.platform = opts.platform ?? process.platform;
+    this.planUndoMerge = opts.planUndoMerge ?? ((input) => realPlanUndoMerge(input, {
+      gitExe: this.gitExe,
+      runGit: this.runGit,
+      runGitBytes: this.runGitBytes,
+      tmpDir: this.tmpDir,
+    }));
     this.mergeUndoPreviewRegistry = opts.mergeUndoPreviewRegistry ?? new MergeUndoPreviewRegistry(this.now);
   }
 
@@ -1287,6 +1313,64 @@ export class CheckpointService {
       row.afterRef,
       row.afterOid,
     );
+    if ((params.strategy ?? 'exact') === 'merge-undo') {
+      if (!afterUsable || !row.beforeOid || !row.afterOid) {
+        return { ...base, reason: 'after-edge-unusable' };
+      }
+      const planned = await this.planUndoMerge({
+        cwd: repoRoot,
+        beforeOid: row.beforeOid,
+        afterOid: row.afterOid,
+        requestedPaths: validation.validatedPaths,
+        witnessedPaths: witnessedSet,
+        liveContentionPaths: validation.contention.map((entry) => entry.path),
+      });
+      const pathStates: SharedMergeUndoPathPreview[] = planned.paths.map((entry) => ({
+        path: entry.path,
+        state: entry.state,
+        ...(entry.state === 'clean' || entry.state === 'merged' || entry.state === 'conflicted'
+          ? {}
+          : { reason: entry.state === 'refused-live-contention' ? 'active-turn-witnesses-path' : entry.state }),
+        ...(entry.patch === null ? {} : { patch: entry.patch }),
+        patchTruncated: entry.patchTruncated,
+        omittedBytes: entry.omittedBytes,
+      }));
+      if (planned.kind !== 'ready') {
+        const reason = planned.kind === 'conflicted'
+          ? planned.reason
+          : planned.kind === 'refused'
+            ? (planned.reason === 'refused-live-contention' ? 'active-turn-witnesses-path' : planned.reason)
+            : planned.reason;
+        return {
+          ...base,
+          reason,
+          pathStates,
+          ...('omittedBytes' in planned ? {
+            omittedBytes: planned.omittedBytes,
+            omittedPathCount: planned.omittedPathCount,
+          } : {}),
+        };
+      }
+      const identity = mergePreviewIdentity(
+        workspaceId,
+        turnId,
+        row.beforeOid,
+        row.afterOid,
+        validation.validatedPaths,
+        planned,
+      );
+      const mergePreviewToken = this.mergeUndoPreviewRegistry.mint(identity);
+      if (!mergePreviewToken) return { ...base, reason: 'merge-preview-token-invalid', pathStates };
+      return {
+        ...base,
+        available: true,
+        reason: null,
+        mergePreviewToken,
+        pathStates,
+        omittedBytes: planned.omittedBytes,
+        omittedPathCount: planned.omittedPathCount,
+      };
+    }
     const root = this.canonicalRoot(repoRoot);
     const gate = await checkAfterSnapshot({
       repoRoot,
@@ -1493,22 +1577,13 @@ export class CheckpointService {
     strategy?: RestoreStrategy;
     mergePreviewToken?: string;
   }): Promise<RestoreOutcome> {
-    if ((params.strategy ?? 'exact') === 'merge-undo') {
-      return this.failedOutcome(
-        'merge_undo_paths',
-        params.operationId ?? '',
-        dedupe(params.requestedPaths),
-        [],
-        params.force ? 'merge-force-refused' : 'merge-undo-not-implemented',
-      );
-    }
     const validation = this.validateRestorePaths(params.turnId, params.requestedPaths, params.workspaceId);
     if (!validation.ok) {
       // Non-witnessed paths never reach a mutation; fail visibly WITHOUT a lock/row.
       return {
         status: 'failed',
         operationId: params.operationId ?? '',
-        kind: 'restore_paths',
+        kind: (params.strategy ?? 'exact') === 'merge-undo' ? 'merge_undo_paths' : 'restore_paths',
         preRef: null,
         preOid: null,
         requestedPaths: dedupe(params.requestedPaths),
@@ -1519,7 +1594,7 @@ export class CheckpointService {
         failureReason: 'non-witnessed-paths',
       };
     }
-    return this.executeRestore('restore_paths', {
+    return this.executeRestore((params.strategy ?? 'exact') === 'merge-undo' ? 'merge_undo_paths' : 'restore_paths', {
       ...params,
       paths: validation.validatedPaths,
       contention: validation.contention,
@@ -1542,18 +1617,9 @@ export class CheckpointService {
     mergePreviewToken?: string;
   }): Promise<RestoreOutcome> {
     const paths = this.revertTurnPathSet(params.turnId).paths;
-    if ((params.strategy ?? 'exact') === 'merge-undo') {
-      return this.failedOutcome(
-        'merge_undo_turn',
-        params.operationId ?? '',
-        paths,
-        [],
-        params.force ? 'merge-force-refused' : 'merge-undo-not-implemented',
-      );
-    }
     // Surface same-path open-turn contention for symmetry with restorePaths.
     const validation = this.validateRestorePaths(params.turnId, paths, params.workspaceId);
-    return this.executeRestore('revert_turn', {
+    return this.executeRestore((params.strategy ?? 'exact') === 'merge-undo' ? 'merge_undo_turn' : 'revert_turn', {
       ...params,
       paths,
       contention: validation.contention,
@@ -1563,7 +1629,7 @@ export class CheckpointService {
   // ── the compound op: one RESTORE-priority lock acquisition ─────────────────────
 
   private async executeRestore(
-    kind: 'restore_paths' | 'revert_turn',
+    kind: RestoreOutcome['kind'],
     args: {
       turnId: string;
       paths: string[];
@@ -1573,6 +1639,8 @@ export class CheckpointService {
       operationId?: string;
       previewTokens?: Record<string, string>;
       force?: boolean;
+      strategy?: RestoreStrategy;
+      mergePreviewToken?: string;
       contention: { path: string; turnId: string }[];
     },
   ): Promise<RestoreOutcome> {
@@ -1590,7 +1658,7 @@ export class CheckpointService {
   }
 
   private async runRestore(
-    kind: 'restore_paths' | 'revert_turn',
+    kind: RestoreOutcome['kind'],
     args: {
       turnId: string;
       paths: string[];
@@ -1601,6 +1669,8 @@ export class CheckpointService {
       operationId?: string;
       previewTokens?: Record<string, string>;
       force?: boolean;
+      strategy?: RestoreStrategy;
+      mergePreviewToken?: string;
       contention: { path: string; turnId: string }[];
     },
   ): Promise<RestoreOutcome> {
@@ -1622,6 +1692,7 @@ export class CheckpointService {
       status: 'pending',
       sourceTurnId: args.turnId,
       requestedPaths: paths,
+      ...((args.strategy ?? 'exact') === 'merge-undo' ? { previewToken: args.mergePreviewToken ?? null } : {}),
     });
 
     const fail = (reason: string, extra?: Partial<RestoreOutcome>): RestoreOutcome => {
@@ -1652,6 +1723,133 @@ export class CheckpointService {
         ...(overlap ? { overlap } : {}),
       };
     };
+
+    // Strategy dispatch is deliberately above every exact-only classifier/source/gate.
+    // Merge undo owns its token, edge, contention, planner, PRE, and apply checks and
+    // cannot fall through to checkAfterSnapshot or the exact preview-token/force path.
+    if ((args.strategy ?? 'exact') === 'merge-undo') {
+      if (args.force) return fail('merge-force-refused');
+      const consumed = args.mergePreviewToken
+        ? this.mergeUndoPreviewRegistry.consumeDetailed(args.mergePreviewToken)
+        : { kind: 'invalid' as const };
+      if (consumed.kind !== 'ok') {
+        return fail(consumed.kind === 'expired' ? 'merge-preview-token-expired' : 'merge-preview-token-invalid');
+      }
+      const token = consumed.record;
+      if (
+        token.workspaceId !== args.workspaceId
+        || token.turnId !== args.turnId
+        || token.strategy !== 'merge-undo'
+        || JSON.stringify(token.requestedPaths) !== JSON.stringify([...paths].sort())
+        || token.mergeExitCode !== 0
+        || token.hasUnmergedRecords
+      ) return fail('merge-preview-token-invalid');
+
+      const row = this.store.getTurnRecord(args.turnId);
+      if (!row) return fail('unknown-turn');
+      const [beforeUsable, afterUsable] = await Promise.all([
+        this.verifyEdgeUsable(repoRoot, row.beforeReady, row.beforeRef, row.beforeOid),
+        this.verifyEdgeUsable(repoRoot, row.afterReady, row.afterRef, row.afterOid),
+      ]);
+      if (!beforeUsable) return fail('before-edge-unusable');
+      if (!afterUsable || !row.beforeOid || !row.afterOid) return fail('after-edge-unusable');
+      if (row.beforeOid !== token.beforeCommitOid || row.afterOid !== token.afterCommitOid) {
+        return fail('merge-preview-token-invalid');
+      }
+
+      contention = this.openTurnContention(args.turnId, paths, args.workspaceId);
+      const plannerInput: UndoMergePlannerInput = {
+        cwd: repoRoot,
+        beforeOid: row.beforeOid,
+        afterOid: row.afterOid,
+        requestedPaths: paths,
+        witnessedPaths: this.revertTurnPathSet(args.turnId).paths,
+        liveContentionPaths: contention.map((entry) => entry.path),
+      };
+      const classified = await this.planUndoMerge(plannerInput);
+      if (classified.kind !== 'ready') {
+        return fail(mergePlanFailureReason(classified));
+      }
+      if (!sameMergeIdentity(token, mergePreviewIdentity(
+        args.workspaceId, args.turnId, row.beforeOid, row.afterOid, paths, classified,
+      ))) return fail('merge-preview-token-invalid');
+
+      const currentStat = new Map<string, LstatInfo | null>();
+      for (const p of paths) currentStat.set(p, this.lstatAbs(this.abs(root, p)));
+      let pre: SafetyPreOutcome;
+      try {
+        pre = await this.captureSafetyPre({
+          repoRoot,
+          repoState: args.capability.repoState === 'unborn' ? 'unborn' : 'repo',
+          workspaceId: args.workspaceId,
+          operationId,
+          paths,
+          currentStat,
+          captureIndex: true,
+        });
+      } catch (err) {
+        return fail(`pre-snapshot-failed:${describeError(err)}`);
+      }
+      this.recoveryStore.updateRecoveryOperation(operationId, { preIncludedPaths: pre.included });
+      if (!pre.ok) return fail(pre.reason ?? 'pre-snapshot-failed', { preRef: pre.ref, preOid: pre.oid });
+
+      // Re-plan after PRE so all mechanical identity is live at the last safe point.
+      const replanned = await this.planUndoMerge(plannerInput);
+      if (replanned.kind !== 'ready' || !sameMergeIdentity(token, mergePreviewIdentity(
+        args.workspaceId, args.turnId, row.beforeOid, row.afterOid, paths, replanned.kind === 'ready' ? replanned : classified,
+      ))) {
+        return fail(replanned.kind === 'ready' ? 'merge-preview-token-invalid' : mergePlanFailureReason(replanned), {
+          preRef: pre.ref, preOid: pre.oid,
+        });
+      }
+      if (replanned.paths.some((entry) => entry.conflictStages.length > 0)) {
+        return fail('merge-preview-token-invalid', { preRef: pre.ref, preOid: pre.oid });
+      }
+
+      this.recoveryStore.updateRecoveryOperation(operationId, { status: 'ready' });
+      const completed: string[] = [];
+      const failures: { path: string; reason: string }[] = [];
+      const requestedSet = new Set(paths);
+      for (const p of paths) {
+        const plannedPath = replanned.paths.find((entry) => entry.path === p);
+        if (!plannedPath) {
+          failures.push({ path: p, reason: 'merge-result-missing' });
+          continue;
+        }
+        const target: RestoreTarget = plannedPath.result
+          ? { kind: 'present', mode: plannedPath.result.mode, oid: plannedPath.result.blobOid }
+          : { kind: 'absent' };
+        try {
+          await this.mutateMergeWorktreePath(repoRoot, root, p, target, requestedSet);
+          await this.updateRealIndex(repoRoot, p, target);
+          completed.push(p);
+          this.recoveryStore.updateRecoveryOperation(operationId, { completedPaths: completed });
+        } catch (err) {
+          failures.push({ path: p, reason: describeError(err) });
+        }
+      }
+      const status: RestoreOutcome['status'] = failures.length === 0 ? 'completed' : 'partial';
+      this.recoveryStore.updateRecoveryOperation(operationId, {
+        status,
+        completedPaths: completed,
+        failureReason: failures.length > 0 ? failures.map((entry) => `${entry.path}:${entry.reason}`).join('; ') : null,
+        result: JSON.stringify({ completed, failures }),
+        endedAt: this.now(),
+      });
+      return {
+        status,
+        operationId,
+        kind,
+        preRef: pre.ref,
+        preOid: pre.oid,
+        requestedPaths: paths,
+        completedPaths: completed,
+        rejectedPaths: [],
+        failures,
+        contention,
+        failureReason: null,
+      };
+    }
 
     // 0. Classify requested paths: ignored (check-ignore trichotomy) + unsupported
     //    current entry types are REJECTED as not-covered-by-before-checkpoint. Any
@@ -1848,6 +2046,7 @@ export class CheckpointService {
     operationId: string;
     paths: string[];
     currentStat: Map<string, LstatInfo | null>;
+    captureIndex?: boolean;
   }): Promise<SafetyPreOutcome> {
     const { repoRoot, repoState, operationId, paths, currentStat } = a;
     const ref = recoveryRef({ workspaceId: a.workspaceId, operationId });
@@ -1901,6 +2100,18 @@ export class CheckpointService {
       }
       // Absent paths in the PRE snapshot get the ABSENT sentinel for the token compare.
       for (const rec of included) if (rec.state !== 'present') currentOid.set(rec.path, ABSENT_SENTINEL);
+
+      if (a.captureIndex) {
+        const index = await this.readRealIndexEntries(repoRoot, paths);
+        for (const rec of included) {
+          const entry = index.get(rec.path) ?? null;
+          rec.indexState = entry ? 'present' : 'absent';
+          if (entry) {
+            rec.indexOid = entry.oid;
+            rec.indexMode = entry.mode;
+          }
+        }
+      }
 
       const indexInfo = [...additions, ...deletions];
       if (indexInfo.length > 0) {
@@ -1966,6 +2177,81 @@ export class CheckpointService {
       out.set(p, { kind: 'present', mode, oid });
     }
     return out;
+  }
+
+  private async readRealIndexEntries(
+    repoRoot: string,
+    paths: string[],
+  ): Promise<Map<string, { mode: string; oid: string }>> {
+    const result = await this.runGitBytes(repoRoot, ['ls-files', '--stage', '-z', '--', ...paths], {
+      gitExe: this.gitExe,
+      timeoutMs: this.restoreTuning.fileTimeoutMs,
+      maxBytes: 64 << 20,
+    });
+    if (result.code !== 0) throw new RestoreError('index-read-failed');
+    const entries = new Map<string, { mode: string; oid: string }>();
+    for (const record of result.stdout.toString('utf8').split('\0').filter(Boolean)) {
+      const tab = record.indexOf('\t');
+      const meta = tab < 0 ? [] : record.slice(0, tab).split(' ');
+      if (meta.length !== 3 || meta[2] !== '0') throw new RestoreError('index-worktree-diverged');
+      entries.set(record.slice(tab + 1), { mode: meta[0], oid: meta[1] });
+    }
+    return entries;
+  }
+
+  private async updateRealIndex(repoRoot: string, relPath: string, target: RestoreTarget): Promise<void> {
+    const args = target.kind === 'present'
+      ? ['update-index', '--add', '--cacheinfo', target.mode, target.oid, relPath]
+      : ['update-index', '--force-remove', '--', relPath];
+    const result = await this.git(repoRoot, args, { allowNonzero: true });
+    if (result.code !== 0) throw new RestoreError('index-update-failed');
+  }
+
+  /** Materialize a clean merge blob through Git's smudge pipeline before the same
+   * guarded atomic worktree transition used by exact restore. */
+  private async mutateMergeWorktreePath(
+    repoRoot: string,
+    root: string,
+    relPath: string,
+    target: RestoreTarget,
+    requestedSet: Set<string>,
+  ): Promise<void> {
+    const targetAbs = this.abs(root, relPath);
+    if (!withinRoot(targetAbs, root)) throw new RestoreError('path-escapes-workspace');
+    this.assertSafeAncestors(root, relPath);
+    if (target.kind === 'absent') {
+      const st = this.lstatAbs(targetAbs);
+      if (st === null) return;
+      if (st.isDirectory) {
+        this.clearDirectoryForTransition(root, targetAbs, requestedSet);
+        return;
+      }
+      this.assertSafeAncestors(root, relPath);
+      await this.guardedUnlink(targetAbs);
+      return;
+    }
+    if (target.mode !== '100644' && target.mode !== '100755') {
+      throw new RestoreError(`unsupported-tree-mode:${target.mode}`);
+    }
+    this.clearDirectoryForTransition(root, targetAbs, requestedSet);
+    const dir = path.dirname(targetAbs);
+    fs.mkdirSync(dir, { recursive: true });
+    this.assertSafeAncestors(root, relPath);
+    const tmp = path.join(dir, `.lares-restore-${randomUUID()}.tmp`);
+    try {
+      const smudged = await this.runGitBytes(repoRoot, ['cat-file', '--filters', `--path=${relPath}`, target.oid], {
+        gitExe: this.gitExe,
+        timeoutMs: this.restoreTuning.fileTimeoutMs,
+        maxBytes: this.restoreTuning.fileMaxBytes,
+      });
+      if (smudged.code !== 0) throw new RestoreError('blob-smudge-failed');
+      fs.writeFileSync(tmp, smudged.stdout);
+      this.applyMode(tmp, target.mode);
+      await this.atomicReplace(tmp, targetAbs);
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+      throw err;
+    }
   }
 
   // ── steps 6–8: per-path guarded mutation ───────────────────────────────────────
@@ -2229,6 +2515,9 @@ export interface CheckpointPreviewResult {
   overlap?: AfterSnapshotOverlap;
   strategy?: RestoreStrategy;
   mergePreviewToken?: string;
+  pathStates?: SharedMergeUndoPathPreview[];
+  omittedBytes?: number;
+  omittedPathCount?: number;
 }
 
 export interface RestorePathValidation {
@@ -2255,6 +2544,10 @@ export interface PreIncludedPath {
   state: 'present' | 'absent' | 'directory';
   oid?: string;
   mode?: string;
+  /** Merge undo additionally records the prior real-index entry for rollback. */
+  indexState?: 'present' | 'absent';
+  indexOid?: string;
+  indexMode?: string;
 }
 
 /** A restore source resolved from the before commit via ls-tree. */
@@ -2334,6 +2627,68 @@ function canonicalHistoryPath(input: string, repoRoot: string): string {
 
 function dedupe(paths: string[]): string[] {
   return Array.from(new Set(paths));
+}
+
+type ReadyUndoMergePlan = Extract<UndoMergePlannerResult, { kind: 'ready' }>;
+
+function mergePreviewIdentity(
+  workspaceId: string,
+  turnId: string,
+  beforeCommitOid: string,
+  afterCommitOid: string,
+  requestedPaths: string[],
+  planned: ReadyUndoMergePlan,
+): MergeUndoPreviewIdentity {
+  return {
+    workspaceId,
+    turnId,
+    strategy: 'merge-undo',
+    beforeCommitOid,
+    afterCommitOid,
+    requestedPaths: [...requestedPaths].sort(),
+    renameGroups: planned.renameGroups.map((group) => [...group].sort()),
+    resultTreeOid: planned.resultTreeOid,
+    mergeExitCode: 0,
+    hasUnmergedRecords: planned.paths.some((entry) => entry.conflictStages.length > 0),
+    paths: planned.paths.map((entry) => ({
+      path: entry.path,
+      state: entry.state,
+      currentRawOid: entry.current?.rawWorktreeOid ?? null,
+      currentCleanOid: entry.current?.blobOid ?? null,
+      currentMode: entry.current?.mode ?? null,
+      indexCleanOid: entry.index?.blobOid ?? null,
+      indexMode: entry.index?.mode ?? null,
+      normalizationFingerprint: entry.normalizationFingerprint ?? '',
+      resultBlobOid: entry.result?.blobOid ?? null,
+      resultMode: entry.result?.mode ?? null,
+    })),
+  };
+}
+
+function sameMergeIdentity(a: MergeUndoPreviewIdentity, b: MergeUndoPreviewIdentity): boolean {
+  const normalized = (identity: MergeUndoPreviewIdentity) => ({
+    workspaceId: identity.workspaceId,
+    turnId: identity.turnId,
+    strategy: identity.strategy,
+    beforeCommitOid: identity.beforeCommitOid,
+    afterCommitOid: identity.afterCommitOid,
+    requestedPaths: [...identity.requestedPaths].sort(),
+    renameGroups: identity.renameGroups.map((group) => [...group].sort())
+      .sort((left, right) => left.join('\0').localeCompare(right.join('\0'))),
+    resultTreeOid: identity.resultTreeOid,
+    mergeExitCode: identity.mergeExitCode,
+    hasUnmergedRecords: identity.hasUnmergedRecords,
+    paths: [...identity.paths].sort((left, right) => left.path.localeCompare(right.path)),
+  });
+  return JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
+}
+
+function mergePlanFailureReason(plan: Exclude<UndoMergePlannerResult, { kind: 'ready' }>): string {
+  if (plan.kind === 'conflicted') return plan.reason;
+  if (plan.kind === 'refused') {
+    return plan.reason === 'refused-live-contention' ? 'active-turn-witnesses-path' : plan.reason;
+  }
+  return plan.reason;
 }
 
 // ── restore internals ─────────────────────────────────────────────────────────
