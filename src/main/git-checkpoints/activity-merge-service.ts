@@ -24,6 +24,7 @@ import {
 } from '../database';
 import { runGit as realRunGit, runGitBytes as realRunGitBytes, type GitRunBytesResult, type GitRunResult, type RunGitOptions } from './git-command';
 import { recordIntentArchitectureEvent } from './intent-architecture-telemetry';
+import { runMergeTreeCore, splitNulRecords, type MergeTreeStageRecord } from './merge-tree-core';
 
 const OID_RE = /^[0-9a-f]{40,64}$/;
 const OPTS: RunGitOptions = { allowNonzero: true, timeoutMs: 60_000, maxBytes: 64 << 20 };
@@ -76,39 +77,20 @@ const defaultStore: ActivityMergeStore = {
   recordPromotedCheckpointRefs,
 };
 
-function splitZero(bytes: Buffer): Buffer[] {
-  const rows: Buffer[] = [];
-  let start = 0;
-  for (let i = 0; i < bytes.length; i += 1) {
-    if (bytes[i] !== 0) continue;
-    if (i > start) rows.push(bytes.subarray(start, i));
-    start = i + 1;
-  }
-  return rows;
-}
-
-function parseUnmerged(bytes: Buffer, attemptId: string): ActivityMergeConflict[] {
+function activityConflicts(stages: readonly MergeTreeStageRecord[], attemptId: string): ActivityMergeConflict[] {
   const byPath = new Map<string, ActivityMergeConflict>();
-  for (const row of splitZero(bytes)) {
-    const tab = row.indexOf(9);
-    if (tab < 0) continue;
-    const meta = row.subarray(0, tab).toString('ascii').split(' ');
-    const stage = Number(meta[2]);
-    const pathBytesBase64 = row.subarray(tab + 1).toString('base64');
+  for (const stage of stages) {
+    const pathBytesBase64 = stage.pathBytesBase64;
     const current = byPath.get(pathBytesBase64) ?? {
       attemptId, pathBytesBase64, baseBlobOid: null, primaryBlobOid: null,
       activityBlobOid: null, resolutionBlobOid: null, resolution: null,
     };
-    if (stage === 1) current.baseBlobOid = meta[1] ?? null;
-    if (stage === 2) current.primaryBlobOid = meta[1] ?? null;
-    if (stage === 3) current.activityBlobOid = meta[1] ?? null;
+    if (stage.stage === 1) current.baseBlobOid = stage.blobOid;
+    if (stage.stage === 2) current.primaryBlobOid = stage.blobOid;
+    if (stage.stage === 3) current.activityBlobOid = stage.blobOid;
     byPath.set(pathBytesBase64, current);
   }
   return [...byPath.values()].sort((a, b) => a.pathBytesBase64.localeCompare(b.pathBytesBase64));
-}
-
-function displayPath(pathBytesBase64: string): string {
-  return Buffer.from(pathBytesBase64, 'base64').toString('utf8');
 }
 
 function latestPromotionBase(activity: PlanningActivityWorktree, attempts: ActivityMergeAttempt[]): string {
@@ -211,47 +193,29 @@ export class ActivityMergeService {
       // conflict whenever both sides edit one file. `merge-tree --write-tree`
       // runs Git's real content merge without touching a worktree; its -z output
       // begins with the result tree and then exact stage records for real conflicts.
-      const merged = await this.runGitBytes(primaryPath,
-        ['merge-tree', '--write-tree', '--merge-base', base, '--messages', '-z', ours, theirs], opts);
-      if (merged.code > 1) throw new Error(merged.stderr.trim() || 'merge-tree-three-way-failed');
-      const mergeRecords = splitZero(merged.stdout);
-      const mergeTreeOid = mergeRecords.shift()?.toString('ascii').trim() ?? '';
-      if (!OID_RE.test(mergeTreeOid)) throw new Error('merge-tree-result-missing');
-      const readTree = await this.runGit(primaryPath, ['read-tree', mergeTreeOid], opts);
-      if (readTree.code !== 0) throw new Error(readTree.stderr.trim() || 'merge-result-read-tree-failed');
-      let conflicts = parseUnmerged(Buffer.concat(mergeRecords.flatMap((row) => [row, Buffer.from([0])])), attempt.id);
-      if (conflicts.length > 0 && resumed) {
-        const resolutions = new Map(this.store.listConflicts(attempt.id).map((row) => [row.pathBytesBase64, row]));
-        for (const conflict of conflicts) {
-          const resolved = resolutions.get(conflict.pathBytesBase64);
-          if (!resolved?.resolution) continue;
-          const oid = resolved.resolutionBlobOid;
-          const p = displayPath(conflict.pathBytesBase64);
-          if (oid) {
-            const modeResult = await this.runGit(primaryPath, ['ls-files', '-u', '--', p], opts);
-            const mode = modeResult.stdout.trim().split(/\s+/)[0] || '100644';
-            await this.runGit(primaryPath, ['update-index', '--add', '--cacheinfo', mode, oid, p], opts);
-          } else {
-            await this.runGit(primaryPath, ['update-index', '--force-remove', '--', p], opts);
-          }
-        }
-        conflicts = conflicts.filter((conflict) => !resolutions.get(conflict.pathBytesBase64)?.resolution);
-      }
-      if (conflicts.length > 0) {
+      const storedResolutions = resumed ? this.store.listConflicts(attempt.id)
+        .filter((conflict) => conflict.resolution)
+        .map((conflict) => ({ pathBytesBase64: conflict.pathBytesBase64, blobOid: conflict.resolutionBlobOid })) : undefined;
+      const merge = await runMergeTreeCore({ cwd: primaryPath, baseOid: base, currentOid: ours,
+        incomingOid: theirs, resolutions: storedResolutions }, {
+        gitExe: this.deps.gitExe, runGit: this.runGit, runGitBytes: this.runGitBytes,
+        tmpDir: this.deps.tmpDir, privateIndexFile: indexFile,
+      });
+      if (merge.kind === 'failed') throw new Error(merge.reason);
+      const conflicts = activityConflicts(merge.stages, attempt.id);
+      if (merge.kind === 'conflicted') {
         this.store.replaceConflicts(attempt.id, conflicts);
         this.store.updateAttempt({ id: attempt.id, state: 'conflicted', endedAt: this.now() });
         this.store.updateActivity({ executionRunId, state: 'merge-conflicted', failureCode: null, updatedAt: this.now() });
         return { status: 'conflicted', attemptId: attempt.id, conflicts };
       }
 
-      const treeResult = await this.runGit(primaryPath, ['write-tree'], opts);
-      const treeOid = treeResult.stdout.trim();
-      if (treeResult.code !== 0 || !OID_RE.test(treeOid)) throw new Error('merge-write-tree-failed');
+      const treeOid = merge.applyTreeOid;
       const changedBytes = await this.runGitBytes(primaryPath,
         ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', ours, treeOid],
         { ...OPTS, gitExe: this.deps.gitExe });
       if (changedBytes.code !== 0) throw new Error('merge-path-discovery-failed');
-      const affected = splitZero(changedBytes.stdout);
+      const affected = splitNulRecords(changedBytes.stdout);
 
       // Affected primary paths must be clean. Unrelated dirt is deliberately not
       // inspected and therefore cannot block or be reconciled by this operation.
@@ -305,7 +269,7 @@ export class ActivityMergeService {
         const checkout = await this.runGit(primaryPath, ['checkout-index', '--force', '--stdin', '-z'], { ...opts, stdin });
         if (checkout.code !== 0) throw new Error('primary-worktree-reconcile-failed');
         const stage = await this.runGitBytes(primaryPath, ['ls-files', '--stage', '-z', '--', ...affected.map((p) => p.toString('utf8'))], opts);
-        const present = new Set(splitZero(stage.stdout).map((row) => row.subarray(row.indexOf(9) + 1).toString('base64')));
+        const present = new Set(splitNulRecords(stage.stdout).map((row) => row.subarray(row.indexOf(9) + 1).toString('base64')));
         let indexInfo = stage.stdout;
         for (const p of affected) {
           if (!present.has(p.toString('base64'))) indexInfo = Buffer.concat([indexInfo, Buffer.from(`0 ${'0'.repeat(40)}\t`), p, Buffer.from([0])]);

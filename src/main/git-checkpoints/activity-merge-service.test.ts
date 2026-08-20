@@ -125,6 +125,13 @@ test('scenario 6: incompatible plan commits persist exact conflicts and leave pr
   assert.deepEqual(result.status === 'conflicted' && result.conflicts.map((c) => c.pathBytesBase64),
     [Buffer.from('shared.txt').toString('base64')]);
   if (result.status !== 'conflicted') return;
+  assert.deepEqual(result.conflicts.map((conflict) => [
+    conflict.baseBlobOid, conflict.primaryBlobOid, conflict.activityBlobOid,
+  ]), [[
+    git(f.primary, 'rev-parse', `${f.row.baselineOid}:shared.txt`),
+    git(f.primary, 'rev-parse', `${before}:shared.txt`),
+    git(f.primary, 'rev-parse', `${f.row.activityHeadRef}:shared.txt`),
+  ]], 'activity persistence consumes the neutral core stage 1/2/3 records');
   const resolved = await service.resolveAndPromote({ attemptId: result.attemptId, resolutions: [{
     pathBytesBase64: result.conflicts[0].pathBytesBase64, resolution: 'take-activity',
   }] });
