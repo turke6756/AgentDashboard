@@ -3,7 +3,7 @@ import fs from 'fs';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { ORCHESTRATIONS } from './catalog';
-import { runSerial, runParallel } from './groupthink-v2';
+import { planArtifactHash, preparePlanBaselineForResume, runSerial, runParallel } from './groupthink-v2';
 import { parseLegacyGroupthinkCommand } from './groupthink-legacy';
 import {
   DashboardClient, RunOrchestrationRequest, OrchestrationRun,
@@ -166,6 +166,7 @@ export class OrchestrationService extends EventEmitter {
       if (req.reviewerProvider && req.reviewerProvider !== prior.reviewerProvider)
         throw httpErr(409, 'A resumed orchestration cannot change its reviewer provider.');
       run = { ...prior, status: 'running', error: undefined, endedAt: undefined, updatedAt: nowIso() };
+      preparePlanBaselineForResume(run);
     } else {
       assertGroupthinkProvider('lead_provider', req.leadProvider);
       assertGroupthinkProvider('reviewer_provider', req.reviewerProvider);
@@ -212,6 +213,7 @@ export class OrchestrationService extends EventEmitter {
         startedAt: nowIso(),
         updatedAt: nowIso(),
       };
+      run.planBaselineHash = planArtifactHash(run.planPath);
       // T2: archive a stale plan at the same path BEFORE persisting the run. A
       // failed archive throws here, refusing the start before any run row exists.
       // Gated on all three resume signals — resumeLeadId/resumeReviewerId can be

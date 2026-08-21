@@ -22,7 +22,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runSerial, runParallel } from './groupthink-v2';
+import {
+  planArtifactHash, planArtifactMatchesRun, preparePlanBaselineForResume,
+  runSerial, runParallel,
+} from './groupthink-v2';
 import { parallelSynthesisPrompt, serialLeadPrompt, writebackClause } from './groupthink-v2-prompts';
 import { Agent } from '../../shared/types';
 import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './types';
@@ -205,6 +208,15 @@ async function rejectsMatching(p: Promise<unknown>, re: RegExp): Promise<void> {
 
 function rm(p: string): void { try { fs.unlinkSync(p); } catch { /* ignore */ } }
 
+function planArtifact(run: OrchestrationRun, overrides: { intentId?: string; planArtifactId?: string } = {}): string {
+  return `---\n` +
+    `intent_id: ${overrides.intentId ?? run.planningIntentId}\n` +
+    `plan_artifact_id: ${overrides.planArtifactId ?? run.planArtifactId}\n` +
+    `status: active\n` +
+    `date: 2026-08-20\n` +
+    `---\n\n# Delivered plan\n`;
+}
+
 test('legacy fresh-file and anchored HTML writeback clauses remain byte-identical', () => {
   const legacyPath = '/tmp/legacy-plan.md';
   assert.equal(writebackClause(legacyPath), `write the plan file to ${legacyPath}`);
@@ -248,10 +260,11 @@ test('serial runner threads frozen plan identity into the folder-plan lead promp
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb',
     planningIntentId: 'int_1234abcd',
+    planBaselineHash: null,
   });
   const { client, state } = makeFake({
     onTurn: (agent) => {
-      if (agent.title.startsWith('Lead') && agent.counter === 2) fs.writeFileSync(target, 'plan');
+      if (agent.title.startsWith('Lead') && agent.counter === 2) fs.writeFileSync(target, planArtifact(run));
     },
   });
 
@@ -263,6 +276,129 @@ test('serial runner threads frozen plan identity into the folder-plan lead promp
     assert.ok(leadKickoff.includes(target));
   } finally {
     rm(target);
+  }
+});
+
+test('plan-bound serial run ignores scaffold baseline at turn 1 and launches reviewer', async () => {
+  const target = freshPlanPath();
+  fs.writeFileSync(target, '# scaffolded plan.md\n');
+  const run = makeRun({
+    planPath: target,
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb',
+    planningIntentId: 'int_1234abcd',
+    planBaselineHash: planArtifactHash(target),
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 2) fs.writeFileSync(target, planArtifact(run));
+    },
+  });
+
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    assert.equal(state.launchInputs.length, 2, 'REACHABILITY:wp3-baseline-detector reviewer launches after turn 1');
+  } finally {
+    rm(target);
+  }
+});
+
+test('editing the source plan.md after start cannot deliver the frozen per-run target', async () => {
+  const sourcePlan = freshPlanPath();
+  const target = freshPlanPath();
+  fs.writeFileSync(sourcePlan, '# plan summary\n');
+  const run = makeRun({
+    planPath: target,
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb',
+    planningIntentId: 'int_1234abcd',
+    planBaselineHash: null,
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) fs.appendFileSync(sourcePlan, 'external edit\n');
+      if (agent.title.startsWith('Lead') && agent.counter === 2) fs.writeFileSync(target, planArtifact(run));
+    },
+  });
+
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    assert.equal(state.launchInputs.length, 2, 'source-plan edit did not skip reviewer');
+  } finally {
+    rm(sourcePlan);
+    rm(target);
+  }
+});
+
+test('plan-bound completion requires changed parseable frontmatter matching both frozen identities', async () => {
+  const run = makeRun({
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb',
+    planningIntentId: 'int_1234abcd',
+    planBaselineHash: null,
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        fs.writeFileSync(run.planPath, '# changed but no frontmatter\n');
+      } else if (agent.title.startsWith('Reviewer') && agent.counter === 1) {
+        fs.writeFileSync(run.planPath, planArtifact(run, { intentId: 'int_deadbeef' }));
+      } else if (agent.title.startsWith('Lead') && agent.counter === 2) {
+        fs.writeFileSync(run.planPath, planArtifact(run, { planArtifactId: 'plan_deadbeef' }));
+      } else if (agent.title.startsWith('Lead') && agent.counter === 3) {
+        fs.writeFileSync(run.planPath, planArtifact(run));
+      }
+    },
+  });
+
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    assert.equal(state.launchInputs.length, 2, 'unparseable artifact did not complete at lead turn 1');
+    assert.equal(state.sendInputCalls.filter((call) => /Reviewer Feedback/.test(call.text)).length, 2,
+      'wrong intent and wrong plan_artifact_id both kept the relay running');
+    assert.equal(planArtifactMatchesRun(run), true, 'matching changed artifact completes');
+  } finally {
+    rm(run.planPath);
+  }
+});
+
+test('resume accepts a changed matching artifact and re-baselines an invalid current artifact', () => {
+  const accepted = makeRun({
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb', planningIntentId: 'int_1234abcd', planBaselineHash: null,
+  });
+  const invalid = makeRun({
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb', planningIntentId: 'int_1234abcd', planBaselineHash: null,
+  });
+  try {
+    fs.writeFileSync(accepted.planPath, planArtifact(accepted));
+    preparePlanBaselineForResume(accepted);
+    assert.equal(accepted.planBaselineHash, null, 'valid changed artifact remains deliverable on resume');
+    assert.equal(planArtifactMatchesRun(accepted), true);
+
+    fs.writeFileSync(invalid.planPath, planArtifact(invalid, { intentId: 'int_deadbeef' }));
+    preparePlanBaselineForResume(invalid);
+    assert.equal(invalid.planBaselineHash, planArtifactHash(invalid.planPath), 'invalid current file becomes resume baseline');
+    assert.equal(planArtifactMatchesRun(invalid), false, 're-baselined invalid artifact keeps waiting');
+  } finally {
+    rm(accepted.planPath);
+    rm(invalid.planPath);
+  }
+});
+
+test('legacy non-plan fresh-file run retains bare existsSync completion', async () => {
+  const run = makeRun();
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) fs.writeFileSync(run.planPath, 'legacy plan');
+    },
+  });
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    assert.equal(state.launchInputs.length, 1, 'legacy file existence still completes before reviewer launch');
+  } finally {
+    rm(run.planPath);
   }
 });
 

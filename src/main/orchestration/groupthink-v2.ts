@@ -28,6 +28,7 @@ import {
   serialLeadPrompt, serialReviewerKickoff,
   parallelR1Prompt, parallelR2Prompt, parallelSynthesisPrompt,
 } from './groupthink-v2-prompts';
+import { parseFrontmatter } from '../plans/planning-reader';
 
 // --- Configuration (mirrors groupthink-v2.js:39–43) ---
 const READY_STATUSES = new Set<string>(['idle', 'waiting']);
@@ -150,12 +151,46 @@ export function archiveStalePlan(planPath: string, runId: string): string | null
   }
 }
 
-// A folder-native plan binding points at a pre-existing document. Treat it as
-// delivered only after the document's filesystem timestamp moves past run start;
-// fresh-file runs retain their original existence check. This keeps completion
-// independent of the retired plan_section_changes table.
+/** Hash the exact target bytes, returning null when no readable file exists. */
+export function planArtifactHash(planPath: string): string | null {
+  try {
+    return createHash('sha256').update(fs.readFileSync(planPath)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function isFolderPlanDeliverable(run: OrchestrationRun): boolean {
+  return Boolean(run.planId && !run.sectionAnchor && run.planningIntentId && run.planArtifactId);
+}
+
+/** True only for a changed folder-plan document carrying the frozen identity. */
+export function planArtifactMatchesRun(run: OrchestrationRun): boolean {
+  if (!isFolderPlanDeliverable(run)) return false;
+  const currentHash = planArtifactHash(run.planPath);
+  if (currentHash === null || currentHash === (run.planBaselineHash ?? null)) return false;
+  try {
+    const frontmatter = parseFrontmatter(fs.readFileSync(run.planPath, 'utf8'));
+    return frontmatter?.intent_id === run.planningIntentId
+      && frontmatter?.plan_artifact_id === run.planArtifactId;
+  } catch {
+    return false;
+  }
+}
+
+/** Resume keeps an already-delivered artifact; otherwise current disk is the new baseline. */
+export function preparePlanBaselineForResume(run: OrchestrationRun): void {
+  if (isFolderPlanDeliverable(run) && !planArtifactMatchesRun(run)) {
+    run.planBaselineHash = planArtifactHash(run.planPath);
+  }
+}
+
+// Folder-plan outputs require a changed, identity-stamped document. Anchored
+// HTML rails retain their historical timestamp detector, and legacy fresh-file
+// runs retain the original bare existence check below.
 function planDeliverableReady(_client: DashboardClient, ctx: OrchestrationRunContext): boolean {
   const { run } = ctx;
+  if (isFolderPlanDeliverable(run)) return planArtifactMatchesRun(run);
   if (run.planId && run.sectionAnchor) {
     try {
       return fs.statSync(run.planPath).mtimeMs >= Date.parse(run.startedAt);
