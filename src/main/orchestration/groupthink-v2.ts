@@ -603,7 +603,10 @@ export async function runSerial(client: DashboardClient, ctx: OrchestrationRunCo
       title: 'Lead Planner (GroupThink)',
       roleDescription: 'Lead planner in charge of making the final call. You will receive feedback from a reviewer.',
       provider: leadProvider,
-      kickoffPrompt: serialLeadPrompt(topic, planPath, sectionAnchor, run.planId),
+      kickoffPrompt: serialLeadPrompt(
+        topic, planPath, sectionAnchor, run.planId,
+        run.planningIntentId ?? undefined, run.planArtifactId ?? undefined,
+      ),
       ownerAgentId: run.supervisorId,
     });
     run.leadId = lead.id;
@@ -768,7 +771,10 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   run.round = 3;
   ctx.emit('round', { round: 3 });
   await waitReceiverReady(client, ctx, synthesizer.id, 'Synthesizer', turnTimeoutMs);
-  await sendWorker(client, ctx, synthesizer.id, 'Synthesizer', parallelSynthesisPrompt(peerR2.content, planPath, sectionAnchor, run.planId));
+  await sendWorker(client, ctx, synthesizer.id, 'Synthesizer', parallelSynthesisPrompt(
+    peerR2.content, planPath, sectionAnchor, run.planId,
+    run.planningIntentId ?? undefined, run.planArtifactId ?? undefined,
+  ));
 
   const synthR3 = await waitTurnComplete(client, ctx, synthesizer.id, 'Synthesizer R3', turnTimeoutMs);
   markRelayed(ctx, synthesizer.id, synthR3);

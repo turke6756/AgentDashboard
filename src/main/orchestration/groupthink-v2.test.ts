@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runSerial, runParallel } from './groupthink-v2';
+import { parallelSynthesisPrompt, serialLeadPrompt, writebackClause } from './groupthink-v2-prompts';
 import { Agent } from '../../shared/types';
 import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './types';
 import {
@@ -203,6 +204,67 @@ async function rejectsMatching(p: Promise<unknown>, re: RegExp): Promise<void> {
 }
 
 function rm(p: string): void { try { fs.unlinkSync(p); } catch { /* ignore */ } }
+
+test('legacy fresh-file and anchored HTML writeback clauses remain byte-identical', () => {
+  const legacyPath = '/tmp/legacy-plan.md';
+  assert.equal(writebackClause(legacyPath), `write the plan file to ${legacyPath}`);
+
+  const htmlPath = '/tmp/legacy-surface.html';
+  const sectionAnchor = 'sec_legacy';
+  assert.equal(
+    writebackClause(htmlPath, sectionAnchor, 'int_ignored1', 'plan_ignored1'),
+    `write the finalized plan by NATIVELY EDITING the existing plan surface at ${htmlPath}, ` +
+      `into the section anchored \`${sectionAnchor}\` (Edit that zone in place). ` +
+      `Do NOT create a new file and do NOT edit any other section \u2014 the run completes when that section's content changes`,
+  );
+});
+
+test('folder-plan finalizer prompts name the derived target and exact frontmatter, never plan.md', () => {
+  const target = path.join(os.tmpdir(), 'deliberations', '2026-08-20-1234abcd-run12345.md');
+  const frontmatter = `---\n` +
+    `intent_id: int_1234abcd\n` +
+    `plan_artifact_id: plan_cba81aeb\n` +
+    `status: active\n` +
+    `date: 2026-08-20\n` +
+    `---`;
+  const lead = serialLeadPrompt(
+    'Plan a thing', target, undefined, 'canonical-plan-uuid', 'int_1234abcd', 'plan_cba81aeb',
+  );
+  const synthesis = parallelSynthesisPrompt(
+    'Peer feedback', target, undefined, 'canonical-plan-uuid', 'int_1234abcd', 'plan_cba81aeb',
+  );
+
+  for (const prompt of [lead, synthesis]) {
+    assert.ok(prompt.includes(target));
+    assert.ok(prompt.includes(frontmatter), 'REACHABILITY:wp2-frontmatter-clause');
+    assert.equal(prompt.includes('plan.md'), false);
+  }
+});
+
+test('serial runner threads frozen plan identity into the folder-plan lead prompt', async () => {
+  const target = path.join(os.tmpdir(), `2026-08-20-1234abcd-${process.pid}-threaded.md`);
+  const run = makeRun({
+    planPath: target,
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: 'plan_cba81aeb',
+    planningIntentId: 'int_1234abcd',
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 2) fs.writeFileSync(target, 'plan');
+    },
+  });
+
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    const leadKickoff = state.sendInputCalls[0].text;
+    assert.ok(leadKickoff.includes(`intent_id: ${run.planningIntentId}`));
+    assert.ok(leadKickoff.includes(`plan_artifact_id: ${run.planArtifactId}`));
+    assert.ok(leadKickoff.includes(target));
+  } finally {
+    rm(target);
+  }
+});
 
 // ── Serial: BUG-29 ordering + kickoff path ───────────────────────────
 

@@ -372,6 +372,7 @@ test('orchestration-start-run-resolves-plan-ref', () => {
     PLAN_UUID,
     'REACHABILITY:orchestration-start-run-plan-ref',
   );
+  assert.equal(persisted.planArtifactId, PLAN_ARTIFACT_ID, 'portable plan identity frozen for prompt frontmatter');
   assert.equal(result.planId, PLAN_UUID, 'start_run returns the canonical UUID');
 });
 

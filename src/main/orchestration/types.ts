@@ -97,6 +97,8 @@ export interface OrchestrationRun {
   planPath: string;                  // absolute
   // WP6 planning-surface rail (frozen at dispatch). See RunOrchestrationRequest.
   planId?: string;
+  /** Portable plan identity used by folder-plan output frontmatter. */
+  planArtifactId?: string | null;
   /** Server-witnessed planning-intent association, frozen for this run. */
   planningIntentId?: string | null;
   /** Frozen item stamp for the run (SC-WP-3A). Null/absent for a plan-only or

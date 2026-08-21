@@ -200,6 +200,7 @@ export class OrchestrationService extends EventEmitter {
         topic: req.topic || 'Research and plan a feature.',
         planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId, runId),
         planId: resolved.planId,
+        planArtifactId: resolved.plan.artifactId ?? null,
         planningIntentId: req.planningIntentId,
         sectionAnchor: req.sectionAnchor,
         leadProvider: req.leadProvider || prov.defaultLeadProvider,
