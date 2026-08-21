@@ -44,8 +44,10 @@ const SECOND_PLAN_UUID = '22222222-2222-4222-8222-222222222222';
 const FOREIGN_PLAN_UUID = '33333333-3333-4333-8333-333333333333';
 const DELETED_PLAN_UUID = '44444444-4444-4444-8444-444444444444';
 const BUILT_IN_PLAN_UUID = '55555555-5555-4555-8555-555555555555';
+const HTML_PLAN_UUID = '66666666-6666-4666-8666-666666666666';
 const PLAN_ARTIFACT_ID = 'plan_a1b2c3d4';
 const SECOND_PLAN_ARTIFACT_ID = 'plan_b1c2d3e4';
+const HTML_PLAN_ARTIFACT_ID = 'plan_e1f2a3b4';
 
 db.getWorkspace = (id: string) => {
   if (id === 'ws-1') return { id: 'ws-1', path: workspaceRoots.defaulted };
@@ -61,6 +63,7 @@ const planRows = new Map([
   [FOREIGN_PLAN_UUID, { id: FOREIGN_PLAN_UUID, workspaceId: 'ws-2', path: '.lares/plans/foreign/plan.md', deletedAt: null, artifactId: 'plan_c1d2e3f4' }],
   [DELETED_PLAN_UUID, { id: DELETED_PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/deleted/plan.md', deletedAt: '2026-08-17T00:00:00.000Z', artifactId: 'plan_d1e2f3a4' }],
   [BUILT_IN_PLAN_UUID, { id: BUILT_IN_PLAN_UUID, workspaceId: 'ws-built-in', path: '.lares/plans/built-in/plan.md', deletedAt: null, artifactId: PLAN_ARTIFACT_ID }],
+  [HTML_PLAN_UUID, { id: HTML_PLAN_UUID, workspaceId: 'ws-1', path: 'plans/legacy-plan.html', deletedAt: null, artifactId: HTML_PLAN_ARTIFACT_ID }],
 ]);
 db.getPlan = (id: string) => planRows.has(id) ? clone(planRows.get(id)!) : null;
 db.getPlanByWorkspaceArtifactId = (workspaceId: string, artifactId: string) => {
@@ -370,6 +373,76 @@ test('orchestration-start-run-resolves-plan-ref', () => {
     'REACHABILITY:orchestration-start-run-plan-ref',
   );
   assert.equal(result.planId, PLAN_UUID, 'start_run returns the canonical UUID');
+});
+
+test('folder plan launch freezes a unique in-folder deliberation target', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const result = svc.start_run(baseReq({ planPath: 'caller-controlled.md' }));
+  const run = getRun(result.runId)!;
+  const planFolder = path.join(workspaceRoots.defaulted, '.lares', 'plans', 'primary');
+
+  assert.equal(
+    path.dirname(path.dirname(run.planPath)),
+    planFolder,
+    'REACHABILITY:wp1-deliberation-target',
+  );
+  assert.equal(path.basename(path.dirname(run.planPath)), 'deliberations');
+  assert.match(path.basename(run.planPath), /^\d{4}-\d{2}-\d{2}-1234abcd-[0-9a-f]{8}\.md$/);
+  assert.match(run.planPath, new RegExp(`${run.runId}\\.md$`));
+  assert.notEqual(run.planPath, path.join(planFolder, 'plan.md'));
+});
+
+test('concurrent folder plan launches freeze distinct deliberation targets', async () => {
+  const gate = deferred();
+  const runner: OrchestrationRunner = async () => { await gate.promise; };
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const first = svc.start_run(baseReq());
+  const second = svc.start_run(baseReq());
+  const firstPath = getRun(first.runId)!.planPath;
+  const secondPath = getRun(second.runId)!.planPath;
+
+  assert.notEqual(firstPath, secondPath);
+  assert.ok(firstPath.endsWith(`${first.runId}.md`));
+  assert.ok(secondPath.endsWith(`${second.runId}.md`));
+  gate.resolve();
+  await waitFor(() => getRun(first.runId)?.status === 'complete');
+  await waitFor(() => getRun(second.runId)?.status === 'complete');
+});
+
+test('anchored HTML-surface plan keeps the registered plan path', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const result = svc.start_run(baseReq({ planId: HTML_PLAN_ARTIFACT_ID, sectionAnchor: 'sec_html' }));
+
+  assert.equal(getRun(result.runId)!.planPath, path.join(workspaceRoots.defaulted, 'plans', 'legacy-plan.html'));
+});
+
+test('complete and stalled events report the derived deliberation target', async () => {
+  const completeDeliver = makeDeliver();
+  const completeRunner: OrchestrationRunner = async () => {};
+  const completeSvc = new OrchestrationService(makeClient(), completeDeliver.fn, {
+    serial: completeRunner, parallel: completeRunner,
+  });
+  const complete = completeSvc.start_run(baseReq());
+  await waitFor(() => getRun(complete.runId)?.status === 'complete');
+  const completePath = getRun(complete.runId)!.planPath;
+  const completeEvent = eventsFor(complete.runId).find((event) => event.kind === 'complete');
+  assert.deepEqual(completeEvent?.payload, { planPath: completePath });
+  assert.ok(completeDeliver.calls[0].text.includes(completePath));
+
+  const stalledDeliver = makeDeliver();
+  const stalledRunner: OrchestrationRunner = async () => { throw new Error('STALL: test'); };
+  const stalledSvc = new OrchestrationService(makeClient(), stalledDeliver.fn, {
+    serial: stalledRunner, parallel: stalledRunner,
+  });
+  const stalled = stalledSvc.start_run(baseReq());
+  await waitFor(() => getRun(stalled.runId)?.status === 'stalled');
+  const stalledPath = getRun(stalled.runId)!.planPath;
+  const stalledEvent = eventsFor(stalled.runId).find((event) => event.kind === 'stalled');
+  assert.equal((stalledEvent?.payload as { planPath?: string }).planPath, stalledPath);
+  const stalledDelivery = JSON.parse(stalledDeliver.calls[0].text.split('\n').slice(1).join('\n'));
+  assert.equal(stalledDelivery.planPath, stalledPath);
 });
 
 test('new-launch plan and intent failures preserve the settled rung codes and exact messages', () => {

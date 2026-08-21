@@ -41,7 +41,9 @@ export interface RunOrchestrationRequest {
   supervisorId: string;
   mode?: OrchestrationMode;          // default 'serial'
   topic?: string;
-  planPath?: string;                 // resolved against workspace root
+  // Legacy resume input only. New plan-bound launches ignore this caller value
+  // and freeze a server-derived target from the registered plan row.
+  planPath?: string;
   // WP6 planning-surface rail: when set, the run edits an EXISTING plan surface
   // registered in the plans table at `sectionAnchor` rather than writing a fresh
   // plan file. planId references a `plans` row; sectionAnchor is the `sec_`

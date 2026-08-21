@@ -18,6 +18,7 @@ import {
 import { getOrchestrationProviderSettingsCached } from './orchestration-provider-settings';
 import { isPlanningIntentId } from '../../shared/planning-artifact-ids';
 import { PlanRefError, resolveActivePlanRef, resolvePlanRef } from '../plans/resolve-plan-ref';
+import { workspaceStateDir } from '../workspace-state-dir';
 
 const READY_STATUSES = new Set(['idle', 'waiting']);
 
@@ -27,6 +28,35 @@ function nowIso(): string {
 
 function httpErr(statusCode: number, message: string): Error & { statusCode: number } {
   return Object.assign(new Error(message), { statusCode });
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function frozenPlanPath(
+  workspaceRoot: string,
+  registeredPath: string,
+  planningIntentId: string,
+  runId: string,
+): string {
+  const planPath = path.resolve(path.isAbsolute(registeredPath)
+    ? registeredPath
+    : path.join(workspaceRoot, registeredPath));
+  const plansHome = path.resolve(workspaceStateDir(workspaceRoot), 'plans');
+  if (path.basename(planPath).toLowerCase() !== 'plan.md' || !isContainedPath(plansHome, planPath)) {
+    return planPath;
+  }
+
+  const planFolder = path.dirname(planPath);
+  const date = nowIso().slice(0, 10);
+  const intentHex = planningIntentId.slice('int_'.length);
+  const target = path.resolve(planFolder, 'deliberations', `${date}-${intentHex}-${runId}.md`);
+  if (!isContainedPath(planFolder, target)) {
+    throw httpErr(409, 'Derived orchestration target escapes the requested plan folder');
+  }
+  return target;
 }
 
 export function assertGroupthinkProvider(role: 'lead_provider' | 'reviewer_provider', value: string | undefined): void {
@@ -159,15 +189,16 @@ export class OrchestrationService extends EventEmitter {
       if (!resolved.plan.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
       const planRel = resolved.plan.path;
       const prov = getOrchestrationProviderSettingsCached(ws.path).groupthink;
+      const runId = uuidv4().slice(0, 8);
       run = {
-        runId: uuidv4().slice(0, 8),
+        runId,
         name: 'groupthink',
         mode: req.mode === 'parallel' ? 'parallel' : 'serial',
         status: 'starting',
         workspaceId: req.workspaceId,
         supervisorId: req.supervisorId,
         topic: req.topic || 'Research and plan a feature.',
-        planPath: path.isAbsolute(planRel) ? planRel : path.join(ws.path, planRel),
+        planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId, runId),
         planId: resolved.planId,
         planningIntentId: req.planningIntentId,
         sectionAnchor: req.sectionAnchor,
