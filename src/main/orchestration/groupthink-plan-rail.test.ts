@@ -26,7 +26,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runSerial, runParallel } from './groupthink-v2';
+import { planArtifactHash, runSerial, runParallel } from './groupthink-v2';
 import { OrchestrationService } from './service';
 import { Agent } from '../../shared/types';
 import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './types';
@@ -40,10 +40,11 @@ import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './ty
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require('../database') as Record<string, any>;
 const svcRunsStore = new Map<string, OrchestrationRun>();
-const svcPlansStore = new Map<string, { id: string; workspaceId: string; path: string; deletedAt: null }>();
+const svcPlansStore = new Map<string, { id: string; workspaceId: string; path: string; deletedAt: null; artifactId?: string }>();
 const svcEvents: Array<{ runId: string; kind: string; payload: unknown }> = [];
 const svcClone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
-db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', path: os.tmpdir() } : null);
+let svcWorkspaceRoot = os.tmpdir();
+db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', path: svcWorkspaceRoot } : null);
 db.getPlan = (id: string) => (svcPlansStore.has(id) ? svcClone(svcPlansStore.get(id)!) : null);
 db.getPlanIntentRow = (_workspaceId: string, planId: string, intentId: string) =>
   planId === '00000000-0000-4000-8000-000000000001' && intentId === 'int_1234abcd'
@@ -263,6 +264,281 @@ async function svcWaitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> 
   }
   throw new Error('svcWaitFor timed out');
 }
+
+const FOLDER_PLAN_ID = '00000000-0000-4000-8000-000000000001';
+const FOLDER_PLAN_ARTIFACT_ID = 'plan_cba81aeb';
+const FOLDER_INTENT_ID = 'int_1234abcd';
+
+interface FolderPlanFixture {
+  root: string;
+  folder: string;
+  planPath: string;
+  cleanup(): void;
+}
+
+function scaffoldFolderPlan(): FolderPlanFixture {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-wp4-plan-'));
+  const folder = path.join(root, '.lares', 'plans', `wp4-${path.basename(root)}`);
+  const planPath = path.join(folder, 'plan.md');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'plan.json'), JSON.stringify({
+    schema_version: 1,
+    plan_artifact_id: FOLDER_PLAN_ARTIFACT_ID,
+    title: 'WP-4 integration fixture',
+  }, null, 2));
+  fs.writeFileSync(planPath, '# Scaffolded folder plan\n');
+  svcWorkspaceRoot = root;
+  svcPlansStore.set(FOLDER_PLAN_ID, {
+    id: FOLDER_PLAN_ID,
+    workspaceId: 'ws-1',
+    path: path.relative(root, planPath),
+    deletedAt: null,
+    artifactId: FOLDER_PLAN_ARTIFACT_ID,
+  });
+  return {
+    root, folder, planPath,
+    cleanup: () => {
+      const resolved = path.resolve(root);
+      assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep), 'fixture cleanup stays inside OS temp');
+      fs.rmSync(resolved, { recursive: true, force: true });
+      svcWorkspaceRoot = os.tmpdir();
+    },
+  };
+}
+
+function resetSvcState(): void {
+  svcRunsStore.clear();
+  svcEvents.length = 0;
+}
+
+function matchingArtifact(run: OrchestrationRun): string {
+  return `---\n` +
+    `intent_id: ${run.planningIntentId}\n` +
+    `plan_artifact_id: ${run.planArtifactId}\n` +
+    `status: active\n` +
+    `date: 2026-08-20\n` +
+    `---\n\n# Integrated deliberation\n`;
+}
+
+function startFolderRun(
+  svc: OrchestrationService,
+  mode: 'serial' | 'parallel',
+  extra: Record<string, unknown> = {},
+): { runId: string; planId: string | null } {
+  return svc.start_run({
+    name: 'groupthink', workspaceId: 'ws-1', supervisorId: 'sup-1',
+    topic: 'Exercise the folder-plan integration', mode,
+    planId: FOLDER_PLAN_ID, planningIntentId: FOLDER_INTENT_ID,
+    ...extra,
+  } as any);
+}
+
+function makeService(client: DashboardClient): OrchestrationService {
+  return new OrchestrationService(client, async () => ({ ok: true }), { serial: runSerial, parallel: runParallel });
+}
+
+test('folder plan serial: reviewer launches and completion waits for matching derived artifact', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  let target = '';
+  let absentAtLeadTurn1 = false;
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        absentAtLeadTurn1 = target !== '' && !fs.existsSync(target);
+      }
+      if (agent.title.startsWith('Lead') && agent.counter === 2) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!));
+      }
+    },
+  });
+  const svc = makeService(client);
+  let runId = '';
+  try {
+    ({ runId } = startFolderRun(svc, 'serial'));
+    target = db.getOrchestrationRun(runId)!.planPath;
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
+    assert.equal(absentAtLeadTurn1, true, 'derived target was absent after lead turn 1');
+    assert.equal(state.launchInputs.length, 2, 'reviewer launched instead of turn-1 false completion');
+    assert.notEqual(target, fixture.planPath, 'completion target is not scaffolded plan.md');
+    assert.equal(fs.readFileSync(fixture.planPath, 'utf8'), '# Scaffolded folder plan\n', 'plan.md stayed untouched');
+    const complete = svcEvents.find((event) => event.runId === runId && event.kind === 'complete');
+    assert.deepEqual(complete?.payload, { planPath: target }, 'complete event names the derived artifact');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('folder plan parallel: both planners launch and synthesis completes on derived artifact write', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  let target = '';
+  let absentBeforeSynthesis = true;
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (!agent.title.startsWith('Synthesizer')) return;
+      if (agent.counter < 3) absentBeforeSynthesis = absentBeforeSynthesis && target !== '' && !fs.existsSync(target);
+      if (agent.counter === 3) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!));
+      }
+    },
+  });
+  const svc = makeService(client);
+  let runId = '';
+  try {
+    ({ runId } = startFolderRun(svc, 'parallel'));
+    target = db.getOrchestrationRun(runId)!.planPath;
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
+    assert.equal(state.launchInputs.length, 2, 'both planners launched');
+    assert.equal(absentBeforeSynthesis, true, 'target stayed absent through R1 and R2');
+    const synthesizer = [...state.agents.values()].find((agent) => agent.title.startsWith('Synthesizer'))!;
+    assert.equal(synthesizer.counter, 3, 'synthesis reached R3 before completion');
+    assert.equal(fs.existsSync(target), true, 'derived synthesis artifact exists');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('two concurrent folder-plan runs freeze distinct targets and complete without collision', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  const targets = new Map<string, OrchestrationRun>();
+  let sharedState!: FakeState;
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (!agent.title.startsWith('Lead') || agent.counter !== 2) return;
+      const kickoff = sharedState.sentPrompts.find((prompt) => prompt.id === agent.id && prompt.text.includes('Termination contract'));
+      const entry = [...targets.entries()].find(([target]) => kickoff?.text.includes(target));
+      assert.ok(entry, 'lead kickoff maps to exactly one frozen target');
+      fs.mkdirSync(path.dirname(entry![0]), { recursive: true });
+      fs.writeFileSync(entry![0], matchingArtifact(entry![1]));
+    },
+  });
+  sharedState = state;
+  const svc = makeService(client);
+  try {
+    const first = startFolderRun(svc, 'serial');
+    const second = startFolderRun(svc, 'serial');
+    const firstRun = db.getOrchestrationRun(first.runId)!;
+    const secondRun = db.getOrchestrationRun(second.runId)!;
+    targets.set(firstRun.planPath, firstRun);
+    targets.set(secondRun.planPath, secondRun);
+    assert.notEqual(firstRun.planPath, secondRun.planPath, 'concurrent runs freeze distinct derived targets');
+    await svcWaitFor(() => db.getOrchestrationRun(first.runId)?.status === 'complete'
+      && db.getOrchestrationRun(second.runId)?.status === 'complete');
+    assert.equal(fs.existsSync(firstRun.planPath), true);
+    assert.equal(fs.existsSync(secondRun.planPath), true);
+    assert.notEqual(fs.realpathSync(firstRun.planPath), fs.realpathSync(secondRun.planPath), 'artifacts did not collide');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('restart-resume accepts a persisted-baseline delta with matching identity', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  const { client, state } = makeFake();
+  const stalling = new OrchestrationService(client, async () => ({ ok: true }), {
+    serial: async () => { throw new Error('STALL: simulated dashboard restart'); },
+    parallel: runParallel,
+  });
+  try {
+    const { runId } = startFolderRun(stalling, 'serial');
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'stalled');
+    const persisted = db.getOrchestrationRun(runId)!;
+    assert.equal(persisted.planBaselineHash, null, 'absent launch target persisted as null baseline');
+    fs.mkdirSync(path.dirname(persisted.planPath), { recursive: true });
+    fs.writeFileSync(persisted.planPath, matchingArtifact(persisted));
+
+    // Simulate process rehydration: only the cloned row survives into a new service.
+    svcRunsStore.set(runId, svcClone(persisted));
+    const restarted = makeService(client);
+    restarted.start_run({
+      name: 'groupthink', workspaceId: 'ws-1', supervisorId: 'sup-1', resumeRunId: runId,
+    } as any);
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
+    assert.equal(state.launchInputs.length, 1, 'matching changed artifact is accepted before reviewer launch');
+    assert.equal(db.getOrchestrationRun(runId)!.planBaselineHash, null, 'resume preserved the persisted baseline');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('restart-resume re-baselines non-matching content and keeps waiting', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  let resumedTarget = '';
+  let invalidBaseline = '';
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        assert.equal(fs.readFileSync(resumedTarget, 'utf8').includes('int_deadbeef'), true,
+          'invalid resume artifact still exists after lead turn 1');
+      }
+      if (agent.title.startsWith('Lead') && agent.counter === 2) {
+        fs.writeFileSync(resumedTarget, matchingArtifact(db.getOrchestrationRun(runId)!));
+      }
+    },
+  });
+  const stalling = new OrchestrationService(client, async () => ({ ok: true }), {
+    serial: async () => { throw new Error('STALL: simulated dashboard restart'); },
+    parallel: runParallel,
+  });
+  let runId = '';
+  try {
+    ({ runId } = startFolderRun(stalling, 'serial'));
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'stalled');
+    const persisted = db.getOrchestrationRun(runId)!;
+    resumedTarget = persisted.planPath;
+    fs.mkdirSync(path.dirname(resumedTarget), { recursive: true });
+    fs.writeFileSync(resumedTarget, matchingArtifact(persisted).replace(FOLDER_INTENT_ID, 'int_deadbeef'));
+    invalidBaseline = planArtifactHash(resumedTarget)!;
+    svcRunsStore.set(runId, svcClone(persisted));
+
+    const restarted = makeService(client);
+    restarted.start_run({
+      name: 'groupthink', workspaceId: 'ws-1', supervisorId: 'sup-1', resumeRunId: runId,
+    } as any);
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
+    assert.equal(state.launchInputs.length, 2, 'invalid artifact was re-baselined and reviewer launched');
+    assert.equal(db.getOrchestrationRun(runId)!.planBaselineHash, invalidBaseline,
+      'persisted resume baseline is the invalid pre-existing content hash');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('folder plan with sectionAnchor still derives a fresh target and cannot mtime-complete before creation', async () => {
+  resetSvcState();
+  const fixture = scaffoldFolderPlan();
+  let target = '';
+  let absentAtLeadTurn1 = false;
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        absentAtLeadTurn1 = target !== '' && !fs.existsSync(target);
+      }
+      if (agent.title.startsWith('Reviewer') && agent.counter === 1) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!));
+      }
+    },
+  });
+  const svc = makeService(client);
+  let runId = '';
+  try {
+    ({ runId } = startFolderRun(svc, 'serial', { sectionAnchor: 'sec_bonus' }));
+    target = db.getOrchestrationRun(runId)!.planPath;
+    await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
+    assert.notEqual(target, fixture.planPath, 'sectionAnchor does not defeat derived target selection');
+    assert.equal(absentAtLeadTurn1, true, 'mtime detector saw no file at lead turn 1');
+    assert.equal(state.launchInputs.length, 2, 'reviewer launched before fresh target creation');
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 const REAL_PLAN_REL = 'plans/demo-plan-planning-surface-acceptance.html';
 const REAL_PLAN_BASENAME = 'demo-plan-planning-surface-acceptance.html';
