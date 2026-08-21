@@ -241,9 +241,11 @@ test('folder-plan finalizer prompts name the derived target and exact frontmatte
     `---`;
   const lead = serialLeadPrompt(
     'Plan a thing', target, undefined, 'canonical-plan-uuid', 'int_1234abcd', 'plan_cba81aeb',
+    'folder-deliberation',
   );
   const synthesis = parallelSynthesisPrompt(
     'Peer feedback', target, undefined, 'canonical-plan-uuid', 'int_1234abcd', 'plan_cba81aeb',
+    'folder-deliberation',
   );
 
   for (const prompt of [lead, synthesis]) {
@@ -253,12 +255,50 @@ test('folder-plan finalizer prompts name the derived target and exact frontmatte
   }
 });
 
+test('folder-plan output kind overrides sectionAnchor and supports nullable plan artifact identity', () => {
+  const target = path.join(os.tmpdir(), 'deliberations', 'section-anchor-ignored.md');
+  const clause = writebackClause(
+    target, 'sec_ignored', 'int_1234abcd', undefined, 'folder-deliberation',
+  );
+  assert.match(clause, /new deliberation document/);
+  assert.match(clause, /intent_id: int_1234abcd/);
+  assert.doesNotMatch(clause, /plan_artifact_id:/);
+  assert.doesNotMatch(clause, /NATIVELY EDITING|Do NOT create a new file/);
+});
+
+test('folder-plan detector with null planArtifactId still requires changed matching-intent frontmatter', async () => {
+  const run = makeRun({
+    planId: '11111111-1111-4111-8111-111111111111',
+    planArtifactId: null,
+    planOutputKind: 'folder-deliberation',
+    planningIntentId: 'int_1234abcd',
+    planBaselineHash: null,
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        fs.writeFileSync(run.planPath, 'changed but unlabelled');
+      }
+      if (agent.title.startsWith('Lead') && agent.counter === 2) {
+        fs.writeFileSync(run.planPath, `---\nintent_id: int_1234abcd\nstatus: active\ndate: 2026-08-20\n---\n`);
+      }
+    },
+  });
+  try {
+    await runSerial(client, makeCtx(run).ctx);
+    assert.equal(state.launchInputs.length, 2, 'unlabelled content did not use a weak completion branch');
+  } finally {
+    rm(run.planPath);
+  }
+});
+
 test('serial runner threads frozen plan identity into the folder-plan lead prompt', async () => {
   const target = path.join(os.tmpdir(), `2026-08-20-1234abcd-${process.pid}-threaded.md`);
   const run = makeRun({
     planPath: target,
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb',
+    planOutputKind: 'folder-deliberation',
     planningIntentId: 'int_1234abcd',
     planBaselineHash: null,
   });
@@ -286,6 +326,7 @@ test('plan-bound serial run ignores scaffold baseline at turn 1 and launches rev
     planPath: target,
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb',
+    planOutputKind: 'folder-deliberation',
     planningIntentId: 'int_1234abcd',
     planBaselineHash: planArtifactHash(target),
   });
@@ -311,6 +352,7 @@ test('editing the source plan.md after start cannot deliver the frozen per-run t
     planPath: target,
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb',
+    planOutputKind: 'folder-deliberation',
     planningIntentId: 'int_1234abcd',
     planBaselineHash: null,
   });
@@ -334,6 +376,7 @@ test('plan-bound completion requires changed parseable frontmatter matching both
   const run = makeRun({
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb',
+    planOutputKind: 'folder-deliberation',
     planningIntentId: 'int_1234abcd',
     planBaselineHash: null,
   });
@@ -366,10 +409,12 @@ test('resume accepts a changed matching artifact and re-baselines an invalid cur
   const accepted = makeRun({
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb', planningIntentId: 'int_1234abcd', planBaselineHash: null,
+    planOutputKind: 'folder-deliberation',
   });
   const invalid = makeRun({
     planId: '11111111-1111-4111-8111-111111111111',
     planArtifactId: 'plan_cba81aeb', planningIntentId: 'int_1234abcd', planBaselineHash: null,
+    planOutputKind: 'folder-deliberation',
   });
   try {
     fs.writeFileSync(accepted.planPath, planArtifact(accepted));

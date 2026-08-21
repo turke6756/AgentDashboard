@@ -3,25 +3,26 @@
 // loop depend on; do not paraphrase. Keep the wording byte-identical to the
 // script so behavior is unchanged across the in-process cutover.
 
-// WP6: when a run carries a planning-surface rail, the deliverable is a native
-// Edit of one section of an EXISTING registered plan surface, not a fresh
-// markdown file. This block is appended to the
-// termination contract so the finalizer writes back to the dispatched `sec_`
-// zone; the run's done-detection watches that section for a content change.
+// Registered HTML surfaces retain the native section-edit contract. Folder-plan
+// outputs instead create identity-stamped deliberation documents, even when a
+// stale caller also supplied a sectionAnchor.
+import { isFolderPlanOutput, type OrchestrationPlanOutputKind } from './types';
+
 export function writebackClause(
   planPath: string,
   sectionAnchor?: string,
   planningIntentId?: string,
   planArtifactId?: string,
+  outputKind?: OrchestrationPlanOutputKind | null,
 ): string {
-  if (!sectionAnchor && planningIntentId && planArtifactId) {
+  if (isFolderPlanOutput(outputKind) && planningIntentId) {
     const date = /(?:^|[\\/])(\d{4}-\d{2}-\d{2})-[^\\/]+$/.exec(planPath)?.[1]
       ?? new Date().toISOString().slice(0, 10);
     return `write the finalized plan to ${planPath} as a new deliberation document. ` +
       `Begin the file with this exact frontmatter block (copy it verbatim):\n\n` +
       `---\n` +
       `intent_id: ${planningIntentId}\n` +
-      `plan_artifact_id: ${planArtifactId}\n` +
+      (planArtifactId ? `plan_artifact_id: ${planArtifactId}\n` : '') +
       `status: active\n` +
       `date: ${date}\n` +
       `---\n\n` +
@@ -42,6 +43,7 @@ export function serialLeadPrompt(
   _planId?: string,
   planningIntentId?: string,
   planArtifactId?: string,
+  outputKind?: OrchestrationPlanOutputKind | null,
 ): string {
   return `You are the Lead Planner in a GroupThink deliberation.
 
@@ -51,7 +53,7 @@ You are working with a Reviewer agent. Each of your assistant turns will be rela
 
 Plan schema when you finalize: file paths, specific edits, clear instructions a worker agent could execute without further questions.
 
-Termination contract: ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId)} ONLY after the Reviewer has explicitly approved the latest draft in their own message. The write ends the orchestration — a premature write terminates the deliberation before consensus.
+Termination contract: ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind)} ONLY after the Reviewer has explicitly approved the latest draft in their own message. The write ends the orchestration — a premature write terminates the deliberation before consensus.
 
 Begin by producing your first draft of the plan as your next message.`;
 }
@@ -105,6 +107,7 @@ export function parallelSynthesisPrompt(
   _planId?: string,
   planningIntentId?: string,
   planArtifactId?: string,
+  outputKind?: OrchestrationPlanOutputKind | null,
 ): string {
   return `Here is the other planner's reaction after seeing your initial draft and engaging with the differences:
 
@@ -116,7 +119,7 @@ ${otherR2}
 
 You now have full context: your initial draft, the other planner's initial take, and the other planner's reaction above. Synthesize.
 
-Identify where you both agree. Identify where you disagree and pick the right middle ground with reasoning. ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId).replace(/^write /, 'Write ')}.
+Identify where you both agree. Identify where you disagree and pick the right middle ground with reasoning. ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind).replace(/^write /, 'Write ')}.
 
 Plan schema: file paths, specific edits, clear instructions a worker agent could execute without further questions. The write ends the orchestration.`;
 }

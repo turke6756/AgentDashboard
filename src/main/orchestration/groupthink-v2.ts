@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import { Agent, AgentProvider, LaunchAgentInput } from '../../shared/types';
 import {
   DashboardClient, OrchestrationRunContext, SendInputConfirmedResult, SubmitRecoveryPolicy,
-  OrchestrationRun,
+  OrchestrationRun, isFolderPlanOutput,
 } from './types';
 import { withResolvedPlanStamp, type DispatchContext } from '../git-checkpoints/dispatch-context';
 import {
@@ -160,19 +160,15 @@ export function planArtifactHash(planPath: string): string | null {
   }
 }
 
-function isFolderPlanDeliverable(run: OrchestrationRun): boolean {
-  return Boolean(run.planId && !run.sectionAnchor && run.planningIntentId && run.planArtifactId);
-}
-
 /** True only for a changed folder-plan document carrying the frozen identity. */
 export function planArtifactMatchesRun(run: OrchestrationRun): boolean {
-  if (!isFolderPlanDeliverable(run)) return false;
+  if (!isFolderPlanOutput(run.planOutputKind) || !run.planningIntentId) return false;
   const currentHash = planArtifactHash(run.planPath);
   if (currentHash === null || currentHash === (run.planBaselineHash ?? null)) return false;
   try {
     const frontmatter = parseFrontmatter(fs.readFileSync(run.planPath, 'utf8'));
     return frontmatter?.intent_id === run.planningIntentId
-      && frontmatter?.plan_artifact_id === run.planArtifactId;
+      && (!run.planArtifactId || frontmatter?.plan_artifact_id === run.planArtifactId);
   } catch {
     return false;
   }
@@ -180,7 +176,7 @@ export function planArtifactMatchesRun(run: OrchestrationRun): boolean {
 
 /** Resume keeps an already-delivered artifact; otherwise current disk is the new baseline. */
 export function preparePlanBaselineForResume(run: OrchestrationRun): void {
-  if (isFolderPlanDeliverable(run) && !planArtifactMatchesRun(run)) {
+  if (isFolderPlanOutput(run.planOutputKind) && !planArtifactMatchesRun(run)) {
     run.planBaselineHash = planArtifactHash(run.planPath);
   }
 }
@@ -190,7 +186,7 @@ export function preparePlanBaselineForResume(run: OrchestrationRun): void {
 // runs retain the original bare existence check below.
 function planDeliverableReady(_client: DashboardClient, ctx: OrchestrationRunContext): boolean {
   const { run } = ctx;
-  if (isFolderPlanDeliverable(run)) return planArtifactMatchesRun(run);
+  if (isFolderPlanOutput(run.planOutputKind)) return planArtifactMatchesRun(run);
   if (run.planId && run.sectionAnchor) {
     try {
       return fs.statSync(run.planPath).mtimeMs >= Date.parse(run.startedAt);
@@ -640,7 +636,7 @@ export async function runSerial(client: DashboardClient, ctx: OrchestrationRunCo
       provider: leadProvider,
       kickoffPrompt: serialLeadPrompt(
         topic, planPath, sectionAnchor, run.planId,
-        run.planningIntentId ?? undefined, run.planArtifactId ?? undefined,
+        run.planningIntentId ?? undefined, run.planArtifactId ?? undefined, run.planOutputKind,
       ),
       ownerAgentId: run.supervisorId,
     });
@@ -808,7 +804,7 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   await waitReceiverReady(client, ctx, synthesizer.id, 'Synthesizer', turnTimeoutMs);
   await sendWorker(client, ctx, synthesizer.id, 'Synthesizer', parallelSynthesisPrompt(
     peerR2.content, planPath, sectionAnchor, run.planId,
-    run.planningIntentId ?? undefined, run.planArtifactId ?? undefined,
+    run.planningIntentId ?? undefined, run.planArtifactId ?? undefined, run.planOutputKind,
   ));
 
   const synthR3 = await waitTurnComplete(client, ctx, synthesizer.id, 'Synthesizer R3', turnTimeoutMs);
@@ -816,7 +812,9 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   ctx.persist();
 
   if (!(await waitForDeliverable(client, ctx, PLAN_WRITE_GRACE_MS))) {
-    const what = run.planId && sectionAnchor
+    const what = isFolderPlanOutput(run.planOutputKind) && fs.existsSync(planPath)
+      ? `the artifact at ${planPath} exists but does not match the run identity`
+      : run.planId && sectionAnchor
       ? `no content change in section ${sectionAnchor} of plan ${run.planId}`
       : `no plan file at ${planPath}`;
     throw new Error(`STALL: Synthesizer completed R3 but ${what} after ${PLAN_WRITE_GRACE_MS}ms grace.`);

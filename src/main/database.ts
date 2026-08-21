@@ -554,6 +554,7 @@ export function initDatabase(): void {
       plan_id           TEXT,            -- WP6 planning-surface rail (nullable)
       plan_artifact_id  TEXT,
       plan_baseline_hash TEXT,
+      plan_output_kind TEXT,
       section_anchor    TEXT,            -- WP6 writeback target sec_ anchor
       plan_item_id      TEXT,            -- Stage II plan-only; reserved for Stage III
       plan_binding_mode TEXT NOT NULL DEFAULT 'agent-default'
@@ -566,6 +567,7 @@ export function initDatabase(): void {
   try { db.exec(`ALTER TABLE orchestrations ADD COLUMN plan_id TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE orchestrations ADD COLUMN plan_artifact_id TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE orchestrations ADD COLUMN plan_baseline_hash TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE orchestrations ADD COLUMN plan_output_kind TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE orchestrations ADD COLUMN section_anchor TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE orchestrations ADD COLUMN plan_item_id TEXT`); } catch { /* exists */ }
   let orchestrationBindingModeAdded = false;
@@ -11512,6 +11514,7 @@ function rowToOrchestrationRun(row: any): OrchestrationRun {
     planId: row.plan_id ?? undefined,
     planArtifactId: row.plan_artifact_id ?? null,
     planBaselineHash: row.plan_baseline_hash ?? null,
+    planOutputKind: row.plan_output_kind ?? null,
     planningIntentId: row.planning_intent_id ?? null,
     planItemId: row.plan_item_id ?? null,
     sectionAnchor: row.section_anchor ?? undefined,
@@ -11526,9 +11529,9 @@ export function insertOrchestration(r: OrchestrationRun): void {
        run_id, name, mode, status, workspace_id, supervisor_id, topic, plan_path,
        lead_provider, reviewer_provider, turn_timeout_ms, lead_id, reviewer_id,
        turn, round, last_relayed_ts, started_at, updated_at, ended_at, error,
-       plan_id, plan_artifact_id, plan_baseline_hash, section_anchor, plan_item_id,
-       plan_binding_mode, planning_intent_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       plan_id, plan_artifact_id, plan_baseline_hash, plan_output_kind,
+       section_anchor, plan_item_id, plan_binding_mode, planning_intent_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(run_id) DO UPDATE SET
        name = excluded.name, mode = excluded.mode, status = excluded.status,
        workspace_id = excluded.workspace_id, supervisor_id = excluded.supervisor_id,
@@ -11541,6 +11544,7 @@ export function insertOrchestration(r: OrchestrationRun): void {
        plan_id = excluded.plan_id,
        plan_artifact_id = COALESCE(orchestrations.plan_artifact_id, excluded.plan_artifact_id),
        plan_baseline_hash = excluded.plan_baseline_hash,
+       plan_output_kind = COALESCE(orchestrations.plan_output_kind, excluded.plan_output_kind),
        section_anchor = excluded.section_anchor,
        plan_item_id = excluded.plan_item_id, plan_binding_mode = excluded.plan_binding_mode,
        planning_intent_id = COALESCE(orchestrations.planning_intent_id, excluded.planning_intent_id)`,
@@ -11550,7 +11554,7 @@ export function insertOrchestration(r: OrchestrationRun): void {
       r.leadId ?? null, r.reviewerId ?? null, r.turn ?? null, r.round ?? null,
       JSON.stringify(r.lastRelayedTs || {}), r.startedAt, r.updatedAt,
       r.endedAt ?? null, r.error ?? null,
-      r.planId ?? null, r.planArtifactId ?? null, r.planBaselineHash ?? null,
+      r.planId ?? null, r.planArtifactId ?? null, r.planBaselineHash ?? null, r.planOutputKind ?? null,
       r.sectionAnchor ?? null, r.planItemId ?? null,
       r.planBindingMode ?? (r.planId ? 'explicit' : 'agent-default'),
       r.planningIntentId ?? null,

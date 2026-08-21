@@ -8,8 +8,9 @@ import { parseLegacyGroupthinkCommand } from './groupthink-legacy';
 import {
   DashboardClient, RunOrchestrationRequest, OrchestrationRun,
   OrchestrationDescriptor, OrchestrationRunContext, OrchestrationRunner,
+  OrchestrationPlanOutputKind, isFolderPlanOutput,
 } from './types';
-import { LAUNCHABLE_AGENT_PROVIDERS, isLaunchableAgentProvider } from '../../shared/types';
+import { LAUNCHABLE_AGENT_PROVIDERS, isLaunchableAgentProvider, type PathType } from '../../shared/types';
 import {
   getWorkspace,
   insertOrchestration, updateOrchestration, getOrchestrationRun, listOrchestrationRuns,
@@ -40,14 +41,12 @@ function frozenPlanPath(
   registeredPath: string,
   planningIntentId: string,
   runId: string,
+  outputKind: OrchestrationPlanOutputKind,
 ): string {
   const planPath = path.resolve(path.isAbsolute(registeredPath)
     ? registeredPath
     : path.join(workspaceRoot, registeredPath));
-  const plansHome = path.resolve(workspaceStateDir(workspaceRoot), 'plans');
-  if (path.basename(planPath).toLowerCase() !== 'plan.md' || !isContainedPath(plansHome, planPath)) {
-    return planPath;
-  }
+  if (!isFolderPlanOutput(outputKind)) return planPath;
 
   const planFolder = path.dirname(planPath);
   const date = nowIso().slice(0, 10);
@@ -57,6 +56,20 @@ function frozenPlanPath(
     throw httpErr(409, 'Derived orchestration target escapes the requested plan folder');
   }
   return target;
+}
+
+function planOutputKind(
+  workspaceRoot: string,
+  registeredPath: string,
+  pathType: PathType,
+): OrchestrationPlanOutputKind {
+  const planPath = path.resolve(path.isAbsolute(registeredPath)
+    ? registeredPath
+    : path.join(workspaceRoot, registeredPath));
+  const plansHome = path.resolve(workspaceStateDir(workspaceRoot, pathType), 'plans');
+  return path.basename(planPath).toLowerCase() === 'plan.md' && isContainedPath(plansHome, planPath)
+    ? 'folder-deliberation'
+    : 'registered-surface';
 }
 
 export function assertGroupthinkProvider(role: 'lead_provider' | 'reviewer_provider', value: string | undefined): void {
@@ -179,18 +192,14 @@ export class OrchestrationService extends EventEmitter {
         throw httpErr(400, 'planningIntentId must match int_[0-9a-f]{8}');
       }
       const resolved = resolveActivePlanRef(req.workspaceId, req.planId, req.planningIntentId);
-      // WP6 / planning-surface demo fix (2026-07-06): a plan-rail run (planId
-      // set) edits an EXISTING plan surface, so its planPath MUST be that plan
-      // row's real `path` — not the legacy `plans/new-plan.md` default. The
-      // acceptance demo shipped the default into the rail Lead's termination
-      // instructions and the groupthink.complete message (both derive from
-      // run.planPath), forcing the Lead to self-correct; a sloppier model would
-      // have written a stray file. Resolve the row here so every downstream
-      // consumer (writebackClause, prompt mentions, completion event) is honest.
+      // Resolve the registered plan path once. Folder-native plans freeze a
+      // per-run deliberation target; registered HTML surfaces keep their own
+      // path. Every downstream consumer uses that frozen output contract.
       if (!resolved.plan.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
       const planRel = resolved.plan.path;
       const prov = getOrchestrationProviderSettingsCached(ws.path).groupthink;
       const runId = uuidv4().slice(0, 8);
+      const outputKind = planOutputKind(ws.path, planRel, ws.pathType);
       run = {
         runId,
         name: 'groupthink',
@@ -199,9 +208,10 @@ export class OrchestrationService extends EventEmitter {
         workspaceId: req.workspaceId,
         supervisorId: req.supervisorId,
         topic: req.topic || 'Research and plan a feature.',
-        planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId, runId),
+        planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId, runId, outputKind),
         planId: resolved.planId,
         planArtifactId: resolved.plan.artifactId ?? null,
+        planOutputKind: outputKind,
         planningIntentId: req.planningIntentId,
         sectionAnchor: req.sectionAnchor,
         leadProvider: req.leadProvider || prov.defaultLeadProvider,
@@ -214,15 +224,6 @@ export class OrchestrationService extends EventEmitter {
         updatedAt: nowIso(),
       };
       run.planBaselineHash = planArtifactHash(run.planPath);
-      // T2: archive a stale plan at the same path BEFORE persisting the run. A
-      // failed archive throws here, refusing the start before any run row exists.
-      // Gated on all three resume signals — resumeLeadId/resumeReviewerId can be
-      // set via structured/legacy params even without resumeRunId.
-      // WP6: a plan-rail run edits an EXISTING registered surface,
-      // so NEVER archive it away — archiving is only for the legacy fresh-file
-      // deliverable path where a leftover plan would trip the existsSync gate.
-      // New launches are always plan+intent-bound; legacy fresh-file runs can
-      // only re-enter through the resume branch above.
     }
     insertOrchestration(run);            // upsert
     void this.execute(run, !!req.keepAgents);

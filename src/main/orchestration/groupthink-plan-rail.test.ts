@@ -44,14 +44,22 @@ const svcPlansStore = new Map<string, { id: string; workspaceId: string; path: s
 const svcEvents: Array<{ runId: string; kind: string; payload: unknown }> = [];
 const svcClone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 let svcWorkspaceRoot = os.tmpdir();
-db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', path: svcWorkspaceRoot } : null);
+db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', path: svcWorkspaceRoot, pathType: 'windows' } : null);
 db.getPlan = (id: string) => (svcPlansStore.has(id) ? svcClone(svcPlansStore.get(id)!) : null);
 db.getPlanIntentRow = (_workspaceId: string, planId: string, intentId: string) =>
   planId === '00000000-0000-4000-8000-000000000001' && intentId === 'int_1234abcd'
     ? { planId, intentId, status: 'active' }
     : null;
-db.insertOrchestration = (r: OrchestrationRun) => { svcRunsStore.set(r.runId, svcClone(r)); };
-db.updateOrchestration = (r: OrchestrationRun) => { svcRunsStore.set(r.runId, svcClone(r)); };
+function svcUpsertRunLikeSql(r: OrchestrationRun): void {
+  const prior = svcRunsStore.get(r.runId);
+  const next = svcClone(r);
+  if (prior?.planArtifactId != null) next.planArtifactId = prior.planArtifactId;
+  if (prior?.planningIntentId != null) next.planningIntentId = prior.planningIntentId;
+  if (prior?.planOutputKind != null) next.planOutputKind = prior.planOutputKind;
+  svcRunsStore.set(r.runId, next);
+}
+db.insertOrchestration = svcUpsertRunLikeSql;
+db.updateOrchestration = svcUpsertRunLikeSql;
 db.getOrchestrationRun = (id: string) => (svcRunsStore.has(id) ? svcClone(svcRunsStore.get(id)!) : null);
 db.listOrchestrationRuns = () => Array.from(svcRunsStore.values()).map(svcClone);
 db.insertOrchestrationEvent = (e: any) => { svcEvents.push(svcClone(e)); };
@@ -341,11 +349,13 @@ test('folder plan serial: reviewer launches and completion waits for matching de
   resetSvcState();
   const fixture = scaffoldFolderPlan();
   let target = '';
-  let absentAtLeadTurn1 = false;
+  let nonMatchingAtLeadTurn1 = false;
   const { client, state } = makeFake({
     onTurn: (agent) => {
       if (agent.title.startsWith('Lead') && agent.counter === 1) {
-        absentAtLeadTurn1 = target !== '' && !fs.existsSync(target);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!).replace(FOLDER_INTENT_ID, 'int_deadbeef'));
+        nonMatchingAtLeadTurn1 = true;
       }
       if (agent.title.startsWith('Lead') && agent.counter === 2) {
         fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -359,8 +369,8 @@ test('folder plan serial: reviewer launches and completion waits for matching de
     ({ runId } = startFolderRun(svc, 'serial'));
     target = db.getOrchestrationRun(runId)!.planPath;
     await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
-    assert.equal(absentAtLeadTurn1, true, 'derived target was absent after lead turn 1');
-    assert.equal(state.launchInputs.length, 2, 'reviewer launched instead of turn-1 false completion');
+    assert.equal(nonMatchingAtLeadTurn1, true, 'lead turn 1 wrote a non-matching derived artifact');
+    assert.equal(state.launchInputs.length, 2, 'non-matching artifact did not prevent reviewer launch');
     assert.notEqual(target, fixture.planPath, 'completion target is not scaffolded plan.md');
     assert.equal(fs.readFileSync(fixture.planPath, 'utf8'), '# Scaffolded folder plan\n', 'plan.md stayed untouched');
     const complete = svcEvents.find((event) => event.runId === runId && event.kind === 'complete');
@@ -374,11 +384,18 @@ test('folder plan parallel: both planners launch and synthesis completes on deri
   resetSvcState();
   const fixture = scaffoldFolderPlan();
   let target = '';
-  let absentBeforeSynthesis = true;
+  let nonMatchingBeforeSynthesis = true;
   const { client, state } = makeFake({
     onTurn: (agent) => {
       if (!agent.title.startsWith('Synthesizer')) return;
-      if (agent.counter < 3) absentBeforeSynthesis = absentBeforeSynthesis && target !== '' && !fs.existsSync(target);
+      if (agent.counter === 1) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!).replace(FOLDER_PLAN_ARTIFACT_ID, 'plan_deadbeef'));
+      }
+      if (agent.counter < 3) {
+        nonMatchingBeforeSynthesis = nonMatchingBeforeSynthesis
+          && fs.readFileSync(target, 'utf8').includes('plan_deadbeef');
+      }
       if (agent.counter === 3) {
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!));
@@ -392,7 +409,7 @@ test('folder plan parallel: both planners launch and synthesis completes on deri
     target = db.getOrchestrationRun(runId)!.planPath;
     await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
     assert.equal(state.launchInputs.length, 2, 'both planners launched');
-    assert.equal(absentBeforeSynthesis, true, 'target stayed absent through R1 and R2');
+    assert.equal(nonMatchingBeforeSynthesis, true, 'non-matching target did not complete through R1 and R2');
     const synthesizer = [...state.agents.values()].find((agent) => agent.title.startsWith('Synthesizer'))!;
     assert.equal(synthesizer.counter, 3, 'synthesis reached R3 before completion');
     assert.equal(fs.existsSync(target), true, 'derived synthesis artifact exists');
@@ -514,11 +531,13 @@ test('folder plan with sectionAnchor still derives a fresh target and cannot mti
   resetSvcState();
   const fixture = scaffoldFolderPlan();
   let target = '';
-  let absentAtLeadTurn1 = false;
+  let nonMatchingAtLeadTurn1 = false;
   const { client, state } = makeFake({
     onTurn: (agent) => {
       if (agent.title.startsWith('Lead') && agent.counter === 1) {
-        absentAtLeadTurn1 = target !== '' && !fs.existsSync(target);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, matchingArtifact(db.getOrchestrationRun(runId)!).replace(FOLDER_INTENT_ID, 'int_deadbeef'));
+        nonMatchingAtLeadTurn1 = true;
       }
       if (agent.title.startsWith('Reviewer') && agent.counter === 1) {
         fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -533,8 +552,13 @@ test('folder plan with sectionAnchor still derives a fresh target and cannot mti
     target = db.getOrchestrationRun(runId)!.planPath;
     await svcWaitFor(() => db.getOrchestrationRun(runId)?.status === 'complete');
     assert.notEqual(target, fixture.planPath, 'sectionAnchor does not defeat derived target selection');
-    assert.equal(absentAtLeadTurn1, true, 'mtime detector saw no file at lead turn 1');
-    assert.equal(state.launchInputs.length, 2, 'reviewer launched before fresh target creation');
+    assert.equal(nonMatchingAtLeadTurn1, true, 'sectionAnchor fixture wrote a non-matching artifact at lead turn 1');
+    assert.equal(state.launchInputs.length, 2, 'full identity detector launched reviewer despite file mtime');
+    const leadPrompt = state.sentPrompts.find((prompt) => prompt.text.includes('Termination contract'))?.text ?? '';
+    assert.match(leadPrompt, /new deliberation document/);
+    assert.match(leadPrompt, new RegExp(`intent_id: ${FOLDER_INTENT_ID}`));
+    assert.match(leadPrompt, new RegExp(`plan_artifact_id: ${FOLDER_PLAN_ARTIFACT_ID}`));
+    assert.doesNotMatch(leadPrompt, /NATIVELY EDITING|Do NOT create a new file/);
   } finally {
     fixture.cleanup();
   }

@@ -45,13 +45,17 @@ const FOREIGN_PLAN_UUID = '33333333-3333-4333-8333-333333333333';
 const DELETED_PLAN_UUID = '44444444-4444-4444-8444-444444444444';
 const BUILT_IN_PLAN_UUID = '55555555-5555-4555-8555-555555555555';
 const HTML_PLAN_UUID = '66666666-6666-4666-8666-666666666666';
+const NULL_ARTIFACT_PLAN_UUID = '77777777-7777-4777-8777-777777777777';
+const WSL_PLAN_UUID = '88888888-8888-4888-8888-888888888888';
 const PLAN_ARTIFACT_ID = 'plan_a1b2c3d4';
 const SECOND_PLAN_ARTIFACT_ID = 'plan_b1c2d3e4';
 const HTML_PLAN_ARTIFACT_ID = 'plan_e1f2a3b4';
+const WSL_PLAN_ARTIFACT_ID = 'plan_f1a2b3c4';
 
 db.getWorkspace = (id: string) => {
-  if (id === 'ws-1') return { id: 'ws-1', path: workspaceRoots.defaulted };
-  if (id === 'ws-built-in') return { id: 'ws-built-in', path: workspaceRoots.builtIn };
+  if (id === 'ws-1') return { id: 'ws-1', path: workspaceRoots.defaulted, pathType: 'windows' };
+  if (id === 'ws-built-in') return { id: 'ws-built-in', path: workspaceRoots.builtIn, pathType: 'windows' };
+  if (id === 'ws-wsl') return { id: 'ws-wsl', path: workspaceRoots.defaulted, pathType: 'wsl' };
   return null;
 };
 // Fix 3 (planning-surface demo): start_run now resolves getPlan(planId).path for
@@ -64,6 +68,8 @@ const planRows = new Map([
   [DELETED_PLAN_UUID, { id: DELETED_PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/deleted/plan.md', deletedAt: '2026-08-17T00:00:00.000Z', artifactId: 'plan_d1e2f3a4' }],
   [BUILT_IN_PLAN_UUID, { id: BUILT_IN_PLAN_UUID, workspaceId: 'ws-built-in', path: '.lares/plans/built-in/plan.md', deletedAt: null, artifactId: PLAN_ARTIFACT_ID }],
   [HTML_PLAN_UUID, { id: HTML_PLAN_UUID, workspaceId: 'ws-1', path: 'plans/legacy-plan.html', deletedAt: null, artifactId: HTML_PLAN_ARTIFACT_ID }],
+  [NULL_ARTIFACT_PLAN_UUID, { id: NULL_ARTIFACT_PLAN_UUID, workspaceId: 'ws-1', path: '.lares/plans/null-artifact/plan.md', deletedAt: null, artifactId: null }],
+  [WSL_PLAN_UUID, { id: WSL_PLAN_UUID, workspaceId: 'ws-wsl', path: '.lares/plans/wsl/plan.md', deletedAt: null, artifactId: WSL_PLAN_ARTIFACT_ID }],
 ]);
 db.getPlan = (id: string) => planRows.has(id) ? clone(planRows.get(id)!) : null;
 db.getPlanByWorkspaceArtifactId = (workspaceId: string, artifactId: string) => {
@@ -76,8 +82,16 @@ db.getPlanIntentRow = (_workspaceId: string, planId: string, intentId: string) =
   if (intentId === 'int_deadbeef') return { planId, intentId, status: 'withdrawn' };
   return null;
 };
-db.insertOrchestration = (r: OrchestrationRun) => { runsStore.set(r.runId, clone(r)); };
-db.updateOrchestration = (r: OrchestrationRun) => { runsStore.set(r.runId, clone(r)); };
+function upsertRunLikeSql(r: OrchestrationRun): void {
+  const prior = runsStore.get(r.runId);
+  const next = clone(r);
+  if (prior?.planArtifactId != null) next.planArtifactId = prior.planArtifactId;
+  if (prior?.planningIntentId != null) next.planningIntentId = prior.planningIntentId;
+  if (prior?.planOutputKind != null) next.planOutputKind = prior.planOutputKind;
+  runsStore.set(r.runId, next);
+}
+db.insertOrchestration = upsertRunLikeSql;
+db.updateOrchestration = upsertRunLikeSql;
 db.getOrchestrationRun = (id: string) => (runsStore.has(id) ? clone(runsStore.get(id)!) : null);
 db.listOrchestrationRuns = () => Array.from(runsStore.values()).map(clone);
 db.insertOrchestrationEvent = (e: any) => { eventsStore.push(clone(e)); };
@@ -373,7 +387,32 @@ test('orchestration-start-run-resolves-plan-ref', () => {
     'REACHABILITY:orchestration-start-run-plan-ref',
   );
   assert.equal(persisted.planArtifactId, PLAN_ARTIFACT_ID, 'portable plan identity frozen for prompt frontmatter');
+  assert.equal(persisted.planOutputKind, 'folder-deliberation', 'folder output shape frozen with the run');
   assert.equal(result.planId, PLAN_UUID, 'start_run returns the canonical UUID');
+});
+
+test('orchestration upsert freezes identity fields, fills a null artifact id, and writes back baseline', () => {
+  const frozen = priorRun('sql-coalesce-frozen');
+  frozen.planArtifactId = 'plan_aaaaaaaa';
+  frozen.planOutputKind = 'folder-deliberation';
+  frozen.planBaselineHash = 'baseline-old';
+  db.insertOrchestration(frozen);
+  db.updateOrchestration({
+    ...frozen,
+    planArtifactId: 'plan_bbbbbbbb',
+    planOutputKind: 'registered-surface',
+    planBaselineHash: 'baseline-new',
+  });
+  assert.equal(getRun(frozen.runId)!.planArtifactId, 'plan_aaaaaaaa', 'COALESCE freezes a set artifact id');
+  assert.equal(getRun(frozen.runId)!.planOutputKind, 'folder-deliberation', 'COALESCE freezes output kind');
+  assert.equal(getRun(frozen.runId)!.planBaselineHash, 'baseline-new', 'baseline is writable on update');
+
+  const fill = priorRun('sql-coalesce-fill');
+  fill.planArtifactId = null;
+  db.insertOrchestration(fill);
+  db.updateOrchestration({ ...fill, planArtifactId: 'plan_cccccccc', planBaselineHash: 'filled-baseline' });
+  assert.equal(getRun(fill.runId)!.planArtifactId, 'plan_cccccccc', 'COALESCE fills a null artifact id');
+  assert.equal(getRun(fill.runId)!.planBaselineHash, 'filled-baseline');
 });
 
 test('folder plan launch freezes a unique in-folder deliberation target', () => {
@@ -392,6 +431,25 @@ test('folder plan launch freezes a unique in-folder deliberation target', () => 
   assert.match(path.basename(run.planPath), /^\d{4}-\d{2}-\d{2}-1234abcd-[0-9a-f]{8}\.md$/);
   assert.match(run.planPath, new RegExp(`${run.runId}\\.md$`));
   assert.notEqual(run.planPath, path.join(planFolder, 'plan.md'));
+});
+
+test('folder plan output kind survives sectionAnchor and nullable artifact identity', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const result = svc.start_run(baseReq({ planId: NULL_ARTIFACT_PLAN_UUID, sectionAnchor: 'sec_ignored' }));
+  const run = getRun(result.runId)!;
+  assert.equal(run.planOutputKind, 'folder-deliberation');
+  assert.equal(run.planArtifactId, null);
+  assert.match(run.planPath, /[\\/]deliberations[\\/].+\.md$/);
+});
+
+test('WSL folder-plan classification uses the workspace path type', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const result = svc.start_run(baseReq({ workspaceId: 'ws-wsl', planId: WSL_PLAN_UUID }));
+  const run = getRun(result.runId)!;
+  assert.equal(run.planOutputKind, 'folder-deliberation');
+  assert.match(run.planPath, /[\\/]deliberations[\\/].+\.md$/);
 });
 
 test('concurrent folder plan launches freeze distinct deliberation targets', async () => {
@@ -417,6 +475,7 @@ test('anchored HTML-surface plan keeps the registered plan path', () => {
   const result = svc.start_run(baseReq({ planId: HTML_PLAN_ARTIFACT_ID, sectionAnchor: 'sec_html' }));
 
   assert.equal(getRun(result.runId)!.planPath, path.join(workspaceRoots.defaulted, 'plans', 'legacy-plan.html'));
+  assert.equal(getRun(result.runId)!.planOutputKind, 'registered-surface');
 });
 
 test('complete and stalled events report the derived deliberation target', async () => {

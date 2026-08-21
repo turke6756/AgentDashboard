@@ -85,6 +85,14 @@ export type SendInputConfirmedResult = {
  *  EXPERIMENT field: default 'raw' so nothing else changes. */
 export type SubmitRecoveryPolicy = 'raw' | 'recover-fallthrough' | 'recover-throw';
 
+/** Frozen writeback shape chosen from the registered plan path at launch. */
+export type OrchestrationPlanOutputKind = 'folder-deliberation' | 'registered-surface';
+
+/** The single contract predicate used by target derivation, prompts, and completion. */
+export function isFolderPlanOutput(kind: OrchestrationPlanOutputKind | null | undefined): boolean {
+  return kind === 'folder-deliberation';
+}
+
 /** Live + persisted run record (one row in `orchestrations`). */
 export interface OrchestrationRun {
   runId: string;
@@ -101,6 +109,8 @@ export interface OrchestrationRun {
   planArtifactId?: string | null;
   /** SHA-256 of the folder-plan target at launch/resume, or null when absent. */
   planBaselineHash?: string | null;
+  /** Frozen output shape; undefined only on historical rows. */
+  planOutputKind?: OrchestrationPlanOutputKind | null;
   /** Server-witnessed planning-intent association, frozen for this run. */
   planningIntentId?: string | null;
   /** Frozen item stamp for the run (SC-WP-3A). Null/absent for a plan-only or
