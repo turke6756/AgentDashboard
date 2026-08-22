@@ -2736,6 +2736,111 @@ function initContextOptimizerSchema(): void {
     BEGIN SELECT RAISE(ABORT, 'continuation intent stamp is immutable'); END;
   `);
 
+  // Owner-focus attribution (plan_8ffceb98 WP-2): existing databases retain
+  // the CHECK originally installed with plan_stamp_source, so widen it by
+  // rebuilding the complete, now-final turn_records schema. Keep this after
+  // both intent columns and immutability triggers have been defined above.
+  const turnRecordsSchema = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turn_records'`,
+  ).get() as { sql?: string } | undefined;
+  if (!turnRecordsSchema?.sql?.includes("'owner-focus'")) {
+    const foreignKeysRow = db.prepare('PRAGMA foreign_keys').get() as
+      { foreign_keys?: number } | undefined;
+    const foreignKeysEnabled = Number(foreignKeysRow?.foreign_keys ?? 0) === 1;
+    if (foreignKeysEnabled) db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      db.exec(`
+        BEGIN;
+        CREATE TABLE turn_records__new (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          turn_seq INTEGER NOT NULL,
+          agent_id TEXT, agent_title TEXT,
+          owner_agent_id TEXT, owner_brick_generation INTEGER,
+          session_id TEXT, task_label TEXT,
+          started_at INTEGER, ended_at INTEGER,
+          status TEXT NOT NULL DEFAULT 'open',
+          before_oid TEXT, after_oid TEXT,
+          before_ref TEXT, after_ref TEXT,
+          before_ready INTEGER NOT NULL DEFAULT 0,
+          after_ready INTEGER NOT NULL DEFAULT 0,
+          before_quality TEXT,
+          after_quality TEXT,
+          before_raw_filter_bypassed INTEGER NOT NULL DEFAULT 0,
+          before_filtered_paths TEXT,
+          before_pruned_at INTEGER, after_pruned_at INTEGER,
+          touched TEXT,
+          diff_stats TEXT,
+          compact_diff TEXT,
+          compact_diff_provenance TEXT,
+          failure_reason TEXT,
+          plan_id TEXT,
+          plan_item_id TEXT,
+          plan_stamp_source TEXT NOT NULL DEFAULT 'legacy-unstamped'
+            CHECK (plan_stamp_source IN ('legacy-unstamped', 'explicit', 'agent-default',
+              'owner-focus', 'fork-carry', 'revive-carry', 'continuation-carry', 'explicit-none',
+              'unbound-manual')),
+          intent_id TEXT,
+          intent_stamp_source TEXT,
+          UNIQUE(workspace_id, turn_seq)
+        );
+        INSERT INTO turn_records__new (
+          id, workspace_id, turn_seq, agent_id, agent_title,
+          owner_agent_id, owner_brick_generation, session_id, task_label,
+          started_at, ended_at, status, before_oid, after_oid, before_ref,
+          after_ref, before_ready, after_ready, before_quality, after_quality,
+          before_raw_filter_bypassed, before_filtered_paths, before_pruned_at,
+          after_pruned_at, touched, diff_stats, compact_diff,
+          compact_diff_provenance, failure_reason, plan_id, plan_item_id,
+          plan_stamp_source, intent_id, intent_stamp_source
+        )
+        SELECT
+          id, workspace_id, turn_seq, agent_id, agent_title,
+          owner_agent_id, owner_brick_generation, session_id, task_label,
+          started_at, ended_at, status, before_oid, after_oid, before_ref,
+          after_ref, before_ready, after_ready, before_quality, after_quality,
+          before_raw_filter_bypassed, before_filtered_paths, before_pruned_at,
+          after_pruned_at, touched, diff_stats, compact_diff,
+          compact_diff_provenance, failure_reason, plan_id, plan_item_id,
+          plan_stamp_source, intent_id, intent_stamp_source
+        FROM turn_records;
+        DROP TABLE turn_records;
+        ALTER TABLE turn_records__new RENAME TO turn_records;
+
+        CREATE INDEX idx_turn_records_ws_seq ON turn_records(workspace_id, turn_seq);
+        CREATE INDEX idx_turn_records_agent ON turn_records(agent_id);
+        CREATE INDEX idx_turn_records_ws_agent_started
+          ON turn_records(workspace_id, agent_id, started_at);
+        CREATE INDEX idx_turn_records_ws_plan_seq
+          ON turn_records(workspace_id, plan_id, turn_seq);
+        CREATE INDEX idx_turn_records_ws_plan_item_seq
+          ON turn_records(workspace_id, plan_item_id, turn_seq);
+
+        CREATE TRIGGER turn_records_plan_stamp_immutable
+        BEFORE UPDATE OF plan_id, plan_item_id, plan_stamp_source ON turn_records
+        WHEN NEW.plan_id IS NOT OLD.plan_id OR NEW.plan_item_id IS NOT OLD.plan_item_id
+          OR NEW.plan_stamp_source IS NOT OLD.plan_stamp_source
+        BEGIN SELECT RAISE(ABORT, 'turn plan stamp is immutable'); END;
+
+        CREATE TRIGGER turn_records_intent_stamp_immutable
+        BEFORE UPDATE OF intent_id, intent_stamp_source ON turn_records
+        WHEN NEW.intent_id IS NOT OLD.intent_id
+          OR NEW.intent_stamp_source IS NOT OLD.intent_stamp_source
+        BEGIN SELECT RAISE(ABORT, 'turn intent stamp is immutable'); END;
+        COMMIT;
+      `);
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction already closed */ }
+      throw error;
+    } finally {
+      db.exec(`PRAGMA foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+    }
+    const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all();
+    if (foreignKeyViolations.length > 0) {
+      throw new Error(`turn_records rebuild violated ${foreignKeyViolations.length} foreign key(s)`);
+    }
+  }
+
   // Mechanics D1: freeze the dispatched revision and explicit orchestration /
   // session correlations. Legacy rows remain nullable unless an exact key join
   // below can bind them.

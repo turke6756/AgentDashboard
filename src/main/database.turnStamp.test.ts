@@ -40,7 +40,20 @@ class FakeBetterSqlite {
     this.db = store;
   }
 
-  pragma(_sql: string): unknown { return undefined; }
+  pragma(sql: string, options?: { simple?: boolean }): unknown {
+    const statement = sql.trim().startsWith('PRAGMA') ? sql : `PRAGMA ${sql}`;
+    if (statement.includes('=')) {
+      this.db.exec(statement);
+      return [];
+    }
+    const stmt = this.db.prepare(statement);
+    try {
+      const rows: Record<string, unknown>[] = [];
+      while (stmt.step()) rows.push(stmt.getAsObject());
+      if (options?.simple) return rows.length > 0 ? Object.values(rows[0])[0] : undefined;
+      return rows;
+    } finally { stmt.free(); }
+  }
   exec(sql: string): this { this.db.exec(sql); return this; }
   prepare(sql: string) {
     const inner = this.db;
@@ -119,6 +132,123 @@ type DbModule = {
 
 let dbm: DbModule;
 let workspaceSeq = 0;
+
+const OLD_TURN_RECORDS_SCHEMA = `
+  CREATE TABLE turn_records (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    turn_seq INTEGER NOT NULL,
+    agent_id TEXT, agent_title TEXT,
+    owner_agent_id TEXT, owner_brick_generation INTEGER,
+    session_id TEXT, task_label TEXT,
+    started_at INTEGER, ended_at INTEGER,
+    status TEXT NOT NULL DEFAULT 'open',
+    before_oid TEXT, after_oid TEXT,
+    before_ref TEXT, after_ref TEXT,
+    before_ready INTEGER NOT NULL DEFAULT 0,
+    after_ready INTEGER NOT NULL DEFAULT 0,
+    before_quality TEXT,
+    after_quality TEXT,
+    before_raw_filter_bypassed INTEGER NOT NULL DEFAULT 0,
+    before_filtered_paths TEXT,
+    before_pruned_at INTEGER, after_pruned_at INTEGER,
+    touched TEXT,
+    diff_stats TEXT,
+    compact_diff TEXT,
+    compact_diff_provenance TEXT,
+    failure_reason TEXT,
+    plan_id TEXT,
+    plan_item_id TEXT,
+    plan_stamp_source TEXT NOT NULL DEFAULT 'legacy-unstamped'
+      CHECK (plan_stamp_source IN ('legacy-unstamped', 'explicit', 'agent-default',
+        'fork-carry', 'revive-carry', 'continuation-carry', 'explicit-none',
+        'unbound-manual')),
+    intent_id TEXT,
+    intent_stamp_source TEXT,
+    UNIQUE(workspace_id, turn_seq)
+  )`;
+
+function seedOldSchemaFixture(dbPath: string): void {
+  const fixture = new FakeBetterSqlite(dbPath);
+  fixture.exec(`
+    PRAGMA foreign_keys = ON;
+    ${OLD_TURN_RECORDS_SCHEMA};
+    CREATE TABLE save_intents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      execution_run_id TEXT,
+      repository_key TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('task','named-save-set')),
+      plan_id TEXT,
+      plan_item_id TEXT,
+      title TEXT NOT NULL,
+      brief_digest TEXT,
+      dispatch_attempt_id TEXT UNIQUE,
+      created_by TEXT NOT NULL CHECK (created_by IN ('task-dispatch','human-save-card')),
+      created_by_id TEXT,
+      state TEXT NOT NULL CHECK (state IN ('open','ready','committed','superseded','abandoned')),
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      ready_at INTEGER,
+      committed_at INTEGER,
+      CHECK (
+        (kind='task' AND dispatch_attempt_id IS NOT NULL) OR
+        (kind='named-save-set' AND dispatch_attempt_id IS NULL)
+      )
+    );
+    CREATE TABLE attribution_resolutions (
+      id TEXT PRIMARY KEY,
+      repository_key TEXT NOT NULL,
+      path_bytes_base64 TEXT NOT NULL,
+      evidence_digest TEXT NOT NULL,
+      earlier_intent_id TEXT NOT NULL REFERENCES save_intents(id),
+      later_intent_id TEXT NOT NULL REFERENCES save_intents(id),
+      resolution TEXT NOT NULL CHECK (resolution IN
+        ('commit-together','superseded-intentionally','restore-lost-work')),
+      chosen_by_app_user_id TEXT NOT NULL,
+      chosen_at INTEGER NOT NULL,
+      superseded_intent_id TEXT REFERENCES save_intents(id),
+      restore_turn_id TEXT REFERENCES turn_records(id),
+      consumed_by_candidate_id TEXT,
+      UNIQUE (repository_key, path_bytes_base64, evidence_digest,
+              earlier_intent_id, later_intent_id)
+    );
+    INSERT INTO turn_records (
+      id, workspace_id, turn_seq, agent_id, agent_title, owner_agent_id,
+      owner_brick_generation, session_id, task_label, started_at, ended_at,
+      status, before_oid, after_oid, before_ref, after_ref, before_ready,
+      after_ready, before_quality, after_quality, before_raw_filter_bypassed,
+      before_filtered_paths, before_pruned_at, after_pruned_at, touched,
+      diff_stats, compact_diff, compact_diff_provenance, failure_reason,
+      plan_id, plan_item_id, plan_stamp_source, intent_id, intent_stamp_source
+    ) VALUES (
+      'old-schema-turn', 'old-schema-workspace', 47, 'agent-old', 'Old Agent',
+      'owner-old', 3, 'session-old', 'Old task', 100, 200, 'closed',
+      'before-oid', 'after-oid', 'before-ref', 'after-ref', 1, 1,
+      'guaranteed', 'hook', 1, '["filtered.txt"]', 300, 400,
+      '[{"path":"kept.txt","op":"write"}]', '{"witnessed":{"files":1}}',
+      'compact', 'witnessed', NULL, 'plan-old', 'item-old', 'explicit',
+      'intent-old', 'task-dispatch'
+    );
+    INSERT INTO save_intents (
+      id, workspace_id, kind, title, dispatch_attempt_id, created_by, state, created_at
+    ) VALUES
+      ('intent-earlier', 'old-schema-workspace', 'task', 'Earlier', 'dispatch-earlier',
+       'task-dispatch', 'open', 1),
+      ('intent-later', 'old-schema-workspace', 'task', 'Later', 'dispatch-later',
+       'task-dispatch', 'open', 2);
+    INSERT INTO attribution_resolutions (
+      id, repository_key, path_bytes_base64, evidence_digest,
+      earlier_intent_id, later_intent_id, resolution, chosen_by_app_user_id,
+      chosen_at, restore_turn_id
+    ) VALUES (
+      'old-schema-resolution', 'repo-old', 'a2VwdC50eHQ=', 'digest-old',
+      'intent-earlier', 'intent-later', 'restore-lost-work', 'human-old', 3,
+      'old-schema-turn'
+    );
+  `);
+}
+
 function freshWorkspace(): string {
   workspaceSeq += 1;
   return dbm.createWorkspace({
@@ -365,6 +495,104 @@ test('fresh database accepts owner-focus and still rejects a bogus stamp source'
     /invalid turn plan stamp source/,
   );
   assert.equal(dbm.getTurnRecord('bad-bogus-source'), null);
+});
+
+test('old-schema database rebuild preserves rows, indexes, triggers, and restore FK', () => {
+  const freshAppData = process.env.APPDATA;
+  assert.ok(freshAppData);
+  const fixtureAppData = path.join(freshAppData, 'old-schema-fixture');
+  seedOldSchemaFixture(path.join(fixtureAppData, 'AgentDashboard', 'dashboard.db'));
+  process.env.APPDATA = fixtureAppData;
+  try {
+    dbm.initDatabase();
+    const raw = dbm.getDb();
+    const preserved = raw.prepare(
+      `SELECT id, turn_seq, plan_id, plan_item_id, plan_stamp_source,
+              intent_id, intent_stamp_source, before_filtered_paths, touched
+         FROM turn_records WHERE id = ?`,
+    ).get('old-schema-turn');
+    assert.deepEqual(preserved, {
+      id: 'old-schema-turn',
+      turn_seq: 47,
+      plan_id: 'plan-old',
+      plan_item_id: 'item-old',
+      plan_stamp_source: 'explicit',
+      intent_id: 'intent-old',
+      intent_stamp_source: 'task-dispatch',
+      before_filtered_paths: '["filtered.txt"]',
+      touched: '[{"path":"kept.txt","op":"write"}]',
+    });
+
+    raw.prepare(
+      `INSERT INTO turn_records (id, workspace_id, turn_seq, plan_id, plan_stamp_source)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('old-schema-owner-focus', 'old-schema-workspace', 48, 'plan-owner', 'owner-focus');
+    assert.throws(
+      () => raw.prepare(
+        `INSERT INTO turn_records (id, workspace_id, turn_seq, plan_stamp_source)
+         VALUES (?, ?, ?, ?)`,
+      ).run('old-schema-bogus', 'old-schema-workspace', 49, 'bogus-source'),
+      /CHECK constraint failed/,
+    );
+
+    const schemaObjects = raw.prepare(
+      `SELECT type, name FROM sqlite_master
+        WHERE name IN (?, ?, ?, ?, ?, ?, ?) ORDER BY name`,
+    ).all(
+      'idx_turn_records_ws_seq',
+      'idx_turn_records_agent',
+      'idx_turn_records_ws_agent_started',
+      'idx_turn_records_ws_plan_seq',
+      'idx_turn_records_ws_plan_item_seq',
+      'turn_records_plan_stamp_immutable',
+      'turn_records_intent_stamp_immutable',
+    );
+    assert.deepEqual(schemaObjects, [
+      { type: 'index', name: 'idx_turn_records_agent' },
+      { type: 'index', name: 'idx_turn_records_ws_agent_started' },
+      { type: 'index', name: 'idx_turn_records_ws_plan_item_seq' },
+      { type: 'index', name: 'idx_turn_records_ws_plan_seq' },
+      { type: 'index', name: 'idx_turn_records_ws_seq' },
+      { type: 'trigger', name: 'turn_records_intent_stamp_immutable' },
+      { type: 'trigger', name: 'turn_records_plan_stamp_immutable' },
+    ]);
+    assert.throws(
+      () => raw.prepare('UPDATE turn_records SET plan_id = ? WHERE id = ?')
+        .run('plan-forged', 'old-schema-turn'),
+      /turn plan stamp is immutable/,
+    );
+    assert.throws(
+      () => raw.prepare('UPDATE turn_records SET intent_id = ? WHERE id = ?')
+        .run('intent-forged', 'old-schema-turn'),
+      /turn intent stamp is immutable/,
+    );
+    assert.deepEqual(
+      raw.prepare(
+        `SELECT ar.restore_turn_id, tr.id AS parent_id
+           FROM attribution_resolutions ar
+           JOIN turn_records tr ON tr.id = ar.restore_turn_id
+          WHERE ar.id = ?`,
+      ).get('old-schema-resolution'),
+      { restore_turn_id: 'old-schema-turn', parent_id: 'old-schema-turn' },
+    );
+    assert.deepEqual(raw.prepare('PRAGMA foreign_key_check').all(), []);
+
+    const beforeSchema = raw.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turn_records'`,
+    ).get();
+    const beforeRows = raw.prepare('SELECT COUNT(*) AS count FROM turn_records').get();
+    dbm.initDatabase();
+    const afterSchema = dbm.getDb().prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turn_records'`,
+    ).get();
+    const afterRows = dbm.getDb().prepare('SELECT COUNT(*) AS count FROM turn_records').get();
+    assert.deepEqual(afterSchema, beforeSchema);
+    assert.deepEqual(afterRows, beforeRows);
+    assert.deepEqual(dbm.getDb().prepare('PRAGMA foreign_key_check').all(), []);
+  } finally {
+    process.env.APPDATA = freshAppData;
+    dbm.initDatabase();
+  }
 });
 
 test('legacy rows read legacy-unstamped through the mapper', () => {
