@@ -12,6 +12,7 @@ import type {
   OverheadSource,
   OverheadSourceKind,
 } from '../../shared/types';
+import { parseIndex, projectParsed } from '../../shared/memory-index-core';
 import { extractClaudeImports } from '../shared/claude-import-resolver';
 import { splitFrontmatter } from '../shared/frontmatter-split';
 import { classifyPathMutability } from '../shared/path-mutability';
@@ -27,6 +28,8 @@ export interface WalkUpDeps {
   managedPolicyPath: string | null;
   additionalDirs?: string[];
   env: Record<string, string | undefined>;
+  /** Clock input for lifecycle-aware memory-index projection. */
+  nowISO?: string;
   /** Per-scan memo of resolved-path → built source, so overlapping ancestors are
    *  read + estimated once. Shared with the analyzer's MCP-free passes. */
   seen?: Set<string>;
@@ -160,8 +163,8 @@ function buildSkillSources(
 }
 
 /** Split a MEMORY.md into two costed rows (Wave-2 §C2), modeled on
- *  `buildSkillSources`: a `memory-index` (resident, 0 tokens — the manual "check
- *  MEMORY.md" pointer already lives inside CLAUDE.md) and a `memory-body`
+ *  `buildSkillSources`: a `memory-index` (resident, projected injection text)
+ *  and a `memory-body`
  *  (on-demand, MEASURED size for the labeled pool but NOT injected each session).
  *  Both carry the same `resolvedPath` so clicking either opens the file. */
 function buildMemorySources(
@@ -185,14 +188,17 @@ function buildMemorySources(
     origin: 'frontmatter-split' as const,
     mutable,
   };
+  const injectText = exists
+    ? projectParsed(parseIndex(file!.content), { nowISO: deps.nowISO ?? new Date().toISOString() }).injectText
+    : '';
   const index: OverheadSource = {
     ...base,
     id: `${resolved}#memory-index`,
     kind: 'memory-index',
     disclosureTier: 'resident',
-    estimate: deps.estimator.estimate(''), // resident cost is 0 — pointer counted inside CLAUDE.md
+    estimate: deps.estimator.estimate(injectText),
     children: [],
-    warnings: ['MEMORY.md is progressively disclosed (autoMemoryEnabled:false; CLAUDE.md instructs a manual read at session start). No index is injected, so resident cost is 0 — the one-line pointer is already counted inside CLAUDE.md.'],
+    warnings: [],
   };
   if (!exists) return [index];
   const body: OverheadSource = {
@@ -330,7 +336,7 @@ export function analyzeWalkUp(
         continue;
       }
       if (kind === 'memory') {
-        // Split into memory-index (resident, 0) + memory-body (on-demand, measured) (§C2).
+        // Split into memory-index (resident, projected injection) + memory-body (on-demand, measured) (§C2).
         const [index, body] = buildMemorySources(deps, resolved, cand.rel, scope, inherited);
         if (body) resolveImports(body, 0); // memory indexes may @import
         sources.push(index);

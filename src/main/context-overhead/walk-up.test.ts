@@ -109,14 +109,41 @@ test('SKILL.md splits into skill-header (baseline) + skill-body (scenario) sourc
 
 // ── memory resident/on-demand costing split (Wave-2 §C2) ──────────────────────
 
-test('MEMORY.md splits into memory-index (resident, 0 tokens) + memory-body (on-demand, measured)', () => {
+test('MEMORY.md costs the projected resident injection + keeps the full body on demand', () => {
   const memPath = '/ws/agent/memory/MEMORY.md';
   const content = [
     '# Supervisor memory index',
     '',
-    'A large body of progressively-disclosed notes that is read on demand at the',
-    'agent\'s discretion — NOT injected into context every session. Lots of prose',
-    'here so the measured body estimate is clearly greater than zero.',
+    '<!-- disclosure-format: v2 -->',
+    '',
+    '## mb-2026-08-01-expired: Expired capsule',
+    '- status: active',
+    '- date: 2026-08-01',
+    '- consequence: this expired text must not be costed as resident',
+    '- state: obsolete',
+    '- read-if: never',
+    '- expires: 2026-08-02',
+    '',
+    '## mb-2026-08-20-live: Live capsule',
+    '- status: active',
+    '- date: 2026-08-20',
+    '- consequence: this live text is injected and must carry a resident cost',
+    '- state: current',
+    '- read-if: always',
+    '- expires: 2999-01-01',
+  ].join('\r\n');
+  const expectedInjectText = [
+    '# Supervisor memory index',
+    '',
+    '<!-- disclosure-format: v2 -->',
+    '',
+    '## mb-2026-08-20-live: Live capsule',
+    '- status: active',
+    '- date: 2026-08-20',
+    '- consequence: this live text is injected and must carry a resident cost',
+    '- state: current',
+    '- read-if: always',
+    '- expires: 2999-01-01',
   ].join('\n');
   const files: Record<string, string> = { [memPath]: content };
   const reader: FileReader = {
@@ -125,8 +152,8 @@ test('MEMORY.md splits into memory-index (resident, 0 tokens) + memory-body (on-
     listFiles() { return []; },
   };
   const frames = analyzeWalkUp('/ws/agent', '/ws', {
-    reader, estimator: new TokenEstimator(), pathOps: makePathOps('wsl'),
-    userHome: '/home/u', managedPolicyPath: null, env: {}, seen: new Set(),
+    reader, estimator: new TokenEstimator({ encoder: (text) => text.length }), pathOps: makePathOps('wsl'),
+    userHome: '/home/u', managedPolicyPath: null, env: {}, nowISO: '2026-08-22T12:00:00.000Z', seen: new Set(),
   });
   const all = frames.flatMap((f) => flatten(f.sources));
   const index = all.find((s) => s.kind === 'memory-index');
@@ -136,12 +163,15 @@ test('MEMORY.md splits into memory-index (resident, 0 tokens) + memory-body (on-
   assert.ok(!all.some((s) => s.kind === 'memory'), 'legacy "memory" kind is no longer emitted');
   assert.equal(index!.disclosureTier, 'resident', 'the index tier is resident');
   assert.equal(body!.disclosureTier, 'on-demand', 'the body tier is on-demand');
-  assert.equal(index!.estimate.tokens, 0, 'the resident index costs 0 tokens (nothing injected)');
+  assert.equal(index!.estimate.tokens, expectedInjectText.length,
+    'the resident row estimates the normalized injected text with expired blocks removed');
+  assert.ok(index!.estimate.tokens > 0, 'the injected index has a non-zero resident cost');
   assert.ok(body!.estimate.tokens > 0, 'the on-demand body carries its measured size');
+  assert.equal(body!.estimate.chars, content.length, 'the body row still measures the full on-demand file');
   assert.equal(index!.resolvedPath, memPath);
   assert.equal(body!.resolvedPath, memPath, 'both rows share the file path (click opens MEMORY.md)');
-  assert.ok((index!.warnings ?? []).some((w) => w.includes('resident cost is 0')),
-    'the index row explains why its resident cost is 0');
+  assert.ok(!(index!.warnings ?? []).some((w) => w.includes('No index is injected')),
+    'the stale no-index warning is absent');
 });
 
 test('a fenceless SKILL.md still splits (low confidence) and warns on the header row', () => {
