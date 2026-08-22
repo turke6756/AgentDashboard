@@ -244,7 +244,7 @@ export function resolvePlanBindingAtBoundary(
 const API_ERROR_CODES = new Set<string>([
   ...PLAN_REF_ERROR_CODES,
   'submit-not-confirmed', 'delivery-failed', 'browser-policy-denied',
-  'invalid-plan-binding',
+  'invalid-plan-binding', 'activity-bad-request',
   // Context-brick Inc 1 identity layer — resolveIdentity / resolveWorkspaceScope
   // attach these to their 403s. Without the allowlist entry the serializer would
   // strip `err.code`, so a caller could not machine-distinguish an unknown-workspace
@@ -4310,9 +4310,19 @@ function parseActivityListRequest(
   if ((sinceTurn === undefined) !== (sinceFa === undefined)) {
     bad('sinceTurnSeq and sinceFileActivityId must be supplied together');
   }
+  const rawGrouping = url.searchParams.get('grouping');
+  const grouping = rawGrouping === null || rawGrouping === ''
+    ? undefined
+    : ['plan', 'time', 'file', 'none'].includes(rawGrouping)
+      ? rawGrouping as NonNullable<ActivityListRequest['grouping']>
+      : bad('`grouping` must be one of plan, time, file, or none');
+  const rawPathPrefix = url.searchParams.get('pathPrefix');
   return {
     workspaceId,
     preview,
+    grouping,
+    ...(rawPathPrefix === null ? {} : { pathPrefix: rawPathPrefix }),
+    timeZone: url.searchParams.get('timeZone') || undefined,
     limit: integer('limit', 200),
     fileActivityLimit: integer('fileActivityLimit', 10_000),
     agentId: url.searchParams.get('agentId') || undefined,

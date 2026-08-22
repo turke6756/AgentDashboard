@@ -138,6 +138,37 @@ test('WP-9 default plan page gains the additive scope golden without ancillary',
   assert.equal(page.ancillary, undefined);
 });
 
+test('WP-9 continuation exhaustion does not claim first-page turn completeness', async () => {
+  const page = await makeRoutes().list({
+    workspaceId: 'ws',
+    preview: 'none',
+    before: {
+      turns: { before: 7, exhausted: false },
+      fileActivities: { before: null, exhausted: false },
+    },
+  });
+  assert.ok(page.scope);
+  assert.equal(page.scans.turns.exhausted, true, 'fixture must exhaust the continuation scan');
+  assert.equal(page.scope.completeness.turns, false);
+});
+
+test('WP-9 valid pathPrefix is canonicalized and filters emitted file groups', async () => {
+  const routes = makeRoutes({
+    listTurns: () => sourcePage([turn({
+      touched: [
+        { path: 'src/a.ts', op: 'write' },
+        { path: 'docs/b.md', op: 'write' },
+      ],
+    })], 7),
+  });
+  const page = await routes.list({
+    workspaceId: 'ws', grouping: 'file', pathPrefix: 'src/', preview: 'none',
+  });
+  assert.ok(page.scope);
+  assert.equal(page.scope.filters.pathPrefix, 'src');
+  assert.deepEqual(page.items.map((item) => item.kind === 'file-group' ? item.repoPath : item.kind), ['src/a.ts']);
+});
+
 test('WP-9 production registerActivityRoutes list reaches time/file lenses with scope and ancillary', async () => {
   const fileActivities: ActivityFileActivity[] = [{
     id: 1, agentId: 'a2', filePath: '/repo/tools/b.ts', operation: 'write',
@@ -413,6 +444,35 @@ test('production HTTP and IPC registrars both thread listWindowPaths into activi
     ) as ActivityPage;
     assert.equal(ipcWindowCalls, 1, 'real registerCheckpointIpc path must call listWindowPaths');
     assert.ok(ipcPage.items.some((item) => item.kind === 'window-unattributed'));
+  } finally {
+    server.stop();
+    agentCapabilities.clear();
+  }
+});
+
+test('production HTTP parser forwards time grouping and raw invalid pathPrefix to the route boundary', async () => {
+  const supervisor = { getContextStats: () => null, isInputInFlight: () => false } as unknown as AgentSupervisor;
+  const server = new ApiServer(supervisor, 0, undefined, '127.0.0.1');
+  server.setActivityRoutes(makeRoutes());
+  const port = await server.start();
+  const token = agentCapabilities.mint({ agentId: 'sup', workspaceId: 'ws', privilegeLane: 'supervisor' });
+  try {
+    const timePageResponse = await request(port, '/api/activity?grouping=time', `Bearer ${token}`);
+    assert.equal(timePageResponse.status, 200, timePageResponse.body);
+    const timePage = JSON.parse(timePageResponse.body) as ActivityPage;
+    assert.equal(timePage.items[0]?.kind, 'day-group', 'real HTTP parsing must reach the time projection');
+    assert.equal(timePage.scope?.grouping, 'time');
+
+    const invalidPrefix = await request(port, '/api/activity?pathPrefix=', `Bearer ${token}`);
+    assert.equal(invalidPrefix.status, 400, invalidPrefix.body);
+    assert.deepEqual(JSON.parse(invalidPrefix.body), {
+      error: 'pathPrefix must be a workspace-relative path',
+      code: 'activity-bad-request',
+    });
+
+    const invalidGrouping = await request(port, '/api/activity?grouping=week', `Bearer ${token}`);
+    assert.equal(invalidGrouping.status, 400, invalidGrouping.body);
+    assert.equal(JSON.parse(invalidGrouping.body).code, 'activity-bad-request');
   } finally {
     server.stop();
     agentCapabilities.clear();
