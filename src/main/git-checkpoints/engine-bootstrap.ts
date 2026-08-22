@@ -52,6 +52,7 @@ import {
 import { forcePrerequisiteRecheck } from '../runtime-prerequisites';
 import type { RepoWidePurgeResult, RepoWidePurgeWorkspace } from '../../shared/types';
 import { CAPABILITY_PROBE_TTL_MS, captureHealthManager } from '../activity/capture-health';
+import { resolveOwnerFocusPlanId } from '../plans/executing-supervisor-plan';
 
 export interface CheckpointEngineHandle {
   /** The internal Git exe this engine resolved. Reused by the Save-card route
@@ -459,6 +460,7 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
         getAgent: (id) => getAgent(id) as unknown as DispatchAgentInfo | null,
         resolveCapability,
         resolveActivityCapability,
+        resolveOwnerFocusPlan: resolveOwnerFocusPlanId,
       },
       agentId,
       dispatch,

@@ -99,6 +99,7 @@ import {
   registerOrchestrationProviderSettingsIpc,
 } from './orchestration/orchestration-provider-settings-transport';
 import { resolvePlanBindingAtBoundary } from './api-server';
+import { resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
 import { registerGitignoreSuggestionIpc } from './commit-candidates/exhaust-exclusions';
 
@@ -461,7 +462,10 @@ export function registerIpcHandlers(
     // SC-WP-2C: a renderer send is a direct human dispatch. Resolve its
     // agent-default (or explicit request) before touching the delivery queue.
     const dispatch = resolvePlanBindingAtBoundary(
-      { getPlanById: getPlan, planItemInPlan }, agent, 'human-terminal', requestedPlanBinding,
+      { getPlanById: getPlan, planItemInPlan, resolveOwnerFocusPlan: resolveOwnerFocusPlanId },
+      agent,
+      'human-terminal',
+      requestedPlanBinding,
     );
     if (supervisor.isInputInFlight(agentId) || ['working', 'launching'].includes(agent.status)) {
       const reportedStatus = supervisor.isInputInFlight(agentId) ? 'receiving' : agent.status;

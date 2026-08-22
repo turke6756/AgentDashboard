@@ -70,7 +70,7 @@ import { proposeGraduation } from './memory-index/graduation';
 import { publishLessonsBatch } from './memory-index/batch-publisher';
 import { replaceMemoryBundle, restoreMemoryBundle } from './memory-index/bundle-migration';
 import { detectPathType } from './path-utils';
-import { getExecutingSupervisorPlan } from './plans/executing-supervisor-plan';
+import { getExecutingSupervisorPlan, resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import type { PipelineDb } from './context-optimizer/optimizer-pipeline';
 import { runLiveOptimizerAnalyze } from './context-optimizer/optimizer-live-analyze';
 import {
@@ -118,7 +118,7 @@ import {
   type DispatchOrigin,
 } from './git-checkpoints/dispatch-context';
 
-export type PlanBindingBoundaryAgent = Pick<Agent, 'workspaceId' | 'planId'>;
+export type PlanBindingBoundaryAgent = Pick<Agent, 'workspaceId' | 'planId' | 'ownerAgentId'>;
 
 /** Hard ceiling for any HTTP request body accepted by the local API. */
 export const API_MAX_PAYLOAD_BYTES = 1_000_000;
@@ -174,6 +174,8 @@ export interface PlanBindingBoundaryDeps {
   planItemInPlan?: (workspaceId: string, planId: string, planItemId: string) => boolean;
   /** WP-P5D deterministic source for an omitted/agent-default binding. */
   resolveActivePlanDefault?: () => string | null;
+  /** Resolve the durable direct owner's executing plan for owner-focus attribution. */
+  resolveOwnerFocusPlan?: (ownerAgentId: string) => string | null;
 }
 
 /** Resolve an untrusted API/IPC binding before anything is put on the delivery
@@ -213,6 +215,9 @@ export function resolvePlanBindingAtBoundary(
       planItemInPlan: deps.planItemInPlan,
       ...(deps.resolveActivePlanDefault
         ? { resolveActivePlanDefault: () => deps.resolveActivePlanDefault!() }
+        : {}),
+      ...(deps.resolveOwnerFocusPlan
+        ? { resolveOwnerFocusPlan: deps.resolveOwnerFocusPlan }
         : {}),
     },
     agent,
@@ -2001,6 +2006,7 @@ export class ApiServer {
           getPlanById: getPlan,
           planItemInPlan,
           resolveActivePlanDefault: () => getExecutingSupervisorPlan(identity.supervisorId)?.planId ?? null,
+          resolveOwnerFocusPlan: resolveOwnerFocusPlanId,
         },
         agent,
         'api',

@@ -1,6 +1,7 @@
 // Save-card SC-WP-2B — trusted plan-stamp resolution and wire-forgery guards.
 
 import assert from 'node:assert/strict';
+import http from 'node:http';
 
 import type { GitCapability } from '../../shared/types';
 import {
@@ -9,6 +10,7 @@ import {
   withResolvedIntentStamp,
   withPlanningActivityBinding,
   withResolvedPlanStamp,
+  type DispatchContext,
   type DispatchAgentInfo,
   type DispatchDeps,
 } from './dispatch-context';
@@ -266,9 +268,218 @@ test('trusted planning activity binding resolves capability from the physical wo
   assert.equal(ctx?.capability.repoRoot, '/app/planning-worktrees/run-1');
 });
 
+interface ProductionHarness {
+  api: {
+    route(method: string, url: URL, req: http.IncomingMessage, identity: unknown): Promise<unknown>;
+  };
+  handlers: Map<string, (...args: any[]) => any>;
+  httpDispatches: DispatchContext[];
+  ipcDispatches: DispatchContext[];
+  engine: {
+    buildTurnContext(agentId: string, dispatch: DispatchContext): Promise<{ planStamp?: unknown } | null>;
+  };
+  ownerQueryIds: string[];
+}
+
+let productionHarnessPromise: Promise<ProductionHarness> | undefined;
+
+function makeSqlFixture(SQL: any, ownerQueryIds: string[]): any {
+  const sqlDb = new SQL.Database();
+  sqlDb.exec(`
+    CREATE TABLE plans (
+      id TEXT PRIMARY KEY, workspace_id TEXT, slug TEXT, path TEXT,
+      responsible_supervisor_id TEXT, deleted_at INTEGER, run_state TEXT
+    );
+    CREATE TABLE supervisor_active_plan (supervisor_id TEXT PRIMARY KEY, plan_id TEXT);
+    CREATE TABLE plan_execution_runs (plan_id TEXT, lifecycle_state TEXT);
+    INSERT INTO plans VALUES (
+      'plan-owner', 'ws-1', 'owner-plan', '/plans/owner-plan.md',
+      'owner-supervisor', NULL, 'executing'
+    );
+    INSERT INTO supervisor_active_plan VALUES ('owner-supervisor', 'plan-owner');
+    INSERT INTO plan_execution_runs VALUES ('plan-owner', 'active');
+  `);
+  return {
+    prepare(sql: string) {
+      return {
+        get(...params: unknown[]) {
+          if (sql.includes('FROM supervisor_active_plan')) ownerQueryIds.push(String(params[0]));
+          const statement = sqlDb.prepare(sql);
+          try {
+            statement.bind(params);
+            return statement.step() ? statement.getAsObject() : undefined;
+          } finally {
+            statement.free();
+          }
+        },
+      };
+    },
+  };
+}
+
+async function productionHarness(): Promise<ProductionHarness> {
+  if (productionHarnessPromise) return productionHarnessPromise;
+  productionHarnessPromise = (async () => {
+    const initSqlJs = require('sql.js') as () => Promise<any>;
+    const SQL = await initSqlJs();
+    const ownerQueryIds: string[] = [];
+    const sqlFixture = makeSqlFixture(SQL, ownerQueryIds);
+    const agents = new Map<string, any>([
+      ['worker', {
+        id: 'worker', workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-supervisor',
+        status: 'idle', title: 'Worker', resumeSessionId: null, continuationGeneration: 0,
+      }],
+      ['nested-worker', {
+        id: 'nested-worker', workspaceId: 'ws-1', planId: null, ownerAgentId: 'worker-owner',
+        status: 'idle', title: 'Nested worker', resumeSessionId: null, continuationGeneration: 0,
+      }],
+      ['worker-owner', {
+        id: 'worker-owner', workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-supervisor',
+        status: 'idle', title: 'Direct worker owner', resumeSessionId: null, continuationGeneration: 0,
+      }],
+      ['owner-supervisor', {
+        id: 'owner-supervisor', workspaceId: 'ws-1', planId: null, ownerAgentId: null,
+        status: 'idle', title: 'Executing supervisor', resumeSessionId: null, continuationGeneration: 0,
+      }],
+    ]);
+
+    const database = require('../database') as Record<string, any>;
+    database.getDb = () => sqlFixture;
+    database.getAgent = (id: string) => agents.get(id) ?? null;
+    database.getPlan = (id: string) => id === 'plan-owner'
+      ? { id, workspaceId: 'ws-1', deletedAt: null }
+      : null;
+    database.planItemInPlan = () => false;
+    database.getWorkspace = (id: string) => id === 'ws-1'
+      ? { id, path: 'C:/repo', pathType: 'local', title: 'Workspace' }
+      : null;
+    database.getWorkspaces = () => [];
+
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const noop = () => undefined;
+    const electronPath = require.resolve('electron');
+    require.cache[electronPath] = {
+      id: electronPath,
+      filename: electronPath,
+      loaded: true,
+      exports: {
+        ipcMain: { handle: (channel: string, handler: (...args: any[]) => any) => handlers.set(channel, handler) },
+        app: { getPath: () => 'C:/temp', isPackaged: false, on: noop },
+        dialog: { showOpenDialog: noop, showMessageBox: noop },
+        shell: { openExternal: noop, trashItem: noop },
+        BrowserWindow: class {},
+        nativeTheme: { on: noop, themeSource: 'system', shouldUseDarkColors: false },
+      },
+      children: [],
+      paths: [],
+    } as any;
+
+    const httpDispatches: DispatchContext[] = [];
+    const ipcDispatches: DispatchContext[] = [];
+    const confirmedOutcome = (agentId: string) => ({
+      disposition: 'confirmed', agentId, delivered: true,
+      confirmationSource: 'hook', completedAt: Date.now(),
+    });
+    const supervisor = new Proxy({
+      isInputInFlight: () => false,
+      registerTransientTurnSubscription: () => ({ registered: true }),
+      cancelTransientTurnSubscriptionsForPair: noop,
+      sendInput: async (_agentId: string, _text: string, _opts: unknown, dispatch: DispatchContext) => {
+        httpDispatches.push(dispatch);
+        return true;
+      },
+      sendInputWithOutcome: async (agentId: string, _text: string, _opts: unknown, dispatch: DispatchContext) => {
+        ipcDispatches.push(dispatch);
+        return confirmedOutcome(agentId);
+      },
+      on: noop,
+    }, { get: (target, key) => key in target ? (target as any)[key] : noop });
+    const mainWindow = new Proxy({
+      isDestroyed: () => false,
+      webContents: { send: noop },
+    }, { get: (target, key) => key in target ? (target as any)[key] : noop });
+
+    const { ApiServer } = require('../api-server') as typeof import('../api-server');
+    const api = new ApiServer(supervisor as any, 0, undefined, '127.0.0.1') as any;
+    const ipcModule = require('../ipc-handlers') as typeof import('../ipc-handlers');
+    ipcModule.registerIpcHandlers(supervisor as any, mainWindow as any, {} as any);
+
+    const gitRuntime = require('../git/git-runtime') as Record<string, any>;
+    gitRuntime.resolveInternalGit = async () => ({ execPath: 'git' });
+    gitRuntime.probeWorkspaceGit = async () => capability();
+    const engineModule = require('./engine-bootstrap') as typeof import('./engine-bootstrap');
+    const engine = await engineModule.createCheckpointEngine();
+    assert.ok(engine, 'the production checkpoint-engine factory must return its buildTurnContext seam');
+
+    return { api, handlers, httpDispatches, ipcDispatches, engine, ownerQueryIds };
+  })();
+  return productionHarnessPromise;
+}
+
+async function stampFromFrozenDispatch(dispatch: DispatchContext): Promise<unknown> {
+  return (await buildDispatchTurnContext(deps({
+    getAgent: () => ({ workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-supervisor' }),
+  }), 'worker', dispatch))?.planStamp;
+}
+
+async function callProductionHttpSend(harness: ProductionHarness): Promise<void> {
+  const pathname = '/api/agents/worker/input';
+  const req = new http.IncomingMessage(null as any);
+  req.method = 'POST';
+  req.url = pathname;
+  process.nextTick(() => {
+    req.emit('data', Buffer.from(JSON.stringify({ text: 'production HTTP owner-focus' })));
+    req.emit('end');
+  });
+  await harness.api.route('POST', new URL(pathname, 'http://localhost'), req, {
+    workspaceId: null, supervisor: null, asserted: false, projectId: null, supervisorId: null,
+  });
+}
+
+test('[http] real ApiServer send route freezes the direct owner executing plan', async () => {
+  const harness = await productionHarness();
+  harness.httpDispatches.length = 0;
+  await callProductionHttpSend(harness);
+  assert.equal(harness.httpDispatches.length, 1);
+  assert.deepEqual(await stampFromFrozenDispatch(harness.httpDispatches[0]), {
+    planId: 'plan-owner', planItemId: null, source: 'owner-focus',
+  });
+});
+
+test('[ipc] real registerIpcHandlers send handler freezes the direct owner executing plan', async () => {
+  const harness = await productionHarness();
+  harness.ipcDispatches.length = 0;
+  const handler = harness.handlers.get('agent:send-input');
+  assert.ok(handler, 'the production registerIpcHandlers path must register agent:send-input');
+  await handler({}, 'worker', 'production IPC owner-focus');
+  assert.equal(harness.ipcDispatches.length, 1);
+  assert.deepEqual(await stampFromFrozenDispatch(harness.ipcDispatches[0]), {
+    planId: 'plan-owner', planItemId: null, source: 'owner-focus',
+  });
+});
+
+test('[engine] real checkpoint-engine factory builds owner-focus and stops at one owner hop', async () => {
+  const harness = await productionHarness();
+  harness.ownerQueryIds.length = 0;
+  const ownerContext = await harness.engine.buildTurnContext('worker', { origin: 'orchestration' });
+  assert.deepEqual(ownerContext?.planStamp, {
+    planId: 'plan-owner', planItemId: null, source: 'owner-focus',
+  });
+
+  harness.ownerQueryIds.length = 0;
+  const nestedContext = await harness.engine.buildTurnContext('nested-worker', { origin: 'orchestration' });
+  assert.deepEqual(nestedContext?.planStamp, {
+    planId: null, planItemId: null, source: 'agent-default',
+  });
+  assert.deepEqual(harness.ownerQueryIds, ['worker-owner'],
+    'the production SQL resolver must query only the direct worker owner, never its executing grand-owner');
+});
+
 (async () => {
   let passed = 0, failed = 0;
-  for (const t of tests) {
+  const seamFilter = process.env.WP5_SEAM;
+  const selectedTests = seamFilter ? tests.filter((entry) => entry.name.startsWith(`[${seamFilter}]`)) : tests;
+  for (const t of selectedTests) {
     try { await t.run(); console.log(`  ok  ${t.name}`); passed++; }
     catch (err) { console.error(`  FAIL ${t.name}`); console.error('       ', err instanceof Error ? err.stack || err.message : err); failed++; }
   }
