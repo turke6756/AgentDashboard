@@ -27,9 +27,13 @@ import {
   calculateArcFreshness,
   calculatePlanArcFreshness,
   normalizeArcCutoff,
+  parsePlanManifest,
+  serializePlanManifest,
+  PLAN_STATE_CARD_MAX_BYTES,
   type LockTuning,
   type ResponsibilityEvent,
   type PlanManifest,
+  type PlanStatus,
 } from './plan-manifest';
 
 interface TestCase { name: string; run(): Promise<void>; }
@@ -81,6 +85,27 @@ async function readManifest(folder: string): Promise<PlanManifest> {
 
 function ev(id: string, agent = 'agent-x'): ResponsibilityEvent {
   return { event_id: id, event: 'assigned', agent_id: agent, at: Date.now(), source: 'promotion-service' };
+}
+
+function stateCard(status: PlanStatus = 'in_progress'): PlanManifest {
+  return {
+    schema_version: 2,
+    plan_artifact_id: 'plan_deadbeef',
+    title: 'Make plan state cheap and truthful',
+    purpose: 'Give agents one small authoritative standing record.',
+    status,
+    rollup: { total: 8, landed: 1, remaining: 6, dropped: 1 },
+    deploy: { code: 'local_unpushed', restart_required: true },
+    blocker: 'human rebuild+restart',
+    related: [
+      { kind: 'supersedes', id: 'plan_00000001' },
+      { kind: 'successor', id: 'plan_00000002' },
+      { kind: 'blocked_on_same_restart', id: 'plan_00000003' },
+      { kind: 'cluster', id: 'plan_00000004' },
+    ],
+    project: 'planning-surface',
+    state_updated_at: 1_787_299_200_000,
+  };
 }
 
 async function expectError(fn: () => Promise<unknown>, code: string): Promise<PlanManifestError> {
@@ -155,6 +180,81 @@ function delay(ms: number): Promise<void> {
 test('exported defaults match the settled protocol (2s heartbeat / 15s stale)', async () => {
   assert.equal(PLAN_LOCK_HEARTBEAT_MS, 2000);
   assert.equal(PLAN_LOCK_STALE_MS, 15000);
+});
+
+// ── v2 state card ───────────────────────────────────────────────────────────
+
+test('v2 state-card fields parse and serialize round-trip for every status and relation kind', async () => {
+  const statuses: PlanStatus[] = ['draft', 'ready', 'in_progress', 'code_complete', 'completed'];
+  for (const status of statuses) {
+    const manifest = stateCard(status);
+    const serialized = serializePlanManifest(manifest);
+    const parsed = parsePlanManifest(serialized);
+    assert.deepEqual(parsed, manifest);
+  }
+});
+
+test('casMutate writes a valid v2 state card that the production parser reads back', async () => {
+  const home = await makeHome();
+  const folder = await scaffoldFolder(home, 'state-round-trip');
+  const card = stateCard('ready');
+  const result = await casMutate(home, 'state-round-trip', (current) => ({ ...current, ...card }), FAST);
+  assert.equal(result.changed, true);
+
+  const parsed = parsePlanManifest(await fs.readFile(path.join(folder, 'plan.json'), 'utf8'));
+  for (const key of ['title', 'purpose', 'status', 'rollup', 'deploy', 'blocker', 'related', 'project', 'state_updated_at'] as const) {
+    assert.deepEqual(parsed[key], card[key], `${key} round-trips through CAS`);
+  }
+});
+
+test('legacy manifest without state-card fields remains parseable', async () => {
+  const legacy = { schema_version: 1, plan_artifact_id: 'plan_deadbeef', responsibility_events: [] };
+  assert.deepEqual(parsePlanManifest(JSON.stringify(legacy)), legacy);
+});
+
+test('unknown status and related.kind values are cleanly rejected', async () => {
+  const badStatus = { ...stateCard(), status: 'paused' } as unknown as PlanManifest;
+  assert.throws(
+    () => serializePlanManifest(badStatus),
+    (err: unknown) => err instanceof PlanManifestError && err.code === 'invalid-state-card' && /unknown status/.test(err.message),
+  );
+
+  const badRelation = stateCard();
+  badRelation.related = [{ kind: 'depends_on', id: 'plan_00000001' } as never];
+  assert.throws(
+    () => parsePlanManifest(JSON.stringify(badRelation)),
+    (err: unknown) => err instanceof PlanManifestError && err.code === 'invalid-state-card' && /related\[0\]\.kind/.test(err.message),
+  );
+});
+
+test('purpose is one line and state-card nested fields retain their declared shapes', async () => {
+  const multiline = { ...stateCard(), purpose: 'line one\nline two' };
+  assert.throws(() => serializePlanManifest(multiline), /purpose must be one line/);
+
+  const badDeploy = { ...stateCard(), deploy: { code: 'somewhere', restart_required: 'yes' } } as unknown as PlanManifest;
+  assert.throws(() => serializePlanManifest(badDeploy), /unknown deploy\.code/);
+});
+
+test('state card over 2 KiB is rejected before CAS write and leaves plan.json byte-identical', async () => {
+  const home = await makeHome();
+  const folder = await scaffoldFolder(home, 'state-budget');
+  const planJson = path.join(folder, 'plan.json');
+  const before = await fs.readFile(planJson, 'utf8');
+
+  const oversized = stateCard();
+  oversized.blocker = 'x'.repeat(PLAN_STATE_CARD_MAX_BYTES);
+  assert.throws(
+    () => serializePlanManifest(oversized),
+    (err: unknown) => err instanceof PlanManifestError
+      && err.code === 'state-card-too-large'
+      && /maximum is 2048 bytes/.test(err.message),
+  );
+
+  await expectError(
+    () => casMutate(home, 'state-budget', (current) => ({ ...current, ...oversized }), FAST),
+    'state-card-too-large',
+  );
+  assert.equal(await fs.readFile(planJson, 'utf8'), before, 'rejected state card must not alter plan.json');
 });
 
 // ── ARC freshness ──────────────────────────────────────────────────────────

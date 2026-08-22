@@ -56,6 +56,8 @@ export const PLAN_LOCK_RETRY_BASE_MS = 25;
 export const PLAN_LOCK_RETRY_MAX_MS = 250;
 /** Default number of in-lock CAS re-read retries when the guard read finds drift. */
 export const PLAN_CAS_MAX_RETRIES = 5;
+/** Maximum compact UTF-8 JSON size of the v2 state-card fields. */
+export const PLAN_STATE_CARD_MAX_BYTES = 2 * 1024;
 
 export interface LockTuning {
   heartbeatMs: number;
@@ -83,6 +85,8 @@ export type PlanManifestErrorCode =
   | 'containment' // resolved folder escapes the plans-home root (path or symlink)
   | 'not-found' // the plan folder / plan.json is absent
   | 'malformed' // plan.json is not valid JSON / not an object
+  | 'invalid-state-card' // a present v2 state-card field has an invalid shape/value
+  | 'state-card-too-large' // compact serialized v2 state-card exceeds 2 KiB
   | 'lock-timeout' // acquire exhausted its bounded retry while a live holder kept the lock
   | 'cas-exhausted' // the in-lock CAS kept losing the guard re-read (a rogue writer churned the file)
   | 'invalid-arg'; // caller-supplied argument is unusable (e.g. absolute rel path, bad event)
@@ -123,6 +127,27 @@ export interface LifecycleEvent {
   note?: string;
 }
 
+export type PlanStatus = 'draft' | 'ready' | 'in_progress' | 'code_complete' | 'completed';
+export type PlanDeployCode = 'n/a' | 'local_unpushed' | 'pushed_undeployed' | 'deployed';
+export type PlanRelationKind = 'supersedes' | 'successor' | 'blocked_on_same_restart' | 'cluster';
+
+export interface PlanRollup {
+  total: number;
+  landed: number;
+  remaining: number;
+  dropped: number;
+}
+
+export interface PlanDeployState {
+  code: PlanDeployCode;
+  restart_required: boolean;
+}
+
+export interface PlanRelation {
+  kind: PlanRelationKind;
+  id: string;
+}
+
 /** Stable id for a milestone owned by a durable production identity (plan/run id). */
 export function lifecycleEventId(kind: LifecycleEventKind, identity: string): string {
   return `ple_${crypto.createHash('sha256').update(`${kind}\0${identity}`, 'utf8').digest('hex').slice(0, 24)}`;
@@ -135,9 +160,103 @@ export interface PlanManifest {
   source_proposal?: { artifact_id?: string; rel_path?: string };
   responsibility_events?: ResponsibilityEvent[];
   lifecycle_events?: LifecycleEvent[];
+  title?: string;
+  purpose?: string;
+  status?: PlanStatus;
+  rollup?: PlanRollup;
+  deploy?: PlanDeployState;
+  blocker?: string;
+  related?: PlanRelation[];
+  project?: string;
+  state_updated_at?: number;
   created_at?: number;
   updated_at?: number;
   [k: string]: unknown;
+}
+
+const STATE_CARD_KEYS = [
+  'title', 'purpose', 'status', 'rollup', 'deploy', 'blocker', 'related', 'project', 'state_updated_at',
+] as const;
+const PLAN_STATUSES = new Set<PlanStatus>(['draft', 'ready', 'in_progress', 'code_complete', 'completed']);
+const PLAN_DEPLOY_CODES = new Set<PlanDeployCode>(['n/a', 'local_unpushed', 'pushed_undeployed', 'deployed']);
+const PLAN_RELATION_KINDS = new Set<PlanRelationKind>(['supersedes', 'successor', 'blocked_on_same_restart', 'cluster']);
+
+function invalidStateCard(detail: string): never {
+  throw new PlanManifestError('invalid-state-card', `invalid plan state card: ${detail}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireString(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string') invalidStateCard(`${field} must be a string`);
+}
+
+function requireNonNegativeInteger(value: unknown, field: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    invalidStateCard(`${field} must be a non-negative safe integer`);
+  }
+}
+
+/** Validate present v2 state-card fields and enforce their compact UTF-8 budget. */
+export function validatePlanStateCard(manifest: PlanManifest): void {
+  const presentKeys = STATE_CARD_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(manifest, key));
+  if (presentKeys.length === 0) return; // v1/backward-compatible manifest
+
+  if ('title' in manifest) requireString(manifest.title, 'title');
+  if ('purpose' in manifest) {
+    requireString(manifest.purpose, 'purpose');
+    if (/\r|\n/.test(manifest.purpose)) invalidStateCard('purpose must be one line');
+  }
+  if ('status' in manifest && !PLAN_STATUSES.has(manifest.status as PlanStatus)) {
+    invalidStateCard(`unknown status: ${String(manifest.status)}`);
+  }
+  if ('rollup' in manifest) {
+    if (!isRecord(manifest.rollup)) invalidStateCard('rollup must be an object');
+    for (const key of ['total', 'landed', 'remaining', 'dropped'] as const) {
+      requireNonNegativeInteger(manifest.rollup[key], `rollup.${key}`);
+    }
+  }
+  if ('deploy' in manifest) {
+    if (!isRecord(manifest.deploy)) invalidStateCard('deploy must be an object');
+    if (!PLAN_DEPLOY_CODES.has(manifest.deploy.code as PlanDeployCode)) {
+      invalidStateCard(`unknown deploy.code: ${String(manifest.deploy.code)}`);
+    }
+    if (typeof manifest.deploy.restart_required !== 'boolean') {
+      invalidStateCard('deploy.restart_required must be a boolean');
+    }
+  }
+  if ('blocker' in manifest) requireString(manifest.blocker, 'blocker');
+  if ('related' in manifest) {
+    if (!Array.isArray(manifest.related)) invalidStateCard('related must be an array');
+    manifest.related.forEach((relation, index) => {
+      if (!isRecord(relation)) invalidStateCard(`related[${index}] must be an object`);
+      if (!PLAN_RELATION_KINDS.has(relation.kind as PlanRelationKind)) {
+        invalidStateCard(`unknown related[${index}].kind: ${String(relation.kind)}`);
+      }
+      if (typeof relation.id !== 'string' || !/^plan_[0-9a-f]{8}$/.test(relation.id)) {
+        invalidStateCard(`related[${index}].id must match plan_<8hex>`);
+      }
+    });
+  }
+  if ('project' in manifest) requireString(manifest.project, 'project');
+  if ('state_updated_at' in manifest) requireNonNegativeInteger(manifest.state_updated_at, 'state_updated_at');
+
+  const stateCard = Object.fromEntries(presentKeys.map((key) => [key, manifest[key]]));
+  const bytes = Buffer.byteLength(JSON.stringify(stateCard), 'utf8');
+  if (bytes > PLAN_STATE_CARD_MAX_BYTES) {
+    throw new PlanManifestError(
+      'state-card-too-large',
+      `plan state card is ${bytes} bytes; maximum is ${PLAN_STATE_CARD_MAX_BYTES} bytes`,
+    );
+  }
+}
+
+/** Serialize a manifest for plan.json after validating its state card. */
+export function serializePlanManifest(manifest: PlanManifest): string {
+  validatePlanStateCard(manifest);
+  return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
 // ── ARC freshness ──────────────────────────────────────────────────────────
@@ -725,7 +844,7 @@ async function casWriteLoop(
 ): Promise<CasResult> {
   for (let attempt = 0; attempt <= tuning.maxRetries; attempt++) {
     const raw = await readManifestRaw(planJsonPath);
-    const manifest = parseManifest(raw, planJsonPath);
+    const manifest = parsePlanManifest(raw, planJsonPath);
     const baseHash = sha256(raw);
 
     // Test-only rogue-writer seam.
@@ -737,7 +856,7 @@ async function casWriteLoop(
       return { changed: false, manifest, hash: baseHash };
     }
     next.updated_at = Date.now();
-    const serialized = `${JSON.stringify(next, null, 2)}\n`;
+    const serialized = serializePlanManifest(next);
 
     // Guard re-read: if the bytes moved under us (a rogue non-locking writer), re-apply
     // against the fresh manifest so their edits survive.
@@ -761,7 +880,7 @@ async function readManifestRaw(planJsonPath: string): Promise<string> {
   }
 }
 
-function parseManifest(raw: string, planJsonPath: string): PlanManifest {
+export function parsePlanManifest(raw: string, planJsonPath = 'plan.json'): PlanManifest {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -771,7 +890,9 @@ function parseManifest(raw: string, planJsonPath: string): PlanManifest {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new PlanManifestError('malformed', `plan.json is not a JSON object: ${planJsonPath}`);
   }
-  return parsed as PlanManifest;
+  const manifest = parsed as PlanManifest;
+  validatePlanStateCard(manifest);
+  return manifest;
 }
 
 /** temp-write → fsync → atomic rename. Never truncates the live plan.json in place. */
