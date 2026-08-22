@@ -52,7 +52,7 @@ export interface TurnProjectionInput {
   turnScanExhausted?: boolean;
   turnsComplete?: boolean;
   filesComplete?: boolean;
-  /** @deprecated Transitional WP-9 call-site compatibility; projection never reads it. */
+  /** @deprecated Honored as the turnScanExhausted/turnsComplete fallback when those fields are absent. */
   turnsExhausted?: boolean;
   nextOlderTurnSeq?: number | null;
   grouping?: 'plan' | 'time' | 'file' | 'none';
