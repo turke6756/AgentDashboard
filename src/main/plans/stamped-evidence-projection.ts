@@ -72,6 +72,7 @@ export interface DurableStampedTrail {
 const VERIFIED_STAMP_SOURCES: ReadonlySet<string> = new Set([
   'explicit',
   'agent-default',
+  'owner-focus',
   'fork-carry',
   'revive-carry',
   'continuation-carry',

@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  classifyTurnPlanStamp,
   projectDurableStampedTrail,
   projectLiveStampedActivity,
 } from './stamped-evidence-projection';
@@ -151,6 +152,19 @@ test('live activity comes only from open, verified plan-stamped turns and carrie
     assert.equal('completion' in entry, false);
     assert.equal('done' in entry, false);
   }
+});
+
+test('owner-focus stamps classify by plan presence', () => {
+  const workspaceId = freshWorkspace('owner-focus');
+  const verified = dbm.allocateAndInsertTurn(workspaceId, {
+    id: 'owner-focus-verified', planId: 'plan-owner', planStampSource: 'owner-focus',
+  });
+  const unstamped = dbm.allocateAndInsertTurn(workspaceId, {
+    id: 'owner-focus-unstamped', planId: null, planStampSource: 'owner-focus',
+  });
+
+  assert.equal(classifyTurnPlanStamp(verified).planStampStatus, 'verified');
+  assert.equal(classifyTurnPlanStamp(unstamped).planStampStatus, 'unstamped');
 });
 
 test('durable trail reads accepted retention fields verbatim and recovery ledger rows', () => {

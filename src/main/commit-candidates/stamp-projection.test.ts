@@ -104,6 +104,19 @@ test('newly stamped immutable turn rows project plan attribution', () => {
   assert.equal(witnesses[0].planAttributionAvailable, true);
 });
 
+test('owner-focus turn rows project plan attribution', () => {
+  const witnesses = project(
+    [entry('A')],
+    [turn('turn-owner-focus', 'agent-a', 'A')],
+    [row('turn-owner-focus', 'plan-owner', 'owner-focus')],
+  );
+
+  assert.equal(witnesses.length, 1);
+  assert.equal(witnesses[0].planId, 'plan-owner');
+  assert.equal(witnesses[0].planItemId, null);
+  assert.equal(witnesses[0].planAttributionAvailable, true);
+});
+
 test('legacy, unavailable, and mismatched turn rows stay null-attributed', () => {
   const turns = [
     turn('legacy', 'agent-legacy', 'A'),

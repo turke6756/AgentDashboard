@@ -17,6 +17,7 @@ export type TurnStampRecordReader = (turnId: string) => TurnStampRecord | null;
 const RUNTIME_STAMP_SOURCES: ReadonlySet<string> = new Set<TurnPlanStampSource>([
   'explicit',
   'agent-default',
+  'owner-focus',
   'fork-carry',
   'revive-carry',
   'continuation-carry',
