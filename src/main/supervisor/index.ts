@@ -71,7 +71,7 @@ import {
   PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD,
   PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS,
-  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS as PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6,
 } from '../../shared/constants';
 import { removeGlobalAgyStatusHook } from './agy-hooks';
 import { ensureAgyPermissions, ensureAgyTrust } from './agy-settings';
@@ -1403,6 +1403,116 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH = '2bb66afe9089b6
 // bounded inspect projection. Older rows remain cumulative below.
 export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH = 'b8610cb4bde9c836aa397047b2559726a56dcdc21072071d434c0909bc050d6d';
 
+// WP-2 (plan_43d6b04d) — frozen hash of the pristine v6 helper before the
+// locked state-card writer shipped. Older rows remain cumulative below.
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH = 'e43e0f52cbf6129e08fad8774880edbdc5b06d53f6dc14c079c2ffd3ab4d3987';
+
+const PROPOSAL_TO_PLAN_STATE_MODE_BLOCK = `// ---------- state card (locked set/patch) ----------
+const PLAN_STATE_CARD_MAX_BYTES = 2 * 1024;
+const STATE_CARD_KEYS = ['title', 'purpose', 'status', 'rollup', 'deploy', 'blocker', 'related', 'project'];
+const PLAN_STATUSES = new Set(['draft', 'ready', 'in_progress', 'code_complete', 'completed']);
+const PLAN_DEPLOY_CODES = new Set(['n/a', 'local_unpushed', 'pushed_undeployed', 'deployed']);
+const PLAN_RELATION_KINDS = new Set(['supersedes', 'successor', 'blocked_on_same_restart', 'cluster']);
+
+function stateError(detail) { throw new Error('invalid plan state card: ' + detail); }
+function isRecord(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+function requireString(value, field) {
+  if (typeof value !== 'string') stateError(field + ' must be a string');
+}
+function requireNonNegativeInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 0) stateError(field + ' must be a non-negative safe integer');
+}
+function validateStateCard(manifest) {
+  if ('title' in manifest) requireString(manifest.title, 'title');
+  if ('purpose' in manifest) {
+    requireString(manifest.purpose, 'purpose');
+    if (/\\r|\\n/.test(manifest.purpose)) stateError('purpose must be one line');
+  }
+  if ('status' in manifest && !PLAN_STATUSES.has(manifest.status)) stateError('unknown status: ' + String(manifest.status));
+  if ('rollup' in manifest) {
+    if (!isRecord(manifest.rollup)) stateError('rollup must be an object');
+    for (const key of ['total', 'landed', 'remaining', 'dropped']) {
+      requireNonNegativeInteger(manifest.rollup[key], 'rollup.' + key);
+    }
+  }
+  if ('deploy' in manifest) {
+    if (!isRecord(manifest.deploy)) stateError('deploy must be an object');
+    if (!PLAN_DEPLOY_CODES.has(manifest.deploy.code)) stateError('unknown deploy.code: ' + String(manifest.deploy.code));
+    if (typeof manifest.deploy.restart_required !== 'boolean') stateError('deploy.restart_required must be a boolean');
+  }
+  if ('blocker' in manifest) requireString(manifest.blocker, 'blocker');
+  if ('related' in manifest) {
+    if (!Array.isArray(manifest.related)) stateError('related must be an array');
+    manifest.related.forEach((relation, index) => {
+      if (!isRecord(relation)) stateError('related[' + index + '] must be an object');
+      if (!PLAN_RELATION_KINDS.has(relation.kind)) stateError('unknown related[' + index + '].kind: ' + String(relation.kind));
+      if (typeof relation.id !== 'string' || !/^plan_[0-9a-f]{8}$/.test(relation.id)) {
+        stateError('related[' + index + '].id must match plan_<8hex>');
+      }
+    });
+  }
+  if ('project' in manifest) requireString(manifest.project, 'project');
+  requireNonNegativeInteger(manifest.state_updated_at, 'state_updated_at');
+  const card = Object.fromEntries(
+    [...STATE_CARD_KEYS, 'state_updated_at']
+      .filter((key) => Object.prototype.hasOwnProperty.call(manifest, key))
+      .map((key) => [key, manifest[key]]),
+  );
+  const bytes = Buffer.byteLength(JSON.stringify(card), 'utf8');
+  if (bytes > PLAN_STATE_CARD_MAX_BYTES) {
+    throw new Error('plan state card is ' + bytes + ' bytes; maximum is ' + PLAN_STATE_CARD_MAX_BYTES + ' bytes');
+  }
+}
+
+function cmdState(args) {
+  const dir = args.dir;
+  if (!dir) die(2, 'state: --dir <plan-folder> required');
+  if (!args.patch) die(2, 'state: --patch <json-object> required');
+  let patch;
+  try { patch = JSON.parse(String(args.patch)); }
+  catch (e) { die(2, 'state: --patch is not valid JSON.', e.message); }
+  if (!isRecord(patch)) die(2, 'state: --patch must be a JSON object.');
+  for (const key of Object.keys(patch)) {
+    if (!STATE_CARD_KEYS.includes(key)) die(2, 'state: unsupported patch field ' + key);
+  }
+  try {
+    const next = withManifestCAS(dir, (obj) => {
+      if (!obj) throw new Error('plan.json is empty/unreadable');
+      for (const key of STATE_CARD_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+        if (patch[key] === null) delete obj[key];
+        else obj[key] = patch[key];
+      }
+      obj.state_updated_at = nowMs();
+      obj.updated_at = nowMs();
+      validateStateCard(obj);
+      return obj;
+    }, args);
+    out({ action: 'state-updated', state_updated_at: next.state_updated_at });
+  } catch (e) {
+    if (e instanceof LockExhaustion) die(4, 'state: LOCK EXHAUSTION — mutation BLOCKED, no direct edit performed.', e.message);
+    die(2, 'state: mutation rejected; plan.json left unchanged.', e.message);
+  }
+}
+`;
+
+// Keep the v6 bytes frozen in shared/constants.ts; derive the v7 scaffold body
+// here so this version-map owner also owns the migration boundary.
+export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6
+  .replace(
+    '// ---------- inspect (read-only; NO rung parser) ----------',
+    PROPOSAL_TO_PLAN_STATE_MODE_BLOCK + '\n// ---------- inspect (read-only; NO rung parser) ----------',
+  )
+  .replace("  case 'inspect': cmdInspect(args); break;", "  case 'state': cmdState(args); break;\n  case 'inspect': cmdInspect(args); break;")
+  .replace(
+    'usage: plan-manifest.mjs <scaffold|manifest|inspect|refresh-arc> [flags]',
+    'usage: plan-manifest.mjs <scaffold|manifest|state|inspect|refresh-arc> [flags]',
+  )
+  .replace(
+    '  inspect     --dir <plan-folder> [--summary]',
+    '  state       --dir <plan-folder> --patch <json-object>   (null deletes an optional field)\n  inspect     --dir <plan-folder> [--summary]',
+  );
+
 // WP-1 - frozen hash of the pristine write-proposal v1 body. The byte-exact
 // body lives in the test-only write-proposal-old-body-fixtures.ts module.
 export const WRITE_PROPOSAL_SKILL_MD_V1_HASH = 'e025a7762b1765c2cb402fd851c816d44b57ca589b211266ac32eee2f6236078';
@@ -1485,12 +1595,13 @@ const PROPOSAL_TO_PLAN_TREE: Array<{
     previousHashes: { 1: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V1_HASH,
                       2: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH } },
   { rel: 'scripts/plan-identity.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS, executable: true },
-  { rel: 'scripts/plan-manifest.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, executable: true, version: 6,
+  { rel: 'scripts/plan-manifest.mjs', content: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, executable: true, version: 7,
     previousHashes: { 1: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
                       2: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
                       3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
                       4: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
-                      5: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH } },
+                      5: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
+                      6: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH } },
 ];
 /** Expand the proposal-to-plan tree under a skill-root prefix into scaffold
  *  entries. Called for all four roots (Claude+Codex supervisor + worker). Each

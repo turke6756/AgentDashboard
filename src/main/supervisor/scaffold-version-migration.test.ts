@@ -109,6 +109,8 @@ import {
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
   PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH,
   normalizeManagedKey,
   sha256Hex,
@@ -173,7 +175,7 @@ import {
   PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2,
   PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS,
-  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
+  PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS as PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4,
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
@@ -4509,12 +4511,13 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     2: PROPOSAL_TO_PLAN_CONTRACT_WORK_PACKAGES_MD_V2_HASH,
   } }],
   ['references/contracts/manifest-lock.md', { version: 2, previousHashes: { 1: PROPOSAL_TO_PLAN_CONTRACT_MANIFEST_LOCK_MD_V1_HASH } }],
-  ['scripts/plan-manifest.mjs', { version: 6, previousHashes: {
+  ['scripts/plan-manifest.mjs', { version: 7, previousHashes: {
     1: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH,
     2: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V2_HASH,
     3: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V3_HASH,
     4: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V4_HASH,
     5: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
+    6: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH,
   } }],
 ]);
 
@@ -4549,6 +4552,43 @@ test('WP-P0C-TREE-HELPER. proposalToPlanEntries expands the full tree under a ro
       3: PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD_V3_HASH,
     },
   }, 'capture.md must remain in the managed tree as a cumulative v4 retirement entry');
+});
+
+test('WP-2 state scaffold: frozen v6 helper hash is pinned and live v7 carries state mode', () => {
+  assert.equal(
+    sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6),
+    PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH,
+    'frozen v6 helper must match previousHashes[6]',
+  );
+  assert.notEqual(sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH);
+  assert.match(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, /case 'state': cmdState\(args\)/);
+  assert.match(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, /PLAN_STATE_CARD_MAX_BYTES = 2 \* 1024/);
+});
+
+test('WP-2 state scaffold: pristine v6 helper silently upgrades to v7 with no backup', () => {
+  const workDir = mktmp('p2p-plan-manifest-v6');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const rel = '.lares/workers/codex/.agents/skills/proposal-to-plan/scripts/plan-manifest.mjs';
+    const scriptPath = path.join(workDir, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.writeFileSync(scriptPath, PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({
+      'workers/codex/.agents/skills/proposal-to-plan/scripts/plan-manifest.mjs': 6,
+    }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    assert.equal(fs.readFileSync(scriptPath, 'utf-8'), PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS);
+    assert.equal(fs.readdirSync(path.dirname(scriptPath)).filter((n) => n.startsWith('plan-manifest.mjs.bak.')).length, 0);
+    assert.equal(readSidecar(workDir)[
+      'workers/codex/.agents/skills/proposal-to-plan/scripts/plan-manifest.mjs'
+    ], 7);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
 });
 
 test('REACHABILITY:wp2-scaffold-complete existing workspaces receive complete.md and the idempotent append-lifecycle helper', () => {
@@ -4596,7 +4636,7 @@ test('REACHABILITY:wp2-scaffold-complete existing workspaces receive complete.md
     assert.equal(fs.readdirSync(path.dirname(deployedScript)).filter((name) => name.startsWith('plan-manifest.mjs.bak.')).length, 0);
     const migrated = readSidecar(workDir);
     assert.equal(migrated[skillRel.slice('.lares/'.length)], 5);
-    assert.equal(migrated[scriptRel.slice('.lares/'.length)], 6);
+    assert.equal(migrated[scriptRel.slice('.lares/'.length)], 7);
     assert.equal(migrated[completeRel.slice('.lares/'.length)], 1);
 
     const scratchPlan = path.join(workDir, 'scratch-plan');
@@ -4647,7 +4687,7 @@ test('REACHABILITY:wp12-inspect-summary v5 workspaces receive a bounded summary 
   assert.notEqual(
     sha256Hex(PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS),
     PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5_HASH,
-    'live v6 helper must differ from the frozen v5 body',
+    'live v7 helper must differ from the frozen v5 body',
   );
 
   const workDir = mktmp('wp12-inspect-summary');
@@ -4671,7 +4711,7 @@ test('REACHABILITY:wp12-inspect-summary v5 workspaces receive a bounded summary 
       0,
       'a pristine v5 helper must migrate silently without a backup',
     );
-    assert.equal(readSidecar(workDir)[scriptRel.slice('.lares/'.length)], 6);
+    assert.equal(readSidecar(workDir)[scriptRel.slice('.lares/'.length)], 7);
 
     const planDir = path.join(workDir, 'scratch-plan');
     fs.mkdirSync(planDir, { recursive: true });

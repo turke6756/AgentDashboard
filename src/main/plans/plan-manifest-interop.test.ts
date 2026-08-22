@@ -28,7 +28,11 @@ import {
   type LockTuning,
   type ResponsibilityEvent,
   type PlanManifest,
+  parsePlanManifest,
+  PlanManifestError,
 } from './plan-manifest';
+import { PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS } from '../../shared/constants';
+import { PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS } from '../supervisor';
 
 interface TestCase { name: string; run(): Promise<void>; }
 const tests: TestCase[] = [];
@@ -50,12 +54,13 @@ const REAL_TUNING: Partial<LockTuning> = {
 // PLAN_MANIFEST_SKILL_MJS overrides the path (used when running a scratch build whose
 // __dirname is not under dist/).
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
-const SKILL_MJS = process.env.PLAN_MANIFEST_SKILL_MJS || path.join(
+const LEGACY_SKILL_MJS = process.env.PLAN_MANIFEST_SKILL_MJS || path.join(
   REPO_ROOT, '.lares', 'proposals', 'supporting', 'scaffold-drafts',
   'proposal-to-plan', 'scripts', 'plan-manifest.mjs',
 );
 
 let tmpRoots: string[] = [];
+let SKILL_MJS = LEGACY_SKILL_MJS;
 
 async function makeHome(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-manifest-interop-'));
@@ -63,6 +68,15 @@ async function makeHome(): Promise<string> {
   const home = path.join(dir, 'plans');
   await fs.mkdir(home, { recursive: true });
   return home;
+}
+
+async function materializeCurrentSkillHelper(): Promise<void> {
+  if (process.env.PLAN_MANIFEST_SKILL_MJS) return;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-manifest-current-helper-'));
+  tmpRoots.push(dir);
+  SKILL_MJS = path.join(dir, 'plan-manifest.mjs');
+  await fs.writeFile(SKILL_MJS, PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, 'utf8');
+  await fs.writeFile(path.join(dir, 'plan-identity.mjs'), PROPOSAL_TO_PLAN_SCRIPT_PLAN_IDENTITY_MJS, 'utf8');
 }
 
 async function scaffoldFolder(home: string, rel: string, artifactHex = 'deadbeef'): Promise<string> {
@@ -112,6 +126,25 @@ function spawnSkillAppend(
   });
 }
 
+function spawnSkillState(
+  folder: string,
+  patch: Record<string, unknown>,
+  maxWaitMs = 15000,
+  pollMs = 20,
+  helperPath = SKILL_MJS,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      helperPath, 'state', '--dir', folder, '--patch', JSON.stringify(patch),
+      '--max-wait-ms', String(maxWaitMs), '--poll-ms', String(pollMs),
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    child.on('error', reject);
+    child.on('exit', (code) => resolve({ code: code ?? -1, stderr }));
+  });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -146,6 +179,87 @@ async function assertNoLockArtifacts(folder: string): Promise<void> {
 
 test('the skill helper .mjs exists where the interop test expects it', async () => {
   await fs.stat(SKILL_MJS); // throws (fails the test) if the draft path moved
+});
+
+test('state mode writes and patches a v2 state card that the app parser accepts', async () => {
+  const home = await makeHome();
+  const folder = await scaffoldFolder(home, '2026-08-21-state-card', '43d6b04d');
+  const first = await spawnSkillState(folder, {
+    title: 'Cheap and truthful plan state',
+    purpose: 'Give agents one bounded authoritative status record.',
+    status: 'in_progress',
+    rollup: { total: 8, landed: 2, remaining: 6, dropped: 0 },
+    deploy: { code: 'local_unpushed', restart_required: true },
+    blocker: 'Waiting on the same restart.',
+    related: [{ kind: 'cluster', id: 'plan_deadbeef' }],
+    project: 'Lares',
+  });
+  assert.equal(first.code, 0, `state writer exited cleanly (stderr: ${first.stderr.trim()})`);
+
+  const firstRaw = await fs.readFile(path.join(folder, 'plan.json'), 'utf8');
+  const parsed = parsePlanManifest(firstRaw, path.join(folder, 'plan.json'));
+  assert.equal(parsed.status, 'in_progress');
+  assert.deepEqual(parsed.rollup, { total: 8, landed: 2, remaining: 6, dropped: 0 });
+  assert.deepEqual(parsed.deploy, { code: 'local_unpushed', restart_required: true });
+  assert.equal(typeof parsed.state_updated_at, 'number');
+  const firstStamp = parsed.state_updated_at!;
+
+  await delay(2);
+  const second = await spawnSkillState(folder, { status: 'code_complete', blocker: null });
+  assert.equal(second.code, 0, `state patch exited cleanly (stderr: ${second.stderr.trim()})`);
+  const patched = parsePlanManifest(await fs.readFile(path.join(folder, 'plan.json'), 'utf8'));
+  assert.equal(patched.status, 'code_complete');
+  assert.equal(patched.title, 'Cheap and truthful plan state', 'omitted fields are preserved');
+  assert.equal('blocker' in patched, false, 'null deletes an optional state field');
+  assert.ok(patched.state_updated_at! > firstStamp, 'every state patch stamps state_updated_at');
+
+  const beforeOversize = await fs.readFile(path.join(folder, 'plan.json'), 'utf8');
+  const rejected = await spawnSkillState(folder, { purpose: 'x'.repeat(2100) });
+  assert.equal(rejected.code, 2, 'an over-budget state card is rejected');
+  assert.match(rejected.stderr, /maximum is 2048 bytes/);
+  assert.equal(
+    await fs.readFile(path.join(folder, 'plan.json'), 'utf8'),
+    beforeOversize,
+    'budget rejection leaves plan.json byte-identical',
+  );
+  await assertNoLockArtifacts(folder);
+});
+
+test('state mode cannot write through a live service lock', async () => {
+  const home = await makeHome();
+  const folder = await scaffoldFolder(home, '2026-08-21-state-lock');
+  const manifestPath = path.join(folder, 'plan.json');
+  const before = await fs.readFile(manifestPath, 'utf8');
+  const handle = await acquirePlanLock(manifestPath + '.lock', {
+    owner_kind: 'service', owner_id: 'state-holder',
+  }, REAL_TUNING);
+  try {
+    const result = await spawnSkillState(folder, { status: 'ready' }, 1200, 30);
+    assert.equal(result.code, 4, `state contender must report lock exhaustion (stderr: ${result.stderr.trim()})`);
+    assert.equal(await fs.readFile(manifestPath, 'utf8'), before, 'live lock prevents every state mutation');
+  } finally {
+    const released = await releasePlanLock(handle);
+    assert.equal(released.released, true);
+  }
+});
+
+test('app parser enforces the shared 2 KiB boundary on a script-written card', async () => {
+  const home = await makeHome();
+  const folder = await scaffoldFolder(home, '2026-08-21-state-budget-parity');
+  const laxHelper = path.join(path.dirname(SKILL_MJS), 'plan-manifest-lax-budget.mjs');
+  const laxBody = PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS.replace(
+    'const PLAN_STATE_CARD_MAX_BYTES = 2 * 1024;',
+    'const PLAN_STATE_CARD_MAX_BYTES = 4 * 1024;',
+  );
+  assert.notEqual(laxBody, PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS, 'test helper must widen only the script-side budget');
+  await fs.writeFile(laxHelper, laxBody, 'utf8');
+  const result = await spawnSkillState(folder, { purpose: 'x'.repeat(2100) }, 15000, 20, laxHelper);
+  assert.equal(result.code, 0, `lax helper must write the boundary fixture (stderr: ${result.stderr.trim()})`);
+  const raw = await fs.readFile(path.join(folder, 'plan.json'), 'utf8');
+  assert.throws(
+    () => parsePlanManifest(raw, path.join(folder, 'plan.json')),
+    (err: unknown) => err instanceof PlanManifestError && err.code === 'state-card-too-large',
+  );
 });
 
 // ── One-winner reclaim across implementations (no lost update) ──────────────────
@@ -215,6 +329,7 @@ test('a live SERVICE holder is not stolen by a skill contender — skill times o
 // ── Runner ──────────────────────────────────────────────────────────────────
 
 (async () => {
+  await materializeCurrentSkillHelper();
   let passed = 0, failed = 0;
   for (const t of tests) {
     try {
