@@ -1740,7 +1740,7 @@ function initContextOptimizerSchema(): void {
     db.exec(`ALTER TABLE turn_records ADD COLUMN plan_stamp_source TEXT NOT NULL
       DEFAULT 'legacy-unstamped'
       CHECK (plan_stamp_source IN ('legacy-unstamped', 'explicit', 'agent-default',
-        'fork-carry', 'revive-carry', 'continuation-carry', 'explicit-none',
+        'owner-focus', 'fork-carry', 'revive-carry', 'continuation-carry', 'explicit-none',
         'unbound-manual'))`);
   } catch { /* exists */ }
   db.exec(`
@@ -5947,6 +5947,7 @@ export type PersistedTurnPlanStampSource = TurnPlanStampSource | 'legacy-unstamp
 const TURN_PLAN_STAMP_SOURCES: ReadonlySet<string> = new Set<TurnPlanStampSource>([
   'explicit',
   'agent-default',
+  'owner-focus',
   'fork-carry',
   'revive-carry',
   'continuation-carry',

@@ -341,6 +341,32 @@ test('mapper returns explicit stamps and allocations never write legacy-unstampe
   assert.notEqual(compatibilityAllocation.planStampSource, 'legacy-unstamped');
 });
 
+test('fresh database accepts owner-focus and still rejects a bogus stamp source', () => {
+  const ws = freshWorkspace();
+  const ownerFocused = dbm.allocateAndInsertTurn(ws, {
+    id: 'stamped-owner-focus',
+    planId: 'plan-owner',
+    planStampSource: 'owner-focus',
+  });
+  assert.deepEqual(
+    {
+      planId: ownerFocused.planId,
+      planItemId: ownerFocused.planItemId,
+      planStampSource: ownerFocused.planStampSource,
+    },
+    { planId: 'plan-owner', planItemId: null, planStampSource: 'owner-focus' },
+  );
+
+  assert.throws(
+    () => dbm.allocateAndInsertTurn(ws, {
+      id: 'bad-bogus-source',
+      planStampSource: 'bogus-source',
+    }),
+    /invalid turn plan stamp source/,
+  );
+  assert.equal(dbm.getTurnRecord('bad-bogus-source'), null);
+});
+
 test('legacy rows read legacy-unstamped through the mapper', () => {
   const ws = freshWorkspace();
   dbm.getDb().prepare(

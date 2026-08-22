@@ -166,7 +166,7 @@ type ExportShapes = [
   Assert<Equal<ResolvedPlanStamp, {
     planId: string | null;
     planItemId: string | null;
-    source: 'explicit' | 'agent-default' | 'fork-carry' | 'revive-carry'
+    source: 'explicit' | 'agent-default' | 'owner-focus' | 'fork-carry' | 'revive-carry'
       | 'continuation-carry' | 'explicit-none' | 'unbound-manual';
   }>>,
   Assert<Equal<TurnCaptureState, {
