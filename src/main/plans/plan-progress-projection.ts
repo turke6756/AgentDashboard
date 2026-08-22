@@ -11,6 +11,8 @@ export interface PlanProgressProjectionInput {
   card: PromotedPlanFolder | null;
   /** Must already be in the database's stable package order. */
   packages: readonly PlanWorkPackage[];
+  /** Test clock; production reads use the wall clock. */
+  nowMs?: number;
 }
 
 const CARD_MAX_BYTES = 2 * 1024;
@@ -55,8 +57,47 @@ function snapshotVersion(planUpdatedAt: string, packages: readonly PlanWorkPacka
   return `sha256:${digest.digest('hex')}`;
 }
 
+interface SnapshotFreshness {
+  db_snapshot_version: string;
+  snapshot_age_s: number | null;
+  fresh: boolean;
+}
+
+function timestampMs(value: string | number | null | undefined): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  // SQLite's datetime('now') omits a timezone suffix but is UTC.
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function snapshotFreshness(input: PlanProgressProjectionInput): SnapshotFreshness {
+  const planUpdatedAt = timestampMs(input.plan.updatedAt);
+  const packageUpdatedAts = input.packages
+    .map((pkg) => timestampMs(pkg.updatedAt))
+    .filter((value): value is number => value !== null);
+  const dbUpdatedAt = planUpdatedAt === null && packageUpdatedAts.length === 0
+    ? null
+    : Math.max(...(planUpdatedAt === null ? packageUpdatedAts : [planUpdatedAt, ...packageUpdatedAts]));
+  const sourceUpdatedAt = timestampMs(input.card?.updatedAt);
+  const projectionsSynced = input.packages.every((pkg) => pkg.projectionStatus === 'synced');
+  const nowMs = input.nowMs ?? Date.now();
+  return {
+    db_snapshot_version: snapshotVersion(input.plan.updatedAt, input.packages),
+    snapshot_age_s: dbUpdatedAt === null ? null : Math.max(0, Math.floor((nowMs - dbUpdatedAt) / 1_000)),
+    fresh: sourceUpdatedAt !== null
+      && dbUpdatedAt !== null
+      && sourceUpdatedAt <= dbUpdatedAt
+      && projectionsSynced,
+  };
+}
+
 function buildCard(input: PlanProgressProjectionInput): Record<string, unknown> {
   const { card, plan, packages } = input;
+  const freshness = snapshotFreshness(input);
   const fallbackRollup = packages.length > 0 ? derivePackageRollup(stateCounts(packages)) : null;
   const rollup = card?.rollup ?? fallbackRollup;
   const owner = card?.responsibleSupervisor
@@ -71,10 +112,11 @@ function buildCard(input: PlanProgressProjectionInput): Record<string, unknown> 
     title: card?.title ?? plan.slug ?? null,
     badge: card?.lifecycle ?? plan.runState ?? 'unknown',
     latestLifecycleKind: card?.latestLifecycleKind ?? null,
-    complete: rollup?.completed ?? null,
+    complete: freshness.fresh ? rollup?.completed ?? null : null,
     owner,
     activityTier: card?.activityTier ?? 'unknown',
-    rollup,
+    rollup: freshness.fresh ? rollup : 'unknown',
+    ...freshness,
   };
   if (jsonBytes(projection) > CARD_MAX_BYTES) {
     projection.title = typeof projection.title === 'string'
@@ -124,14 +166,15 @@ function buildPackages(input: PlanProgressProjectionInput): Record<string, unkno
   const ordered = priorityOrdered(input.packages);
   const included = ordered.slice(0, PACKAGES_MAX_ROWS);
   const counts = stateCounts(input.packages);
+  const freshness = snapshotFreshness(input);
   const render = (): Record<string, unknown> => {
     const omissions = omittedByState(input.packages, included);
     return {
-      rollup: derivePackageRollup(counts),
+      rollup: freshness.fresh ? derivePackageRollup(counts) : 'unknown',
       packages: included.map((pkg) => ({ id: pkg.id, title: truncateUtf8(pkg.title, TITLE_MAX_BYTES), state: pkg.state })),
       packages_omitted: input.packages.length - included.length,
       packages_omitted_by_state: omissions,
-      db_snapshot_version: snapshotVersion(input.plan.updatedAt, input.packages),
+      ...freshness,
     };
   };
 

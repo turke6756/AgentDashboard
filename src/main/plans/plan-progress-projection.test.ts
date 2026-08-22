@@ -70,6 +70,9 @@ test('card consumes the WP-3 lifecycle/activity DTO and stays within 2 KiB', () 
   );
   assert.equal(projection.badge, 'executing');
   assert.equal(projection.complete, false);
+  assert.match(projection.db_snapshot_version, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(typeof projection.snapshot_age_s, 'number');
+  assert.equal(projection.fresh, true);
   assert.ok(
     Buffer.byteLength(JSON.stringify(projection), 'utf8') <= PLAN_PROGRESS_LIMITS.cardBytes,
     'REACHABILITY:wp13-plan-progress-construct card projection must enforce its byte ceiling',
@@ -82,7 +85,7 @@ test('packages prioritizes blocked then executing before the 40-row cap and repo
   for (let i = 0; i < 45; i++) stable.push(pkg(`blocked-${i}`, 'blocked', stable.length));
   for (let i = 0; i < 7; i++) stable.push(pkg(`done-${i}`, 'done', stable.length));
   for (let i = 0; i < 5; i++) stable.push(pkg(`executing-${i}`, 'executing', stable.length));
-  const projection = buildPlanProgressProjection({ detail: 'packages', plan, card: null, packages: stable }) as any;
+  const projection = buildPlanProgressProjection({ detail: 'packages', plan, card: card(), packages: stable }) as any;
   assert.equal(projection.packages.length, 40);
   assert.ok(projection.packages.every((row: any) => row.state === 'blocked'));
   assert.deepEqual(projection.packages.map((row: any) => row.id), stable.filter((row) => row.state === 'blocked').slice(0, 40).map((row) => row.id));
@@ -96,13 +99,59 @@ test('packages prioritizes blocked then executing before the 40-row cap and repo
 test('packages dynamically truncates under 4 KiB with UTF-8 title and accurate state omissions', () => {
   const packages = Array.from({ length: 70 }, (_, i) =>
     pkg(`WP-${String(i).padStart(3, '0')}-${'id'.repeat(12)}`, i % 3 === 0 ? 'blocked' : i % 3 === 1 ? 'executing' : 'ready', i, '🌍'.repeat(500)));
-  const projection = buildPlanProgressProjection({ detail: 'packages', plan, card: null, packages }) as any;
+  const projection = buildPlanProgressProjection({ detail: 'packages', plan, card: card(), packages }) as any;
   assert.ok(Buffer.byteLength(JSON.stringify(projection), 'utf8') <= PLAN_PROGRESS_LIMITS.packagesBytes);
   assert.ok(projection.packages.length < PLAN_PROGRESS_LIMITS.packageRows, 'byte ceiling wins over row cap');
   assert.ok(projection.packages.every((row: any) => Buffer.byteLength(row.title, 'utf8') <= PLAN_PROGRESS_LIMITS.titleBytes));
   const omittedTotal = Object.values(projection.packages_omitted_by_state).reduce((sum: number, value) => sum + Number(value), 0);
   assert.equal(omittedTotal, projection.packages_omitted);
   assert.equal(projection.packages.length + projection.packages_omitted, packages.length);
+});
+
+test('plan_6e3298be stale 0/8 snapshot fails closed to an unknown rollup', () => {
+  const stalePlan = {
+    ...plan,
+    slug: 'researchers-are-workers-delete-the-home-redirect-6e3298be',
+    updatedAt: '2026-08-15 18:00:00',
+  };
+  const stalePackages = Array.from({ length: 8 }, (_, index) => ({
+    ...pkg(`WP-${index + 1}`, 'ready', index),
+    updatedAt: Date.parse('2026-08-15T18:00:00Z'),
+  }));
+  const diskCard = card({
+    planArtifactId: 'plan_6e3298be',
+    updatedAt: '2026-08-17T12:00:00Z',
+    rollup: { total: 8, landed: 0, remaining: 8, archived: 0, completed: false },
+  });
+
+  const projection = buildPlanProgressProjection({
+    detail: 'packages',
+    plan: stalePlan,
+    card: diskCard,
+    packages: stalePackages,
+    nowMs: Date.parse('2026-08-20T18:00:00Z'),
+  }) as any;
+
+  assert.equal(projection.fresh, false, 'disk state newer than the DB snapshot cannot prove currency');
+  assert.equal(projection.snapshot_age_s, 5 * 24 * 60 * 60);
+  assert.match(projection.db_snapshot_version, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    projection.rollup,
+    'unknown',
+    'REACHABILITY:plan-43d6b04d-wp3-freshness stale 0/8 must never escape as a confident count',
+  );
+});
+
+test('missing currency evidence adds freshness fields and fails closed on both detail responses', () => {
+  for (const detail of ['card', 'packages'] as const) {
+    const projection = buildPlanProgressProjection({ detail, plan, card: null, packages: [pkg('WP-1', 'ready', 1)] }) as any;
+    assert.deepEqual(
+      Object.keys(projection).filter((key) => ['db_snapshot_version', 'snapshot_age_s', 'fresh'].includes(key)).sort(),
+      ['db_snapshot_version', 'fresh', 'snapshot_age_s'],
+    );
+    assert.equal(projection.fresh, false);
+    assert.equal(projection.rollup, 'unknown');
+  }
 });
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
