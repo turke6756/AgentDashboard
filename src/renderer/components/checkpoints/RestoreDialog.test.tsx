@@ -162,6 +162,8 @@ describe('RestoreDialog — WP-G2.4', () => {
     await act(async () => { await Promise.resolve(); });
     expect(container.textContent).toContain('lines 10-13');
     expect(container.textContent).toContain('unstaged or partially staged changes');
+    // The 'index-worktree-diverged' reason also covers untracked (no-index) files.
+    expect(container.textContent).toContain('not tracked by git yet');
     expect(container.textContent).toContain('12 bytes omitted');
     expect(container.textContent).toContain('updates both the working tree and the staging area');
     expect(confirmBtn()?.disabled).toBe(true);
@@ -191,6 +193,23 @@ describe('RestoreDialog — WP-G2.4', () => {
     expect((window as any).api.checkpoints.restore).toHaveBeenCalledWith(expect.objectContaining({
       paths: ['new.ts', 'old.ts'], strategy: 'merge-undo', mergePreviewToken: 'fresh-subset-token',
     }));
+  });
+
+  it('renders as a bounded, centered overlay (not a full-window absolute fill)', async () => {
+    await render();
+    const dialog = container.querySelector('[data-testid="restore-dialog"]') as HTMLElement;
+    const backdrop = container.querySelector('[data-testid="restore-dialog-backdrop"]') as HTMLElement;
+    expect(backdrop).toBeTruthy();
+    // Backdrop centers the panel and covers the viewport via fixed positioning.
+    expect(backdrop.className).toContain('fixed');
+    expect(backdrop.className).toContain('items-center');
+    expect(backdrop.className).toContain('justify-center');
+    // The panel is bounded, not an inset-0 full fill.
+    expect(dialog.className).not.toContain('inset-0');
+    expect(dialog.className).toContain('max-w-');
+    expect(dialog.className).toContain('max-h-');
+    // stopPropagation on the panel is preserved.
+    expect(dialog).toBeTruthy();
   });
 
   it('selects both endpoints of a rename atomically after preview', async () => {

@@ -57,7 +57,7 @@ function reasonCopy(reason: string | undefined): string {
   switch (reason) {
     case 'merge-undo-conflict': return 'Undo conflicts with later edits.';
     case 'active-turn-witnesses-path': return 'An active turn is editing this path. Wait for it to finish or stop the agent, then preview again.';
-    case 'index-worktree-diverged': return 'This path has unstaged or partially staged changes. Stage or commit it, or restore its staging state, then preview again.';
+    case 'index-worktree-diverged': return 'This path has unstaged or partially staged changes — or is not tracked by git yet. Stage it (git add), or commit or restore its staging state, then preview again.';
     case 'rename-pair-incomplete': return 'Both sides of this rename must be selected together.';
     case 'not-witnessed-for-undo': return 'This path was not witnessed for this turn and cannot be undone.';
     case 'unsupported-content-conversion': return 'This path uses an unsupported content filter or working-tree encoding.';
@@ -221,10 +221,15 @@ export default function RestoreDialog({
 
   return (
     <div
+      data-testid="restore-dialog-backdrop"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => e.stopPropagation()}
+    >
+    <div
       role="dialog"
       aria-label={title}
       data-testid="restore-dialog"
-      className="panel-shell absolute inset-0 z-40 border-accent-orange p-3 flex flex-col text-[12px] overflow-y-auto"
+      className="panel-shell w-full max-w-[38rem] max-h-[85vh] border-accent-orange p-3 flex flex-col text-[12px] overflow-y-auto"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between mb-2">
@@ -412,6 +417,7 @@ export default function RestoreDialog({
           Cancel
         </button>
       </div>
+    </div>
     </div>
   );
 }
