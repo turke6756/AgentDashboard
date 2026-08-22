@@ -11,7 +11,7 @@
 // Dismissal latches for the session only — a reload re-pulls WP-C's persisted
 // state, so a fixed index re-quiets the banner on its own after a relaunch.
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as Icons from 'lucide-react';
 import { useMemoryReview } from '../../hooks/useMemoryReview';
 import MemoryReviewPanel from './MemoryReviewPanel';
@@ -20,6 +20,40 @@ export default function MemoryWarningBanner({ workspaceId }: { workspaceId: stri
   const { summary, reload } = useMemoryReview(workspaceId);
   const [dismissed, setDismissed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchSuccess, setDispatchSuccess] = useState<string | null>(null);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const dispatchRequest = useRef(0);
+
+  useEffect(() => {
+    dispatchRequest.current += 1;
+    setDispatching(false);
+    setDispatchSuccess(null);
+    setDispatchError(null);
+  }, [workspaceId]);
+
+  const handleDispatchJanitor = async () => {
+    if (!workspaceId || dispatching) return;
+
+    const request = ++dispatchRequest.current;
+    setDispatching(true);
+    setDispatchSuccess(null);
+    setDispatchError(null);
+
+    try {
+      const result = await window.api.memoryReview.dispatchJanitor(workspaceId);
+      if (request !== dispatchRequest.current) return;
+      if (!result.ok || !result.agentId) {
+        throw new Error(result.code ?? 'Janitor dispatch did not return a launched agent');
+      }
+      setDispatchSuccess(`Janitor dispatched: ${result.agentId}`);
+    } catch (error) {
+      if (request !== dispatchRequest.current) return;
+      setDispatchError(`Failed to dispatch janitor: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (request === dispatchRequest.current) setDispatching(false);
+    }
+  };
 
   if (!summary) return null;
   const { pendingCount, capPercent, hardInvalid, lastRuntimeError } = summary;
@@ -75,7 +109,23 @@ export default function MemoryWarningBanner({ workspaceId }: { workspaceId: stri
           </div>
         )}
 
+        {(dispatchSuccess || dispatchError) && (
+          <div
+            className={`px-3 pb-2 text-[11px] ${dispatchError ? 'text-accent-red' : 'text-gray-200'}`}
+            role={dispatchError ? 'alert' : 'status'}
+          >
+            {dispatchError ?? dispatchSuccess}
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 px-3 pb-2.5">
+          <button
+            onClick={() => void handleDispatchJanitor()}
+            disabled={dispatching || !workspaceId}
+            className="ui-btn px-2.5 py-1 text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {dispatching ? 'Dispatching…' : 'Dispatch janitor'}
+          </button>
           <button
             onClick={() => reload()}
             className="ui-btn px-2.5 py-1 text-[11px]"

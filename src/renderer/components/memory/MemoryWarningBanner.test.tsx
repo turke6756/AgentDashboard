@@ -13,11 +13,13 @@
 //      response never lands (stale-guard);
 //   6. no workspace selected → no fetch, nothing rendered.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import MemoryWarningBanner from './MemoryWarningBanner';
-import type { MemoryReviewSummaryDto } from '../../../shared/types';
+import type { MemoryJanitorDispatchDto, MemoryReviewSummaryDto } from '../../../shared/types';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -36,9 +38,10 @@ function summary(over: Partial<MemoryReviewSummaryDto> = {}): MemoryReviewSummar
 }
 
 const listReview = vi.fn<(ws: string) => Promise<MemoryReviewSummaryDto>>();
+const dispatchJanitor = vi.fn<(ws: string) => Promise<MemoryJanitorDispatchDto>>();
 
 function installApi() {
-  (window as any).api = { memoryReview: { listReview } };
+  (window as any).api = { memoryReview: { listReview, dispatchJanitor } };
 }
 
 async function render(workspaceId: string | null) {
@@ -66,6 +69,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   listReview.mockReset();
+  dispatchJanitor.mockReset();
   installApi();
 });
 
@@ -108,6 +112,51 @@ describe('MemoryWarningBanner', () => {
     listReview.mockResolvedValue(summary({ pendingCount: 0, lastRuntimeError: 'boom' }));
     await render('ws-1');
     expect(container.textContent ?? '').toContain('last read/parse failed');
+  });
+
+  it('renders the janitor control and dispatches the current workspace exactly once', async () => {
+    listReview.mockResolvedValue(summary({ pendingCount: 1 }));
+    let resolveDispatch!: (result: MemoryJanitorDispatchDto) => void;
+    dispatchJanitor.mockImplementation(() => new Promise((resolve) => { resolveDispatch = resolve; }));
+    await render('ws-1');
+
+    const dispatchButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Dispatch janitor');
+    expect(dispatchButton).toBeTruthy();
+    await click(dispatchButton);
+
+    expect(dispatchJanitor).toHaveBeenCalledTimes(1);
+    expect(dispatchJanitor).toHaveBeenCalledWith('ws-1');
+    expect((dispatchButton as HTMLButtonElement).disabled).toBe(true);
+    expect(dispatchButton?.textContent).toBe('Dispatching…');
+
+    await act(async () => {
+      resolveDispatch({ ok: true, agentId: 'memory-janitor-7', brief: 'clean up' });
+      await Promise.resolve();
+    });
+    expect(container.textContent ?? '').toContain('Janitor dispatched: memory-janitor-7');
+    expect((dispatchButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows a dispatch failure inline and keeps the banner visible', async () => {
+    listReview.mockResolvedValue(summary({ pendingCount: 1 }));
+    dispatchJanitor.mockRejectedValue(new Error('launch unavailable'));
+    await render('ws-1');
+
+    const dispatchButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Dispatch janitor');
+    await click(dispatchButton);
+
+    expect(container.querySelector('[data-testid="memory-warning-banner"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain('Failed to dispatch janitor: launch unavailable');
+    expect((dispatchButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('keeps a renderer caller for the dispatchJanitor bridge', () => {
+    const modulePath = resolve(process.cwd(), 'src/renderer/components/memory/MemoryWarningBanner.tsx');
+    const source = readFileSync(modulePath, 'utf8');
+    expect(source).toMatch(/window\.api\.memoryReview\.dispatchJanitor\(workspaceId\)/);
   });
 
   it('Details expands the review panel; Dismiss hides the banner', async () => {
