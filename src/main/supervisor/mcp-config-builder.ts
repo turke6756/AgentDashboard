@@ -30,7 +30,14 @@ import type { AgentRoleLane } from '../../shared/types';
  *  that pulls a page up as a VISIBLE human (persist:user) tab with no readback
  *  and no read/act tools. It lets them surface a webpage FOR the user without
  *  any ability to read or drive it. The full read/click/type `browser` surface
- *  stays researcher-only. */
+ *  stays researcher-only.
+ *
+ *  Provider delivery is deliberately explicit: Claude consumes this grant via
+ *  inline `--mcp-config`, and Codex consumes the same grant after translation
+ *  to dotted `-c` MCP configuration. Agy currently has no Lares-controlled
+ *  per-launch MCP mount, so it cannot receive this grant; see
+ *  AGY_DASHBOARD_MCP_LIMITATION rather than silently treating the lane grant as
+ *  delivered to that provider. */
 export function toolsetsForLane(lane: AgentRoleLane): string {
   switch (lane) {
     case 'supervisor':
@@ -92,12 +99,24 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // read closed-capsule detail on demand.
       return 'comms,observability-core,browser-present,plans-read,memory';
     case 'researcher':
-      return 'browser';
+      // Researchers can be plan-bound too. Keep the full browser surface and
+      // add only the read-only plan ladder; no plan-write/full `plans` grant.
+      // Claude and Codex mount this provider-neutral grant in their launch
+      // paths. Agy cannot currently mount it (AGY_DASHBOARD_MCP_LIMITATION).
+      return 'browser,plans-read';
     case 'legacy':
     default:
       return '';
   }
 }
+
+/** Explicit provider limitation for WP-6. Agy's CLI integration does not expose
+ *  a Lares-controlled per-launch MCP mount (unlike Claude inline config and
+ *  Codex dotted config), so worker/researcher Agy launches cannot receive the
+ *  dashboard `plans-read` toolset yet. Agy continues to read its user-global
+ *  MCP configuration, which is not an equivalent guaranteed grant. */
+export const AGY_DASHBOARD_MCP_LIMITATION =
+  'Agy has no Lares-controlled per-launch MCP mount; plans-read is unavailable to Agy worker/researcher lanes.';
 
 /** Does this role-lane launch with `--strict-mcp-config`?
  *
@@ -106,7 +125,9 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
  *  This is a Claude-only MCP-discovery boundary for worker and researcher
  *  launches: they get exactly their injected dashboard toolset (+ team config
  *  if any) and no globally configured Claude MCP servers. Codex has no strict
- *  equivalent, and agy reads its user-global MCP configuration.
+ *  equivalent. Agy reads its user-global MCP configuration, but Lares cannot
+ *  mount the dashboard plans-read server there per launch; the explicit
+ *  limitation is AGY_DASHBOARD_MCP_LIMITATION.
  *
  *  The supervisor MUST NOT be strict: it still gets its inline dashboard
  *  `--mcp-config` (orchestration/teams/comms/observability), but it also relies

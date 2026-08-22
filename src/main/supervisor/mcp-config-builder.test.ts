@@ -22,7 +22,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { builtinModules } from 'node:module';
 import {
+  AGY_DASHBOARD_MCP_LIMITATION,
   toolsetsForLane,
+  buildCodexMcpConfigArgs,
   buildDashboardMcpConfigArg,
   laneUsesStrictMcp,
   redactMcpToken,
@@ -73,9 +75,10 @@ test('toolsetsForLane: worker gets the read-only plans-read subset, NOT the full
   assert.ok(!grant.includes('plans'), 'worker must NOT include the full plans grant');
 });
 
-test('toolsetsForLane: plans-read is granted to the worker lane ONLY (not supervisor/researcher/legacy)', () => {
+test('toolsetsForLane: plans-read is granted to worker and researcher lanes only', () => {
   assert.ok(toolsetsForLane('worker').split(',').includes('plans-read'));
-  for (const lane of ['supervisor', 'researcher', 'legacy'] as const) {
+  assert.ok(toolsetsForLane('researcher').split(',').includes('plans-read'));
+  for (const lane of ['supervisor', 'legacy'] as const) {
     assert.ok(!toolsetsForLane(lane).split(',').includes('plans-read'), `${lane} must NOT include plans-read`);
   }
 });
@@ -126,7 +129,52 @@ test('toolsetsForLane: supervisor + worker get the open-only browser-present gra
 });
 
 test('toolsetsForLane: researcher gets the full browser, NOT the open-only browser-present', () => {
-  assert.equal(toolsetsForLane('researcher'), 'browser');
+  assert.equal(toolsetsForLane('researcher'), 'browser,plans-read');
+});
+
+// WP-6 per-provider evidence. These tests enter the real config builders used
+// by production launches. Live launch/tool discovery remains a post-restart
+// obligation and is intentionally not inferred from these config assertions.
+test('WP-6 provider claude: worker and researcher inline MCP grants include plans-read', () => {
+  for (const lane of ['worker', 'researcher'] as const) {
+    const parsed = JSON.parse(buildDashboardMcpConfigArg({
+      toolsets: toolsetsForLane(lane),
+      pathType: 'windows',
+      scriptPath: WIN_SCRIPT,
+      apiPort: 1,
+      apiToken: FAKE_TOKEN,
+    }));
+    const grant = parsed.mcpServers['agent-dashboard'].env.DASHBOARD_MCP_TOOLSETS.split(',');
+    assert.ok(grant.includes('plans-read'), `claude ${lane} inline mount must include plans-read`);
+  }
+});
+
+test('WP-6 provider codex: worker and researcher dotted MCP grants include plans-read', () => {
+  for (const lane of ['worker', 'researcher'] as const) {
+    const config = buildDashboardMcpConfigArg({
+      toolsets: toolsetsForLane(lane),
+      pathType: 'windows',
+      scriptPath: WIN_SCRIPT,
+      apiPort: 1,
+      apiToken: 'AGENT_DASHBOARD_API_TOKEN',
+    });
+    const args = buildCodexMcpConfigArgs(config);
+    assert.ok(
+      args.includes(`mcp_servers.agent-dashboard.env.DASHBOARD_MCP_TOOLSETS=${JSON.stringify(toolsetsForLane(lane))}`),
+      `codex ${lane} dotted mount must include the plans-read lane grant`,
+    );
+    assert.ok(toolsetsForLane(lane).split(',').includes('plans-read'));
+  }
+});
+
+test('WP-6 provider agy: unavailable plans-read mount is an explicit limitation', () => {
+  // Agy has no provider-equivalent per-launch MCP config surface in Lares today;
+  // its user-global MCP config is not a guaranteed lane grant. Do not replace
+  // this assertion with a silent skip when adding future providers.
+  assert.equal(
+    AGY_DASHBOARD_MCP_LIMITATION,
+    'Agy has no Lares-controlled per-launch MCP mount; plans-read is unavailable to Agy worker/researcher lanes.',
+  );
 });
 
 // ── WP-G2.3: the `checkpoints` recovery toolset is supervisor-lane ONLY ──────
