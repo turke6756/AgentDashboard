@@ -21,6 +21,7 @@ test('the plans toolset exposes progress read, focus verbs, and the demand probe
   const names = getPlansToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
     'focus_plan',
+    'list_plans',
     'read_plan_progress',
     'record_planning_event',
     'unfocus_plan',
@@ -60,9 +61,10 @@ test('every definition has a description and an object inputSchema with required
 
 // ── WP-A4: plans-read read-only subset (worker lane) ────────────────────────
 
-test('getPlansReadToolDefinitions returns progress read and record_planning_event', () => {
+test('getPlansReadToolDefinitions registers list_plans through the real plans-read provider', () => {
   const names = getPlansReadToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
+    'list_plans',
     'read_plan_progress',
     'record_planning_event',
   ]);
@@ -109,6 +111,29 @@ test('returns null for non-plan tool names (caller switch keeps handling them)',
   assert.strictEqual(await handlePlansToolCall('list_agents', {}, api), null);
   assert.strictEqual(await handlePlansToolCall('browser_open_url', {}, api), null);
   assert.strictEqual(api.calls.length, 0);
+});
+
+test('list_plans dispatches the bounded fleet read and encodes every filter', async () => {
+  const api = fakeApi({
+    'GET /api/plans/state?plan_id=plan_1234abcd&status=in_progress&deploy=local_unpushed&project=Agent+Dashboard': {
+      plans: [{ plan_id: 'plan_1234abcd', fresh: true }],
+    },
+  });
+  const result = await handlePlansReadToolCall('list_plans', {
+    plan_id: 'plan_1234abcd', status: 'in_progress', deploy: 'local_unpushed', project: 'Agent Dashboard',
+  }, api);
+  assert.deepStrictEqual(api.calls, [{
+    method: 'GET',
+    path: '/api/plans/state?plan_id=plan_1234abcd&status=in_progress&deploy=local_unpushed&project=Agent+Dashboard',
+    body: undefined,
+  }]);
+  assert.match(result.content[0].text, /"plan_id": "plan_1234abcd"/);
+});
+
+test('list_plans without filters dispatches the fleet route without a dangling query', async () => {
+  const api = fakeApi({ 'GET /api/plans/state': { plans: [] } });
+  await handlePlansToolCall('list_plans', {}, api);
+  assert.strictEqual(api.calls[0].path, '/api/plans/state');
 });
 
 // ── focus_plan / unfocus_plan (planning-surface P1 explicit verbs) ───────────
@@ -196,6 +221,8 @@ test('mcp-dashboard.js registers plans as a lazy toolset', () => {
   assert.match(dashboardSrc, /require\('\.\/mcp-tools-plans'\)/);
   assert.match(dashboardSrc, /getPlansToolDefinitions/);
   assert.match(dashboardSrc, /handlePlansToolCall/);
+  assert.match(dashboardSrc, /getPlansReadToolDefinitions/);
+  assert.match(dashboardSrc, /handlePlansReadToolCall/);
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────

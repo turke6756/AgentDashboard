@@ -107,6 +107,7 @@ import {
 import type { ActivityBefore, ActivityListRequest, ActivitySnapshot } from '../shared/types';
 import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
+import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
 import { PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
@@ -120,6 +121,50 @@ export type PlanBindingBoundaryAgent = Pick<Agent, 'workspaceId' | 'planId'>;
 
 /** Hard ceiling for any HTTP request body accepted by the local API. */
 export const API_MAX_PAYLOAD_BYTES = 1_000_000;
+const PLAN_LIST_MAX_BYTES = 6 * 1024;
+const PLAN_LIST_ROW_MAX_BYTES = 512;
+const PLAN_LIST_TITLE_MAX_BYTES = 64;
+const PLAN_LIST_PROJECT_MAX_BYTES = 48;
+const PLAN_LIST_STATUSES = new Set(['draft', 'ready', 'in_progress', 'code_complete', 'completed']);
+const PLAN_LIST_DEPLOY_CODES = new Set(['n/a', 'local_unpushed', 'pushed_undeployed', 'deployed']);
+
+function truncatePlanListText(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const suffix = '…';
+  let result = '';
+  for (const character of value) {
+    if (Buffer.byteLength(result + character + suffix, 'utf8') > maxBytes) break;
+    result += character;
+  }
+  return result + suffix;
+}
+
+function planStateRow(
+  manifest: PlanManifest,
+  plan: NonNullable<ReturnType<typeof getPlan>>,
+  freshness: Record<string, unknown>,
+): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    plan_id: manifest.plan_artifact_id ?? plan.id,
+    title: typeof manifest.title === 'string'
+      ? truncatePlanListText(manifest.title, PLAN_LIST_TITLE_MAX_BYTES)
+      : null,
+    status: manifest.status ?? 'unknown',
+    rollup: freshness.fresh === true && manifest.rollup ? manifest.rollup : 'unknown',
+    deploy: manifest.deploy ?? null,
+    project: typeof manifest.project === 'string'
+      ? truncatePlanListText(manifest.project, PLAN_LIST_PROJECT_MAX_BYTES)
+      : null,
+    db_snapshot_version: freshness.db_snapshot_version,
+    snapshot_age_s: freshness.snapshot_age_s,
+    fresh: freshness.fresh,
+  };
+  if (Buffer.byteLength(JSON.stringify(row), 'utf8') > PLAN_LIST_ROW_MAX_BYTES) {
+    row.title = null;
+    row.project = null;
+  }
+  return row;
+}
 
 export interface PlanBindingBoundaryDeps {
   getPlanById: (planId: string) => Pick<import('../shared/types').Plan, 'workspaceId' | 'deletedAt'> | null;
@@ -3817,6 +3862,91 @@ export class ApiServer {
     }
 
     // ── Plan routes (B2 P1-02) — rail-independent; NO header reads (R1) ──
+    // GET /api/plans/state?plan_id=&status=&deploy=&project= — bounded v2
+    // state-card fleet projection for the list_plans MCP tool. Workspace scope
+    // comes only from the validated caller identity, like read_plan_progress.
+    if (method === 'GET' && path === '/api/plans/state') {
+      if (!identity.asserted || !identity.workspaceId) {
+        throw Object.assign(
+          new Error('workspace identity required (send X-Workspace-Id header)'),
+          { statusCode: 400 },
+        );
+      }
+      const workspace = getWorkspace(identity.workspaceId);
+      if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
+
+      const statusFilter = url.searchParams.get('status');
+      if (statusFilter !== null && !PLAN_LIST_STATUSES.has(statusFilter)) {
+        throw Object.assign(new Error('invalid plan status filter'), { statusCode: 400 });
+      }
+      const deployFilter = url.searchParams.get('deploy');
+      if (deployFilter !== null && !PLAN_LIST_DEPLOY_CODES.has(deployFilter)) {
+        throw Object.assign(new Error('invalid plan deploy filter'), { statusCode: 400 });
+      }
+      const projectFilter = url.searchParams.get('project');
+      const requestedRef = url.searchParams.get('plan_id');
+      const requestedPlanId = requestedRef === null
+        ? null
+        : resolvePlanRef(identity.workspaceId, requestedRef).planId;
+
+      const folders = listPromotedPlanFolders(
+        identity.workspaceId,
+        workspace.path,
+        workspace.pathType,
+      );
+      const plans: Array<Record<string, unknown>> = [];
+      const warnings = [...folders.warnings];
+      for (const card of folders.plans) {
+        if (requestedPlanId !== null && card.planId !== requestedPlanId) continue;
+        const plan = getPlan(card.planId);
+        if (!plan || plan.workspaceId !== identity.workspaceId || plan.deletedAt !== null) continue;
+        const manifestPath = nodePath.join(
+          workspaceStateDir(workspace.path, workspace.pathType),
+          'plans',
+          card.folderName,
+          'plan.json',
+        );
+        let manifest: PlanManifest;
+        try {
+          manifest = parsePlanManifest(fs.readFileSync(manifestPath, 'utf8'), manifestPath);
+        } catch {
+          warnings.push(`skipped ${card.folderName}: invalid v2 state record`);
+          continue;
+        }
+        // A legacy manifest is valid input to the parser but is not a v2 state
+        // record. WP-8 backfills these; list_plans never invents state meanwhile.
+        if (!manifest.status || !manifest.rollup || !manifest.deploy || manifest.state_updated_at === undefined) continue;
+        if (statusFilter !== null && manifest.status !== statusFilter) continue;
+        if (deployFilter !== null && manifest.deploy.code !== deployFilter) continue;
+        if (projectFilter !== null && manifest.project !== projectFilter) continue;
+
+        const packages = listPlanWorkPackagesOrdered(plan.id)
+          .filter((pkg) => pkg.workspaceId === identity.workspaceId && pkg.planId === plan.id);
+        const projection = buildPlanProgressProjection({
+          detail: 'card',
+          plan,
+          card: { ...card, updatedAt: manifest.state_updated_at },
+          packages,
+        });
+        const row = planStateRow(manifest, plan, projection);
+        if (Buffer.byteLength(JSON.stringify(row), 'utf8') > PLAN_LIST_ROW_MAX_BYTES) {
+          warnings.push(`skipped ${card.folderName}: bounded state row exceeds ${PLAN_LIST_ROW_MAX_BYTES} bytes`);
+          continue;
+        }
+        plans.push(row);
+      }
+      plans.sort((a, b) => String(a.plan_id).localeCompare(String(b.plan_id)));
+      const result = { plans, warnings };
+      const bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+      if (bytes > PLAN_LIST_MAX_BYTES) {
+        throw Object.assign(
+          new Error(`list_plans response is ${bytes} bytes; maximum is ${PLAN_LIST_MAX_BYTES}`),
+          { statusCode: 413 },
+        );
+      }
+      return result;
+    }
+
     // GET /api/plans?workspaceId=&includeDeleted=
     if (method === 'GET' && path === '/api/plans') {
       return getPlans({

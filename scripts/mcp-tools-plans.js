@@ -25,6 +25,23 @@ const PLAN_ID_DESCRIPTION = 'The registered plan row id (uuid) or the portable p
 
 const READ_DEFS = [
   {
+    name: 'list_plans',
+    description:
+      "List the workspace's bounded v2 plan-state rows without opening plan files. " +
+      'Optionally filter by plan identity, status, deploy code, or project; freshness fields ' +
+      "show whether each rollup is current, and an unproven rollup is returned as 'unknown'.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} (optional filter).` },
+        status: { type: 'string', enum: ['draft', 'ready', 'in_progress', 'code_complete', 'completed'] },
+        deploy: { type: 'string', enum: ['n/a', 'local_unpushed', 'pushed_undeployed', 'deployed'] },
+        project: { type: 'string', maxLength: 120 },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'read_plan_progress',
     description:
       "Read a plan's bounded live progress projection without opening its files. " +
@@ -136,6 +153,16 @@ function missingPlanIdError() {
 
 async function handlePlansToolCall(name, args, apiRequest) {
   switch (name) {
+    case 'list_plans': {
+      const query = new URLSearchParams();
+      for (const key of ['plan_id', 'status', 'deploy', 'project']) {
+        if (args[key] !== undefined) query.set(key, String(args[key]));
+      }
+      const suffix = query.toString();
+      const result = await apiRequest('GET', `/api/plans/state${suffix ? `?${suffix}` : ''}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     case 'read_plan_progress': {
       const planId = resolvePlanId(args);
       if (!planId) return missingPlanIdError();
