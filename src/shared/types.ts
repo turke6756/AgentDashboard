@@ -2249,6 +2249,11 @@ export interface TurnActivityRow {
   planStampStatus: 'verified' | 'unstamped' | 'unverified';
   status: ActivityTurnStatus;
   startedAt: number | null;
+  /** Time axis only: non-negative ms since the previous (newer) member in the
+   *  globally-sorted stream; null for the newest member / null-startedAt ends. */
+  gapFromNewerMs?: number | null;
+  /** Time axis only: gapFromNewerMs !== null && > SESSION_GAP_MS. */
+  sessionBoundary?: boolean;
   endedAt: number | null;
   witnessedPaths: ActivityPath[];
   writeCount: number;
@@ -2277,6 +2282,29 @@ export interface PlanGroupRow {
   nextOlderCursor: { turnSeq: number | null };
 }
 
+export interface DayGroupRow {
+  kind: 'day-group';
+  /** YYYY-MM-DD in the effective timeZone, or null for turns with no startedAt. */
+  dayKey: string | null;
+  timeZone: string;
+  latestStartedAt: number | null;
+  /** Non-negative elapsed ms to the newer adjacent day group; null for the
+   *  newest group and the null-startedAt group. */
+  gapFromNewerGroupMs: number | null;
+  members: TurnActivityRow[];
+  pageCounts: ActivityCounts;
+}
+
+export interface FileGroupRow {
+  kind: 'file-group';
+  repoPath: string;
+  displayPath: string;
+  latestStartedAt: number | null;
+  members: TurnActivityRow[];
+  /** fileCount is definitionally 1 for a file group. */
+  pageCounts: ActivityCounts;
+}
+
 export interface ToolUnjoinedRow {
   kind: 'tool-unjoined';
   id: string;
@@ -2298,9 +2326,27 @@ export interface WindowUnattributedRow {
   hasOmittedPaths: boolean;
 }
 
+export interface ActivityAncillary {
+  toolUnjoined: ToolUnjoinedRow[];
+  windowUnattributed: WindowUnattributedRow[];
+  counts: {
+    toolUnjoinedCount: number;
+    windowUnattributedCount: number;
+    /** Distinct repoPath across ALL ancillary rows (union of tool + window
+     *  paths), EMITTED paths only. Omitted-path identities are unknown and
+     *  never counted; see completeness.ancillaryPaths. */
+    pathCount: number;
+  };
+  /** pathPrefix applies only to turn projection; ancillary is never
+   *  path-filtered in v1. Always false. */
+  scopedByPathPrefix: boolean;
+}
+
 export type ActivityItem =
   | TurnActivityRow
   | PlanGroupRow
+  | DayGroupRow
+  | FileGroupRow
   | ToolUnjoinedRow
   | WindowUnattributedRow;
 
@@ -2338,6 +2384,9 @@ export type ActivityPreviewMode = 'none' | 'sync';
 
 export interface ActivityListRequest {
   workspaceId: string;
+  grouping?: 'plan' | 'time' | 'file' | 'none';
+  pathPrefix?: string;
+  timeZone?: string;
   preview?: ActivityPreviewMode;
   snapshot?: ActivitySnapshot;
   before?: ActivityBefore;
@@ -2351,11 +2400,36 @@ export interface ActivityListRequest {
   since?: { turnSeq: number; fileActivityId: number };
 }
 
+export interface ActivityCountScope {
+  grouping: 'plan' | 'time' | 'file' | 'none';
+  /** Governs pageCounts.turnCount ONLY. */
+  turnCountBasis: 'loaded-turns' | 'visible-file-group-members';
+  filters: {
+    agentId?: string;
+    planId?: string;
+    planItemId?: string;
+    eligibleOnly: boolean;
+    pathPrefix?: string;
+  };
+  completeness: {
+    turns: boolean;
+    agents: boolean;
+    plans: boolean;
+    commits: boolean;
+    files: boolean;
+    ancillaryPaths?: boolean;
+  };
+  timeZone?: string;
+  loadedTurnsExcludedFromFileGroups?: number;
+}
+
 export interface ActivityPage {
   workspaceId: string;
   items: ActivityItem[];
   cursor: ActivityPageCursor;
   pageCounts: ActivityCounts;
+  scope: ActivityCountScope;
+  ancillary?: ActivityAncillary;
   scans: {
     turns: ActivityScanStats;
     fileActivities: ActivityScanStats;
