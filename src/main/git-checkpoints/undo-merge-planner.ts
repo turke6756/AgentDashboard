@@ -269,12 +269,19 @@ async function inspectPath(
   }
 
   const modeRefusal = unsupportedMode(before, after, parsedIndex.entry, current);
+  // An UNTRACKED path (no index entry at all, coherent shape) embodies no staging
+  // decision, so it is eligible as a WORKTREE-ONLY merge: the 3-way merge runs
+  // exactly as for a tracked path, but the apply writes only the worktree and never
+  // creates an index entry (the file stays untracked). Only a genuinely diverged
+  // TRACKED path (index entry present but differing from the worktree, or an
+  // incoherent multi-stage index shape) still refuses 'index-worktree-diverged'.
+  const untrackedWorktree = parsedIndex.coherentShape && parsedIndex.entry === null && current !== null;
   let refusal: MergeUndoPathState | null = null;
   if (ignored.code === 0) refusal = 'ignored';
   else if (conversionRefusal) refusal = conversionRefusal;
   else if (occupantRefusal) refusal = occupantRefusal;
   else if (modeRefusal) refusal = modeRefusal;
-  else if (!parsedIndex.coherentShape || !sameEntry(parsedIndex.entry, current)) refusal = 'index-worktree-diverged';
+  else if (!untrackedWorktree && (!parsedIndex.coherentShape || !sameEntry(parsedIndex.entry, current))) refusal = 'index-worktree-diverged';
   const [cleanBefore, cleanAfter] = !refusal
     ? await Promise.all([
         cleanCapturedEntry(before, cwd, repoPath, runGit, runGitBytes, deps),

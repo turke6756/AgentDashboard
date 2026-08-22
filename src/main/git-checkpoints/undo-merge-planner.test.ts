@@ -268,6 +268,9 @@ test('ignored and untracked-collision paths receive explicit conservative states
     requestedPaths: ['ignored.txt'], witnessedPaths: ['ignored.txt'] }, deps);
   assert.equal(pathState(ignored, 'ignored.txt'), 'ignored');
 
+  // An untracked worktree occupant is now ELIGIBLE (worktree-only), so a path deleted
+  // in the turn and re-created untracked with divergent content is an add/add conflict —
+  // still refused, but via conflict semantics rather than 'index-worktree-diverged'.
   const collisionRoot = createRepo(); t.after(() => fs.rmSync(collisionRoot, { recursive: true, force: true }));
   write(collisionRoot, 'collision.txt', 'turn-owned\n');
   const collisionBefore = commit(collisionRoot, 'before delete', ['collision.txt']);
@@ -276,7 +279,57 @@ test('ignored and untracked-collision paths receive explicit conservative states
   write(collisionRoot, 'collision.txt', 'independent untracked file\n');
   const collision = await planUndoMerge({ cwd: collisionRoot, beforeOid: collisionBefore, afterOid: collisionAfter,
     requestedPaths: ['collision.txt'], witnessedPaths: ['collision.txt'] }, deps);
-  assert.equal(pathState(collision, 'collision.txt'), 'index-worktree-diverged');
+  assert.equal(pathState(collision, 'collision.txt'), 'conflicted');
+});
+
+test('untracked worktree file merges worktree-only with no index entry synthesized', async (t) => {
+  const root = createRepo(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // before/after are raw checkpoint commits of an UNTRACKED file (never git add).
+  const before = rawCheckpoint(root, 'note.txt', lines());
+  const after = rawCheckpoint(root, 'note.txt', lines({ 1: 'TURN' }), before);
+  // Later non-overlapping edit, still untracked (distinct line, no staging).
+  write(root, 'note.txt', lines({ 1: 'TURN', 40: 'LATER' }));
+  assert.equal(git(root, 'ls-files', '--', 'note.txt'), '', 'fixture must leave note.txt untracked');
+
+  const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
+    requestedPaths: ['note.txt'], witnessedPaths: ['note.txt'] }, deps);
+  assert.equal(result.kind, 'ready');
+  assert.equal(pathState(result, 'note.txt'), 'merged');
+  if (result.kind !== 'ready') return;
+  // No index entry participates: the planner records the current index as absent.
+  assert.equal(result.paths[0].index, null, 'untracked path carries no index entry');
+  const content = git(root, 'show', `${result.resultTreeOid}:note.txt`).split('\n');
+  assert.equal(content[0], 'line-1', 'turn edit on line 1 reverted');
+  assert.equal(content[39], 'LATER', 'distant later edit preserved');
+});
+
+test('untracked worktree file with a same-line later edit conflicts and is refused', async (t) => {
+  const root = createRepo(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const before = rawCheckpoint(root, 'note.txt', lines());
+  const after = rawCheckpoint(root, 'note.txt', lines({ 1: 'TURN' }), before);
+  write(root, 'note.txt', lines({ 1: 'LATER-SAME-LINE' })); // same line as the turn edit, still untracked
+  assert.equal(git(root, 'ls-files', '--', 'note.txt'), '', 'fixture must leave note.txt untracked');
+
+  const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
+    requestedPaths: ['note.txt'], witnessedPaths: ['note.txt'] }, deps);
+  assert.equal(result.kind, 'conflicted');
+  assert.equal(pathState(result, 'note.txt'), 'conflicted');
+  assert.equal('resultTreeOid' in result, false, 'a conflicted untracked merge yields no apply tree');
+});
+
+test('tracked staged-vs-worktree divergence is still refused index-worktree-diverged', async (t) => {
+  const root = createRepo(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  write(root, 'tracked.txt', lines());
+  const before = commit(root, 'before', ['tracked.txt']);
+  write(root, 'tracked.txt', lines({ 1: 'TURN' }));
+  const after = commit(root, 'turn', ['tracked.txt']);
+  // Stage one content, then diverge the worktree from the index (no re-add).
+  write(root, 'tracked.txt', lines({ 1: 'TURN', 20: 'STAGED' })); git(root, 'add', '--', 'tracked.txt');
+  write(root, 'tracked.txt', lines({ 1: 'TURN', 20: 'STAGED', 40: 'UNSTAGED' }));
+  const result = await planUndoMerge({ cwd: root, beforeOid: before, afterOid: after,
+    requestedPaths: ['tracked.txt'], witnessedPaths: ['tracked.txt'] }, deps);
+  assert.equal(result.kind, 'refused');
+  assert.equal(pathState(result, 'tracked.txt'), 'index-worktree-diverged');
 });
 
 test('conflict filtering marks only staged conflict paths and previews other merged paths', async (t) => {

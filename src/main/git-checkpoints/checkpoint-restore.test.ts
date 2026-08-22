@@ -1057,6 +1057,122 @@ test('merge undo reaches runRestore before the exact after-snapshot gate and pre
   assert.ok(pre[0].oid);
 });
 
+test('merge undo treats an untracked file as worktree-only and leaves it untracked', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'keep.txt'), 'anchor\n');
+  commitAll(repo, 'base'); // HEAD anchor; note.txt below is never staged
+  const head = git(repo, ['rev-parse', 'HEAD']).trim();
+  const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${base.join('\n')}\n`);
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'note.txt', op: 'write' }]);
+  const after = [...base];
+  after[3] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${after.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...after];
+  later[35] = 'later-untracked-change';
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${later.join('\n')}\n`); // never git add
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['note.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, true, `merge preview failed: ${preview.reason}`);
+  assert.equal(preview.pathStates?.[0]?.state, 'merged');
+  assert.ok(preview.mergePreviewToken);
+
+  const result = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['note.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: preview.mergePreviewToken,
+  });
+  await s.svc.settleCleanups();
+  assert.equal(result.status, 'completed', result.failureReason ?? '');
+  const worktree = fs.readFileSync(path.join(repo, 'note.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  assert.equal(worktree[3], base[3], 'turn edit reverted in worktree');
+  assert.equal(worktree[35], 'later-untracked-change', 'later untracked edit preserved');
+  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), '', 'file remains untracked: no index entry written');
+  assert.match(git(repo, ['status', '--porcelain', '--', 'note.txt']), /^\?\? note\.txt/, 'still reported as untracked');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), head);
+});
+
+test('merge undo refuses a conflicting untracked file and mutates nothing', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'keep.txt'), 'anchor\n');
+  commitAll(repo, 'base');
+  const base = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${base.join('\n')}\n`);
+  const s = await setupBefore(repo, 'T', 'WS', [{ path: 'note.txt', op: 'write' }]);
+  const turn = [...base];
+  turn[9] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${turn.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...turn];
+  later[9] = 'later-same-line'; // conflicts with the turn edit on the same line
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${later.join('\n')}\n`);
+  const beforeBytes = fs.readFileSync(path.join(repo, 'note.txt'));
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['note.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, false);
+  assert.equal(preview.reason, 'merge-undo-conflict');
+  assert.equal(preview.mergePreviewToken, undefined);
+  const result = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['note.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: 'fabricated',
+  });
+  assert.equal(result.failureReason, 'merge-preview-token-invalid');
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'note.txt')), beforeBytes, 'worktree untouched');
+  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), '', 'untracked file never entered the index');
+  assertNoPre(repo, s.recoveryStore, result);
+});
+
+test('merge undo mixed selection updates the index only for the tracked path', async () => {
+  const repo = mkRepo();
+  const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), `${base.join('\n')}\n`);
+  commitAll(repo, 'base');
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${base.join('\n')}\n`); // untracked sibling
+  const s = await setupBefore(repo, 'T', 'WS', [
+    { path: 'tracked.txt', op: 'write' }, { path: 'note.txt', op: 'write' },
+  ]);
+  const turn = [...base];
+  turn[3] = 'turn-change';
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), `${turn.join('\n')}\n`);
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${turn.join('\n')}\n`);
+  await captureAfter(repo, 'T', 'WS', s.svc);
+  const later = [...turn];
+  later[35] = 'later-change';
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), `${later.join('\n')}\n`);
+  git(repo, ['add', '--', 'tracked.txt']); // tracked stays clean (index == worktree)
+  fs.writeFileSync(path.join(repo, 'note.txt'), `${later.join('\n')}\n`); // untracked, not staged
+
+  const preview = await s.svc.previewRestore({
+    turnId: 'T', workspaceId: 'WS', capability: capFor(repo),
+    requestedPaths: ['tracked.txt', 'note.txt'], strategy: 'merge-undo',
+  });
+  assert.equal(preview.available, true, `merge preview failed: ${preview.reason}`);
+  assert.ok(preview.mergePreviewToken);
+
+  const result = await s.svc.restorePaths({
+    turnId: 'T', requestedPaths: ['tracked.txt', 'note.txt'], workspaceId: 'WS', actor: 'human-ipc',
+    capability: capFor(repo), strategy: 'merge-undo', mergePreviewToken: preview.mergePreviewToken,
+  });
+  await s.svc.settleCleanups();
+  assert.equal(result.status, 'completed', result.failureReason ?? '');
+  assert.deepEqual([...result.completedPaths].sort(), ['note.txt', 'tracked.txt']);
+  const trackedWorktree = fs.readFileSync(path.join(repo, 'tracked.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  const trackedIndex = git(repo, ['show', ':tracked.txt']).replace(/\r\n/g, '\n').trimEnd().split('\n');
+  assert.equal(trackedWorktree[3], base[3]);
+  assert.equal(trackedWorktree[35], 'later-change');
+  assert.deepEqual(trackedWorktree, trackedIndex, 'tracked index updated coherently with the worktree');
+  const noteWorktree = fs.readFileSync(path.join(repo, 'note.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
+  assert.equal(noteWorktree[3], base[3]);
+  assert.equal(noteWorktree[35], 'later-change');
+  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), '', 'untracked path never entered the index');
+});
+
 test('merge undo refuses index/worktree divergence before PRE or mutation', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'one\ntwo\nthree\n');

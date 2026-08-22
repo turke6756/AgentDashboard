@@ -1821,9 +1821,16 @@ export class CheckpointService {
         const target: RestoreTarget = plannedPath.result
           ? { kind: 'present', mode: plannedPath.result.mode, oid: plannedPath.result.blobOid }
           : { kind: 'absent' };
+        // A path that currently exists in the worktree with NO index entry is an
+        // UNTRACKED file (the planner already refuses genuinely diverged TRACKED
+        // paths): merge it worktree-only and never create an index entry, so the file
+        // stays untracked after undo. Both signals are required — a path absent from
+        // the index because it was renamed away (`current === null`) must still be
+        // restored INTO the index, so it is not worktree-only.
+        const worktreeOnly = plannedPath.index === null && plannedPath.current !== null;
         try {
           await this.mutateMergeWorktreePath(repoRoot, root, p, target, requestedSet);
-          await this.updateRealIndex(repoRoot, p, target);
+          if (!worktreeOnly) await this.updateRealIndex(repoRoot, p, target);
           completed.push(p);
           this.recoveryStore.updateRecoveryOperation(operationId, { completedPaths: completed });
         } catch (err) {
