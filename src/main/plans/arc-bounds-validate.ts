@@ -6,6 +6,9 @@ export type ArcSectionName = 'Decisions' | 'Work packages' | 'Deliberations' | '
 
 export interface ArcBoundsMeasurements {
   artifactBytes: number;
+  /** Advisory size target; exceeding it does not make validation fail. */
+  artifactTargetBytes: number;
+  overTarget: boolean;
   sectionRows: Record<ArcSectionName, number>;
 }
 
@@ -26,6 +29,9 @@ const SECTION_CAPS: Record<ArcSectionName, number> = {
   Deliberations: ARC_BOUNDS_CONTRACT.sectionRowCaps.deliberations,
   'Who did what': ARC_BOUNDS_CONTRACT.sectionRowCaps.whoDidWhat,
 };
+
+/** Preferred decision-spine size. The hard rejecting cap remains 8 KiB. */
+export const ARC_ARTIFACT_TARGET_BYTES = 4 * 1024;
 
 const SECTION_NAMES = Object.keys(SECTION_CAPS) as ArcSectionName[];
 const MARKDOWN_LINK_RE = /\[[^\]]*\]\(([^\s()]+\.md#[^\s()]+)\)/giu;
@@ -223,6 +229,8 @@ export function validateArcBounds(planFolder: string): ArcBoundsValidationResult
       errors: ['artifact byte cap: ARC.md is missing'],
       measurements: {
         artifactBytes: 0,
+        artifactTargetBytes: ARC_ARTIFACT_TARGET_BYTES,
+        overTarget: false,
         sectionRows: { Decisions: 0, 'Work packages': 0, Deliberations: 0, 'Who did what': 0 },
       },
     };
@@ -268,6 +276,8 @@ export function validateArcBounds(planFolder: string): ArcBoundsValidationResult
     errors,
     measurements: {
       artifactBytes,
+      artifactTargetBytes: ARC_ARTIFACT_TARGET_BYTES,
+      overTarget: artifactBytes > ARC_ARTIFACT_TARGET_BYTES,
       sectionRows: Object.fromEntries(SECTION_NAMES.map((name) => [name, sections[name].length])) as Record<ArcSectionName, number>,
     },
   };

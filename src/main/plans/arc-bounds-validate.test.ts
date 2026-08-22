@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ARC_BOUNDS_CONTRACT } from '../../shared/constants';
-import { validateArcBounds } from './arc-bounds-validate';
+import { ARC_ARTIFACT_TARGET_BYTES, validateArcBounds } from './arc-bounds-validate';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const OWN_PLAN = path.join(
@@ -62,10 +62,24 @@ function expectError(result: ReturnType<typeof validateArcBounds>, fragment: str
   assert.ok(result.errors.some((error) => error.includes(fragment)), result.errors.join('\n'));
 }
 
-test('REACHABILITY:wp11-arc-bounds enters validateArcBounds through this plan own ARC fixture', () => {
+test('WP-7 live plan_37cf5261 ARC fixture still passes validateArcBounds', () => {
   const result = validateArcBounds(OWN_PLAN);
   assert.equal(result.ok, true, `REACHABILITY:wp11-arc-bounds\n${result.errors.join('\n')}`);
   assert.ok(result.measurements.artifactBytes <= ARC_BOUNDS_CONTRACT.artifactMaxBytes);
+});
+
+test('the 4 KiB target is advisory while the 8 KiB hard cap remains rejecting', () => {
+  const padding = '<!-- ' + 'x'.repeat(ARC_ARTIFACT_TARGET_BYTES) + ' -->\n';
+  const f = fixture(`${baseArc()}${padding}`);
+  try {
+    const result = validateArcBounds(f.root);
+    assert.equal(result.ok, true, result.errors.join('\n'));
+    assert.equal(result.measurements.artifactTargetBytes, 4096);
+    assert.equal(result.measurements.overTarget, true);
+    assert.ok(result.measurements.artifactBytes < ARC_BOUNDS_CONTRACT.artifactMaxBytes);
+  } finally {
+    f.dispose();
+  }
 });
 
 test('§R2 hard-bound prose is verbatim-identical to the shared contract constant', () => {

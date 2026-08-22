@@ -78,7 +78,9 @@ import {
   writeProposalEntry,
   readPlanningSurfaceEntry,
   proveProductionEntryPointEntry,
+  READ_PLANNING_SURFACE_SKILL_MD,
   READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
+  READ_PLANNING_SURFACE_SKILL_MD_V2_HASH,
   WRITE_PROPOSAL_SKILL_MD_V1_HASH,
   WRITE_PROPOSAL_SKILL_MD_V2_HASH,
   PROPOSAL_TO_PLAN_SKILL_MD_V1_HASH,
@@ -146,7 +148,7 @@ import {
   WORKER_CLAUDE_MD_V10,
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2,
-  READ_PLANNING_SURFACE_SKILL_MD,
+  READ_PLANNING_SURFACE_SKILL_MD as READ_PLANNING_SURFACE_SKILL_MD_V2,
   READ_PLANNING_SURFACE_SKILL_MD_V1,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   WORKER_CODEX_AGENTS_MD_V2,
@@ -1388,7 +1390,7 @@ test('WP-9 scaffold: Agy preserves seed-once AGENTS.md while version-migrating a
     const sidecar = readSidecar(workDir);
     assert.equal(sidecar['researcher/agy/AGENTS.md'], undefined);
     assert.equal(sidecar['researcher/agy/.agents/skills/write-proposal/SKILL.md'], 3);
-    assert.equal(sidecar['researcher/agy/.agents/skills/read-planning-surface/SKILL.md'], 2);
+    assert.equal(sidecar['researcher/agy/.agents/skills/read-planning-surface/SKILL.md'], 3);
     assert.equal(sidecar['researcher/agy/.agents/skills/create-persona/SKILL.md'], 4);
     assert.equal(sidecar['researcher/agy/.agents/skills/read-comments/SKILL.md'], 5);
     assert.equal(sidecar['researcher/agy/.agents/skills/research-report/SKILL.md'], 1);
@@ -5050,6 +5052,10 @@ test('WP-3-CONTENT. read-planning-surface remains read-only and epistemically bo
     '`supporting/` is subordinate',
     'responsibility.md` §`Determination`',
     'it never decides that a supervisor may act',
+    'at most the first **8 KiB UTF-8**',
+    'plus a heading list',
+    '`truncated:true`',
+    'Never auto-escalate',
   ]) {
     assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes(phrase), `missing WP-3 contract phrase: ${phrase}`);
   }
@@ -5057,12 +5063,15 @@ test('WP-3-CONTENT. read-planning-surface remains read-only and epistemically bo
   assert.ok(READ_PLANNING_SURFACE_SKILL_MD.includes('may\nrecommend “run `orient` on plan X” without running it'));
 });
 
-test('WP-3-MIG. read-planning-surface is a managed v2 skill in every native lane', () => {
+test('WP-7-MIG. read-planning-surface is a managed v3 skill in every native lane', () => {
   const helperEntry = readPlanningSurfaceEntry('.lares/example/.agents/skills/read-planning-surface');
   assert.deepEqual(helperEntry['.lares/example/.agents/skills/read-planning-surface/SKILL.md'], {
     content: READ_PLANNING_SURFACE_SKILL_MD,
-    version: 2,
-    previousHashes: { 1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH },
+    version: 3,
+    previousHashes: {
+      1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
+      2: READ_PLANNING_SURFACE_SKILL_MD_V2_HASH,
+    },
   });
 
   const workDir = mktmp('read-planning-surface-all-lanes');
@@ -5084,7 +5093,7 @@ test('WP-3-MIG. read-planning-surface is a managed v2 skill in every native lane
     for (const rel of paths) {
       assert.equal(fs.readFileSync(path.join(workDir, ...rel.split('/')), 'utf8'), READ_PLANNING_SURFACE_SKILL_MD,
         `${rel} must contain the exact shared skill body`);
-      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 2, `${rel} must be recorded at v2`);
+      assert.equal(sidecar[rel.replace(/^\.lares\//, '')], 3, `${rel} must be recorded at v3`);
     }
   } finally {
     cleanup();
@@ -5095,6 +5104,8 @@ test('WP-3-MIG. read-planning-surface is a managed v2 skill in every native lane
 test('WP-14-CONTENT. read skills default to the canonical bounded ladder and bounded Stage-1 re-entry', () => {
   assert.equal(sha256Hex(READ_PLANNING_SURFACE_SKILL_MD_V1), READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
     'frozen read-planning-surface v1 must match previousHashes[1]');
+  assert.equal(sha256Hex(READ_PLANNING_SURFACE_SKILL_MD_V2), READ_PLANNING_SURFACE_SKILL_MD_V2_HASH,
+    'frozen read-planning-surface v2 must match previousHashes[2]');
   assert.equal(sha256Hex(PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3), PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH,
     'frozen orient v3 must match previousHashes[3]');
   assert.notEqual(sha256Hex(READ_PLANNING_SURFACE_SKILL_MD), READ_PLANNING_SURFACE_SKILL_MD_V1_HASH);
@@ -5139,7 +5150,7 @@ test('WP-14-MIG. pristine reader v1 and orient v3 silently upgrade without backu
       body: READ_PLANNING_SURFACE_SKILL_MD_V1,
       diskVersion: 1,
       live: READ_PLANNING_SURFACE_SKILL_MD,
-      currentVersion: 2,
+      currentVersion: 3,
     },
     {
       rel: '.lares/workers/codex/.agents/skills/proposal-to-plan/references/activities/orient.md',

@@ -133,6 +133,10 @@ type WatcherModule = {
     onPlanFolderSettled?: (planId: string, folderRelPath: string, changeKind: FolderChangeKind) => void | Promise<void>;
     now?: () => number; childSubCap?: number;
     reconcileProjections?: (input: any) => Promise<any>;
+    validateArcBounds?: (planFolder: string) => {
+      ok: boolean; errors: string[];
+      measurements: { artifactBytes: number; sectionRows: Record<string, number> };
+    };
     notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
   }) => {
     reconcileWorkspace(ws: Ws, isBoot: boolean): Promise<FolderReconcileResult>;
@@ -254,10 +258,17 @@ function touchAll(dirAbs: string, mtimeMs: number): void {
   walk(dirAbs);
 }
 
-function newWatcher(opts: { childSubCap?: number; settled?: any[] } = {}) {
+function newWatcher(opts: {
+  childSubCap?: number; settled?: any[];
+  validateArcBounds?: (planFolder: string) => {
+    ok: boolean; errors: string[];
+    measurements: { artifactBytes: number; sectionRows: Record<string, number> };
+  };
+} = {}) {
   const settled = opts.settled;
   return new wm.PlanFolderWatcher({
     childSubCap: opts.childSubCap,
+    validateArcBounds: opts.validateArcBounds,
     onPlanFolderSettled: settled ? (id, rel, kind) => { settled.push([id, rel, kind]); } : undefined,
   });
 }
@@ -315,6 +326,33 @@ test('a valid folder is adopted as a structured/hardening row keyed by plan_arti
   assert.ok(res.settled.some((s) => s.planId === row.id && s.changeKind === 'adopted'));
   assert.deepEqual(settled[0], [row.id, rel, 'adopted']);
   assert.deepEqual(res.watchable, [rel]);
+});
+
+test('REACHABILITY:wp7-arc-bounds measures every valid plan and surfaces advisory failures without rejecting adoption', async () => {
+  const relA = writeFolder('arc-bounds-a');
+  const relB = writeFolder('arc-bounds-b');
+  const measured: string[] = [];
+  const result = await newWatcher({
+    validateArcBounds: (planFolder) => {
+      measured.push(path.basename(planFolder));
+      const overBound = planFolder.endsWith('arc-bounds-b');
+      return {
+        ok: !overBound,
+        errors: overBound ? ['artifact byte cap 8192: ARC.md is 9000 UTF-8 bytes'] : [],
+        measurements: {
+          artifactBytes: overBound ? 9000 : 4096,
+          sectionRows: { Decisions: 0, 'Work packages': 0, Deliberations: 0, 'Who did what': 0 },
+        },
+      };
+    },
+  }).reconcileWorkspace(ws, false);
+
+  assert.deepEqual(measured.sort(), ['arc-bounds-a', 'arc-bounds-b']);
+  const diagnostic = result.diagnostics.find((item) => item.kind === 'arc-bounds' && item.relPath === relB);
+  assert.ok(diagnostic, 'over-bound ARC diagnostic must be visible');
+  assert.match(diagnostic.detail, /9000 UTF-8 bytes/);
+  assert.ok(result.watchable.includes(relA) && result.watchable.includes(relB), 'ARC diagnostics never reject folders');
+  assert.ok(dbm.getPlanByWorkspaceArtifactId(ws.id, artifactForSku('arc-bounds-b')), 'over-bound folder remains adopted');
 });
 
 test('adopt is idempotent by plan_artifact_id — no duplicate row, no re-settle when unchanged', async () => {

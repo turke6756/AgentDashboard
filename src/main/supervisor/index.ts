@@ -49,7 +49,7 @@ import {
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2,
   WRITE_RESEARCH_REPORT_SKILL_MD,
-  READ_PLANNING_SURFACE_SKILL_MD,
+  READ_PLANNING_SURFACE_SKILL_MD as READ_PLANNING_SURFACE_SKILL_MD_V2,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   PROPOSAL_TO_PLAN_SKILL_MD,
   PROPOSAL_TO_PLAN_ACTIVITY_CAPTURE_MD,
@@ -1374,6 +1374,18 @@ export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V2_HASH = '9d5263fb61bae51fe985
 // orient v3 bodies before progressive staged reading shipped. Orient history
 // remains cumulative; the reader's first prior row is version 1.
 export const READ_PLANNING_SURFACE_SKILL_MD_V1_HASH = '2e99819b30450ec4429743bd61a479fee8192aca8f5b7a837b4736567bea0a33';
+export const READ_PLANNING_SURFACE_SKILL_MD_V2_HASH = '2e1f450cc367236cdc22c5286536a50072c3c90b56f71b5db2bcc54e7008f478';
+export const READ_PLANNING_SURFACE_SKILL_MD = `${READ_PLANNING_SURFACE_SKILL_MD_V2}
+
+## Bounded ARC reads
+
+When Stage 1 reads \`ARC.md\`, expose at most the first **8 KiB UTF-8** of its
+body plus a heading list. If the file exceeds that boundary, report
+\`truncated:true\`, disclose that the ARC body was truncated, and use its heading
+list only as bounded descent pointers. Never auto-escalate to the remaining ARC
+body, full \`plan.md\`, or full deliberation bodies; a larger read requires the
+caller's explicit exhaustive-audit request or a separately named anchored slice.
+`;
 export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V3_HASH = '1a8c41724e5bff02964ca58afe4dbc3d05182aad969733e2d85cc137203b3ad4';
 export const PROPOSAL_TO_PLAN_CONTRACT_RESPONSIBILITY_MD_V1_HASH = '64a1f0a1f880fec8c56f702e8560eacd82b1d447278376ce01598368eb73bbcf';
 
@@ -1511,8 +1523,11 @@ export function readPlanningSurfaceEntry(rootPrefix: string): Record<string, Sca
   return {
     [`${rootPrefix}/SKILL.md`]: {
       content: READ_PLANNING_SURFACE_SKILL_MD,
-      version: 2,
-      previousHashes: { 1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH },
+      version: 3,
+      previousHashes: {
+        1: READ_PLANNING_SURFACE_SKILL_MD_V1_HASH,
+        2: READ_PLANNING_SURFACE_SKILL_MD_V2_HASH,
+      },
     },
   };
 }

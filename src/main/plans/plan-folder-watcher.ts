@@ -37,6 +37,7 @@ import {
 } from '../database';
 import { workspaceStateDir, workspaceStateDirName } from '../workspace-state-dir';
 import { observeOverviewSource } from './plan-human-overview';
+import { validateArcBounds, type ArcBoundsValidationResult } from './arc-bounds-validate';
 import {
   adoptPlanFolderRow,
   reconcilePlanFolderProjections,
@@ -62,6 +63,7 @@ export type PlanFolderDiagnosticKind =
   | 'missing-plan-artifact-id'
   | 'non-contract-plan-artifact-id'
   | 'duplicate-artifact-id'
+  | 'arc-bounds'
   | 'degraded-watch';
 
 export interface PlanFolderDiagnostic {
@@ -224,6 +226,8 @@ export interface PlanFolderWatcherOptions {
   /** Deterministic projection-completion seam (tests); production uses the
    *  ordered folder projection coordinator. */
   reconcileProjections?: typeof reconcilePlanFolderProjections;
+  /** ARC bounds measurement seam (tests); production validates every valid plan folder. */
+  validateArcBounds?: (planFolder: string) => ArcBoundsValidationResult;
   notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
 }
 
@@ -289,6 +293,7 @@ export class PlanFolderWatcher {
   private readonly now: () => number;
   private readonly childSubCap: number;
   private readonly reconcileProjections: typeof reconcilePlanFolderProjections;
+  private readonly validateArcBounds: (planFolder: string) => ArcBoundsValidationResult;
   private readonly notifyPlanBadgesInvalidated?: (workspaceId: string) => void;
   /** workspaceId → (folderRelPath → adopted snapshot). */
   private adopted = new Map<string, Map<string, AdoptedFolder>>();
@@ -300,6 +305,7 @@ export class PlanFolderWatcher {
     this.now = opts.now ?? (() => Date.now());
     this.childSubCap = opts.childSubCap ?? DEFAULT_FOLDER_CHILD_SUB_CAP;
     this.reconcileProjections = opts.reconcileProjections ?? reconcilePlanFolderProjections;
+    this.validateArcBounds = opts.validateArcBounds ?? validateArcBounds;
     this.notifyPlanBadgesInvalidated = opts.notifyPlanBadgesInvalidated;
   }
 
@@ -371,6 +377,16 @@ export class PlanFolderWatcher {
       }
 
       const folderRelPath = `${prefix}/${name}`;
+
+      // ARC bounds are advisory folder diagnostics. Measure every valid plan
+      // folder, but never let a missing or over-bound ARC reject adoption.
+      const arcBounds = this.validateArcBounds(folderAbs);
+      if (!arcBounds.ok) {
+        result.diagnostics.push({
+          kind: 'arc-bounds', workspaceId: ws.id, relPath: folderRelPath,
+          detail: `ARC.md bounds advisory (${arcBounds.measurements.artifactBytes} UTF-8 bytes): ${arcBounds.errors.join('; ')}`,
+        });
+      }
 
       // Duplicate artifact_id across folders → leave the loser UNREGISTERED with a
       // both-paths diagnostic; the canonical (first, sorted) folder is never rebound.
