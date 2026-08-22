@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 import {
   getWorkspace,
   getWorkspaceActivityView,
@@ -81,8 +83,18 @@ function turnRows(page: ActivityPage): Array<{ turnId: string; undo: ActivityUnd
   for (const item of page.items) {
     if (item.kind === 'turn') rows.push(item);
     if (item.kind === 'plan-group') rows.push(...item.members);
+    if (item.kind === 'day-group') rows.push(...item.members);
+    if (item.kind === 'file-group') rows.push(...item.members);
   }
   return rows;
+}
+
+function canonicalRepoPath(value: string): string | null {
+  if (path.win32.isAbsolute(value)) return null;
+  const normalized = path.posix.normalize(value.replace(/\\/g, '/')).replace(/\/+$/, '');
+  if (!normalized || normalized === '.' || normalized.startsWith('/')
+      || normalized === '..' || normalized.startsWith('../')) return null;
+  return normalized;
 }
 
 function previewFromUndo(turnId: string, undo: ActivityUndoSafety): TurnPreviewAttachment | undefined {
@@ -190,7 +202,10 @@ export class ActivityRoutes {
   }
 
   async digest(request: ActivityListRequest): Promise<ActivityDigest> {
-    const page = await this.buildPage({ ...request, preview: 'sync' });
+    // Digest is a stable watermark summary, not an interactive lens. Keep the
+    // sibling list-only projection controls out of both its page and since-counts.
+    const { grouping: _grouping, pathPrefix: _pathPrefix, timeZone: _timeZone, ...digestRequest } = request;
+    const page = await this.buildPage({ ...digestRequest, preview: 'sync' });
     const viewed = request.since ? null : this.deps.getViewed(request.workspaceId);
     const since = request.since ?? (viewed ? {
       turnSeq: viewed.turnSeq,
@@ -276,8 +291,23 @@ export class ActivityRoutes {
         code: 'activity-bad-request',
       });
     }
+    let canonicalPrefix: string | undefined;
+    if (request.pathPrefix !== undefined) {
+      const candidate = canonicalRepoPath(request.pathPrefix);
+      if (candidate === null) {
+        throw Object.assign(new Error('pathPrefix must be a workspace-relative path'), {
+          statusCode: 400,
+          code: 'activity-bad-request',
+        });
+      }
+      canonicalPrefix = candidate;
+    }
     const context = this.requireWorkspaceContext(request.workspaceId);
     const source = await this.readSources(request);
+    const turnsFirstPage = (request.before?.turns?.before ?? null) === null;
+    const filesFirstPage = (request.before?.fileActivities?.before ?? null) === null;
+    const turnsComplete = turnsFirstPage && source.turns.exhausted;
+    const filesComplete = filesFirstPage && source.fileActivities.exhausted;
     const generation = (this.generations.get(request.workspaceId) ?? 0) + 1;
     this.generations.set(request.workspaceId, generation);
 
@@ -322,8 +352,17 @@ export class ActivityRoutes {
         previews,
         windowPaths,
         commitLinks,
-        turnsExhausted: source.turns.exhausted,
+        turnScanExhausted: source.turns.exhausted,
+        turnsComplete,
+        filesComplete,
         nextOlderTurnSeq: source.turns.before,
+        grouping: request.grouping,
+        pathPrefix: canonicalPrefix,
+        timeZone: request.timeZone,
+        agentId: request.agentId,
+        planId: request.planId,
+        planItemId: request.planItemId,
+        eligibleOnly: request.eligibleOnly ?? true,
       });
       const nextOlder = source.turns.exhausted && source.fileActivities.exhausted
         ? null
@@ -339,6 +378,8 @@ export class ActivityRoutes {
         items: projection.items,
         cursor: { snapshot: source.snapshot, nextOlder },
         pageCounts: projection.pageCounts,
+        scope: projection.scope,
+        ...(projection.ancillary === undefined ? {} : { ancillary: projection.ancillary }),
         scans: {
           turns: {
             scanned: source.turns.scanned,

@@ -2428,7 +2428,7 @@ export interface ActivityPage {
   items: ActivityItem[];
   cursor: ActivityPageCursor;
   pageCounts: ActivityCounts;
-  /** Interim until WP-9 populates scope on every activity route response. */
+  /** Every production route populates this; optional until foreign renderer fixtures migrate. */
   scope?: ActivityCountScope;
   ancillary?: ActivityAncillary;
   scans: {

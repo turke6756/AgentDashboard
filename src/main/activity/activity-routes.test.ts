@@ -101,8 +101,85 @@ test('B2 digest reads the durable pre-view watermark so a revisit with no new wo
 
 function flatTurns(page: ActivityPage) {
   return page.items.flatMap((item) => item.kind === 'turn' ? [item]
-    : item.kind === 'plan-group' ? item.members : []);
+    : item.kind === 'plan-group' || item.kind === 'day-group' || item.kind === 'file-group'
+      ? item.members : []);
 }
+
+for (const [label, pathPrefix] of [
+  ['explicit empty string', ''],
+  ['parent traversal', '../secret'],
+  ['POSIX absolute path', '/secret'],
+  ['Windows absolute path', 'C:\\secret'],
+] as const) {
+  test(`WP-9 pathPrefix rejects ${label} with activity-bad-request`, async () => {
+    let sourceReads = 0;
+    const routes = makeRoutes({
+      listTurns: () => { sourceReads += 1; return sourcePage([turn()], 7); },
+    });
+    await assert.rejects(
+      routes.list({ workspaceId: 'ws', pathPrefix, preview: 'none' }),
+      (error: unknown) => {
+        const activityError = error as { statusCode?: number; code?: string };
+        return activityError.statusCode === 400 && activityError.code === 'activity-bad-request';
+      },
+    );
+    assert.equal(sourceReads, 0, 'invalid pathPrefix must fail at the route boundary before any scan');
+  });
+}
+
+test('WP-9 default plan page gains the additive scope golden without ancillary', async () => {
+  const page = await makeRoutes().list({ workspaceId: 'ws', preview: 'none' });
+  assert.deepEqual(page.scope, {
+    grouping: 'plan',
+    filters: { eligibleOnly: true },
+    completeness: { turns: true, agents: true, plans: true, commits: true, files: true },
+    turnCountBasis: 'loaded-turns',
+  });
+  assert.equal(page.ancillary, undefined);
+});
+
+test('WP-9 production registerActivityRoutes list reaches time/file lenses with scope and ancillary', async () => {
+  const fileActivities: ActivityFileActivity[] = [{
+    id: 1, agentId: 'a2', filePath: '/repo/tools/b.ts', operation: 'write',
+    timestamp: new Date(150).toISOString(), generation: 0, sessionId: null, enclosed: false,
+  }];
+  const routes = makeRoutes({
+    listFileActivities: () => sourcePage(fileActivities, 1),
+  });
+  const timePage = await routes.list({ workspaceId: 'ws', grouping: 'time', preview: 'none' });
+  assert.equal(timePage.items[0]?.kind, 'day-group');
+  assert.ok(timePage.scope);
+  assert.equal(timePage.scope.grouping, 'time');
+  assert.equal(timePage.scope.timeZone, 'UTC');
+  assert.equal(timePage.ancillary?.toolUnjoined.length, 1);
+  assert.equal(timePage.ancillary?.scopedByPathPrefix, false);
+
+  const filePage = await routes.list({ workspaceId: 'ws', grouping: 'file', preview: 'none' });
+  assert.equal(filePage.items[0]?.kind, 'file-group');
+  assert.ok(filePage.scope);
+  assert.equal(filePage.scope.grouping, 'file');
+  assert.equal(filePage.scope.turnCountBasis, 'visible-file-group-members');
+  assert.equal(filePage.ancillary?.counts.toolUnjoinedCount, 1);
+});
+
+test('WP-9 preview undo resolves for turns nested in day and file groups', async () => {
+  const routes = makeRoutes({ previewRestore: async (_workspaceId, turnId) => preview(turnId) });
+  for (const grouping of ['time', 'file'] as const) {
+    const page = await routes.list({ workspaceId: 'ws', grouping, preview: 'sync' });
+    assert.equal(flatTurns(page)[0]?.undo.state, 'restorable', `${grouping} member must receive preview undo`);
+  }
+});
+
+test('WP-9 digest remains unthreaded from sibling lens controls', async () => {
+  const routes = makeRoutes();
+  const baseline = await routes.digest({ workspaceId: 'ws' });
+  const sibling = await routes.digest({
+    workspaceId: 'ws', grouping: 'time', pathPrefix: 'does/not/match', timeZone: 'America/Los_Angeles',
+  });
+  assert.deepEqual(sibling, baseline);
+  assert.ok(sibling.page.scope);
+  assert.equal(sibling.page.scope.grouping, 'plan');
+});
 
 test('P6 snapshot is captured before either source query and markViewed persists its exact bounds', async () => {
   const order: string[] = [];
@@ -343,6 +420,13 @@ test('production HTTP and IPC registrars both thread listWindowPaths into activi
 });
 
 test('production ApiServer registration enters GET /api/activity and checkpoint parser forwards P1 filters', async () => {
+  const planRowId = '11111111-1111-4111-8111-111111111111';
+  const originalGetPlanByWorkspaceArtifactId = db.getPlanByWorkspaceArtifactId;
+  db.getPlanByWorkspaceArtifactId = (workspaceId: string, artifactId: string) => (
+    workspaceId === 'ws' && artifactId === 'plan_12345678'
+      ? { id: planRowId, workspaceId, path: null, deletedAt: null, artifactId }
+      : null
+  );
   const supervisor = { getContextStats: () => null, isInputInFlight: () => false } as unknown as AgentSupervisor;
   const server = new ApiServer(supervisor, 0, undefined, '127.0.0.1');
   server.setActivityRoutes(makeRoutes());
@@ -352,20 +436,21 @@ test('production ApiServer registration enters GET /api/activity and checkpoint 
   const token = agentCapabilities.mint({ agentId: 'sup', workspaceId: 'ws', privilegeLane: 'supervisor' });
   try {
     const activity = await request(port, '/api/activity', `Bearer ${token}`);
-    assert.equal(activity.status, 200, 'REACHABILITY:activity-routes-registered');
+    assert.equal(activity.status, 200, `REACHABILITY:activity-routes-registered ${activity.body}`);
     assert.equal(JSON.parse(activity.body).workspaceId, 'ws');
     const checkpoints = await request(
       port,
-      '/api/checkpoints?until=12&planId=p&planItemId=wp&eligibleOnly=false',
+      '/api/checkpoints?until=12&planId=plan_12345678&planItemId=wp&eligibleOnly=false',
       `Bearer ${token}`,
     );
-    assert.equal(checkpoints.status, 200);
+    assert.equal(checkpoints.status, 200, checkpoints.body);
     assert.deepEqual(checkpointOpts, {
-      until: 12, planId: 'p', planItemId: 'wp', eligibleOnly: false,
+      until: 12, planId: planRowId, planItemId: 'wp', eligibleOnly: false,
     });
   } finally {
     server.stop();
     agentCapabilities.clear();
+    db.getPlanByWorkspaceArtifactId = originalGetPlanByWorkspaceArtifactId;
   }
 });
 
