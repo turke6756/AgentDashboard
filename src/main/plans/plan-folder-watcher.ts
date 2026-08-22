@@ -502,7 +502,7 @@ export class PlanFolderWatcher {
     changeKind: FolderChangeKind, isBoot: boolean, adoptChange: StructuredPlanChange,
   ): Promise<void> {
     const run = async (): Promise<void> => {
-      const projections = await this.reconcileProjections({
+      const projections = await this.refreshProjectionSnapshot({
         workspace: ws,
         planFolderRelPath: folderRelPath,
         changeKind,
@@ -543,6 +543,15 @@ export class PlanFolderWatcher {
       await run();
       this.clearPendingRetry(ws.id, folderRelPath);
     }
+  }
+
+  /** Event-driven disk-to-DB refresh. Keeping this inside the settled path makes
+   * watcher adopt/change events the normal source of progress snapshot bumps;
+   * read-time reconciliation remains recovery-only. */
+  private refreshProjectionSnapshot(
+    input: Parameters<typeof reconcilePlanFolderProjections>[0],
+  ): ReturnType<typeof reconcilePlanFolderProjections> {
+    return this.reconcileProjections(input);
   }
 
   private clearPendingRetry(workspaceId: string, folderRelPath: string): void {

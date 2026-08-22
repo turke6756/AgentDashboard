@@ -118,6 +118,8 @@ type DbModule = {
   getPlans(filters?: { workspaceId?: string; includeDeleted?: boolean }): Plan[];
   insertProposalRecord(rec: any): void;
   getPlanSourceProposalProjectionState(planId: string): { status: string } | null;
+  getPlan(id: string): { id: string; slug: string | null; runState: string | null; updatedAt: string } | null;
+  listPlanWorkPackagesOrdered(planId: string): import('../database').PlanWorkPackage[];
 };
 
 type FolderChangeKind = 'boot' | 'adopted' | 'changed' | 'dependency';
@@ -153,6 +155,7 @@ type WatcherModule = {
 
 let dbm: DbModule;
 let wm: WatcherModule;
+let buildPlanProgressProjection: typeof import('./plan-progress-projection').buildPlanProgressProjection;
 let wsRoot = '';
 let ws: Ws;
 
@@ -277,6 +280,19 @@ function planRowCount(): number {
   return dbm.getPlans({ workspaceId: ws.id, includeDeleted: true }).length;
 }
 
+function workPackagesDocument(artifactId: string, title: string): string {
+  const packages = [{
+    id: 'WP-1', order: 10, title, initial_state: 'ready',
+    acceptance_conditions: ['The watcher refreshes the projection.'],
+    paths: [{ path: 'src/main/plans/plan-folder-watcher.ts', intent_kind: 'edit' }],
+    depends_on: [],
+    reachability: { kind: 'none', rationale: 'Fixture package adds no independently reachable behavior.' },
+  }];
+  return `---\nplan_artifact_id: ${artifactId}\nkind: work-packages\n---\n\n`
+    + `<!--PLAN-WORK-PACKAGES:v2\n${JSON.stringify({ schema_version: 2, plan_artifact_id: artifactId, packages }, null, 2)}\n-->\n\n`
+    + `## WP-1 - ${title}\n\n**Accept**\n- fixture\n`;
+}
+
 // ── Pure validators ───────────────────────────────────────────────────────────
 test('validatePlanFolder classifies valid / absent / malformed / no-artifact-id', () => {
   writeFolder('v-ok');
@@ -389,6 +405,35 @@ test('a nested output edit fires a settled(changed) callback (depth:0 root watch
 
   await w.reconcileWorkspace(ws, false); // signature moved ⇒ 'changed'
   assert.deepEqual(settled, [[row.id, rel, 'changed']]);
+});
+
+test('REACHABILITY:wp4-event-refresh supplement ingestion bumps the progress projection snapshot version', async () => {
+  const sku = 'event-refresh';
+  const artifactId = artifactForSku(sku);
+  writeFolder(sku, { artifactId, mtimeMs: 1_000_000 });
+  const watcher = newWatcher();
+  await watcher.reconcileWorkspace(ws, false);
+  const row = dbm.getPlanByWorkspaceArtifactId(ws.id, artifactId)!;
+  const projection = () => buildPlanProgressProjection({
+    detail: 'packages',
+    plan: dbm.getPlan(row.id)!,
+    card: null,
+    packages: dbm.listPlanWorkPackagesOrdered(row.id),
+    nowMs: 5_000_000,
+  }) as { db_snapshot_version: string };
+  const before = projection().db_snapshot_version;
+
+  const supplements = path.join(folderAbsOf(sku), 'supplements');
+  fs.mkdirSync(supplements, { recursive: true });
+  const source = path.join(supplements, 'work-packages.md');
+  fs.writeFileSync(source, workPackagesDocument(artifactId, 'Event refreshed package'));
+  fs.utimesSync(source, 5_000_000 / 1000, 5_000_000 / 1000);
+
+  const changed = await watcher.reconcileWorkspace(ws, false);
+  assert.equal(changed.settled[0]?.changeKind, 'changed', 'supplement edit enters the watcher change seam');
+  const after = projection().db_snapshot_version;
+  assert.notEqual(after, before, 'event-driven ingestion must bump db_snapshot_version without restart');
+  assert.equal(dbm.listPlanWorkPackagesOrdered(row.id)[0]?.title, 'Event refreshed package');
 });
 
 test('late-validity: a dir without plan.json is skipped, then adopted once plan.json appears', async () => {
@@ -741,6 +786,7 @@ test('PlansWatcher logs a stable quarantine diagnostic once across repeated no-o
   dbm.initDatabase();
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   wm = require('./plan-folder-watcher') as WatcherModule;
+  ({ buildPlanProgressProjection } = require('./plan-progress-projection') as typeof import('./plan-progress-projection'));
 
   let passed = 0, failed = 0;
   for (const t of tests) {
