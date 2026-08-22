@@ -87,7 +87,7 @@ function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActi
   );
 }
 
-export function OtherRow({ item }: { item: Exclude<ActivityItem, TurnActivityRow | { kind: 'plan-group' }> }): React.ReactElement {
+export function OtherRow({ item }: { item: Extract<ActivityItem, { kind: 'tool-unjoined' | 'window-unattributed' }> }): React.ReactElement {
   const external = item.kind === 'window-unattributed';
   const paths = item.paths;
   return (
@@ -159,7 +159,7 @@ export default function ActivityTab(): React.ReactElement {
                 <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
                 {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={(selectedRow, strategy) => setUndoDialog({ row: selectedRow, strategy })} />)}
               </section>
-            ) : <OtherRow key={item.id} item={item} />)}
+            ) : item.kind === 'day-group' || item.kind === 'file-group' ? null : <OtherRow key={item.id} item={item} />)}
             {page?.cursor.nextOlder && (
               <button type="button" className="ui-btn ui-btn-ghost mx-auto flex text-[11px]" disabled={loading} onClick={() => void loadOlderActivity(workspaceId)}>
                 {loading ? 'Loading older activity...' : 'Load older activity'}
