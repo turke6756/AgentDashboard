@@ -10701,6 +10701,7 @@ export interface InsertRecoveryOperationFields {
   result?: string | null;
   failureReason?: string | null;
   createdAt?: number | null;
+  endedAt?: number | null;
 }
 
 export function insertRecoveryOperation(
@@ -10730,7 +10731,8 @@ export function insertRecoveryOperation(
     fields.completedPaths !== undefined ? JSON.stringify(fields.completedPaths) : null,
     fields.result ?? null,
     fields.failureReason ?? null,
-    fields.createdAt ?? Date.now()
+    fields.createdAt ?? Date.now(),
+    fields.endedAt ?? null
   );
   return rowToRecoveryOperation(
     db.prepare('SELECT * FROM recovery_operations WHERE id = ?').get(id)

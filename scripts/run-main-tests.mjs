@@ -187,6 +187,11 @@ const TESTS = [
   'dist/main/main/log-retention/log-retention-integration.test.js',
   // Git-Native WP-A0: turn_records + recovery_operations schema/accessors.
   'dist/main/main/turn-records.test.js',
+  // Regression: insertRecoveryOperation binds all 17 columns (the missing
+  // ended_at value made checkpoint:revert throw a RangeError on undo). Runs the
+  // REAL prepared statement against real better-sqlite3, so it needs the
+  // Electron ABI like the agy-session-reader suite.
+  'dist/main/main/database.recovery-operation-insert.test.js',
   // While-you-were-away WP-P1: activity snapshot/lookahead/enclosure + attempts.
   'dist/main/main/database.activity.test.js',
   'dist/main/main/database.list-turn-records.test.js',
@@ -815,7 +820,9 @@ for (const file of TESTS) {
   // The agy reader exercises production's better-sqlite3 binding, which is
   // compiled for Electron's ABI. Run that suite with the bundled Electron in
   // Node mode; every JS-only main test keeps the faster host-Node path.
-  const nativeElectronTest = file.endsWith('/agy-session-reader.test.js')
+  const nativeElectronTest =
+    file.endsWith('/agy-session-reader.test.js') ||
+    file.endsWith('/database.recovery-operation-insert.test.js')
   const r = spawnSync(nativeElectronTest ? electronRuntime : process.execPath, [file], {
     stdio: 'inherit',
     env: nativeElectronTest ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
