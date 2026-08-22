@@ -172,6 +172,48 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
   assert.equal(body!.resolvedPath, memPath, 'both rows share the file path (click opens MEMORY.md)');
   assert.ok(!(index!.warnings ?? []).some((w) => w.includes('No index is injected')),
     'the stale no-index warning is absent');
+  assert.ok((index!.warnings ?? []).some((w) => w.includes('pure memory-index projection only')),
+    'the index row discloses that filesystem validation and launch fallbacks are not measured');
+});
+
+test('a hard-invalid MEMORY.md has no confident zero resident cost', () => {
+  const memPath = '/ws/agent/memory/MEMORY.md';
+  const content = '# Missing disclosure marker\n\nThis index is hard-invalid.';
+  const files: Record<string, string> = { [memPath]: content };
+  const reader: FileReader = {
+    read(p) { const c = files[p]; return c !== undefined ? { content: c, bytes: c.length } : null; },
+    exists(p) { return files[p] !== undefined; },
+    listFiles() { return []; },
+  };
+  const frames = analyzeWalkUp('/ws/agent', '/ws', {
+    reader, estimator: new TokenEstimator({ encoder: (text) => text.length }), pathOps: makePathOps('wsl'),
+    userHome: '/home/u', managedPolicyPath: null, env: {}, nowISO: '2026-08-22T12:00:00.000Z', seen: new Set(),
+  });
+  const index = frames.flatMap((f) => flatten(f.sources)).find((s) => s.kind === 'memory-index');
+  assert.ok(index, 'a memory-index source is emitted');
+  assert.equal(index!.estimate.tokens, 0, 'the required estimate shape uses a zero placeholder');
+  assert.ok(!(index!.estimate.tokens === 0 && (index!.warnings ?? []).length === 0),
+    'the zero placeholder is never presented without a warning');
+  assert.ok((index!.warnings ?? []).some((w) => w.includes('hard-invalid') && w.includes('not measured')),
+    'the hard-invalid row explicitly says its resident cost was not measured');
+});
+
+test('an unreadable MEMORY.md has an explicit not-measured warning', () => {
+  const memPath = '/ws/agent/memory/MEMORY.md';
+  const reader: FileReader = {
+    read() { return null; },
+    exists(p) { return p === memPath; },
+    listFiles() { return []; },
+  };
+  const frames = analyzeWalkUp('/ws/agent', '/ws', {
+    reader, estimator: new TokenEstimator({ encoder: (text) => text.length }), pathOps: makePathOps('wsl'),
+    userHome: '/home/u', managedPolicyPath: null, env: {}, nowISO: '2026-08-22T12:00:00.000Z', seen: new Set(),
+  });
+  const index = frames.flatMap((f) => flatten(f.sources)).find((s) => s.kind === 'memory-index');
+  assert.ok(index, 'a memory-index source is emitted');
+  assert.equal(index!.estimate.tokens, 0, 'the required estimate shape stays zero when no bytes were readable');
+  assert.ok((index!.warnings ?? []).some((w) => w.includes('unreadable') && w.includes('not measured')),
+    'the unreadable row makes clear that zero is not a measurement');
 });
 
 test('a fenceless SKILL.md still splits (low confidence) and warns on the header row', () => {

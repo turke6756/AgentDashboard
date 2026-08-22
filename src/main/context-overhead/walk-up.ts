@@ -188,17 +188,27 @@ function buildMemorySources(
     origin: 'frontmatter-split' as const,
     mutable,
   };
-  const injectText = exists
-    ? projectParsed(parseIndex(file!.content), { nowISO: deps.nowISO ?? new Date().toISOString() }).injectText
-    : '';
+  const projection = exists
+    ? projectParsed(parseIndex(file!.content), { nowISO: deps.nowISO ?? new Date().toISOString() })
+    : null;
+  const projectionIsMeasurable = projection !== null && projection.hard.length === 0;
+  const estimateText = projectionIsMeasurable ? projection.injectText : '';
+  const warnings = [
+    ...(file === null
+      ? ['Memory index file is unreadable — resident cost not measured.']
+      : !projectionIsMeasurable
+        ? ['Memory index is hard-invalid — resident cost not measured.']
+        : []),
+    'Estimate reflects the pure memory-index projection only; filesystem validation and launch fallback/banner paths are not measured.',
+  ];
   const index: OverheadSource = {
     ...base,
     id: `${resolved}#memory-index`,
     kind: 'memory-index',
     disclosureTier: 'resident',
-    estimate: deps.estimator.estimate(injectText),
+    estimate: deps.estimator.estimate(estimateText),
     children: [],
-    warnings: [],
+    warnings,
   };
   if (!exists) return [index];
   const body: OverheadSource = {
