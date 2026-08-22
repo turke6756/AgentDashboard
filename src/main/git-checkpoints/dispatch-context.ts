@@ -202,6 +202,7 @@ export interface DispatchAgentInfo {
   workspaceId: string;
   workingDirectory?: string;
   planId?: string | null;
+  ownerAgentId?: string | null;
   title?: string | null;
   resumeSessionId?: string | null;
   continuationGeneration?: number | null;
@@ -232,6 +233,10 @@ export interface DispatchDeps {
    * defaults to no plan; it must never revive a stale agent/focus binding.
    */
   resolveActivePlanDefault?: (agent: DispatchAgentInfo) => string | null;
+  /** Owner-focus tier (int_a3f41c09): resolve the durable owner's currently-
+   * executing plan id, or null. Wired to resolveOwnerFocusPlanId in prod. A
+   * lookup failure/throw MUST return null (fail closed) — never a stale binding. */
+  resolveOwnerFocusPlan?: (ownerAgentId: string) => string | null;
   /**
    * WP-P5C-gate: the authoritative pre-Implement gate for a resolved plan binding,
    * keyed by the globally-unique plan id. It reports whether the plan is a
@@ -312,6 +317,20 @@ export function resolveRequestedPlanBinding(
         planId = deps.resolveActivePlanDefault(agent);
       } catch {
         planId = null;
+      }
+    }
+    if (planId === null && agent.ownerAgentId && deps.resolveOwnerFocusPlan) {
+      let ownerPlanId: string | null = null;
+      try {
+        ownerPlanId = deps.resolveOwnerFocusPlan(agent.ownerAgentId);
+      } catch {
+        ownerPlanId = null;
+      }
+      if (ownerPlanId) {
+        const gated = gateResolvedStamp(deps, {
+          planId: ownerPlanId, planItemId: null, source: 'owner-focus',
+        });
+        if (gated.ok) return gated;
       }
     }
     return gateResolvedStamp(deps, {

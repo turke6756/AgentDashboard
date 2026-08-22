@@ -48,6 +48,114 @@ test('omitted binding resolves the frozen agent default; explicit none stays dis
   });
 });
 
+test('agent-default null resolves the direct owner executing plan as owner-focus', () => {
+  const ownerIds: string[] = [];
+  const ownerAgent: DispatchAgentInfo = {
+    workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-1',
+  };
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: (ownerAgentId) => {
+      ownerIds.push(ownerAgentId);
+      return 'plan-owner';
+    },
+  }), ownerAgent, undefined), {
+    ok: true,
+    stamp: { planId: 'plan-owner', planItemId: null, source: 'owner-focus' },
+  });
+  assert.deepEqual(ownerIds, ['owner-1'], 'only the direct durable owner is consulted');
+});
+
+test('explicit none never consults owner-focus', () => {
+  let ownerCalls = 0;
+  const ownerAgent: DispatchAgentInfo = {
+    workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-1',
+  };
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; return 'plan-owner'; },
+  }), ownerAgent, { mode: 'none' }), {
+    ok: true,
+    stamp: { planId: null, planItemId: null, source: 'explicit-none' },
+  });
+  assert.equal(ownerCalls, 0);
+});
+
+test('a non-null agent default wins without consulting owner-focus', () => {
+  let ownerCalls = 0;
+  const ownerAgent: DispatchAgentInfo = {
+    workspaceId: 'ws-1', planId: 'plan-agent', ownerAgentId: 'owner-1',
+  };
+  const d = deps({
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; return 'plan-owner'; },
+  });
+  assert.deepEqual(resolveRequestedPlanBinding(d, ownerAgent, undefined), {
+    ok: true,
+    stamp: { planId: 'plan-agent', planItemId: null, source: 'agent-default' },
+  });
+  assert.equal(ownerCalls, 0);
+
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveActivePlanDefault: () => 'plan-active',
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; return 'plan-owner'; },
+  }), { ...ownerAgent, planId: null }, undefined), {
+    ok: true,
+    stamp: { planId: 'plan-active', planItemId: null, source: 'agent-default' },
+  });
+  assert.equal(ownerCalls, 0);
+});
+
+test('owner-focus lookup failures degrade to agent-default unknown without dropping the turn', () => {
+  const unknown = {
+    ok: true,
+    stamp: { planId: null, planItemId: null, source: 'agent-default' },
+  } as const;
+  let ownerCalls = 0;
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; return 'plan-owner'; },
+  }), { workspaceId: 'ws-1', planId: null }, undefined), unknown);
+  assert.equal(ownerCalls, 0, 'no durable owner means no lookup');
+
+  const ownerAgent: DispatchAgentInfo = {
+    workspaceId: 'ws-1', planId: null, ownerAgentId: 'missing-owner',
+  };
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; return null; },
+  }), ownerAgent, undefined), unknown, 'missing/non-executing owner returns null');
+  assert.equal(ownerCalls, 1);
+
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => { ownerCalls += 1; throw new Error('lookup failed'); },
+  }), ownerAgent, undefined), unknown, 'resolver throws fail closed');
+  assert.equal(ownerCalls, 2);
+
+  assert.deepEqual(resolveRequestedPlanBinding(deps(), ownerAgent, undefined), unknown,
+    'an unwired resolver preserves the unknown turn');
+});
+
+test('owner-focus gate rejection or throw degrades to agent-default unknown', () => {
+  const ownerAgent: DispatchAgentInfo = {
+    workspaceId: 'ws-1', planId: null, ownerAgentId: 'owner-1',
+  };
+  const unknown = {
+    ok: true,
+    stamp: { planId: null, planItemId: null, source: 'agent-default' },
+  } as const;
+  let gateCalls = 0;
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => 'plan-owner',
+    planImplementGate: () => {
+      gateCalls += 1;
+      return { isStructured: true, hasActiveExecutionRun: false };
+    },
+  }), ownerAgent, undefined), unknown);
+  assert.equal(gateCalls, 1);
+
+  assert.deepEqual(resolveRequestedPlanBinding(deps({
+    resolveOwnerFocusPlan: () => 'plan-owner',
+    planImplementGate: () => { gateCalls += 1; throw new Error('gate failed'); },
+  }), ownerAgent, undefined), unknown);
+  assert.equal(gateCalls, 2);
+});
+
 test('explicit plan is workspace-validated and never falls back to the agent default', () => {
   assert.deepEqual(resolveRequestedPlanBinding(deps(), agent, {
     mode: 'explicit', planId: 'plan-explicit', planItemId: null,
