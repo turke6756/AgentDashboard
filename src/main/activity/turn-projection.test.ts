@@ -13,6 +13,7 @@ import type { ActivityFileActivity, TurnRecord } from '../database';
 import type { WindowPathList } from '../git-checkpoints/checkpoint-service';
 import {
   projectTurnActivity,
+  projectFileGroups,
   SESSION_GAP_MS,
   TOOL_UNJOINED_GAP_MS,
   type TurnPreviewAttachment,
@@ -380,22 +381,26 @@ test('WP-8 time: local-midnight buckets honor the requested zone', () => {
   assert.deepEqual(ny.items.filter((row) => row.kind === 'day-group').map((row) => row.dayKey), ['2026-03-08', '2026-03-07']);
 });
 
-test('WP-8 time: spring-forward instants produce one stable local-date bucket', () => {
+test('WP-8 time: spring-forward instants are stable and refute UTC epoch-day bucketing', () => {
   const result = projectTurnActivity({
     ...baseInput,
     grouping: 'time',
     timeZone: 'America/New_York',
     turns: [
+      // Still March 7 locally although its UTC calendar date is March 8. This
+      // makes epoch-day bucketing observably wrong in the same DST fixture.
+      turn(3, { startedAt: Date.parse('2026-03-08T04:30:00Z') }),
       turn(2, { startedAt: Date.parse('2026-03-08T06:59:59Z') }),
       turn(1, { startedAt: Date.parse('2026-03-08T07:00:01Z') }),
     ],
   });
   const groups = result.items.filter((row) => row.kind === 'day-group');
-  assert.deepEqual(groups.map((row) => row.dayKey), ['2026-03-08']);
+  assert.deepEqual(groups.map((row) => row.dayKey), ['2026-03-08', '2026-03-07']);
   assert.deepEqual(groups[0].members.map((row) => row.startedAt), [
     Date.parse('2026-03-08T07:00:01Z'),
     Date.parse('2026-03-08T06:59:59Z'),
   ]);
+  assert.equal(new Date(groups[1].members[0].startedAt!).toISOString().slice(0, 10), '2026-03-08');
 });
 
 test('WP-8 time: invalid zones fail open to UTC and null timestamps remain terminal', () => {
@@ -464,6 +469,23 @@ test('WP-8 file: fan-out, canonical per-turn dedupe, and distinct page counts', 
   assert.ok(twoGroups.every((row) => row.pageCounts.fileCount === 1));
 });
 
+test('WP-8 file: grouping-layer per-turn Set dedupes duplicate projected paths', () => {
+  const projected = projectTurnActivity({ ...baseInput, grouping: 'none', turns: [turn(1)] });
+  const row = projected.items[0];
+  assert.equal(row.kind, 'turn');
+  if (row.kind !== 'turn') throw new Error('expected projected turn');
+  const duplicatePathRow = {
+    ...row,
+    witnessedPaths: [row.witnessedPaths[0], { ...row.witnessedPaths[0] }],
+  };
+  assert.equal(duplicatePathRow.witnessedPaths.length, 2); // prove the grouping input is genuinely duplicated
+  const { groups, visibleTurns } = projectFileGroups([duplicatePathRow], undefined);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].members.map((member) => member.turnId), ['turn-1']);
+  assert.equal(groups[0].pageCounts.turnCount, 1);
+  assert.deepEqual(visibleTurns.map((member) => member.turnId), ['turn-1']);
+});
+
 test('WP-8 file: prefix restricts groups while relational axes retain all paths', () => {
   const mixed = turn(1, { touched: [
     { path: 'packages/app/src/a.ts', op: 'write' },
@@ -500,6 +522,26 @@ test('WP-8 file: literal paths stay independent and path-less turns are reported
   assert.deepEqual(groups.map((row) => row.repoPath).sort(), ['packages/app/a.ts', 'packages/app/b.ts']);
   assert.equal(result.pageCounts.turnCount, 3);
   assert.equal(result.scope.turnCountBasis, 'visible-file-group-members');
+  assert.equal(result.scope.loadedTurnsExcludedFromFileGroups, 2);
+});
+
+test('WP-8 file: prefix exclusion counts every loaded turn absent from emitted groups', () => {
+  // Concrete edits B.4 says "no matching/any path": with a prefix, both a
+  // non-matching-path turn and a path-less turn are absent from emitted groups.
+  const result = projectTurnActivity({
+    ...baseInput,
+    grouping: 'file',
+    pathPrefix: 'packages/app/src',
+    turns: [
+      turn(3, { touched: [{ path: 'packages/app/src/a.ts', op: 'write' }] }),
+      turn(2, { touched: [{ path: 'packages/app/docs/b.md', op: 'write' }] }),
+      turn(1, { touched: [] }),
+    ],
+  });
+  assert.deepEqual(result.items.filter((row) => row.kind === 'file-group').map((row) => row.repoPath), [
+    'packages/app/src/a.ts',
+  ]);
+  assert.equal(result.pageCounts.turnCount, 1);
   assert.equal(result.scope.loadedTurnsExcludedFromFileGroups, 2);
 });
 
@@ -547,23 +589,103 @@ test('WP-8 ancillary: non-plan axes re-home rows, keep them outside prefix, and 
   assert.equal(plan.scope.turnCountBasis, 'loaded-turns');
 });
 
-test('WP-8 grouping regression: omitted and explicit plan preserve legacy projection fields exactly', () => {
-  const input = {
+test('WP-8 grouping regression: omitted grouping matches the hand-written legacy plan golden', () => {
+  const complete = { value: 0, status: 'complete' as const };
+  const previews = new Map<string, TurnPreviewAttachment>([
+    ['turn-3', preview('turn-3')],
+    ['turn-2', preview('turn-2')],
+  ]);
+  const fileActivities: ActivityFileActivity[] = [{
+    id: 77,
+    agentId: 'agent-2',
+    filePath: path.join(baseInput.repoRoot, 'packages/app/docs/tool.md'),
+    operation: 'write',
+    timestamp: new Date(10_000).toISOString(),
+    generation: 1,
+    sessionId: 'session-2',
+    enclosed: false,
+  }];
+  const result = projectTurnActivity({
     ...baseInput,
-    turns: [turn(2, { planId: 'plan-P', planItemId: 'WP-8', planStampSource: 'explicit' }), turn(1)],
+    turns: [
+      turn(3, {
+        planId: 'plan-P', planItemId: 'WP-8', planStampSource: 'explicit',
+        touched: [{ path: 'packages/app/src/a.ts', op: 'write' }],
+      }),
+      turn(2, { touched: [{ path: 'packages/app/src/b.ts', op: 'write' }] }),
+    ],
+    previews,
+    planTitles: new Map([['plan-P', 'Plan P']]),
+    agentTitles: new Map([['agent-2', 'Agent Two']]),
+    fileActivities,
+    windowPaths: new Map([['turn-2', {
+      available: true,
+      reason: 'ok',
+      paths: ['packages/app/src/b.ts', 'packages/app/src/c.ts'],
+      omittedPathCount: 0,
+      hasOmittedPaths: false,
+      truncated: false,
+    }]]),
     turnScanExhausted: false,
     turnsComplete: false,
-    nextOlderTurnSeq: 1,
-  };
-  const omitted = projectTurnActivity(input);
-  const explicit = projectTurnActivity({ ...input, grouping: 'plan' });
-  const legacyFields = (result: ReturnType<typeof projectTurnActivity>) => ({
+    nextOlderTurnSeq: 2,
+  });
+
+  assert.deepEqual({
     items: result.items,
     pageCounts: result.pageCounts,
     fileActivityStats: result.fileActivityStats,
+  }, {
+    items: [
+      {
+        kind: 'plan-group',
+        planId: 'plan-P',
+        planTitle: 'Plan P',
+        latestTurnSeq: 3,
+        latestStartedAt: 3_000,
+        members: [{
+          kind: 'turn', turnId: 'turn-3', turnSeq: 3, agentId: 'agent-1', agentTitle: 'Agent One',
+          taskLabel: null, planId: 'plan-P', planItemId: 'WP-8', planStampStatus: 'verified',
+          status: 'accepted', startedAt: 3_000, endedAt: 3_500,
+          witnessedPaths: [{ repoPath: 'packages/app/src/a.ts', displayPath: 'src/a.ts' }],
+          writeCount: 1, undo: { state: 'restorable', basis: 'preview', reason: null, contention: [] },
+          beforeReady: true, afterReady: true, beforeQuality: 'ready', afterQuality: 'ready',
+          failureReason: null, beforePrunedAt: null, afterPrunedAt: null, commitOids: [],
+        }],
+        pageCounts: {
+          turnCount: 1, agentCount: 1, fileCount: 1, planCount: 1, commitCount: 0,
+          noCheckpointCount: 0, blockedOverlapCount: complete, unavailableCount: complete, checkingCount: complete,
+        },
+        countsComplete: false,
+        nextOlderCursor: { turnSeq: 2 },
+      },
+      {
+        kind: 'turn', turnId: 'turn-2', turnSeq: 2, agentId: 'agent-1', agentTitle: 'Agent One',
+        taskLabel: null, planId: null, planItemId: null, planStampStatus: 'unstamped',
+        status: 'accepted', startedAt: 2_000, endedAt: 2_500,
+        witnessedPaths: [{ repoPath: 'packages/app/src/b.ts', displayPath: 'src/b.ts' }],
+        writeCount: 1, undo: { state: 'restorable', basis: 'preview', reason: null, contention: [] },
+        beforeReady: true, afterReady: true, beforeQuality: 'ready', afterQuality: 'ready',
+        failureReason: null, beforePrunedAt: null, afterPrunedAt: null, commitOids: [],
+      },
+      {
+        kind: 'window-unattributed', id: 'win:turn-2', hostTurnId: 'turn-2', hostTurnSeq: 2,
+        paths: [{ repoPath: 'packages/app/src/c.ts', displayPath: 'src/c.ts' }],
+        omittedPathCount: 0, hasOmittedPaths: false,
+      },
+      {
+        kind: 'tool-unjoined', id: 'tool:agent-2:77:77', agentId: 'agent-2', agentTitle: 'Agent Two',
+        fileActivityIds: [77],
+        paths: [{ repoPath: 'packages/app/docs/tool.md', displayPath: 'docs/tool.md' }],
+        startedAt: 10_000, endedAt: 10_000,
+      },
+    ],
+    pageCounts: {
+      turnCount: 2, agentCount: 2, fileCount: 3, planCount: 1, commitCount: 0,
+      noCheckpointCount: 0, blockedOverlapCount: complete, unavailableCount: complete, checkingCount: complete,
+    },
+    fileActivityStats: { scanned: 1, emitted: 1, outsideWorkspaceCount: 0 },
   });
-  assert.deepEqual(legacyFields(omitted), legacyFields(explicit));
-  assert.deepEqual(omitted.scope, explicit.scope);
 });
 
 test('WP-8 none: items are a reverse-turnSeq turn-only stream', () => {
@@ -595,6 +717,15 @@ test('WP-8 completeness: paging exhaustion and population completeness remain in
   const truncatedGroup = truncated.items.find((row) => row.kind === 'plan-group');
   assert.equal(truncatedGroup?.countsComplete, false);
   assert.equal(truncatedGroup?.nextOlderCursor.turnSeq, 1);
+});
+
+test('WP-8 compatibility: legacy turnsExhausted remains a true paging and completeness alias', () => {
+  const planned = turn(1, { planId: 'plan-P', planItemId: 'WP-8', planStampSource: 'explicit' });
+  const result = projectTurnActivity({ ...baseInput, turns: [planned], turnsExhausted: true });
+  const group = result.items.find((row) => row.kind === 'plan-group');
+  assert.equal(group?.countsComplete, true);
+  assert.equal(group?.nextOlderCursor.turnSeq, null);
+  assert.equal(result.scope.completeness.turns, true);
 });
 
 test('WP-8 completeness: prefix, source divergence, and undo resolution are orthogonal', () => {

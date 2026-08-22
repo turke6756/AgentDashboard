@@ -251,6 +251,42 @@ function withFileCount(counts: ActivityCounts, fileCount: number): ActivityCount
   return { ...counts, fileCount };
 }
 
+/** @internal Exported so projection tests can inject already-projected duplicate paths. */
+export function projectFileGroups(
+  turns: readonly TurnActivityRow[],
+  pathPrefix: string | undefined,
+): { groups: FileGroupRow[]; visibleTurns: TurnActivityRow[] } {
+  const groupsByPath = new Map<string, { displayPath: string; members: TurnActivityRow[] }>();
+  for (const turn of turns) {
+    const seen = new Set<string>();
+    for (const activityPath of turn.witnessedPaths) {
+      if (seen.has(activityPath.repoPath)) continue;
+      seen.add(activityPath.repoPath);
+      if (pathPrefix !== undefined && !matchesPathPrefix(activityPath.repoPath, pathPrefix)) continue;
+      const group = groupsByPath.get(activityPath.repoPath) ?? { displayPath: activityPath.displayPath, members: [] };
+      group.members.push(turn);
+      groupsByPath.set(activityPath.repoPath, group);
+    }
+  }
+  const groups = [...groupsByPath.entries()].map(([repoPath, group]): FileGroupRow => ({
+    kind: 'file-group',
+    repoPath,
+    displayPath: group.displayPath,
+    latestStartedAt: group.members.reduce<number | null>((latest, member) => (
+      member.startedAt !== null && (latest === null || member.startedAt > latest) ? member.startedAt : latest
+    ), null),
+    members: group.members,
+    pageCounts: withFileCount(countTurns(group.members), 1),
+  })).sort((a, b) => {
+    if (a.latestStartedAt === null) return b.latestStartedAt === null ? a.repoPath.localeCompare(b.repoPath) : 1;
+    if (b.latestStartedAt === null) return -1;
+    return b.latestStartedAt - a.latestStartedAt || a.repoPath.localeCompare(b.repoPath);
+  });
+  const visibleById = new Map<string, TurnActivityRow>();
+  for (const group of groups) for (const member of group.members) visibleById.set(member.turnId, member);
+  return { groups, visibleTurns: [...visibleById.values()] };
+}
+
 function projectTurn(
   turn: TurnRecord,
   workspacePrefix: string,
@@ -411,7 +447,8 @@ export function projectTurnActivity(input: TurnProjectionInput): TurnProjectionR
     scopedByPathPrefix: false,
   };
 
-  const turnsComplete = input.turnsComplete === true;
+  const turnScanExhausted = input.turnScanExhausted ?? input.turnsExhausted ?? false;
+  const turnsComplete = input.turnsComplete ?? input.turnsExhausted ?? false;
   const filesComplete = input.filesComplete === true;
   const ancillaryPathsComplete = turnsComplete && filesComplete
     && windowRows.every((row) => !row.hasOmittedPaths);
@@ -471,7 +508,7 @@ export function projectTurnActivity(input: TurnProjectionInput): TurnProjectionR
         countsComplete: exactCounts !== undefined || turnsComplete,
         // This cursor is older-direction paging only; it does not imply count completeness.
         nextOlderCursor: {
-          turnSeq: input.turnScanExhausted === true
+          turnSeq: turnScanExhausted
             ? null
             : input.nextOlderTurnSeq ?? Math.min(...members.map((member) => member.turnSeq)),
         },
@@ -534,35 +571,7 @@ export function projectTurnActivity(input: TurnProjectionInput): TurnProjectionR
     pageCounts = countTurns(turns);
     scope = { ...baseScope, turnCountBasis: 'loaded-turns', timeZone };
   } else if (grouping === 'file') {
-    const groupsByPath = new Map<string, { displayPath: string; members: TurnActivityRow[] }>();
-    for (const turn of turns) {
-      const seen = new Set<string>();
-      for (const activityPath of turn.witnessedPaths) {
-        if (seen.has(activityPath.repoPath)) continue;
-        seen.add(activityPath.repoPath);
-        if (pathPrefix !== undefined && !matchesPathPrefix(activityPath.repoPath, pathPrefix)) continue;
-        const group = groupsByPath.get(activityPath.repoPath) ?? { displayPath: activityPath.displayPath, members: [] };
-        group.members.push(turn);
-        groupsByPath.set(activityPath.repoPath, group);
-      }
-    }
-    const groups = [...groupsByPath.entries()].map(([repoPath, group]): FileGroupRow => ({
-      kind: 'file-group',
-      repoPath,
-      displayPath: group.displayPath,
-      latestStartedAt: group.members.reduce<number | null>((latest, member) => (
-        member.startedAt !== null && (latest === null || member.startedAt > latest) ? member.startedAt : latest
-      ), null),
-      members: group.members,
-      pageCounts: withFileCount(countTurns(group.members), 1),
-    })).sort((a, b) => {
-      if (a.latestStartedAt === null) return b.latestStartedAt === null ? a.repoPath.localeCompare(b.repoPath) : 1;
-      if (b.latestStartedAt === null) return -1;
-      return b.latestStartedAt - a.latestStartedAt || a.repoPath.localeCompare(b.repoPath);
-    });
-    const visibleById = new Map<string, TurnActivityRow>();
-    for (const group of groups) for (const member of group.members) visibleById.set(member.turnId, member);
-    const visibleTurns = [...visibleById.values()];
+    const { groups, visibleTurns } = projectFileGroups(turns, pathPrefix);
     items = groups;
     pageCounts = withFileCount(countTurns(visibleTurns), groups.length);
     scope = {
