@@ -20,7 +20,7 @@ import {
   getContinuationAttempt, getContinuationEscapeBudget, closeContinuationHandoffAttempt, insertContinuationBrick,
   getLatestBrickForAttempt, countContinuationDeferrals, insertContinuationDeferral,
   getContinuationDeferralForAttempt, hasRunningOrchestrationForSupervisor,
-  getPlans, getPlan, getPlanByWorkspacePath, createOrRevivePlan, updatePlanWithBadgeResult, softDeletePlanIfLive, derivePlanSlug,
+  getPlans, getPlan, getPlanByWorkspaceArtifactId, getPlanByWorkspacePath, createOrRevivePlan, updatePlanWithBadgeResult, softDeletePlanIfLive, derivePlanSlug,
   planItemInPlan,
   getSupervisorFocus, upsertSupervisorFocus, deleteSupervisorFocus,
   bumpSupervisorFocusAttended, getSupervisorFocusedPlans,
@@ -112,7 +112,7 @@ import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
-import { PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
+import { isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
   resolveRequestedPlanBinding,
   withResolvedPlanStamp,
@@ -144,11 +144,11 @@ function truncatePlanListText(value: string, maxBytes: number): string {
 
 function planStateRow(
   manifest: PlanManifest,
-  plan: NonNullable<ReturnType<typeof getPlan>>,
+  plan: ReturnType<typeof getPlan>,
   freshness: Record<string, unknown>,
 ): Record<string, unknown> {
   const row: Record<string, unknown> = {
-    plan_id: manifest.plan_artifact_id ?? plan.id,
+    plan_id: manifest.plan_artifact_id ?? plan?.id,
     title: typeof manifest.title === 'string'
       ? truncatePlanListText(manifest.title, PLAN_LIST_TITLE_MAX_BYTES)
       : null,
@@ -3907,9 +3907,17 @@ export class ApiServer {
       }
       const projectFilter = url.searchParams.get('project');
       const requestedRef = url.searchParams.get('plan_id');
-      const requestedPlanId = requestedRef === null
-        ? null
-        : resolvePlanRef(identity.workspaceId, requestedRef).planId;
+      let requestedPlanId: string | null = null;
+      let requestedArtifactId: string | null = null;
+      if (requestedRef !== null) {
+        if (isPlanArtifactId(requestedRef)) {
+          const registered = getPlanByWorkspaceArtifactId(identity.workspaceId, requestedRef);
+          if (registered) requestedPlanId = resolvePlanRef(identity.workspaceId, requestedRef).planId;
+          else requestedArtifactId = requestedRef;
+        } else {
+          requestedPlanId = resolvePlanRef(identity.workspaceId, requestedRef).planId;
+        }
+      }
 
       const folders = listPromotedPlanFolders(
         identity.workspaceId,
@@ -3920,8 +3928,9 @@ export class ApiServer {
       const warnings = [...folders.warnings];
       for (const card of folders.plans) {
         if (requestedPlanId !== null && card.planId !== requestedPlanId) continue;
+        if (requestedArtifactId !== null && card.planArtifactId !== requestedArtifactId) continue;
         const plan = getPlan(card.planId);
-        if (!plan || plan.workspaceId !== identity.workspaceId || plan.deletedAt !== null) continue;
+        if (plan && (plan.workspaceId !== identity.workspaceId || plan.deletedAt !== null)) continue;
         const manifestPath = nodePath.join(
           workspaceStateDir(workspace.path, workspace.pathType),
           'plans',
@@ -3935,21 +3944,26 @@ export class ApiServer {
           warnings.push(`skipped ${card.folderName}: invalid v2 state record`);
           continue;
         }
-        // A legacy manifest is valid input to the parser but is not a v2 state
-        // record. WP-8 backfills these; list_plans never invents state meanwhile.
-        if (!manifest.status || !manifest.rollup || !manifest.deploy || manifest.state_updated_at === undefined) continue;
+        // A stamped state card is identified by its status + update timestamp.
+        // Optional unknowns remain honest in the row: no rollup becomes
+        // `unknown`, and no deploy assessment becomes null.
+        if (!manifest.status || manifest.state_updated_at === undefined) continue;
         if (statusFilter !== null && manifest.status !== statusFilter) continue;
-        if (deployFilter !== null && manifest.deploy.code !== deployFilter) continue;
+        if (deployFilter !== null && manifest.deploy?.code !== deployFilter) continue;
         if (projectFilter !== null && manifest.project !== projectFilter) continue;
 
-        const packages = listPlanWorkPackagesOrdered(plan.id)
-          .filter((pkg) => pkg.workspaceId === identity.workspaceId && pkg.planId === plan.id);
-        const projection = buildPlanProgressProjection({
-          detail: 'card',
-          plan,
-          card: { ...card, updatedAt: manifest.state_updated_at },
-          packages,
-        });
+        // Disk is the fleet row source. A matching DB registration enriches the
+        // row with its real snapshot freshness; without one, fail closed rather
+        // than pretending the stamped rollup has a current DB projection.
+        const projection = plan
+          ? buildPlanProgressProjection({
+              detail: 'card',
+              plan,
+              card: { ...card, updatedAt: manifest.state_updated_at },
+              packages: listPlanWorkPackagesOrdered(plan.id)
+                .filter((pkg) => pkg.workspaceId === identity.workspaceId && pkg.planId === plan.id),
+            })
+          : { db_snapshot_version: null, snapshot_age_s: null, fresh: false };
         const row = planStateRow(manifest, plan, projection);
         if (Buffer.byteLength(JSON.stringify(row), 'utf8') > PLAN_LIST_ROW_MAX_BYTES) {
           warnings.push(`skipped ${card.folderName}: bounded state row exceeds ${PLAN_LIST_ROW_MAX_BYTES} bytes`);
