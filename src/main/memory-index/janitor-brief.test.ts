@@ -19,6 +19,9 @@
 //   node dist/main/main/memory-index/janitor-brief.test.js
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { LaunchAgentInput } from '../../shared/types';
 import type { ValidatedDisposal } from './io';
 import type { LessonRow, ReviewFindingRow } from './review-store';
@@ -26,6 +29,7 @@ import {
   EVIDENCE_UNAVAILABLE_LINE,
   classifyLessonFiring,
   generateJanitorBrief,
+  readLiveDisposal,
   renderJanitorBrief,
   type JanitorBriefDeps,
   type LessonFiringResult,
@@ -238,6 +242,23 @@ test('generateJanitorBrief passes the active lesson NAMES to the firing check', 
   const out = generateJanitorBrief(deps, 'ws-1');
   assert.deepEqual(deps.calls.assessNames, [['l1', 'l2']]);
   assert.ok(out.includes('# Memory index janitor brief'));
+});
+
+test('readLiveDisposal tolerates a missing MEMORY.md and renders the existing empty-map advisory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-janitor-missing-memory-'));
+  try {
+    const out = renderJanitorBrief({
+      pending: [],
+      lessons: [],
+      firing: firingOk({}),
+      disposal: readLiveDisposal(root),
+    });
+
+    assert.ok(out.includes('## Validated disposal map (0)'));
+    assert.ok(out.includes('_No resident disposal conditions available._'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ── IPC dispatch ────────────────────────────────────────────────────────────

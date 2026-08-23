@@ -227,13 +227,24 @@ export function renderJanitorBrief(input: JanitorBriefInput): string {
   return lines.join('\n');
 }
 
-function readLiveDisposal(ws: string): ReadonlyMap<string, ValidatedDisposal> {
+export function readLiveDisposal(workspaceRoot: string): ReadonlyMap<string, ValidatedDisposal> {
+  try {
+    return readValidateProject(workspaceRoot, new Date().toISOString()).disposal;
+  } catch {
+    // A missing or temporarily unreadable MEMORY.md must not take down brief
+    // generation or janitor dispatch. The renderer already reports that no
+    // resident disposal conditions are available, without inventing a finding.
+    return new Map();
+  }
+}
+
+function readWorkspaceDisposal(ws: string): ReadonlyMap<string, ValidatedDisposal> {
   const workspace = getWorkspace(ws);
   if (!workspace) return new Map();
   const workspaceRoot = workspace.pathType === 'wsl'
     ? wslToWindowsPath(workspace.path)
     : workspace.path;
-  return readValidateProject(workspaceRoot, new Date().toISOString()).disposal;
+  return readLiveDisposal(workspaceRoot);
 }
 
 /** Wire the injected reads into the deterministic renderer. */
@@ -241,6 +252,6 @@ export function generateJanitorBrief(deps: JanitorBriefDeps, ws: string): string
   const pending = deps.listPending(ws);
   const lessons = deps.listActiveLessons(ws);
   const firing = deps.assessFiring(ws, lessons.map((l) => l.name));
-  const disposal = deps.readDisposal?.(ws) ?? readLiveDisposal(ws);
+  const disposal = deps.readDisposal?.(ws) ?? readWorkspaceDisposal(ws);
   return renderJanitorBrief({ pending, lessons, firing, disposal });
 }
