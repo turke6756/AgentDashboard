@@ -204,6 +204,19 @@ test('a committed entry awaiting cleanup does not wedge archiving another entry'
   assert.equal(readAt(workDir, `${ARCHIVE_REL}${second}.md`), secondBody, 'B archives successfully');
 });
 
+test('a details body present in neither catalog remains an orphan-details HARD', () => {
+  const workDir = mkWorkDir();
+  const seeded = seedActive(workDir);
+  const orphan = 'mb-2026-08-22-uncatalogued';
+  writeAt(workDir, `${DETAILS_REL}${orphan}.md`, body(orphan));
+  const result = archiveMemoryEntry('ws-true-orphan', workDir, PT, seeded.input, NOW);
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.code, 'hard_invalid');
+  assert.ok(!result.ok && result.findings?.some((finding) => finding.cls === 'orphan-details'));
+  assert.equal(readAt(workDir, INDEX_REL), seeded.prior, 'true orphan refuses before logical commit');
+  assert.equal(readAt(workDir, `${ARCHIVE_REL}${ID}.md`), null, 'true orphan refuses before archive copy');
+});
+
 test('post-commit retry classifies before CAS and returns ok, never cas_mismatch', () => {
   const workDir = mkWorkDir();
   const seeded = seedActive(workDir);

@@ -535,6 +535,9 @@ const TESTS = [
   'dist/main/main/memory-index/graduation.test.js',
   'dist/main/main/memory-index/batch-publisher.test.js',
   'dist/main/main/memory-index/bundle-migration.test.js',
+  // plan_1fe663ce WP-5: crash-safe resident-to-archive mover, including CRLF
+  // offset mapping, narrow cleanup-orphan tolerance, and rename-boundary retry.
+  'dist/main/main/memory-index/archive-mover.test.js',
   // Memory & Lessons v2 WP-H1 — the renderer-only review READ IPC: the handler
   // projects WP-B's pending queue + WP-C's index state into the summary DTO
   // (pendingCount/capPressure/capPercent/hardInvalid/runtime), bad-workspace-id
