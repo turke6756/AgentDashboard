@@ -138,8 +138,12 @@ function seedAttributedInvocation(ws: string, skillName: string): void {
      VALUES (?, ?, '/w/x.jsonl', ?, 1, ?, 'tool_use')`,
   ).run(`inv-${sessionSeq}`, `stream-${sessionSeq}`, sess, skillName);
 }
-function seedFileActivity(ws: string, filePath: string, operation = 'read'): void {
+function seedFileActivity(ws: string, workspaceRoot: string, filePath: string, operation = 'read'): void {
   const aid = `file-agent-${++sessionSeq}`;
+  rawDb.prepare(
+    `INSERT OR IGNORE INTO workspaces (id, title, path, path_type)
+     VALUES (?, 'W', ?, ?)`,
+  ).run(ws, workspaceRoot, /^[A-Za-z]:[\\/]/.test(workspaceRoot) ? 'windows' : 'wsl');
   rawDb.prepare(
     `INSERT INTO agents (id, workspace_id, title, slug, working_directory, command)
      VALUES (?, ?, 'T', 's', '/w', 'claude')`,
@@ -255,11 +259,11 @@ test('never-recalled is suppressed once the entry has been recalled (count > 0)'
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
 });
 
-test('never-recalled is suppressed by a normalized file_activities read basename', () => {
+test('never-recalled is suppressed by the normalized read of its declared custom-basename detail path', () => {
   const ws = 'ws-file-read';
   const entryId = 'mb-2026-06-01-file-read';
-  seedFileActivity(ws, `C:\\repo\\.lares/memory/details/../details/${entryId.toUpperCase()}.md`);
-  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `details/${entryId}.md` })] });
+  seedFileActivity(ws, 'C:\\repo', 'c:/REPO/.lares\\supervisor/memory/details/../details/CUSTOM-BASENAME.md');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: 'memory/details/custom-basename.md' })] });
   store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
   assert.equal(store.getRecallCount(ws, entryId), 0, 'bumpRecall telemetry remains untouched');
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
@@ -268,17 +272,45 @@ test('never-recalled is suppressed by a normalized file_activities read basename
 test('file_activities reads are workspace-scoped', () => {
   const ws = 'ws-file-read-local';
   const entryId = 'mb-2026-06-01-other-workspace';
-  seedFileActivity('ws-file-read-foreign', `/repo/details/${entryId}.md`);
-  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `${entryId}.md` })] });
+  rawDb.prepare(`INSERT INTO workspaces (id, title, path, path_type) VALUES (?, 'W', ?, 'wsl')`).run(ws, '/repo-local');
+  seedFileActivity('ws-file-read-foreign', '/repo-foreign', `/repo-local/.lares/supervisor/memory/details/${entryId}.md`);
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `memory/details/${entryId}.md` })] });
   store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
+});
+
+test('a local agent read under another workspace path does not suppress never-recalled', () => {
+  const ws = 'ws-local-agent-foreign-path';
+  const entryId = 'mb-2026-06-01-foreign-path';
+  seedFileActivity(ws, 'C:\\repo-local', `C:\\repo-foreign\\.lares\\supervisor\\memory\\details\\${entryId}.md`);
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `memory/details/${entryId}.md` })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
+});
+
+test('the same basename in a different local directory does not suppress never-recalled', () => {
+  const ws = 'ws-same-basename';
+  const entryId = 'mb-2026-06-01-same-basename';
+  seedFileActivity(ws, '/repo', `/repo/docs/${entryId}.md`);
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `memory/details/${entryId}.md` })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
+});
+
+test('a normalized read of an archived entry declared under memory/archive counts', () => {
+  const ws = 'ws-archive-read';
+  const entryId = 'mb-2026-06-01-archive-read';
+  seedFileActivity(ws, '/repo', '/repo/.lares/supervisor/memory/archive/custom-archive.md');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'archived', date: '2026-06-01', detail: 'memory/archive/custom-archive.md' })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
 });
 
 test('non-read file activity does not suppress never-recalled', () => {
   const ws = 'ws-file-write';
   const entryId = 'mb-2026-06-01-write-only';
-  seedFileActivity(ws, `C:\\repo\\details\\${entryId}.md`, 'write');
-  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `${entryId}.md` })] });
+  seedFileActivity(ws, 'C:\\repo', `C:\\repo\\.lares\\supervisor\\memory\\details\\${entryId}.md`, 'write');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `memory/details/${entryId}.md` })] });
   store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
 });

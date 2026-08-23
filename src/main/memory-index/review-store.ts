@@ -17,6 +17,8 @@ import path from 'path';
 import { getDb } from '../database';
 import {
   CAP_PRESSURE_RATIO,
+  MEMORY_ARCHIVE_DIR,
+  MEMORY_DETAILS_DIR,
   MEMORY_INDEX_BUDGET_BYTES,
   MEMORY_INDEX_BUDGET_LINES,
   NEVER_RECALLED_MIN_AGE_DAYS,
@@ -188,24 +190,69 @@ function recallMap(ws: string): Map<string, number> {
   return m;
 }
 
-/** Capsule ids whose detail files have been read through the general file
- * activity rail. Paths arrive in both Windows and POSIX spellings, so compare
- * only a normalized, case-folded basename. */
-function fileActivityRecallIds(ws: string): Set<string> {
-  const rows = getDb()
+type CanonicalPath = { style: 'windows' | 'posix'; value: string };
+
+function canonicalAbsolutePath(raw: string): CanonicalPath | null {
+  const value = raw.trim();
+  if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')) {
+    return { style: 'windows', value: path.win32.normalize(value.replace(/\//g, '\\')).toLowerCase() };
+  }
+  if (value.startsWith('/')) {
+    return { style: 'posix', value: path.posix.normalize(value.replace(/\\/g, '/')) };
+  }
+  return null;
+}
+
+function resolveCanonical(base: CanonicalPath, pointer: string): CanonicalPath {
+  return base.style === 'windows'
+    ? { style: 'windows', value: path.win32.resolve(base.value, pointer.replace(/\//g, '\\')).toLowerCase() }
+    : { style: 'posix', value: path.posix.resolve(base.value, pointer.replace(/\\/g, '/')) };
+}
+
+function isInsideCanonical(target: CanonicalPath, root: CanonicalPath): boolean {
+  if (target.style !== root.style) return false;
+  const pathApi = target.style === 'windows' ? path.win32 : path.posix;
+  const rel = pathApi.relative(root.value, target.value);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel);
+}
+
+function workspaceMemoryPaths(ws: string): {
+  supervisorDir: CanonicalPath;
+  detailsDir: CanonicalPath;
+  archiveDir: CanonicalPath;
+  reads: Set<string>;
+} | null {
+  const db = getDb();
+  const workspace = db.prepare(`SELECT path FROM workspaces WHERE id = ?`).get(ws) as { path: unknown } | undefined;
+  const workspaceRoot = workspace ? canonicalAbsolutePath(String(workspace.path)) : null;
+  if (!workspaceRoot) return null;
+
+  const detailsDir = resolveCanonical(workspaceRoot, MEMORY_DETAILS_DIR);
+  const archiveDir = resolveCanonical(workspaceRoot, MEMORY_ARCHIVE_DIR);
+  const supervisorDir = resolveCanonical(detailsDir, '../..');
+  const prefix = (p: CanonicalPath): string => `${p.value.replace(/\\/g, '/').toLowerCase()}/`;
+  const detailsPrefix = prefix(detailsDir);
+  const archivePrefix = prefix(archiveDir);
+  const rows = db
     .prepare(
       `SELECT fa.file_path
          FROM file_activities fa
          JOIN agents a ON a.id = fa.agent_id
-        WHERE a.workspace_id = ? AND fa.operation = 'read'`,
+        WHERE a.workspace_id = ? AND fa.operation = 'read'
+          AND (
+            substr(lower(replace(fa.file_path, char(92), '/')), 1, length(?)) = ?
+            OR substr(lower(replace(fa.file_path, char(92), '/')), 1, length(?)) = ?
+          )`,
     )
-    .all(ws) as Array<{ file_path: unknown }>;
-  const ids = new Set<string>();
+    .all(ws, detailsPrefix, detailsPrefix, archivePrefix, archivePrefix) as Array<{ file_path: unknown }>;
+  const reads = new Set<string>();
   for (const row of rows) {
-    const basename = path.posix.basename(String(row.file_path).replace(/\\/g, '/')).toLowerCase();
-    if (basename.endsWith('.md')) ids.add(basename.slice(0, -3));
+    const normalized = canonicalAbsolutePath(String(row.file_path));
+    if (normalized && (isInsideCanonical(normalized, detailsDir) || isInsideCanonical(normalized, archiveDir))) {
+      reads.add(`${normalized.style}:${normalized.value}`);
+    }
   }
-  return ids;
+  return { supervisorDir, detailsDir, archiveDir, reads };
 }
 
 // ── Lesson registry ───────────────────────────────────────────────────────────
@@ -707,7 +754,7 @@ export function reconcileMemoryEvidence(
   const indexHash = sha256Hex(parsed.raw);
   const todayDay = epochDay(nowISO);
   const counts = recallMap(ws);
-  const fileActivityRecalls = fileActivityRecallIds(ws);
+  const memoryPaths = workspaceMemoryPaths(ws);
   const findings: FindingInput[] = [];
 
   // never-recalled — aged, closed, pointer-bearing entries never recalled.
@@ -719,7 +766,12 @@ export function reconcileMemoryEvidence(
     if (Number.isNaN(dd) || Number.isNaN(todayDay)) continue;
     if (todayDay - dd <= NEVER_RECALLED_MIN_AGE_DAYS) continue;
     if ((counts.get(e.id) ?? 0) > 0) continue;
-    if (fileActivityRecalls.has(e.id.toLowerCase())) continue;
+    if (memoryPaths) {
+      const detailPath = resolveCanonical(memoryPaths.supervisorDir, e.detail);
+      const inMemoryDir = isInsideCanonical(detailPath, memoryPaths.detailsDir)
+        || isInsideCanonical(detailPath, memoryPaths.archiveDir);
+      if (inMemoryDir && memoryPaths.reads.has(`${detailPath.style}:${detailPath.value}`)) continue;
+    }
     findings.push({ kind: 'never-recalled', entryId: e.id, sourceHash: indexHash, reason: NEVER_RECALLED_REASON });
   }
 
