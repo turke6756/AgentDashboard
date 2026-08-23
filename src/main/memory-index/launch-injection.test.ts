@@ -51,6 +51,7 @@ import {
   RESEARCHER_CLAUDE_SETTINGS_JSON,
 } from '../../shared/constants';
 import { DISCLOSURE_FORMAT_MARKER } from '../../shared/memory-index-core';
+import { validateProjectSource } from './io';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
 const tests: TestCase[] = [];
@@ -253,7 +254,7 @@ test('entry-local failure enters degraded seam, injects the partial current proj
   assert.ok(!pending.some((finding) => finding.kind === 'hard-invalid'), 'degradation is not mislabeled globally invalid');
 });
 
-test('a clean re-evaluation clears projection-degraded and the repaired entry finding', () => {
+test('a clean projection clears degraded findings even when an unrelated non-projection HARD remains', () => {
   const ws = nextWs();
   const { root, detailsDir, memoryMd } = makeWorkspace();
   const keep = 'mb-2026-07-28-repair-keep';
@@ -263,10 +264,30 @@ test('a clean re-evaluation clears projection-degraded and the repaired entry fi
   assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'degraded');
 
   writeDetail(detailsDir, repaired);
+  fs.writeFileSync(path.join(detailsDir, 'orphan.md'), 'not catalogued', 'utf8');
   assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
   assert.ok(!store.listFindings(ws, 'pending').some((finding) =>
     finding.kind === 'projection-degraded' || (finding.kind === 'detail-missing' && finding.entryId === repaired)),
-  'the clean pass owns and clears both repaired findings');
+  'zero splices/sheds owns and clears both repaired findings');
+  assert.ok(store.listFindings(ws, 'pending').some((finding) => finding.kind === 'orphan-details'),
+    'the unrelated non-projection HARD remains pending');
+});
+
+test('re-evaluated index units clear legacy raw byte-budget and legacy-format rows', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const id = 'mb-2026-07-28-raw-repair';
+  store.upsertFindings(ws, [
+    { kind: 'byte-budget', entryId: null, sourceHash: 'old-budget', reason: 'legacy raw row' },
+    { kind: 'legacy-format', entryId: null, sourceHash: 'old-format', reason: 'legacy raw row' },
+  ], NOW);
+  writeIndex(memoryMd, idx(ACTIVE(id)));
+  writeDetail(detailsDir, id);
+
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  const rows = store.listFindings(ws);
+  assert.equal(rows.find((finding) => finding.kind === 'byte-budget')?.status, 'cleared');
+  assert.equal(rows.find((finding) => finding.kind === 'legacy-format')?.status, 'cleared');
 });
 
 test('a degraded pass preserves advisory findings for a withheld entry', () => {
@@ -379,6 +400,24 @@ test('HARD-invalid live index with NO prior good source → banner-only', () => 
   const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
   assert.equal(r.outcome, 'banner-only');
   assert.equal(r.injectText, inj.BANNER_ONLY);
+});
+
+test('preamble-only over-budget is budget-unrecoverable and takes banner-only, never degraded', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const id = 'mb-2026-07-28-preamble-budget';
+  const source = `${MARKER}\n${'p'.repeat(26_000)}\n\n${ACTIVE(id)}\n`;
+  writeIndex(memoryMd, source);
+  writeDetail(detailsDir, id);
+
+  const projected = validateProjectSource(source, root, NOW).projection;
+  assert.deepEqual(projected.blanked, { reason: 'budget-unrecoverable' },
+    'fixture precondition: shedding every entry cannot repair the oversized preamble');
+  const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
+  assert.equal(r.outcome, 'banner-only');
+  assert.equal(r.injectText, inj.BANNER_ONLY);
+  assert.ok(!store.listFindings(ws, 'pending').some((finding) => finding.kind === 'projection-degraded'),
+    'a globally blanked projection is not labeled degraded');
 });
 
 test('reconciliation does NOT run or clear against a structurally-invalid current parse', () => {

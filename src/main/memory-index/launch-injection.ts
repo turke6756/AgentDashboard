@@ -180,49 +180,62 @@ function degradedFinding(r: ReadValidateProjectResult): FindingInput {
   };
 }
 
-function validationFindings(r: ReadValidateProjectResult): FindingInput[] {
-  return r.hard.map((finding) => ({
-    kind: finding.cls,
-    entryId: finding.id,
-    sourceHash: finding.id ? entryHash(r.parsed, finding.id) : sha256Hex(r.parsed.raw),
-    reason: finding.message,
-  }));
-}
-
 const ADVISORY_KINDS = new Set(['cap-pressure', 'stale-active', 'condition-review']);
 const ENTRY_VALIDATOR_KINDS = new Set([
   'disposal-missing', 'disposal-malformed', 'detail-missing', 'detail-escape',
   'detail-unreadable', 'duplicate-id', 'duplicate-field', 'unexpected-field',
-  'unexpected-content', 'detail-root-mismatch', 'missing-field', 'malformed-schema',
+  'unexpected-content', 'detail-root-mismatch',
 ]);
 const UNIT_VALIDATOR_KINDS = new Set(['orphan-details', 'archive-orphan']);
+const RETIRED_INDEX_RAW_KINDS = new Set([
+  'legacy-format', 'bare-scoped-pkg', 'byte-budget', 'line-budget', 'invalid-handoff',
+]);
+const RETIRED_ENTRY_RAW_KINDS = new Set(['missing-field', 'malformed-schema']);
+
+function validationFindings(r: ReadValidateProjectResult): FindingInput[] {
+  return r.hard
+    .filter((finding) => ENTRY_VALIDATOR_KINDS.has(finding.cls) || UNIT_VALIDATOR_KINDS.has(finding.cls))
+    .map((finding) => ({
+      kind: finding.cls,
+      entryId: finding.id,
+      sourceHash: finding.id ? entryHash(r.parsed, finding.id) : sha256Hex(r.parsed.raw),
+      reason: finding.message,
+    }));
+}
 
 /** Preserve findings whose producer/unit this pass did not successfully own. */
 function reconciliationKeepIds(
   ws: string,
-  current: ReadValidateProjectResult,
+  evaluated: ReadValidateProjectResult,
+  launchCurrent: ReadValidateProjectResult,
   currentIsClean: boolean,
 ): string[] {
-  const projected = projectedEntryIds(current);
-  const currentHard = new Set(current.hard.map((finding) => `${finding.cls}\0${finding.id ?? ''}`));
+  const projected = projectedEntryIds(evaluated);
+  const evaluatedHard = new Set(evaluated.hard.map((finding) => `${finding.cls}\0${finding.id ?? ''}`));
   const keep: string[] = [];
   for (const finding of listFindings(ws, 'pending')) {
     let mayClear = false;
     if (finding.kind === 'hard-invalid') {
       mayClear = currentIsClean;
     } else if (finding.kind === 'projection-degraded') {
-      mayClear = currentIsClean && !current.projection.degraded;
+      mayClear = !launchCurrent.projection.degraded;
     } else if (ADVISORY_KINDS.has(finding.kind)) {
       mayClear = finding.entryId === null
-        ? !current.projection.blanked
+        ? !evaluated.projection.blanked
         : projected.has(finding.entryId);
     } else if (ENTRY_VALIDATOR_KINDS.has(finding.kind) && finding.entryId) {
-      const disposal = current.disposal.get(finding.entryId);
-      const entryExists = current.parsed.entries.some((entry) => entry.id === finding.entryId);
+      const disposal = evaluated.disposal.get(finding.entryId);
+      const entryExists = evaluated.parsed.entries.some((entry) => entry.id === finding.entryId);
       const unitPassed = disposal ? !('error' in disposal) : entryExists;
-      mayClear = unitPassed && !currentHard.has(`${finding.kind}\0${finding.entryId}`);
+      mayClear = unitPassed && !evaluatedHard.has(`${finding.kind}\0${finding.entryId}`);
     } else if (UNIT_VALIDATOR_KINDS.has(finding.kind)) {
-      mayClear = !currentHard.has(`${finding.kind}\0${finding.entryId ?? ''}`);
+      mayClear = !evaluatedHard.has(`${finding.kind}\0${finding.entryId ?? ''}`);
+    } else if (RETIRED_INDEX_RAW_KINDS.has(finding.kind)) {
+      mayClear = !launchCurrent.hard.some((hard) => hard.cls === finding.kind);
+    } else if (RETIRED_ENTRY_RAW_KINDS.has(finding.kind) && finding.entryId) {
+      const entryExists = launchCurrent.parsed.entries.some((entry) => entry.id === finding.entryId);
+      const currentHard = launchCurrent.hard.some((hard) => hard.cls === finding.kind && hard.id === finding.entryId);
+      mayClear = entryExists && !currentHard;
     }
     if (!mayClear) keep.push(finding.findingId);
   }
@@ -231,15 +244,16 @@ function reconciliationKeepIds(
 
 function reconcileProjectedSource(
   ws: string,
-  current: ReadValidateProjectResult,
+  evaluated: ReadValidateProjectResult,
+  launchCurrent: ReadValidateProjectResult,
   nowISO: string,
   producedIds: string[],
   currentIsClean: boolean,
 ): void {
-  reconcileMemoryEvidence(ws, current.parsed, nowISO, {
+  reconcileMemoryEvidence(ws, evaluated.parsed, nowISO, {
     keepExternalIds: [
       ...producedIds,
-      ...reconciliationKeepIds(ws, current, currentIsClean),
+      ...reconciliationKeepIds(ws, evaluated, launchCurrent, currentIsClean),
     ],
   });
 }
@@ -297,7 +311,7 @@ export function computeSupervisorMemoryInjection(
       degradedFinding(current),
       ...advisoryFindings(current, nowISO),
     ], nowISO);
-    reconcileProjectedSource(ws, current, nowISO, findingIds, false);
+    reconcileProjectedSource(ws, current, current, nowISO, findingIds, currentIsClean);
     const withheld = new Set([
       ...current.projection.spliced.map((entry) => entry.id),
       ...current.projection.shed,
@@ -323,7 +337,7 @@ export function computeSupervisorMemoryInjection(
       ...validationFindings(current),
       ...advisoryFindings(current, nowISO),
     ], nowISO);
-    reconcileProjectedSource(ws, current, nowISO, findingIds, currentIsClean);
+    reconcileProjectedSource(ws, current, current, nowISO, findingIds, currentIsClean);
     return {
       injectText: current.injectText,
       outcome: current.injectText ? 'valid' : 'valid-empty',
@@ -339,7 +353,7 @@ export function computeSupervisorMemoryInjection(
     if (fb.hard.length === 0) {
       // Fallback still valid → re-project TODAY + banner, reconcile against it.
       const keepIds = upsertFindings(ws, [...globalFindings, ...advisoryFindings(fb, nowISO)], nowISO);
-      reconcileProjectedSource(ws, fb, nowISO, keepIds, false);
+      reconcileProjectedSource(ws, fb, current, nowISO, keepIds, false);
       return {
         injectText: `${fallbackBanner(prior.validatedAt)}\n\n${fb.injectText}`,
         outcome: 'fallback',
