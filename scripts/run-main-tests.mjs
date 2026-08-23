@@ -515,6 +515,8 @@ const TESTS = [
   // (severity/fallback/runtime flow, reconcile-only-against-valid, MEMORY.md
   // untouched, the compose/predicate helpers, and the autoMemoryEnabled gate).
   'dist/main/main/memory-index/launch-injection.test.js',
+  // WP-11 — real supervisor fresh/Windows-resume/WSL-resume provider gates.
+  'dist/main/main/supervisor/launch-injection.test.js',
   // Memory & Lessons v2 WP-D — the recall_memory detail fetch + recall telemetry:
   // declared-pointer resolution, invalid_id/not_found/read_error structured codes,
   // escaping-pointer refusal, archived-served flag, UTF-8-safe body truncation,

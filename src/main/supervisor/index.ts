@@ -3890,14 +3890,14 @@ export class AgentSupervisor extends EventEmitter {
     // (see maybeDeliverInitialUserPrompt). Never merged into agentMdPrompt
     // above — that positional-arg path mixes content into launch framing and
     // is claude-only.
-    // WP-C — a supervisor-privilege CODEX launch rides its memory index on this
+    // WP-C/WP-11 — a non-Claude supervisor-privilege launch rides its memory index on this
     // same single-slot pending rail: index-only when there is no initial prompt,
     // merged ahead of it when there is (exactly once — single-slot map). Claude
     // supervisors instead get the index spliced into --append-system-prompt-file
-    // (launchWindows/WslAgent), so this is Codex-only here; every other agent
-    // (workers, researchers, Claude) keeps the plain initialUserPrompt path.
+    // (launchWindows/WslAgent), so every non-Claude provider stages here; workers,
+    // researchers, and Claude keep the plain initialUserPrompt path.
     let stagedSupervisorMemory = false;
-    if (provider === 'codex') {
+    if (provider !== 'claude') {
       stagedSupervisorMemory = this.stageSupervisorMemoryInjection(agent.id, resolvedInput.initialUserPrompt ?? '');
     }
     if (!stagedSupervisorMemory && resolvedInput.initialUserPrompt) {
@@ -5279,13 +5279,13 @@ export class AgentSupervisor extends EventEmitter {
       );
     }
 
-    // WP-C — ordinary CODEX supervisor RESUME/relaunch (auto-restart, reconcile
+    // WP-C/WP-11 — ordinary non-Claude supervisor RESUME/relaunch (auto-restart, reconcile
     // re-drive) bypasses launchAgent, so the fresh-launch staging never ran;
     // stage the memory index here on the same pending rail. Only when nothing is
     // already staged this launch — a revive pre-stages index+wake, and this guard
     // preserves it instead of overwriting with an index-only entry. Claude resume
     // deliberately does NOT re-inject (matrix); the sysprompt splice is FRESH-only.
-    if (resume && agent.provider === 'codex' && hasSupervisorPrivilege(agent) && !this.pendingInitialPrompts.has(agent.id)) {
+    if (resume && agent.provider !== 'claude' && hasSupervisorPrivilege(agent) && !this.pendingInitialPrompts.has(agent.id)) {
       this.stageSupervisorMemoryInjection(agent.id, '');
     }
 
@@ -6156,6 +6156,14 @@ export class AgentSupervisor extends EventEmitter {
   private async launchWslAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, overrideCommand?: string, sessionId?: string, freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
     if (!agent.tmuxSessionName) throw new Error('No tmux session name');
 
+    // WP-C/WP-11 — ordinary non-Claude supervisor RESUME/relaunch bypasses
+    // launchAgent, so stage the memory index here on the pending rail. Keep this
+    // before provider transport refusals: staging is provider-neutral, while a
+    // refused launch still fails normally and never reaches delivery.
+    if (resume && agent.provider !== 'claude' && hasSupervisorPrivilege(agent) && !this.pendingInitialPrompts.has(agent.id)) {
+      this.stageSupervisorMemoryInjection(agent.id, '');
+    }
+
     // Grok is Windows-first: the WSL submit-encoding / transport path has not
     // been probed, so grok on WSL is refused outright rather than shipped as an
     // unverified guess (plan §Open item 3 — reject grok on WSL until a WSL
@@ -6194,15 +6202,6 @@ export class AgentSupervisor extends EventEmitter {
       const stateDirectory = researcherProviderStateDirectory(agent.provider);
       const providerStateRoot = stateDirectory ? resolveWslHomeSubdir(stateDirectory) : null;
       assertResearcherProviderCredentials(agent.provider, providerStateRoot);
-    }
-
-    // WP-C — ordinary CODEX supervisor RESUME/relaunch bypasses launchAgent, so
-    // stage the memory index here on the pending rail (mirrors the Windows path).
-    // Only when nothing is already staged this launch (a revive pre-stages
-    // index+wake); Claude resume never re-injects (the sysprompt splice is
-    // FRESH-only).
-    if (resume && agent.provider === 'codex' && hasSupervisorPrivilege(agent) && !this.pendingInitialPrompts.has(agent.id)) {
-      this.stageSupervisorMemoryInjection(agent.id, '');
     }
 
     // A workspace typed 'wsl' on a machine WITHOUT WSL routes here and tries to
