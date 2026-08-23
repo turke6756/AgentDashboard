@@ -22,6 +22,9 @@
 //   node dist/main/main/memory-index/janitor-brief.test.js
 
 import { SkillUsageQueries, type QueryDb } from '../skill-analytics/queries';
+import { getWorkspace } from '../database';
+import { wslToWindowsPath } from '../path-utils';
+import { readValidateProject, type ValidatedDisposal } from './io';
 import type { LessonRow, ReviewFindingRow } from './review-store';
 
 /** The result of the coverage-guarded lesson-firing check. When
@@ -86,6 +89,8 @@ export interface JanitorBriefInput {
   lessons: LessonRow[];
   /** The lesson-firing snapshot (from `assessLessonFiring`). */
   firing: LessonFiringResult;
+  /** WP-2's validated lifecycle projection, keyed by resident memory id. */
+  disposal: ReadonlyMap<string, ValidatedDisposal>;
 }
 
 /** The store/query reads the brief generation needs (injected; production wires
@@ -94,6 +99,8 @@ export interface JanitorBriefDeps {
   listPending(ws: string): ReviewFindingRow[];
   listActiveLessons(ws: string): LessonRow[];
   assessFiring(ws: string, lessonNames: string[]): LessonFiringResult;
+  /** Tests inject this; production falls back to the canonical live-disk reader. */
+  readDisposal?(ws: string): ReadonlyMap<string, ValidatedDisposal>;
 }
 
 /** Honest, no-absence-claim line for insufficient firing coverage. */
@@ -106,12 +113,16 @@ export const EVIDENCE_UNAVAILABLE_LINE =
 // regardless of the store's row order. Unknown kinds sort last, then alphabetically.
 const KIND_ORDER: Record<string, number> = {
   'hard-invalid': 0,
-  'cap-pressure': 1,
-  'stale-active': 2,
-  'condition-review': 3,
-  'never-recalled': 4,
-  'never-fired': 5,
-  'evidence-unavailable': 6,
+  'projection-degraded': 1,
+  'archive-cleanup-pending': 2,
+  'archive-orphan': 3,
+  'archive-growth': 4,
+  'cap-pressure': 5,
+  'stale-active': 6,
+  'condition-review': 7,
+  'never-recalled': 8,
+  'never-fired': 9,
+  'evidence-unavailable': 10,
 };
 function kindRank(k: string): number {
   return k in KIND_ORDER ? KIND_ORDER[k] : 100;
@@ -124,7 +135,7 @@ function kindRank(k: string): number {
  * are never printed.
  */
 export function renderJanitorBrief(input: JanitorBriefInput): string {
-  const { pending, lessons, firing } = input;
+  const { pending, lessons, firing, disposal } = input;
   const lines: string[] = [];
 
   lines.push('# Memory index janitor brief');
@@ -163,6 +174,26 @@ export function renderJanitorBrief(input: JanitorBriefInput): string {
     lines.push('');
   }
 
+  // WP-7: lifecycle conditions are a projection of every validated resident
+  // body, not an anomaly queue. Healthy future expiries and open loops belong
+  // here even when they have no review finding.
+  const disposalEntries = [...disposal.entries()].sort(([a], [b]) => a.localeCompare(b));
+  lines.push(`## Validated disposal map (${disposalEntries.length})`);
+  lines.push('');
+  if (disposalEntries.length === 0) {
+    lines.push('_No resident disposal conditions available._');
+  } else {
+    for (const [id, fact] of disposalEntries) {
+      if ('error' in fact) {
+        lines.push(`- \`${id}\` — validation error: \`${fact.error}\` (see the review queue).`);
+      } else {
+        const value = fact.value === null ? '' : ` — ${fact.value}`;
+        lines.push(`- \`${id}\` — \`${fact.kind}\`${value}`);
+      }
+    }
+  }
+  lines.push('');
+
   // ── Lesson firing ────────────────────────────────────────────────────────
   lines.push('## Lesson firing');
   lines.push('');
@@ -188,7 +219,7 @@ export function renderJanitorBrief(input: JanitorBriefInput): string {
   // ── Closing instructions ─────────────────────────────────────────────────
   lines.push('## When you finish');
   lines.push(
-    '- Archive resolved loops, graduate anything permanent to CLAUDE.md/AGENTS.md via `propose_graduation`, and publish reusable know-how as a lesson via `publish_lesson`.',
+    '- Archive expired or resolved memories with `archive_memory`, graduate anything permanent to CLAUDE.md/AGENTS.md via `propose_graduation`, and publish reusable know-how as a lesson via `publish_lesson`.',
   );
   lines.push('- Re-validate: `node .lares/scripts/memory-index.mjs validate <index>`.');
   lines.push('');
@@ -196,10 +227,20 @@ export function renderJanitorBrief(input: JanitorBriefInput): string {
   return lines.join('\n');
 }
 
+function readLiveDisposal(ws: string): ReadonlyMap<string, ValidatedDisposal> {
+  const workspace = getWorkspace(ws);
+  if (!workspace) return new Map();
+  const workspaceRoot = workspace.pathType === 'wsl'
+    ? wslToWindowsPath(workspace.path)
+    : workspace.path;
+  return readValidateProject(workspaceRoot, new Date().toISOString()).disposal;
+}
+
 /** Wire the injected reads into the deterministic renderer. */
 export function generateJanitorBrief(deps: JanitorBriefDeps, ws: string): string {
   const pending = deps.listPending(ws);
   const lessons = deps.listActiveLessons(ws);
   const firing = deps.assessFiring(ws, lessons.map((l) => l.name));
-  return renderJanitorBrief({ pending, lessons, firing });
+  const disposal = deps.readDisposal?.(ws) ?? readLiveDisposal(ws);
+  return renderJanitorBrief({ pending, lessons, firing, disposal });
 }
