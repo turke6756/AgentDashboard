@@ -510,6 +510,7 @@ const TESTS = [
   // readValidateProject): dangling/escaping/orphan detail HARD classes over real
   // on-disk fixtures, pure+I/O combination, and the shipped CLI's exit codes.
   'dist/main/main/memory-index/io-validate.test.js',
+  'dist/main/main/memory-index/io.test.js',
   // Memory & Lessons v2 WP-C — the launch projection + provider-neutral delivery
   // (severity/fallback/runtime flow, reconcile-only-against-valid, MEMORY.md
   // untouched, the compose/predicate helpers, and the autoMemoryEnabled gate).
