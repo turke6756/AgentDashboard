@@ -5,9 +5,10 @@
 //     DECLARED pointer from the parsed capsule is used, never a synthesized name);
 //   - traversal / `..` / separator ids are rejected by MEMORY_ID_GRAMMAR with NO
 //     disk read and NO increment (invalid_id);
-//   - a missing detail file → not_found with no increment; an absent pointer →
-//     not_found; a pointer escaping MEMORY_DETAILS_DIR → not_found (no leak);
-//   - an archived capsule is served with { ok:true, archived:true } and DOES bump;
+//   - a missing detail file → not_found with no increment; a pointer escaping
+//     MEMORY_DETAILS_DIR → not_found (no leak);
+//   - an ARCHIVE.md capsule under memory/archive is served with
+//     { ok:true, archived:true } and DOES bump;
 //   - an oversize body is UTF-8-safe-truncated (truncated:true) without splitting
 //     a multibyte sequence;
 //   - `bumpRecall` fires ONLY on ok:true;
@@ -27,7 +28,14 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { RECALL_DETAIL_MAX_BYTES, MEMORY_DETAILS_DIR } from '../../shared/memory-index-core';
+import {
+  ARCHIVE_FORMAT_MARKER,
+  ARCHIVE_INDEX_REL,
+  DISCLOSURE_FORMAT_MARKER,
+  MEMORY_ARCHIVE_DIR,
+  MEMORY_DETAILS_DIR,
+  RECALL_DETAIL_MAX_BYTES,
+} from '../../shared/memory-index-core';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
 const tests: TestCase[] = [];
@@ -96,50 +104,57 @@ let store: StoreModule;
 const NOW = '2026-07-28T00:00:00Z';
 
 // ── on-disk fixture builders ────────────────────────────────────────────
-const MARKER = '<!-- disclosure-format: v2 -->';
-
 interface CapsuleSpec {
   id: string;
-  status: string;
-  /** the `detail:` pointer value; omit for a capsule with no detail line. */
-  detail?: string;
+  status: 'active' | 'archived';
+  detail: string;
 }
 
-/** Create a workspace root with a MEMORY.md holding the given capsules, plus a
- *  details dir. Returns { root, detailsDir }. Detail bodies are written separately. */
-function makeWorkspace(capsules: CapsuleSpec[]): { root: string; detailsDir: string } {
+/** Create a workspace with resident active cards in MEMORY.md and archived cards
+ *  in archive/ARCHIVE.md. Detail bodies are written separately. */
+function makeWorkspace(capsules: CapsuleSpec[]): { root: string; detailsDir: string; archiveDir: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-ws-'));
   const detailsDir = path.join(root, ...MEMORY_DETAILS_DIR.split('/').filter(Boolean));
+  const archiveDir = path.join(root, ...MEMORY_ARCHIVE_DIR.split('/').filter(Boolean));
   fs.mkdirSync(detailsDir, { recursive: true });
+  fs.mkdirSync(archiveDir, { recursive: true });
   const memoryMd = path.resolve(detailsDir, '..', 'MEMORY.md');
-  let text = `${MARKER}\n\n`;
+  const archiveMd = path.join(root, ...ARCHIVE_INDEX_REL.split('/').filter(Boolean));
+  let memoryText = `${DISCLOSURE_FORMAT_MARKER}\n\n`;
+  let archiveText = `${ARCHIVE_FORMAT_MARKER}\n\n`;
   for (const c of capsules) {
-    text += `## ${c.id}: ${c.id} title\n`;
-    text += `- status: ${c.status}\n`;
-    text += `- consequence: c\n- state: s\n- read-if: r\n`;
-    if (c.detail !== undefined) text += `- detail: ${c.detail}\n`;
-    text += '\n';
+    if (c.status === 'active') {
+      memoryText += `## ${c.id}: ${c.id} title\n`;
+      memoryText += '- read-if: relevant to this test\n';
+      memoryText += `- detail: ${c.detail}\n\n`;
+    } else {
+      archiveText += `## ${c.id}: ${c.id} title\n`;
+      archiveText += '- status: archived\n';
+      archiveText += `- detail: ${c.detail}\n\n`;
+    }
   }
-  fs.writeFileSync(memoryMd, text, 'utf8');
-  return { root, detailsDir };
+  fs.writeFileSync(memoryMd, memoryText, 'utf8');
+  fs.writeFileSync(archiveMd, archiveText, 'utf8');
+  return { root, detailsDir, archiveDir };
 }
 
-/** Write a detail body file under a workspace's details dir. */
-function writeDetail(detailsDir: string, name: string, body: string): void {
-  fs.writeFileSync(path.join(detailsDir, name), body, 'utf8');
+/** Write a contract-valid body; recall strips this disposal block before return. */
+function writeDetail(bodyDir: string, name: string, body: string): void {
+  const disposal = '<!-- memory-disposal:v1\nkind: open-loop\n-->\n';
+  fs.writeFileSync(path.join(bodyDir, name), disposal + body, 'utf8');
 }
 
 // ── AC1: the DECLARED pointer resolves, even when basename ≠ <id>.md ──────
 test('AC1 — a declared pointer whose basename ≠ <id>.md still resolves via the declared pointer', () => {
   const id = 'mb-2026-07-28-alpha';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/custom-basename.md' }]);
+  const { root, detailsDir } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/custom-basename.md' }]);
   writeDetail(detailsDir, 'custom-basename.md', 'ALPHA BODY');
   // A synthesized <id>.md is deliberately NOT written — only custom-basename.md.
   const r = recall.recallMemoryDetail(root, id);
   assert.equal(r.ok, true);
   if (r.ok) {
     assert.equal(r.body, 'ALPHA BODY');
-    assert.equal(r.status, 'done');
+    assert.equal(r.status, 'active');
     assert.equal(r.archived, false);
     assert.equal(r.truncated, false);
   }
@@ -170,11 +185,11 @@ test('AC2 — traversal / .. / separator ids are rejected (invalid_id) with no d
   assert.equal(store.getRecallCount(ws, 'mb-2026-07-28-CAPS'), 0);
 });
 
-// ── AC3a: missing detail file / absent pointer → not_found, no increment ──
+// ── AC3a: missing detail file → not_found, no increment ───────────────────
 test('AC3a — a missing detail file → not_found with no increment', () => {
   const ws = 'ws-missing';
   const id = 'mb-2026-07-28-gone';
-  const { root } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/never-written.md' }]);
+  const { root } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/never-written.md' }]);
   const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, 'not_found');
@@ -183,19 +198,9 @@ test('AC3a — a missing detail file → not_found with no increment', () => {
 
 test('AC3a — an id absent from the index → not_found', () => {
   const id = 'mb-2026-07-28-present';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/p.md' }]);
+  const { root, detailsDir } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/p.md' }]);
   writeDetail(detailsDir, 'p.md', 'body');
   const r = recall.recallMemoryDetail(root, 'mb-2026-07-28-absent');
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, 'not_found');
-});
-
-test('AC3a — a capsule with NO detail pointer → not_found (never a synthesized <id>.md)', () => {
-  const id = 'mb-2026-07-28-nodetail';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done' }]);
-  // Even if a file named <id>.md exists on disk, an absent pointer is not_found.
-  writeDetail(detailsDir, `${id}.md`, 'MUST NOT BE SERVED');
-  const r = recall.recallMemoryDetail(root, id);
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, 'not_found');
 });
@@ -203,7 +208,7 @@ test('AC3a — a capsule with NO detail pointer → not_found (never a synthesiz
 test('a pointer escaping MEMORY_DETAILS_DIR → not_found (no content leak, no increment)', () => {
   const ws = 'ws-escape';
   const id = 'mb-2026-07-28-escape';
-  const { root } = makeWorkspace([{ id, status: 'done', detail: 'memory/../../../outside-secret.md' }]);
+  const { root } = makeWorkspace([{ id, status: 'active', detail: 'memory/../../../outside-secret.md' }]);
   // Write the escape target on disk so a resolution that failed to bound would leak it.
   fs.writeFileSync(path.join(root, 'outside-secret.md'), 'SECRET', 'utf8');
   const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
@@ -216,8 +221,8 @@ test('a pointer escaping MEMORY_DETAILS_DIR → not_found (no content leak, no i
 test('AC3b — an archived capsule is served with { ok:true, archived:true } and increments', () => {
   const ws = 'ws-archived';
   const id = 'mb-2026-07-28-arch';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'archived', detail: 'memory/details/arch.md' }]);
-  writeDetail(detailsDir, 'arch.md', 'ARCHIVED BODY');
+  const { root, archiveDir } = makeWorkspace([{ id, status: 'archived', detail: 'memory/archive/arch.md' }]);
+  writeDetail(archiveDir, 'arch.md', 'ARCHIVED BODY');
   const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
   assert.equal(r.ok, true);
   if (r.ok) {
@@ -231,7 +236,7 @@ test('AC3b — an archived capsule is served with { ok:true, archived:true } and
 test('bumpRecall fires ONLY on ok:true — a repeated success accumulates', () => {
   const ws = 'ws-bump';
   const id = 'mb-2026-07-28-bump';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/b.md' }]);
+  const { root, detailsDir } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/b.md' }]);
   writeDetail(detailsDir, 'b.md', 'B');
   recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
   recall.recallMemoryDetailWithTelemetry(ws, root, id, '2026-07-28T01:00:00Z');
@@ -241,7 +246,7 @@ test('bumpRecall fires ONLY on ok:true — a repeated success accumulates', () =
 // ── AC3c: oversize body UTF-8-safe-truncated without splitting a rune ──────
 test('AC3c — an oversize body is truncated (truncated:true) without splitting a multibyte sequence', () => {
   const id = 'mb-2026-07-28-big';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/big.md' }]);
+  const { root, detailsDir } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/big.md' }]);
   // (RECALL_DETAIL_MAX_BYTES - 1) ASCII bytes, then a 3-byte '€' straddling the
   // cap boundary. A naive byte-slice at the cap would split the euro; the safe
   // truncate must back up over it, dropping the whole rune.
@@ -260,7 +265,7 @@ test('AC3c — an oversize body is truncated (truncated:true) without splitting 
 
 test('a body exactly at the cap is NOT flagged truncated', () => {
   const id = 'mb-2026-07-28-exact';
-  const { root, detailsDir } = makeWorkspace([{ id, status: 'done', detail: 'memory/details/exact.md' }]);
+  const { root, detailsDir } = makeWorkspace([{ id, status: 'active', detail: 'memory/details/exact.md' }]);
   writeDetail(detailsDir, 'exact.md', 'a'.repeat(RECALL_DETAIL_MAX_BYTES));
   const r = recall.recallMemoryDetail(root, id);
   assert.equal(r.ok, true);
@@ -273,8 +278,8 @@ test('a body exactly at the cap is NOT flagged truncated', () => {
 // ── AC4: cross-workspace isolation ────────────────────────────────────────
 test('AC4 — two workspaces holding the same memory id CANNOT cross-read or cross-increment', () => {
   const id = 'mb-2026-07-28-shared';
-  const a = makeWorkspace([{ id, status: 'done', detail: 'memory/details/shared.md' }]);
-  const b = makeWorkspace([{ id, status: 'done', detail: 'memory/details/shared.md' }]);
+  const a = makeWorkspace([{ id, status: 'active', detail: 'memory/details/shared.md' }]);
+  const b = makeWorkspace([{ id, status: 'active', detail: 'memory/details/shared.md' }]);
   writeDetail(a.detailsDir, 'shared.md', 'WORKSPACE-A-BODY');
   writeDetail(b.detailsDir, 'shared.md', 'WORKSPACE-B-BODY');
   const wsA = 'ws-A';
