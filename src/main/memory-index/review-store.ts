@@ -13,6 +13,7 @@
 //   node dist/main/main/memory-index/review-store.test.js
 
 import crypto from 'crypto';
+import path from 'path';
 import { getDb } from '../database';
 import {
   CAP_PRESSURE_RATIO,
@@ -185,6 +186,26 @@ function recallMap(ws: string): Map<string, number> {
   const m = new Map<string, number>();
   for (const r of rows) m.set(String(r.entry_id), num(r.count));
   return m;
+}
+
+/** Capsule ids whose detail files have been read through the general file
+ * activity rail. Paths arrive in both Windows and POSIX spellings, so compare
+ * only a normalized, case-folded basename. */
+function fileActivityRecallIds(ws: string): Set<string> {
+  const rows = getDb()
+    .prepare(
+      `SELECT fa.file_path
+         FROM file_activities fa
+         JOIN agents a ON a.id = fa.agent_id
+        WHERE a.workspace_id = ? AND fa.operation = 'read'`,
+    )
+    .all(ws) as Array<{ file_path: unknown }>;
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const basename = path.posix.basename(String(row.file_path).replace(/\\/g, '/')).toLowerCase();
+    if (basename.endsWith('.md')) ids.add(basename.slice(0, -3));
+  }
+  return ids;
 }
 
 // ── Lesson registry ───────────────────────────────────────────────────────────
@@ -667,8 +688,9 @@ export interface ReconcileResult {
  * The caller (WP-C) runs this ONLY against a valid source.
  *
  * - `never-recalled`: closed entries ({done,note,archived}) with a `detail:`
- *   pointer, age > NEVER_RECALLED_MIN_AGE_DAYS, and recall count 0. Never active
- *   capsules (active state is inline + recall-free; `stale-active` covers those).
+ *   pointer, age > NEVER_RECALLED_MIN_AGE_DAYS, recall count 0, and no matching
+ *   workspace-scoped file read. Never active capsules (active state is inline +
+ *   recall-free; `stale-active` covers those).
  * - `never-fired` / `evidence-unavailable`: guarded by the coverage check. When
  *   the corpus is incomplete OR attribution is an unreliable proxy, emit a single
  *   `evidence-unavailable` advisory and NO absence candidates; otherwise flag each
@@ -685,6 +707,7 @@ export function reconcileMemoryEvidence(
   const indexHash = sha256Hex(parsed.raw);
   const todayDay = epochDay(nowISO);
   const counts = recallMap(ws);
+  const fileActivityRecalls = fileActivityRecallIds(ws);
   const findings: FindingInput[] = [];
 
   // never-recalled — aged, closed, pointer-bearing entries never recalled.
@@ -696,6 +719,7 @@ export function reconcileMemoryEvidence(
     if (Number.isNaN(dd) || Number.isNaN(todayDay)) continue;
     if (todayDay - dd <= NEVER_RECALLED_MIN_AGE_DAYS) continue;
     if ((counts.get(e.id) ?? 0) > 0) continue;
+    if (fileActivityRecalls.has(e.id.toLowerCase())) continue;
     findings.push({ kind: 'never-recalled', entryId: e.id, sourceHash: indexHash, reason: NEVER_RECALLED_REASON });
   }
 

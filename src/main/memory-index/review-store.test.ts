@@ -102,9 +102,11 @@ const NOW = '2026-07-28T00:00:00Z';
 function mkEntry(o: Partial<ParsedEntry> & { id: string; status: string }): ParsedEntry {
   return {
     id: o.id, title: o.title ?? '', status: o.status, date: o.date ?? null,
+    idDate: o.idDate ?? null,
     owner: null, consequence: null, state: null, openLoop: null,
     expires: null, expiresWhen: null, readIf: null, detail: o.detail ?? null,
-    fields: {}, blockStart: 0, blockEnd: 0, idMalformed: false,
+    fields: {}, duplicateFields: [], unexpectedContent: [],
+    blockStart: 0, blockEnd: 0, idMalformed: false,
   };
 }
 function mkParsed(o: { raw?: string; entries?: ParsedEntry[]; byteLength?: number; lineCount?: number }): ParsedIndex {
@@ -113,7 +115,7 @@ function mkParsed(o: { raw?: string; entries?: ParsedEntry[]; byteLength?: numbe
     raw, normalized: raw,
     byteLength: o.byteLength ?? Buffer.byteLength(raw, 'utf8'),
     lineCount: o.lineCount ?? 1,
-    hasMarker: true, markerMismatch: false, preamble: '', handoffReadFirst: null,
+    hasMarker: true, markerMismatch: false, preamble: '', handoffReadFirst: null, handoffRange: null,
     entries: o.entries ?? [], bareScopedPkgs: [],
   };
 }
@@ -135,6 +137,17 @@ function seedAttributedInvocation(ws: string, skillName: string): void {
     `INSERT INTO skill_invocations (id, stream_id, jsonl_path, session_id, ts_ms, skill_name, detector)
      VALUES (?, ?, '/w/x.jsonl', ?, 1, ?, 'tool_use')`,
   ).run(`inv-${sessionSeq}`, `stream-${sessionSeq}`, sess, skillName);
+}
+function seedFileActivity(ws: string, filePath: string, operation = 'read'): void {
+  const aid = `file-agent-${++sessionSeq}`;
+  rawDb.prepare(
+    `INSERT INTO agents (id, workspace_id, title, slug, working_directory, command)
+     VALUES (?, ?, 'T', 's', '/w', 'claude')`,
+  ).run(aid, ws);
+  rawDb.prepare(
+    `INSERT INTO file_activities (agent_id, file_path, operation)
+     VALUES (?, ?, ?)`,
+  ).run(aid, filePath, operation);
 }
 function setBackfillComplete(version: number): void {
   rawDb.prepare(`INSERT OR REPLACE INTO skill_analytics_meta (k, v) VALUES (?, ?)`).run(BACKFILL_COMPLETE_KEY, NOW);
@@ -240,6 +253,34 @@ test('never-recalled is suppressed once the entry has been recalled (count > 0)'
   });
   store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
+});
+
+test('never-recalled is suppressed by a normalized file_activities read basename', () => {
+  const ws = 'ws-file-read';
+  const entryId = 'mb-2026-06-01-file-read';
+  seedFileActivity(ws, `C:\\repo\\.lares/memory/details/../details/${entryId.toUpperCase()}.md`);
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `details/${entryId}.md` })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.getRecallCount(ws, entryId), 0, 'bumpRecall telemetry remains untouched');
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
+});
+
+test('file_activities reads are workspace-scoped', () => {
+  const ws = 'ws-file-read-local';
+  const entryId = 'mb-2026-06-01-other-workspace';
+  seedFileActivity('ws-file-read-foreign', `/repo/details/${entryId}.md`);
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `${entryId}.md` })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
+});
+
+test('non-read file activity does not suppress never-recalled', () => {
+  const ws = 'ws-file-write';
+  const entryId = 'mb-2026-06-01-write-only';
+  seedFileActivity(ws, `C:\\repo\\details\\${entryId}.md`, 'write');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: `${entryId}.md` })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
 });
 
 test('a young closed entry (age <= threshold) does not produce never-recalled', () => {
