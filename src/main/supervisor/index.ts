@@ -4079,7 +4079,12 @@ export class AgentSupervisor extends EventEmitter {
     // scripts/memory-index-cli-entry.ts + src/shared/memory-index-core.ts (one
     // source of logic; main imports the same core in-process). The `remember`
     // skill runs `node .lares/scripts/memory-index.mjs validate <index>`.
-    [`.lares/scripts/memory-index.mjs`]: { content: MEMORY_INDEX_MJS, version: 1, executable: true },
+    [`.lares/scripts/memory-index.mjs`]: {
+      content: MEMORY_INDEX_MJS,
+      version: 2,
+      executable: true,
+      previousHashes: { 1: '4aac51e57ecfd481e7303a45c0738b6fb3468a7f503d0c0e5d72b62ad74a7d33' },
+    }, // v2: regenerated for graded projection + per-entry I/O validation
     // Usage-limits capture (plans/usage-limits-mcp-and-ui.md) — the statusLine
     // command each lane's settings.json points at. Prints the terminal status
     // line AND writes the rate_limits reading to .lares/usage/latest.json.

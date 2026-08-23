@@ -4036,6 +4036,18 @@ function workerClaudeFilesMap(): Record<string, ScaffoldFile> {
 function supCodexFilesMap(): Record<string, ScaffoldFile> {
   return (AgentSupervisor as unknown as { SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile> }).SUPERVISOR_FILES_CODEX;
 }
+function workspaceScriptFilesMap(): Record<string, ScaffoldFile> {
+  return (AgentSupervisor as unknown as { WORKSPACE_SCRIPT_FILES: Record<string, ScaffoldFile> }).WORKSPACE_SCRIPT_FILES;
+}
+
+test('WP-8 memory-index bundle advances to v2 and preserves the deployed v1 hash', () => {
+  const managed = workspaceScriptFilesMap()['.lares/scripts/memory-index.mjs'];
+  const v1Hash = '4aac51e57ecfd481e7303a45c0738b6fb3468a7f503d0c0e5d72b62ad74a7d33';
+  assert.equal(managed.version, 2);
+  assert.deepEqual(managed.previousHashes, { 1: v1Hash });
+  assert.notEqual(sha256Hex(managed.content), v1Hash,
+    'the regenerated v2 body must differ from the frozen deployed v1 body');
+});
 
 const PROPOSAL_TO_PLAN_REL_FILES = [
   'SKILL.md',
