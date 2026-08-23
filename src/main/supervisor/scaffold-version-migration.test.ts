@@ -27,6 +27,7 @@ import {
   DASHBOARD_STATUS_SCRIPT_V1_HASH,
   DASHBOARD_STATUS_SCRIPT_V2_HASH,
   REMEMBER_SKILL_V1_HASH,
+  REMEMBER_SKILL_V2_HASH,
   SCAFFOLD_SIDECAR_REL,
   SUPERVISOR_AGENT_MD_V8_HASH,
   SUPERVISOR_AGENT_MD_V9_HASH,
@@ -1251,18 +1252,16 @@ function listResearchGuardBackups(workDir: string): string[] {
   return fs.readdirSync(dir).filter((n) => n.startsWith('research-write-guard.mjs.bak.'));
 }
 
-test('precondition: reconstructed v1 remember body hashes to REMEMBER_SKILL_V1_HASH and differs from the live v2 body', () => {
-  const v2Pointer = '- detail: memory/details/<id>.md                           # optional, for long bodies';
-  const v1Pointer = '- detail: .lares/supervisor/memory/details/<id>.md         # optional, for long bodies';
-  assert.ok(REMEMBER_SKILL.includes(v2Pointer), 'the live remember body must contain the validator-accepted v2 pointer');
-  const v1Body = REMEMBER_SKILL.replace(v2Pointer, v1Pointer);
-  assert.equal(
-    sha256Hex(v1Body), REMEMBER_SKILL_V1_HASH,
-    'the reconstructed v1 body must hash to the shipped previousHashes[1] literal, or pristine v1 copies cannot silently upgrade',
-  );
+test('WP-10 precondition: remember keeps cumulative v1/v2 hashes and the live v3 body differs', () => {
+  assert.equal(REMEMBER_SKILL_V1_HASH, 'e97e02e3a6bce521bdb37b535a89e61f25c267e0dd6b4194480b12fe8e6c9aea');
+  assert.equal(REMEMBER_SKILL_V2_HASH, '6bd5a3dfa290f7250fd68a4486bac547c5d57e865cc8f330244324945087b40e');
   assert.notEqual(
     sha256Hex(REMEMBER_SKILL), REMEMBER_SKILL_V1_HASH,
-    'the live v2 body must differ from the frozen v1 hash',
+    'the live v3 body must differ from the frozen v1 hash',
+  );
+  assert.notEqual(
+    sha256Hex(REMEMBER_SKILL), REMEMBER_SKILL_V2_HASH,
+    'the live v3 body must differ from the frozen v2 hash',
   );
 });
 

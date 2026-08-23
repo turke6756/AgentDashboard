@@ -4188,19 +4188,40 @@ description: >-
   Something just happened that future agents shouldn't have to relearn — a
   hard-won fix, a decision with consequences, a constraint you discovered, a trap
   you fell into, or a loop you're leaving open. Invoke BEFORE ending the turn.
-  Walks you through: is this worth saving at all (most things aren't), is it a
-  MEMORY (current workspace state others must know) or a LESSON (reusable
-  "when X, do Y" steering), and how to write it so it actually gets found and read
-  later.
+  Routes it first: an ephemeral note with a stateable end condition becomes a
+  memory by default; a rule that every workspace agent must always obey becomes a
+  proposed workspace-root instruction change, gated on explicit user acceptance.
 ---
 
 # remember
 
-You felt "this shouldn't be lost." Good instinct — now spend it well. Most
-moments are NOT worth saving. Work through these gates in order; stop the moment a
-gate says stop.
+You felt "this shouldn't be lost." First decide which act this is. **Routing comes
+before formatting.**
 
-## 1. Is this worth saving at all? (the loudest rule)
+## 1. Route first: note or rule?
+
+There are two acts, deliberately different in cost:
+
+- **Ephemeral note with a stateable end condition** → write a **MEMORY**. This is
+  the default: cheap, ungated, and expected. The fact is true for now, and you can
+  state what date, event, or loop closure will make it obsolete.
+- **Must-always-hold rule** → propose an addition to the **workspace-root**
+  \`CLAUDE.md\` / \`AGENTS.md\`. This is rare permanent steering for every future
+  agent in this workspace. Draft the exact text and rationale, ask the user to
+  accept it explicitly in chat, then **STOP before writing either file**. Do not
+  treat silence, prior approval of related work, or your own judgement as
+  acceptance.
+
+The common error is **over-promotion**: turning a temporary fact or narrow lesson
+into permanent steering when a cheap, expiring memory would do. When uncertain,
+choose the memory path.
+
+The promotion target is never a lane scaffold such as
+\`.lares/supervisor/CLAUDE.md\` or a worker \`AGENTS.md\`; it is the instruction
+file at the workspace root. This skill only proposes that edit. It does not
+execute promotion.
+
+## 2. Is the note worth saving at all?
 
 **If the fact already lives somewhere durable and discoverable, DON'T save it.**
 Skip it if it is already captured by:
@@ -4216,91 +4237,74 @@ tempting approach is wrong, a constraint you only learned by tripping over it, a
 decision and its consequence, an open loop nobody else is holding. If in doubt,
 DON'T write it — a bloated index gets ignored, which defeats the point.
 
-## 2. Memory or lesson?
-
-One question decides it:
-
-> **Would this steer an agent in a DIFFERENT workspace?**
-
-- **No — it's about THIS workspace's current state** (a migration in flight, a
-  broken thing to avoid, a decision that holds only here) → it's a **MEMORY**.
-  Memories are injected into supervisors at launch and fetched by workers on
-  demand; they describe *this* workspace right now.
-- **Yes — it's reusable "when X, do Y" steering that would help anywhere** → it's a
-  **LESSON**. Lessons become skills that fire by description on both providers.
-
-## 3a. Write a MEMORY (capsule)
+## 3. Write the MEMORY card
 
 Memories live in \`.lares/supervisor/memory/MEMORY.md\` as capsules. You do NOT edit
 that file by hand here — draft the capsule and hand it to the supervisor, who owns
-the write. A capsule looks like:
+the write. The resident card is recognition-only and looks like:
 
 \`\`\`
 ## mb-YYYY-MM-DD-<slug>: <one-line title>
-- status: active            # active | done | note | archived
-- <a named way to die>      # REQUIRED for an active memory — see gate 4
-- read-if: <when a future agent should fetch the detail>   # optional
-- detail: memory/details/<id>.md                           # optional, for long bodies
-<the memory, tight — what's true and why it matters>
+- read-if: <future work situation in which the body should be fetched>
+- detail: memory/details/<id>.md
 \`\`\`
 
-**read-if authoring:** the index carries the *trigger*, the detail file carries the
-*body*. Write \`read-if\` as the concrete condition under which a future agent
-should spend a \`recall_memory\` call — "read-if: you're about to touch the
-auth-token refresh path", not "read-if: relevant". If there's no condition worth
-naming, the memory is probably too small for a detail file — inline it.
+**Write \`read-if\` in the vocabulary of future work**, not the incident that
+produced the note. Name the task, subsystem, decision, or failure mode a future
+agent will recognize: "touching the auth-token refresh path" is useful; "when the
+August incident is relevant" is not. The card carries the trigger; the detail file
+carries the body.
 
-## 3b. Write a LESSON (publish_lesson)
+## 4. Start the body with the exact disposal block
 
-A lesson is a skill: it fires when its **description** trigger matches what a
-future agent is mid-flight on. The description is the whole ballgame.
+The detail body must begin with exactly one \`memory-disposal:v1\` block. Choose
+one grammar and copy its shape exactly.
 
-**Lesson-description authoring:** write the trigger as the *situation the agent is
-in*, not a topic label. "When a test mutates a shared file to prove a failure,
-restore it by re-editing the line, never by discarding the file" fires; "notes
-about testing" does not. Front-load the concrete "when X".
+Expiry on a real Gregorian date:
 
-Then call **\`publish_lesson({ name, description, body })\`**:
-- \`name\` — a slug: lowercase, digits, hyphens (\`^[a-z0-9][a-z0-9-]{0,62}$\`).
-  It may not collide with \`remember\` or a shipped skill.
-- \`description\` — the mid-flight trigger above.
-- \`body\` — the "when X, do Y" steering, tight.
+\`\`\`
+<!-- memory-disposal:v1
+kind: expires
+value: YYYY-MM-DD
+-->
+<what is true now, why it matters, and the evidence a future agent needs>
+\`\`\`
 
-The app writes the lesson to every provider/lane skill root transactionally — you
-never touch \`.claude/\` or \`.agents/\` directories yourself.
+Expiry when a reviewer can check a concrete state change:
 
-## 4. Every active memory names a way to die
+\`\`\`
+<!-- memory-disposal:v1
+kind: expires-when
+value: <specific checkable condition>
+-->
+<what is true now, why it matters, and the evidence a future agent needs>
+\`\`\`
 
-An active memory with no exit is how the index rots. Before you save an **active**
-memory, give it exactly one named exit:
+An unfinished thread whose owner will close and archive it explicitly:
 
-- **expires: YYYY-MM-DD** — a date after which it's mechanically dropped;
-- **expires-when: <condition>** — a concrete condition a reviewer can check
-  ("expires-when: the pi-integration branch lands");
-- **open-loop: <what closes it>** — an unfinished thread; when you close the loop,
-  retire the memory that same turn.
+\`\`\`
+<!-- memory-disposal:v1
+kind: open-loop
+-->
+<name the open thread, what closes it, and why it matters>
+\`\`\`
 
-No exit → don't save it as active. (done/note/archived capsules are already dead;
-they don't need an exit.)
+The opener must be the first content in the body. \`expires\` and
+\`expires-when\` require exactly one \`value\`; \`open-loop\` forbids \`value\`.
+Do not invent other keys or put the old disposal fields on the resident card.
 
-## 5. Validate
+## 5. Hand off and validate
 
-After the supervisor writes a memory capsule, confirm the index still parses:
+Hand the card and body to the supervisor, which owns the memory write. No user
+approval gate applies to this memory path. After the supervisor writes them,
+confirm the index and referenced body still validate:
 
 \`\`\`
 node .lares/scripts/memory-index.mjs validate .lares/supervisor/memory/MEMORY.md
 \`\`\`
 
 A HARD failure means the index would be REJECTED at launch — fix it before ending
-the turn. (\`publish_lesson\` validates its own slug and writes; you don't run the
-validator for a lesson.)
-
-## Graduation (the other exit)
-
-If a memory turned out to be **permanent workspace truth** (not a passing state),
-it belongs in \`CLAUDE.md\`/\`AGENTS.md\`, not the memory index. Call
-**\`propose_graduation({ target, text, rationale })\`** to record the proposal for
-human approval — never edit the root docs directly from here.
+the turn.
 `;
 
 /** read-agent-log.sh — .lares/supervisor/scripts/read-agent-log.sh */

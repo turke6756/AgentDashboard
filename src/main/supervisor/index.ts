@@ -973,6 +973,11 @@ export const DASHBOARD_STATUS_SCRIPT_V2_HASH = 'a6e27a1330e7cd499ed5be2b7b3a68ea
  *  the supervisor state dir, matching the memory-index validator. */
 export const REMEMBER_SKILL_V1_HASH = 'e97e02e3a6bce521bdb37b535a89e61f25c267e0dd6b4194480b12fe8e6c9aea';
 
+/** SHA-256 hex of the v2 `remember/SKILL.md` body before route-first memory vs
+ *  workspace-rule guidance and the memory-disposal:v1 body grammar. Used in the
+ *  v3 file's previousHashes for silent v2→v3 upgrade of pristine workspaces. */
+export const REMEMBER_SKILL_V2_HASH = '6bd5a3dfa290f7250fd68a4486bac547c5d57e865cc8f330244324945087b40e';
+
 /** SHA-256 hex of the pre-UserPromptSubmit `.claude/settings.json` (Stop +
  *  SubagentStop only). v2 adds the UserPromptSubmit hook entry. Used in the
  *  v2 settings file's previousHashes for silent v1→v2 upgrade. */
@@ -3981,7 +3986,7 @@ export class AgentSupervisor extends EventEmitter {
     // worker copies are WORKER_FILES_CLAUDE + codexFiles).
     // Published lessons are NOT scaffold entries — the memory_lessons DB registry
     // is their record; only `remember` itself is managed here.
-    [`.lares/supervisor/.claude/skills/remember/SKILL.md`]:                       { content: REMEMBER_SKILL, version: 2, previousHashes: { 1: REMEMBER_SKILL_V1_HASH } }, // v2: fixes the capsule example's `detail:` path to the validator-accepted `memory/details/<id>.md` form
+    [`.lares/supervisor/.claude/skills/remember/SKILL.md`]:                       { content: REMEMBER_SKILL, version: 3, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH } }, // v3: route-first memory vs workspace-rule contract + memory-disposal:v1 body grammar
     // Persona kit (§1.4) — the two default skills ship into every native lane too
     // so the supervisor/researcher/worker can guide persona creation + read comments.
     [`.lares/supervisor/.claude/skills/create-persona/SKILL.md`]:                 { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } }, // v4: `.lares` rename
@@ -4010,7 +4015,7 @@ export class AgentSupervisor extends EventEmitter {
     ...writeProposalEntry('.lares/supervisor/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/supervisor/.agents/skills/read-planning-surface'),
     ...proveProductionEntryPointEntry('.lares/supervisor/.agents/skills/prove-the-production-entry-point'),
-    [`.lares/supervisor/.agents/skills/remember/SKILL.md`]: { content: REMEMBER_SKILL, version: 2, previousHashes: { 1: REMEMBER_SKILL_V1_HASH } }, // v2: fixes the capsule example's `detail:` path to the validator-accepted `memory/details/<id>.md` form
+    [`.lares/supervisor/.agents/skills/remember/SKILL.md`]: { content: REMEMBER_SKILL, version: 3, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH } }, // v3: route-first memory vs workspace-rule contract + memory-disposal:v1 body grammar
   };
 
   /** Class IV — workspace-shared hook script. Written on first supervised
@@ -4113,7 +4118,7 @@ export class AgentSupervisor extends EventEmitter {
     },
     // Memory & Lessons v2 (WP-F1): the `remember` skill for the Claude WORKER
     // skill root.
-    [`.lares/workers/claude/.claude/skills/remember/SKILL.md`]:       { content: REMEMBER_SKILL, version: 2, previousHashes: { 1: REMEMBER_SKILL_V1_HASH } }, // v2: fixes the capsule example's `detail:` path to the validator-accepted `memory/details/<id>.md` form
+    [`.lares/workers/claude/.claude/skills/remember/SKILL.md`]:       { content: REMEMBER_SKILL, version: 3, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH } }, // v3: route-first memory vs workspace-rule contract + memory-disposal:v1 body grammar
     // Persona kit (§1.4) — default skills for the Claude worker lane.
     [`.lares/workers/claude/.claude/skills/create-persona/SKILL.md`]: { content: PERSONA_CREATE_PERSONA_SKILL, version: 4, previousHashes: { 1: sha256Hex(PERSONA_CREATE_PERSONA_SKILL_V1), 2: PERSONA_CREATE_PERSONA_SKILL_V2_HASH, 3: PERSONA_CREATE_PERSONA_SKILL_V3_HASH } }, // v4: `.lares` rename
     [`.lares/workers/claude/.claude/skills/read-comments/SKILL.md`]:  { content: PERSONA_READ_COMMENTS_SKILL, version: 5, previousHashes: { 1: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V1), 2: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V2), 3: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V3), 4: sha256Hex(PERSONA_READ_COMMENTS_SKILL_V4) } }, // v5: Python fallback removed (honest on a Python-free clean VM)
@@ -4343,8 +4348,8 @@ export class AgentSupervisor extends EventEmitter {
         // Claude copies.
         [`.lares/workers/codex/.agents/skills/remember/SKILL.md`]: {
           content: REMEMBER_SKILL,
-          version: 2, // v2: fixes the capsule example's `detail:` path to the validator-accepted `memory/details/<id>.md` form
-          previousHashes: { 1: REMEMBER_SKILL_V1_HASH },
+          version: 3, // v3: route-first memory vs workspace-rule contract + memory-disposal:v1 body grammar
+          previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH },
         },
       };
       providerCreated = this.writeScaffoldMap(workDir, codexFiles, pathType);
