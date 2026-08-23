@@ -32,8 +32,9 @@ import {
   stageTextFile,
 } from '../scaffold-writer';
 import { readValidateProject } from './io';
-import { upsertFindings } from './review-store';
+import { computeFindingId, upsertFindings, type FindingInput } from './review-store';
 import type { BundleErrorCode } from './bundle-migration';
+import { getDb } from '../database';
 
 const INDEX_REL = MEMORY_DETAILS_DIR.replace(/details\/?$/, 'MEMORY.md');
 const ACTIVE_POINTER_PREFIX = 'memory/details/';
@@ -52,7 +53,7 @@ export interface ArchiveMemoryInput {
 }
 
 export type ArchiveMemoryResult =
-  | { ok: true; code?: 'cleanup_pending' }
+  | { ok: true; code?: 'cleanup_pending'; persisted?: boolean }
   | {
       ok: false;
       code: BundleErrorCode;
@@ -160,8 +161,21 @@ export function classifyArchiveState(
   return { kind: 'conflict', message: `no recoverable archive state for ${input.id}` };
 }
 
+/** Translate an offset in parseCatalog's CRLF-normalized text back to raw. */
+function normalizedOffsetToRaw(source: string, normalizedOffset: number): number {
+  let rawOffset = 0;
+  let currentNormalized = 0;
+  while (currentNormalized < normalizedOffset && rawOffset < source.length) {
+    rawOffset += source[rawOffset] === '\r' && source[rawOffset + 1] === '\n' ? 2 : 1;
+    currentNormalized++;
+  }
+  return rawOffset;
+}
+
 function withoutEntry(source: string, entry: ParsedEntry): string {
-  return source.slice(0, entry.blockStart) + source.slice(entry.blockEnd);
+  const rawStart = normalizedOffsetToRaw(source, entry.blockStart);
+  const rawEnd = normalizedOffsetToRaw(source, entry.blockEnd);
+  return source.slice(0, rawStart) + source.slice(rawEnd);
 }
 
 function archivedRecord(entry: ParsedEntry, id: string): string {
@@ -206,8 +220,15 @@ function validateFinalBundle(
 
     writeMirror(INDEX_REL, residentSource);
     writeMirror(ARCHIVE_INDEX_REL, archiveSource);
+    const resident = parseIndex(residentSource);
+    const archive = parseArchiveIndex(archiveSource);
+    const residentIds = new Set(resident.entries.map((entry) => entry.id));
+    const committedCleanupIds = new Set(
+      archive.entries.filter((entry) => !residentIds.has(entry.id)).map((entry) => entry.id),
+    );
     for (const name of listScaffoldDir(workDir, MEMORY_DETAILS_DIR, pathType)) {
-      if (name.endsWith('.tmp') || name === `${input.id}.md`) continue;
+      const detailId = name.endsWith('.md') ? name.slice(0, -3) : '';
+      if (name.endsWith('.tmp') || name === `${input.id}.md` || committedCleanupIds.has(detailId)) continue;
       const content = readScaffoldText(workDir, `${MEMORY_DETAILS_DIR}${name}`, pathType);
       if (content !== null) writeMirror(`${MEMORY_DETAILS_DIR}${name}`, content);
     }
@@ -220,12 +241,9 @@ function validateFinalBundle(
 
     const findings: ValidationFinding[] = readValidateProject(tmpRoot, nowISO).hard
       .map((finding) => ({ cls: finding.cls, id: finding.id, message: finding.message }));
-    const resident = parseIndex(residentSource);
-    const archive = parseArchiveIndex(archiveSource);
     findings.push(...validateArchiveParsed(archive).hard
       .map((finding) => ({ cls: finding.cls, id: finding.id, message: finding.message })));
 
-    const residentIds = new Set(resident.entries.map((entry) => entry.id));
     for (const entry of archive.entries) {
       if (residentIds.has(entry.id)) findings.push({ cls: 'duplicate-id', id: entry.id, message: `memory id occurs in both catalogs: ${entry.id}` });
       if (entry.detail !== `${ARCHIVE_POINTER_PREFIX}${entry.id}.md`) {
@@ -263,14 +281,26 @@ function validateFinalBundle(
   }
 }
 
-function persistCleanupPending(ws: string, input: ArchiveMemoryInput, nowISO: string): void {
-  upsertFindings(ws, [{
+function cleanupFinding(input: ArchiveMemoryInput): FindingInput {
+  return {
     kind: 'archive-cleanup-pending',
     entryId: input.id,
     sourceHash: input.expectedBodyHash,
     reason: `archived ${input.id}, but ${MEMORY_DETAILS_DIR}${input.id}.md could not be removed`,
     exitCondition: 'remove the redundant resident detail body after verifying the archive copy',
-  }], nowISO);
+  };
+}
+
+function persistCleanupPending(ws: string, input: ArchiveMemoryInput, nowISO: string): string {
+  const finding = cleanupFinding(input);
+  return upsertFindings(ws, [finding], nowISO)[0] ?? computeFindingId(ws, finding);
+}
+
+/** Clear only this mover-owned finding; never reconcile another producer's rows. */
+function clearCleanupPending(findingId: string, nowISO: string): void {
+  getDb().prepare(
+    `UPDATE memory_review_queue SET status = 'cleared', last_seen = ? WHERE finding_id = ? AND status = 'pending'`,
+  ).run(nowISO, findingId);
 }
 
 function finishCleanup(
@@ -280,14 +310,29 @@ function finishCleanup(
   input: ArchiveMemoryInput,
   nowISO: string,
   cleanupBody: string | null,
+  pendingFindingId?: string,
 ): ArchiveMemoryResult {
-  if (cleanupBody === null) return { ok: true };
+  let findingId = pendingFindingId;
+  if (!findingId) {
+    try {
+      findingId = persistCleanupPending(ws, input, nowISO);
+    } catch {
+      // Do not delete the only retry signal when durable persistence is down.
+      return { ok: true, code: 'cleanup_pending', persisted: false };
+    }
+  }
+  if (cleanupBody === null) {
+    try { clearCleanupPending(findingId, nowISO); return { ok: true }; }
+    catch { return { ok: true, code: 'cleanup_pending', persisted: true }; }
+  }
   try {
     deleteScaffoldFile(workDir, bodyRel(MEMORY_DETAILS_DIR, input.id), pathType);
-    if (!scaffoldFileExists(workDir, bodyRel(MEMORY_DETAILS_DIR, input.id), pathType)) return { ok: true };
+    if (!scaffoldFileExists(workDir, bodyRel(MEMORY_DETAILS_DIR, input.id), pathType)) {
+      try { clearCleanupPending(findingId, nowISO); return { ok: true }; }
+      catch { return { ok: true, code: 'cleanup_pending', persisted: true }; }
+    }
   } catch { /* committed transitions are never rolled back for cleanup failure */ }
-  try { persistCleanupPending(ws, input, nowISO); } catch { /* caller still needs the truthful committed outcome */ }
-  return { ok: true, code: 'cleanup_pending' };
+  return { ok: true, code: 'cleanup_pending', persisted: true };
 }
 
 function restorePrecommit(
@@ -320,9 +365,13 @@ export function archiveMemoryEntry(
   input: ArchiveMemoryInput,
   nowISO: string,
 ): ArchiveMemoryResult {
+  if (!input || typeof input.id !== 'string' || typeof input.expectedPriorHash !== 'string' || typeof input.expectedBodyHash !== 'string') {
+    return { ok: false, code: 'conflict', message: 'archive input is malformed' };
+  }
   let release: (() => void) | null = null;
   let logicalCommitted = false;
   let state: Extract<ArchiveState, { kind: 'active' }> | null = null;
+  let pendingFindingId: string | null = null;
   try {
     release = acquireWorkspaceLock(workDir, pathType);
     const classified = classifyArchiveState(workDir, pathType, input);
@@ -333,7 +382,9 @@ export function archiveMemoryEntry(
     state = classified;
 
     // Ordinary caller CAS applies only to the active/pre-commit state and is
-    // re-read under the lock immediately before validation/mutation.
+    // re-read under the lock immediately before validation/mutation. The held
+    // shared scaffold lock is also the guard that keeps ARCHIVE.md stable from
+    // classification through its commit; no second archive CAS is needed.
     const lockedIndex = readScaffoldText(workDir, INDEX_REL, pathType);
     const lockedBody = readScaffoldText(workDir, bodyRel(MEMORY_DETAILS_DIR, input.id), pathType);
     if (lockedIndex === null || sha256Hex(lockedIndex) !== input.expectedPriorHash) {
@@ -361,14 +412,35 @@ export function archiveMemoryEntry(
       stageTextFile(workDir, ARCHIVE_INDEX_TMP_REL, proposedArchive, false, pathType);
       commitStagedRename(workDir, ARCHIVE_INDEX_TMP_REL, ARCHIVE_INDEX_REL, pathType);
     }
+    // Persist the janitor pointer before the logical commit. A kill after the
+    // MEMORY.md rename can therefore never create an unrecorded cleanup state.
+    pendingFindingId = persistCleanupPending(ws, input, nowISO);
     stageTextFile(workDir, INDEX_TMP_REL, proposedResident, false, pathType);
     commitStagedRename(workDir, INDEX_TMP_REL, INDEX_REL, pathType);
     logicalCommitted = true;
 
-    return finishCleanup(ws, workDir, pathType, input, nowISO, lockedBody);
+    return finishCleanup(ws, workDir, pathType, input, nowISO, lockedBody, pendingFindingId);
   } catch (err) {
+    let afterFailure: ArchiveState | null = null;
+    if (release) {
+      try { afterFailure = classifyArchiveState(workDir, pathType, input); } catch { /* retain the original failure */ }
+    }
+    if (afterFailure?.kind === 'committed') {
+      // The final rename may have landed and then thrown. Never roll it back;
+      // leave the already-persisted cleanup marker for a fresh retry.
+      if (pendingFindingId) return { ok: true, code: 'cleanup_pending', persisted: true };
+      try {
+        persistCleanupPending(ws, input, nowISO);
+        return { ok: true, code: 'cleanup_pending', persisted: true };
+      } catch {
+        return { ok: true, code: 'cleanup_pending', persisted: false };
+      }
+    }
     if (!logicalCommitted && state) {
       restorePrecommit(workDir, pathType, state.archiveSource, state.archiveBodyPreexisted, input.id);
+    }
+    if (pendingFindingId) {
+      try { clearCleanupPending(pendingFindingId, nowISO); } catch { /* preserve original write failure */ }
     }
     return { ok: false, code: 'write_error', message: err instanceof Error ? err.message : String(err) };
   } finally {

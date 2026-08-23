@@ -13,6 +13,7 @@ import { ARCHIVE_FORMAT_MARKER, DISCLOSURE_FORMAT_MARKER } from '../../shared/me
 import { archiveMemoryEntry, type ArchiveMemoryInput } from './archive-mover';
 import * as scaffoldWriter from '../scaffold-writer';
 import * as reviewStore from './review-store';
+import * as database from '../database';
 
 interface TestCase { name: string; run(): void }
 const tests: TestCase[] = [];
@@ -25,6 +26,19 @@ const INDEX_REL = '.lares/supervisor/memory/MEMORY.md';
 const DETAILS_REL = '.lares/supervisor/memory/details/';
 const ARCHIVE_REL = '.lares/supervisor/memory/archive/';
 const ARCHIVE_INDEX_REL = `${ARCHIVE_REL}ARCHIVE.md`;
+
+const writerExports = scaffoldWriter as unknown as {
+  commitStagedRename: typeof scaffoldWriter.commitStagedRename;
+  deleteScaffoldFile: typeof scaffoldWriter.deleteScaffoldFile;
+};
+const storeExports = reviewStore as unknown as {
+  upsertFindings: typeof reviewStore.upsertFindings;
+};
+const databaseExports = database as unknown as { getDb: typeof database.getDb };
+// The mover calls the real persistence seams; tests replace only their backing
+// store so filesystem behaviour remains real without initializing app SQLite.
+storeExports.upsertFindings = (ws, findings) => findings.map((finding) => reviewStore.computeFindingId(ws, finding));
+databaseExports.getDb = (() => ({ prepare: () => ({ run: () => ({ changes: 1 }) }) })) as unknown as typeof database.getDb;
 
 function sha(content: string): string {
   return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
@@ -92,6 +106,22 @@ test('archives copy -> ARCHIVE add -> MEMORY remove -> cleanup without migration
   assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), null, 'resident body is cleaned after commit');
 });
 
+test('CRLF resident removal maps normalized parser offsets back to byte-correct raw offsets', () => {
+  const workDir = mkWorkDir();
+  const second = 'mb-2026-08-22-still-active';
+  const prior = residentIndex(residentCard(ID), residentCard(second)).replace(/\n/g, '\r\n');
+  const expectedResident = residentIndex(residentCard(second)).replace(/\n/g, '\r\n');
+  const firstBody = body(ID);
+  writeAt(workDir, INDEX_REL, prior);
+  writeAt(workDir, `${DETAILS_REL}${ID}.md`, firstBody);
+  writeAt(workDir, `${DETAILS_REL}${second}.md`, body(second));
+  const result = archiveMemoryEntry('ws-crlf', workDir, PT, {
+    id: ID, expectedPriorHash: sha(prior), expectedBodyHash: sha(firstBody),
+  }, NOW);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(readAt(workDir, INDEX_REL), expectedResident, 'remaining CRLF bytes are preserved exactly');
+});
+
 test('wrong resident index CAS returns cas_mismatch before mutation', () => {
   const workDir = mkWorkDir();
   const seeded = seedActive(workDir);
@@ -156,6 +186,24 @@ test('retry recovers the both-catalog precommit intermediate', () => {
   assertArchived(workDir, seeded.bodyText);
 });
 
+test('a committed entry awaiting cleanup does not wedge archiving another entry', () => {
+  const workDir = mkWorkDir();
+  const second = 'mb-2026-08-22-second';
+  const secondBody = body(second);
+  const resident = residentIndex(residentCard(second));
+  writeAt(workDir, INDEX_REL, resident);
+  writeAt(workDir, ARCHIVE_INDEX_REL, archiveIndex(archiveCard(ID)));
+  writeAt(workDir, `${ARCHIVE_REL}${ID}.md`, body(ID));
+  writeAt(workDir, `${DETAILS_REL}${ID}.md`, body(ID)); // A: committed, cleanup pending
+  writeAt(workDir, `${DETAILS_REL}${second}.md`, secondBody);
+  const result = archiveMemoryEntry('ws-two-entry', workDir, PT, {
+    id: second, expectedPriorHash: sha(resident), expectedBodyHash: sha(secondBody),
+  }, NOW);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), body(ID), 'A cleanup remains independently pending');
+  assert.equal(readAt(workDir, `${ARCHIVE_REL}${second}.md`), secondBody, 'B archives successfully');
+});
+
 test('post-commit retry classifies before CAS and returns ok, never cas_mismatch', () => {
   const workDir = mkWorkDir();
   const seeded = seedActive(workDir);
@@ -168,39 +216,103 @@ test('post-commit retry classifies before CAS and returns ok, never cas_mismatch
   assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), null, 'retry finishes step 5 cleanup');
 });
 
-test('cleanup failure returns cleanup_pending and persists the review finding', () => {
+test('first-pass cleanup failure returns cleanup_pending and persists before delete', () => {
   const workDir = mkWorkDir();
   const seeded = seedActive(workDir);
-  writeAt(workDir, INDEX_REL, residentIndex());
-  writeAt(workDir, ARCHIVE_INDEX_REL, archiveIndex(archiveCard()));
-  writeAt(workDir, `${ARCHIVE_REL}${ID}.md`, seeded.bodyText);
-
-  const writer = scaffoldWriter as unknown as { deleteScaffoldFile: typeof scaffoldWriter.deleteScaffoldFile };
-  const store = reviewStore as unknown as { upsertFindings: typeof reviewStore.upsertFindings };
-  const priorDelete = writer.deleteScaffoldFile;
-  const priorUpsert = store.upsertFindings;
+  const priorDelete = writerExports.deleteScaffoldFile;
+  const priorUpsert = storeExports.upsertFindings;
   const persisted: Array<{ ws: string; findings: reviewStore.FindingInput[]; nowISO: string }> = [];
-  writer.deleteScaffoldFile = (wd, rel, pathType) => {
+  const events: string[] = [];
+  writerExports.deleteScaffoldFile = (wd, rel, pathType) => {
+    if (wd === workDir && rel === `${DETAILS_REL}${ID}.md`) events.push('delete');
     if (wd === workDir && rel === `${DETAILS_REL}${ID}.md`) throw new Error('simulated cleanup denial');
     priorDelete(wd, rel, pathType);
   };
-  store.upsertFindings = (ws, findings, nowISO) => {
+  storeExports.upsertFindings = (ws, findings, nowISO) => {
+    events.push('persist');
     persisted.push({ ws, findings, nowISO });
     return ['finding-id'];
   };
   try {
     const result = archiveMemoryEntry('ws-pending', workDir, PT, seeded.input, NOW);
-    assert.deepEqual(result, { ok: true, code: 'cleanup_pending' });
+    assert.deepEqual(result, { ok: true, code: 'cleanup_pending', persisted: true });
   } finally {
-    writer.deleteScaffoldFile = priorDelete;
-    store.upsertFindings = priorUpsert;
+    writerExports.deleteScaffoldFile = priorDelete;
+    storeExports.upsertFindings = priorUpsert;
   }
+  assert.deepEqual(events, ['persist', 'delete'], 'cleanup marker is durable before deletion begins');
   assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), seeded.bodyText, 'committed transition is not rolled back');
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].ws, 'ws-pending');
   assert.equal(persisted[0].findings[0].kind, 'archive-cleanup-pending');
   assert.equal(persisted[0].findings[0].entryId, ID);
   assert.equal(persisted[0].findings[0].sourceHash, seeded.input.expectedBodyHash);
+});
+
+test('persistence failure is surfaced and cleanup is not attempted', () => {
+  const workDir = mkWorkDir();
+  const seeded = seedActive(workDir);
+  writeAt(workDir, INDEX_REL, residentIndex());
+  writeAt(workDir, ARCHIVE_INDEX_REL, archiveIndex(archiveCard()));
+  writeAt(workDir, `${ARCHIVE_REL}${ID}.md`, seeded.bodyText);
+  const priorUpsert = storeExports.upsertFindings;
+  storeExports.upsertFindings = () => { throw new Error('database unavailable'); };
+  try {
+    const result = archiveMemoryEntry('ws-persist-fail', workDir, PT, seeded.input, NOW);
+    assert.deepEqual(result, { ok: true, code: 'cleanup_pending', persisted: false });
+  } finally {
+    storeExports.upsertFindings = priorUpsert;
+  }
+  assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), seeded.bodyText, 'retry body remains when persistence fails');
+});
+
+test('fresh calls recover faults after each commit rename boundary', () => {
+  const priorCommit = writerExports.commitStagedRename;
+  const priorUpsert = storeExports.upsertFindings;
+  for (const failAfter of [1, 2, 3]) {
+    const workDir = mkWorkDir();
+    const seeded = seedActive(workDir);
+    let commits = 0;
+    const events: string[] = [];
+    storeExports.upsertFindings = (ws, findings, nowISO) => {
+      events.push('persist');
+      return priorUpsert(ws, findings, nowISO);
+    };
+    writerExports.commitStagedRename = (wd, tempRel, finalRel, pathType) => {
+      priorCommit(wd, tempRel, finalRel, pathType);
+      commits++;
+      events.push(`commit:${commits}`);
+      if (commits === failAfter) throw new Error(`simulated crash after rename ${failAfter}`);
+    };
+    let first;
+    try {
+      first = archiveMemoryEntry(`ws-rename-${failAfter}`, workDir, PT, seeded.input, NOW);
+    } finally {
+      writerExports.commitStagedRename = priorCommit;
+      storeExports.upsertFindings = priorUpsert;
+    }
+    if (failAfter < 3) {
+      assert.equal(first.ok, false, `rename ${failAfter} fault is restored precommit`);
+      assert.equal(first.ok ? '' : first.code, 'write_error');
+    } else {
+      assert.deepEqual(first, { ok: true, code: 'cleanup_pending', persisted: true }, 'logical commit is never rolled back');
+      assert.ok(events.indexOf('persist') < events.indexOf('commit:3'), 'cleanup marker precedes the logical-commit rename');
+      assert.equal(readAt(workDir, `${DETAILS_REL}${ID}.md`), seeded.bodyText);
+    }
+    const recovered = archiveMemoryEntry(`ws-rename-${failAfter}`, workDir, PT, seeded.input, NOW);
+    assert.deepEqual(recovered, { ok: true }, `fresh call recovers rename boundary ${failAfter}`);
+    assertArchived(workDir, seeded.bodyText);
+  }
+});
+
+test('a leftover archive-mover tmp does not break retry', () => {
+  const workDir = mkWorkDir();
+  const seeded = seedActive(workDir);
+  writeAt(workDir, `${ARCHIVE_REL}${ID}.md.archive-mover.tmp`, 'stale partial bytes');
+  const result = archiveMemoryEntry('ws-stale-tmp', workDir, PT, seeded.input, NOW);
+  assert.deepEqual(result, { ok: true });
+  assertArchived(workDir, seeded.bodyText);
+  assert.equal(readAt(workDir, `${ARCHIVE_REL}${ID}.md.archive-mover.tmp`), null);
 });
 
 let passed = 0;
