@@ -1668,6 +1668,8 @@ export const RESEARCHER_AGENT_MD_V5_HASH = '90e26bca4b533513c0c59e0fffb7fad431dd
 export const RESEARCHER_AGENT_MD_V6_HASH = 'bfbb7c65eebc502994ff48921793fbab0a44a930d8ca442e53d06bc0577a24b6';
 /** SHA-256 of the shipped supervisor v25 body, before the honest live posture. */
 export const SUPERVISOR_AGENT_MD_V25_HASH = '4bceb0c2113aca7a934cd5aa274b6f6e1e5fcb87ec035d1c5ed3215286733d15';
+/** SHA-256 of the shipped supervisor v26 body, before fetch-when-relevant memory guidance. */
+export const SUPERVISOR_AGENT_MD_V26_HASH = '35e5bff94fecfb2166ec4bd7385f2e0e75db9129cb45e0768a64df401cea0552';
 /** SHA-256 of the shipped research-store README v3 body. */
 export const RESEARCH_STORE_README_MD_V3_HASH = 'b6581d5568d26f317a8cdf61248c1fbe385f4cd40bec929124641db88c523fe4';
 /** SHA-256 hex of the v4 research-store README before the report contract. */
@@ -3936,8 +3938,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 26, // v26 records the live provider posture and cwd-versus-HOME distinction.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH },
+      version: 27, // v27 corrects the Memory section to fetch details when relevant.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -4081,10 +4083,10 @@ export class AgentSupervisor extends EventEmitter {
     // skill runs `node .lares/scripts/memory-index.mjs validate <index>`.
     [`.lares/scripts/memory-index.mjs`]: {
       content: MEMORY_INDEX_MJS,
-      version: 2,
+      version: 3,
       executable: true,
-      previousHashes: { 1: '4aac51e57ecfd481e7303a45c0738b6fb3468a7f503d0c0e5d72b62ad74a7d33' },
-    }, // v2: regenerated for graded projection + per-entry I/O validation
+      previousHashes: { 1: '4aac51e57ecfd481e7303a45c0738b6fb3468a7f503d0c0e5d72b62ad74a7d33', 2: '3c8f5215a6cdcf59a4d6b5060b7cfd43356c79163bcb1d57b1f452cb4b660d67' },
+    }, // v3: framing preamble is composed within the projection budget
     // Usage-limits capture (plans/usage-limits-mcp-and-ui.md) — the statusLine
     // command each lane's settings.json points at. Prints the terminal status
     // line AND writes the rate_limits reading to .lares/usage/latest.json.

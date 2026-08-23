@@ -11,6 +11,7 @@ export const CAP_PRESSURE_RATIO = 0.8;
 export const RECALL_DETAIL_MAX_BYTES = 16384;
 export const DISCLOSURE_FORMAT_MARKER = '<!-- disclosure-format: v2 -->';
 export const ARCHIVE_FORMAT_MARKER = '<!-- memory-archive-format: v1 -->';
+export const MEMORY_FRAMING_PREAMBLE = `**Your workspace memories.** Each entry below is a short description of something this workspace learned. They are deliberately brief — the detail is not here. If at any point in your work an entry looks relevant, call \`recall_memory\` with its id to read the full memory. Nothing will remind you; deciding what is worth opening is yours.`;
 export const MEMORY_ID_GRAMMAR = /^mb-\d{4}-\d{2}-\d{2}-[a-z0-9-]+$/;
 export const LESSON_SLUG_GRAMMAR = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const MEMORY_DETAILS_DIR = '.lares/supervisor/memory/details/';
@@ -455,6 +456,10 @@ function projectionBudget(text: string): ProjectionBudget {
   };
 }
 
+function frameMemoryProjection(text: string): string {
+  return `${MEMORY_FRAMING_PREAMBLE}\n\n${text}`;
+}
+
 export function projectParsed(parsed: ParsedIndex, opts: ProjectParsedOptions): ProjectionResult {
   void opts.nowISO;
   const validation = validateParsed(parsed);
@@ -513,7 +518,7 @@ export function projectParsed(parsed: ParsedIndex, opts: ProjectParsedOptions): 
   const shedOrder = [...remaining.filter((entry) => !protectedIds.has(entry.id)), ...remaining.filter((entry) => protectedIds.has(entry.id))];
   const global = allFindings.find((finding) => GLOBAL_BLANK_CLASSES.has(finding.cls));
   for (const entry of global ? [] : shedOrder) {
-    if (!projectionBudget(candidate).overBudget) break;
+    if (!projectionBudget(frameMemoryProjection(candidate)).overBudget) break;
     removedRanges.push([entry.blockStart, entry.blockEnd]);
     removedEntries.add(entry);
     if (!shed.includes(entry.id)) shed.push(entry.id);
@@ -522,7 +527,9 @@ export function projectParsed(parsed: ParsedIndex, opts: ProjectParsedOptions): 
 
   let blanked: false | { reason: string } = false;
   if (global) blanked = { reason: global.cls };
-  else if (projectionBudget(candidate).overBudget) blanked = { reason: 'budget-unrecoverable' };
+  else if (projectionBudget(frameMemoryProjection(candidate)).overBudget) blanked = { reason: 'budget-unrecoverable' };
+
+  const framedCandidate = frameMemoryProjection(candidate);
 
   const result = {
     expired,
@@ -530,8 +537,8 @@ export function projectParsed(parsed: ParsedIndex, opts: ProjectParsedOptions): 
     shed,
     blanked,
     degraded: spliced.length > 0 || shed.length > 0,
-    injectText: blanked ? '' : candidate,
-    budget: projectionBudget(candidate),
+    injectText: blanked ? '' : framedCandidate,
+    budget: projectionBudget(framedCandidate),
   } as ProjectionResult;
 
   // Keep old consumers compiling without changing the exact enumerable v2 shape.

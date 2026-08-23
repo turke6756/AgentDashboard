@@ -50,7 +50,7 @@ import {
   WORKER_CLAUDE_SETTINGS_JSON,
   RESEARCHER_CLAUDE_SETTINGS_JSON,
 } from '../../shared/constants';
-import { DISCLOSURE_FORMAT_MARKER } from '../../shared/memory-index-core';
+import { DISCLOSURE_FORMAT_MARKER, MEMORY_FRAMING_PREAMBLE } from '../../shared/memory-index-core';
 import { validateProjectSource } from './io';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
@@ -184,6 +184,8 @@ test('valid index → injects the projected text, persists last-good source, ups
 
   const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
   assert.equal(r.outcome, 'valid');
+  assert.ok(r.injectText.startsWith(`${MEMORY_FRAMING_PREAMBLE}\n\n`),
+    'REACHABILITY:framing-preamble — a non-blank projection starts with the fixed framing');
   assert.ok(r.injectText.includes(id), 'the clean capsule rides injectText');
 
   const state = store.getIndexState(ws)!;
@@ -413,6 +415,8 @@ test('preamble-only over-budget is budget-unrecoverable and takes banner-only, n
   const projected = validateProjectSource(source, root, NOW).projection;
   assert.deepEqual(projected.blanked, { reason: 'budget-unrecoverable' },
     'fixture precondition: shedding every entry cannot repair the oversized preamble');
+  assert.equal(projected.injectText, '', 'a blanked projection omits the framing preamble');
+  assert.ok(!projected.injectText.includes(MEMORY_FRAMING_PREAMBLE));
   const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
   assert.equal(r.outcome, 'banner-only');
   assert.equal(r.injectText, inj.BANNER_ONLY);

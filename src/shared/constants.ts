@@ -869,7 +869,7 @@ configuration reading, never an observed denial.`,
 
 /** v26 records the live, provider-specific researcher posture and distinguishes
  * the still-active per-provider cwd from the deleted per-agent HOME redirect. */
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V25.replace(
+export const SUPERVISOR_AGENT_MD_V26 = SUPERVISOR_AGENT_MD_V25.replace(
   'writes findings to `.lares/research/inbox/` (a sandboxed, untrusted tier);',
   'writes findings to `.lares/research/inbox/` (an untrusted tier);',
 ).replace(
@@ -903,6 +903,18 @@ open through shell chaining, and its identical live write also landed. Inbox
 promotion and reader rules improve downstream consistency; they do not restrict
 provider-home persistence.`,
 );
+
+/** v27 corrects the Memory section to the fetch-when-relevant model. */
+const SUPERVISOR_AGENT_MD_V27_MEMORY_NEW = [
+  'Your workspace memory index is **injected into your context at launch** — you don\'t open it at session start. The injected entries are deliberately brief descriptions; their full bodies are not inline. When an entry becomes relevant at any point in your work, call `recall_memory` with its capsule id to fetch the full memory. Opening a memory is normal and expected, not an escalation. The index is maintained at `./memory/MEMORY.md` (with detail files under `./memory/details/`); repo-wide auto-memory stays off (`autoMemoryEnabled: false` in your `./.claude/settings.json`), so this managed index is your only memory source.',
+  '',
+  'If you are re-orienting after a crash, reset, or continuation handoff: read the injected descriptions fully before acting. Then read the `handoff-read-first` list in order, and use `recall_memory` to open any other capsule whose `read-if` trigger matches your task.',
+  '',
+  'Memories and lessons serve **every** supervisor and worker in this workspace, not just their author. When something happens that future agents shouldn\'t have to relearn, reach for the `remember` skill to save it — don\'t hand-write memory or lesson files. After editing the index yourself, run `node .lares/scripts/memory-index.mjs validate <index>` (exit 0) before ending your turn.',
+].join('\n');
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V26
+  .split(SUPERVISOR_AGENT_MD_V20_MEMORY_NEW)
+  .join(SUPERVISOR_AGENT_MD_V27_MEMORY_NEW);
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
 
