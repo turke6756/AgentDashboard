@@ -39,16 +39,14 @@
 
 import crypto from 'crypto';
 import {
-  parseIndex,
-  validateParsed,
-  projectParsed,
   STALE_ACTIVE_DAYS,
   type Finding,
   type ParsedIndex,
 } from '../../shared/memory-index-core';
-import { readValidateProject, validateIO, type ReadValidateProjectResult } from './io';
+import { readValidateProject, validateProjectSource, type ReadValidateProjectResult } from './io';
 import {
   getIndexState,
+  listFindings,
   putIndexState,
   putRuntimeError,
   upsertFindings,
@@ -80,6 +78,16 @@ export const BANNER_ONLY =
   `fallback snapshot exists, so NO memory index was injected this launch. ` +
   `Fix the live index — run \`node .lares/scripts/memory-index.mjs validate\`. -->`;
 
+/** Prefixed to a partial current projection. It is deliberately composed here,
+ * outside the untrusted MEMORY.md bytes retained by the projector. */
+export function degradedBanner(withheld: number): string {
+  return (
+    `<!-- ⚠ MEMORY INDEX DEGRADED: ${withheld} ${withheld === 1 ? 'entry was' : 'entries were'} ` +
+    `withheld from this launch; the remaining validated entries were injected. ` +
+    `Fix the withheld entries — run \`node .lares/scripts/memory-index.mjs validate\`. -->`
+  );
+}
+
 // ── Findings mapping (valid source only) ──────────────────────────────────────
 /** Per-entry content hash so a materially-changed entry yields a new finding_id
  *  and recurs (WP-B), and index-level findings share the whole-index hash. */
@@ -95,28 +103,50 @@ function entryHash(parsed: ParsedIndex, id: string): string {
  * as id lists rather than Finding objects. reconcileMemoryEvidence separately
  * produces never-recalled / never-fired|evidence-unavailable / cap-pressure.
  */
-function advisoryFindings(r: ReadValidateProjectResult): FindingInput[] {
+function epochDay(date: string): number {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  return Number.isNaN(ms) ? NaN : Math.floor(ms / 86_400_000);
+}
+
+function projectedEntryIds(r: ReadValidateProjectResult): Set<string> {
+  if (r.projection.blanked) return new Set();
+  const withheld = new Set([
+    ...r.projection.expired,
+    ...r.projection.spliced.map((entry) => entry.id),
+    ...r.projection.shed,
+  ]);
+  return new Set(r.parsed.entries
+    .filter((entry) => entry.status === 'active' && !withheld.has(entry.id))
+    .map((entry) => entry.id));
+}
+
+function advisoryFindings(r: ReadValidateProjectResult, nowISO: string): FindingInput[] {
   const whole = sha256Hex(r.parsed.raw);
   const out: FindingInput[] = [];
+  const projected = projectedEntryIds(r);
   for (const f of r.advisory) {
     out.push({ kind: f.cls, entryId: f.id, sourceHash: f.id ? entryHash(r.parsed, f.id) : whole, reason: f.message });
   }
-  for (const id of r.projection.staleActive) {
+  const today = epochDay(nowISO.slice(0, 10));
+  for (const entry of r.parsed.entries) {
+    if (!projected.has(entry.id) || !entry.idDate) continue;
+    const created = epochDay(entry.idDate);
+    if (Number.isNaN(today) || Number.isNaN(created) || today - created <= STALE_ACTIVE_DAYS) continue;
     out.push({
       kind: 'stale-active',
-      entryId: id,
-      sourceHash: entryHash(r.parsed, id),
-      reason: `active entry ${id} is older than ${STALE_ACTIVE_DAYS} days — confirm it is still current`,
+      entryId: entry.id,
+      sourceHash: entryHash(r.parsed, entry.id),
+      reason: `active entry ${entry.id} is older than ${STALE_ACTIVE_DAYS} days — confirm it is still current`,
     });
   }
-  for (const id of r.projection.conditionReview) {
-    const e = r.parsed.entries.find((x) => x.id === id);
+  for (const [id, disposal] of r.disposal) {
+    if (!projected.has(id) || 'error' in disposal || disposal.kind !== 'expires-when') continue;
     out.push({
       kind: 'condition-review',
       entryId: id,
       sourceHash: entryHash(r.parsed, id),
       reason: `active entry ${id} carries an expires-when condition — review whether it has fired`,
-      exitCondition: e?.expiresWhen ?? null,
+      exitCondition: disposal.value,
     });
   }
   return out;
@@ -135,30 +165,90 @@ function hardInvalidFinding(parsed: ParsedIndex, hard: Finding[]): FindingInput 
 }
 
 // ── Full-validation over a SOURCE string (fallback path) ──────────────────────
-// io.ts.readValidateProject reads MEMORY.md from disk; the fallback is a SOURCE
-// held in memory_index_state (not on disk), so it is validated by composing the
-// SAME landed pieces — pure validateParsed + WP-A2 validateIO (re-checking the
-// live detail files) + projectParsed — never a re-implementation.
-function validateProjectText(text: string, workspaceRoot: string, nowISO: string): ReadValidateProjectResult {
-  const parsed = parseIndex(text);
-  const pure = validateParsed(parsed);
-  const io = validateIO(parsed, workspaceRoot);
-  const projection = projectParsed(parsed, { nowISO });
-  const combinedHard = [...pure.hard, ...io.hard];
-  const advisory = [...pure.advisory, ...io.advisory];
+// Both live and last-known-good SOURCE bytes enter through io.ts's canonical
+// validateProjectSource pipeline; the fallback still re-checks live body files.
+function degradedFinding(r: ReadValidateProjectResult): FindingInput {
+  const withheld = new Set([
+    ...r.projection.spliced.map((entry) => entry.id),
+    ...r.projection.shed,
+  ]);
   return {
-    parsed,
-    hard: combinedHard,
-    advisory,
-    projection,
-    injectText: combinedHard.length === 0 ? projection.injectText : '',
+    kind: 'projection-degraded',
+    entryId: null,
+    sourceHash: sha256Hex(r.parsed.raw),
+    reason: `${withheld.size} ${withheld.size === 1 ? 'entry was' : 'entries were'} withheld; the remaining validated entries were injected`,
   };
+}
+
+function validationFindings(r: ReadValidateProjectResult): FindingInput[] {
+  return r.hard.map((finding) => ({
+    kind: finding.cls,
+    entryId: finding.id,
+    sourceHash: finding.id ? entryHash(r.parsed, finding.id) : sha256Hex(r.parsed.raw),
+    reason: finding.message,
+  }));
+}
+
+const ADVISORY_KINDS = new Set(['cap-pressure', 'stale-active', 'condition-review']);
+const ENTRY_VALIDATOR_KINDS = new Set([
+  'disposal-missing', 'disposal-malformed', 'detail-missing', 'detail-escape',
+  'detail-unreadable', 'duplicate-id', 'duplicate-field', 'unexpected-field',
+  'unexpected-content', 'detail-root-mismatch', 'missing-field', 'malformed-schema',
+]);
+const UNIT_VALIDATOR_KINDS = new Set(['orphan-details', 'archive-orphan']);
+
+/** Preserve findings whose producer/unit this pass did not successfully own. */
+function reconciliationKeepIds(
+  ws: string,
+  current: ReadValidateProjectResult,
+  currentIsClean: boolean,
+): string[] {
+  const projected = projectedEntryIds(current);
+  const currentHard = new Set(current.hard.map((finding) => `${finding.cls}\0${finding.id ?? ''}`));
+  const keep: string[] = [];
+  for (const finding of listFindings(ws, 'pending')) {
+    let mayClear = false;
+    if (finding.kind === 'hard-invalid') {
+      mayClear = currentIsClean;
+    } else if (finding.kind === 'projection-degraded') {
+      mayClear = currentIsClean && !current.projection.degraded;
+    } else if (ADVISORY_KINDS.has(finding.kind)) {
+      mayClear = finding.entryId === null
+        ? !current.projection.blanked
+        : projected.has(finding.entryId);
+    } else if (ENTRY_VALIDATOR_KINDS.has(finding.kind) && finding.entryId) {
+      const disposal = current.disposal.get(finding.entryId);
+      const entryExists = current.parsed.entries.some((entry) => entry.id === finding.entryId);
+      const unitPassed = disposal ? !('error' in disposal) : entryExists;
+      mayClear = unitPassed && !currentHard.has(`${finding.kind}\0${finding.entryId}`);
+    } else if (UNIT_VALIDATOR_KINDS.has(finding.kind)) {
+      mayClear = !currentHard.has(`${finding.kind}\0${finding.entryId ?? ''}`);
+    }
+    if (!mayClear) keep.push(finding.findingId);
+  }
+  return keep;
+}
+
+function reconcileProjectedSource(
+  ws: string,
+  current: ReadValidateProjectResult,
+  nowISO: string,
+  producedIds: string[],
+  currentIsClean: boolean,
+): void {
+  reconcileMemoryEvidence(ws, current.parsed, nowISO, {
+    keepExternalIds: [
+      ...producedIds,
+      ...reconciliationKeepIds(ws, current, currentIsClean),
+    ],
+  });
 }
 
 // ── Result ────────────────────────────────────────────────────────────────────
 export type MemoryInjectionOutcome =
   | 'valid' // current parse valid — its projected text injected
   | 'valid-empty' // current parse valid but the projection is empty (index dropped to nothing)
+  | 'degraded' // current parse projected partially; a wrapper-owned warning is prefixed
   | 'fallback' // current parse HARD-invalid — re-validated last-good fallback injected behind a banner
   | 'banner-only' // current parse HARD-invalid — no valid fallback; banner injected, no index
   | 'runtime'; // read/parse threw — nothing injected, fail-open
@@ -197,19 +287,43 @@ export function computeSupervisorMemoryInjection(
     return { injectText: '', outcome: 'runtime' };
   }
 
-  // Step 2a — current parse VALID: persist the last-known-good source (clears any
-  // prior runtime error), upsert advisory findings, reconcile against it, inject.
-  if (current.hard.length === 0) {
-    putIndexState(ws, {
-      sourceText: current.parsed.raw,
-      sourceHash: sha256Hex(current.parsed.raw),
-      parsedJson: JSON.stringify(current.parsed),
-      validatedAt: nowISO,
-    });
-    const advIds = upsertFindings(ws, advisoryFindings(current), nowISO);
-    // Reconcile ONLY against a valid source; keep the advisory ids so the
-    // reconciliation sweep does not clear them (WP-B keepExternalIds).
-    reconcileMemoryEvidence(ws, current.parsed, nowISO, { keepExternalIds: advIds });
+  const currentIsClean = current.hard.length === 0;
+
+  // A local splice or deterministic budget shed injects the usable current
+  // projection. Never replace last-known-good with a partial source.
+  if (!current.projection.blanked && current.projection.degraded) {
+    const findingIds = upsertFindings(ws, [
+      ...validationFindings(current),
+      degradedFinding(current),
+      ...advisoryFindings(current, nowISO),
+    ], nowISO);
+    reconcileProjectedSource(ws, current, nowISO, findingIds, false);
+    const withheld = new Set([
+      ...current.projection.spliced.map((entry) => entry.id),
+      ...current.projection.shed,
+    ]).size;
+    return {
+      injectText: `${degradedBanner(withheld)}\n\n${current.injectText}`,
+      outcome: 'degraded',
+    };
+  }
+
+  // A non-blanked projection remains usable even when a non-projection
+  // integrity finding exists. Only a zero-HARD source becomes last-known-good.
+  if (!current.projection.blanked) {
+    if (currentIsClean) {
+      putIndexState(ws, {
+        sourceText: current.parsed.raw,
+        sourceHash: sha256Hex(current.parsed.raw),
+        parsedJson: JSON.stringify(current.parsed),
+        validatedAt: nowISO,
+      });
+    }
+    const findingIds = upsertFindings(ws, [
+      ...validationFindings(current),
+      ...advisoryFindings(current, nowISO),
+    ], nowISO);
+    reconcileProjectedSource(ws, current, nowISO, findingIds, currentIsClean);
     return {
       injectText: current.injectText,
       outcome: current.injectText ? 'valid' : 'valid-empty',
@@ -218,14 +332,14 @@ export function computeSupervisorMemoryInjection(
 
   // Step 2b — current parse HARD-invalid. Persist the hard-invalid finding; try
   // the last-known-good SOURCE, re-running FULL I/O validation over it.
-  const hardFinding = hardInvalidFinding(current.parsed, current.hard);
+  const globalFindings = [hardInvalidFinding(current.parsed, current.hard), ...validationFindings(current)];
   const prior = getIndexState(ws);
   if (prior?.sourceText) {
-    const fb = validateProjectText(prior.sourceText, workspaceRoot, nowISO);
+    const fb = validateProjectSource(prior.sourceText, workspaceRoot, nowISO);
     if (fb.hard.length === 0) {
       // Fallback still valid → re-project TODAY + banner, reconcile against it.
-      const keepIds = upsertFindings(ws, [hardFinding, ...advisoryFindings(fb)], nowISO);
-      reconcileMemoryEvidence(ws, fb.parsed, nowISO, { keepExternalIds: keepIds });
+      const keepIds = upsertFindings(ws, [...globalFindings, ...advisoryFindings(fb, nowISO)], nowISO);
+      reconcileProjectedSource(ws, fb, nowISO, keepIds, false);
       return {
         injectText: `${fallbackBanner(prior.validatedAt)}\n\n${fb.injectText}`,
         outcome: 'fallback',
@@ -237,7 +351,7 @@ export function computeSupervisorMemoryInjection(
   // only, never unvalidated bytes. Upsert the hard-invalid finding but DO NOT
   // reconcile (no valid source ⇒ never clear/mutate findings from an invalid
   // parse). upsertFindings does not clear, so this preserves history.
-  upsertFindings(ws, [hardFinding], nowISO);
+  upsertFindings(ws, globalFindings, nowISO);
   return { injectText: BANNER_ONLY, outcome: 'banner-only' };
 }
 

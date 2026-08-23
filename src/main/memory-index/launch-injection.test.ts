@@ -120,12 +120,6 @@ let store: StoreModule;
 const MARKER = DISCLOSURE_FORMAT_MARKER;
 function ACTIVE(id: string, over: Record<string, string> = {}): string {
   const f: Record<string, string> = {
-    status: 'active',
-    date: '2026-07-28',
-    owner: 'super',
-    consequence: 'things break silently',
-    state: 'constraint X holds',
-    'open-loop': 'finish Y',
     'read-if': 'before editing the schema',
     detail: `memory/details/${id}.md`,
     ...over,
@@ -147,8 +141,13 @@ function makeWorkspace(): { root: string; detailsDir: string; memoryMd: string }
   return { root, detailsDir, memoryMd: path.join(detailsDir, '..', 'MEMORY.md') };
 }
 function writeIndex(memoryMd: string, body: string): void { fs.writeFileSync(memoryMd, body, 'utf8'); }
-function writeDetail(detailsDir: string, id: string): void {
-  fs.writeFileSync(path.join(detailsDir, `${id}.md`), `# ${id}\nclosed history\n`, 'utf8');
+function writeDetail(detailsDir: string, id: string, kind = 'open-loop', value: string | null = null): void {
+  const valueLine = value === null ? '' : `\nvalue: ${value}`;
+  fs.writeFileSync(
+    path.join(detailsDir, `${id}.md`),
+    `<!-- memory-disposal:v1\nkind: ${kind}${valueLine}\n-->\n# ${id}\nclosed history\n`,
+    'utf8',
+  );
 }
 
 const NOW = '2026-07-28T00:00:00Z';
@@ -201,7 +200,7 @@ test('a repeat launch does not duplicate review-queue rows', () => {
   const ws = nextWs();
   const { root, detailsDir, memoryMd } = makeWorkspace();
   const id = 'mb-2026-06-01-stale'; // aged active → stale-active finding too
-  writeIndex(memoryMd, idx(ACTIVE(id, { date: '2026-06-01' })));
+  writeIndex(memoryMd, idx(ACTIVE(id)));
   writeDetail(detailsDir, id);
 
   inj.computeSupervisorMemoryInjection(ws, root, NOW);
@@ -228,6 +227,92 @@ test('a valid launch CLEARS a previously-set last_runtime_error', () => {
 });
 
 // ── RUNTIME (read/parse threw) ─────────────────────────────────────────────────
+test('entry-local failure enters degraded seam, injects the partial current projection, and does not persist it', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const keep = 'mb-2026-07-28-degraded-keep';
+  const withheld = 'mb-2026-07-28-degraded-missing';
+
+  writeIndex(memoryMd, idx(ACTIVE(keep)));
+  writeDetail(detailsDir, keep);
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  const lastGood = store.getIndexState(ws)!.sourceText;
+
+  writeIndex(memoryMd, idx(ACTIVE(keep), ACTIVE(withheld)));
+  const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
+  assert.equal(r.outcome, 'degraded', 'REACHABILITY:degraded-outcome');
+  assert.ok(r.injectText.startsWith(inj.degradedBanner(1)), 'the wrapper prefixes the degraded banner');
+  assert.ok(r.injectText.includes(keep), 'the valid current entry is injected');
+  assert.ok(!r.injectText.includes(withheld), 'the invalid entry is withheld');
+  assert.equal(store.getIndexState(ws)!.sourceText, lastGood, 'partial current source never replaces last-known-good');
+  assert.ok(!fs.readFileSync(memoryMd, 'utf8').includes('MEMORY INDEX DEGRADED'), 'banner stays outside index bytes');
+  const pending = store.listFindings(ws, 'pending');
+  assert.ok(pending.some((finding) => finding.kind === 'projection-degraded'), 'degraded finding is pending');
+  assert.ok(pending.some((finding) => finding.kind === 'detail-missing' && finding.entryId === withheld),
+    'the entry-local validator finding is retained');
+  assert.ok(!pending.some((finding) => finding.kind === 'hard-invalid'), 'degradation is not mislabeled globally invalid');
+});
+
+test('a clean re-evaluation clears projection-degraded and the repaired entry finding', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const keep = 'mb-2026-07-28-repair-keep';
+  const repaired = 'mb-2026-07-28-repair-entry';
+  writeIndex(memoryMd, idx(ACTIVE(keep), ACTIVE(repaired)));
+  writeDetail(detailsDir, keep);
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'degraded');
+
+  writeDetail(detailsDir, repaired);
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  assert.ok(!store.listFindings(ws, 'pending').some((finding) =>
+    finding.kind === 'projection-degraded' || (finding.kind === 'detail-missing' && finding.entryId === repaired)),
+  'the clean pass owns and clears both repaired findings');
+});
+
+test('a degraded pass preserves advisory findings for a withheld entry', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const stale = 'mb-2026-06-01-withheld-stale';
+  const keep = 'mb-2026-07-28-withheld-keep';
+  writeIndex(memoryMd, idx(ACTIVE(stale), ACTIVE(keep)));
+  writeDetail(detailsDir, stale);
+  writeDetail(detailsDir, keep);
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  assert.ok(store.listFindings(ws, 'pending').some((finding) => finding.kind === 'stale-active' && finding.entryId === stale));
+
+  fs.rmSync(path.join(detailsDir, `${stale}.md`));
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'degraded');
+  assert.ok(store.listFindings(ws, 'pending').some((finding) => finding.kind === 'stale-active' && finding.entryId === stale),
+    'withheld/unreadable entry remains outside advisory clearing ownership');
+});
+
+test('condition-review advisory is derived from the validated disposal map', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const id = 'mb-2026-07-28-condition';
+  writeIndex(memoryMd, idx(ACTIVE(id)));
+  writeDetail(detailsDir, id, 'expires-when', 'the migration lands');
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  const finding = store.listFindings(ws, 'pending').find((row) => row.kind === 'condition-review' && row.entryId === id);
+  assert.equal(finding?.exitCondition, 'the migration lands');
+});
+
+test('budget pressure sheds entries and enters the degraded outcome', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const ids = Array.from({ length: 60 }, (_, i) => `mb-2026-07-28-budget-${String(i).padStart(2, '0')}`);
+  const blocks = ids.map((id) => ACTIVE(id, { 'read-if': `before ${'x'.repeat(500)}` }));
+  writeIndex(memoryMd, idx(...blocks));
+  for (const id of ids) writeDetail(detailsDir, id);
+
+  const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
+  assert.equal(r.outcome, 'degraded');
+  assert.ok(r.injectText.includes('MEMORY INDEX DEGRADED'));
+  assert.ok(ids.some((id) => r.injectText.includes(id)), 'some valid entries remain');
+  assert.ok(ids.some((id) => !r.injectText.includes(id)), 'some entries were deterministically shed');
+  assert.equal(store.getIndexState(ws), null, 'a shed source is not persisted as last-known-good');
+});
+
 test('a missing MEMORY.md → RUNTIME: nothing injected, error recorded, last-good source intact', () => {
   const ws = nextWs();
   const { root } = makeWorkspace(); // no MEMORY.md written
@@ -250,12 +335,9 @@ test('HARD-invalid live index → re-validated fallback re-projected TODAY drops
   const exp = 'mb-2026-07-28-exp';
   // Seed a VALID last-good source at 2026-07-28: both entries active, both with
   // detail files. `exp` expires 2026-08-15.
-  writeIndex(memoryMd, idx(
-    ACTIVE(keep, { expires: '2027-01-01' }),
-    ACTIVE(exp, { expires: '2026-08-15' }),
-  ));
-  writeDetail(detailsDir, keep);
-  writeDetail(detailsDir, exp);
+  writeIndex(memoryMd, idx(ACTIVE(keep), ACTIVE(exp)));
+  writeDetail(detailsDir, keep, 'expires', '2027-01-01');
+  writeDetail(detailsDir, exp, 'expires', '2026-08-15');
   const seed = inj.computeSupervisorMemoryInjection(ws, root, NOW);
   assert.equal(seed.outcome, 'valid');
 
@@ -303,14 +385,14 @@ test('reconciliation does NOT run or clear against a structurally-invalid curren
   const ws = nextWs();
   const { root, detailsDir, memoryMd } = makeWorkspace();
   const id = 'mb-2026-06-01-stale';
-  writeIndex(memoryMd, idx(ACTIVE(id, { date: '2026-06-01' })));
+  writeIndex(memoryMd, idx(ACTIVE(id)));
   writeDetail(detailsDir, id);
   inj.computeSupervisorMemoryInjection(ws, root, NOW); // seeds a pending stale-active finding
   assert.ok(store.listFindings(ws, 'pending').some((f) => f.kind === 'stale-active'), 'stale-active is pending');
 
   // Live goes HARD-invalid AND fallback becomes I/O-invalid (detail removed) →
   // banner-only ⇒ no reconcile ⇒ the prior pending finding is NOT cleared.
-  writeIndex(memoryMd, idx(ACTIVE(id, { date: '2026-06-01' })).replace(`${MARKER}\n\n`, ''));
+  writeIndex(memoryMd, idx(ACTIVE(id)).replace(`${MARKER}\n\n`, ''));
   fs.rmSync(path.join(detailsDir, `${id}.md`));
   const r = inj.computeSupervisorMemoryInjection(ws, root, NOW);
   assert.equal(r.outcome, 'banner-only');
