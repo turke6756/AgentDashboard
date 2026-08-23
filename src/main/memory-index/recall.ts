@@ -1,27 +1,27 @@
 // recall.ts — the on-demand memory-detail fetch behind the `recall_memory` MCP
-// tool + POST /api/memory/recall route (WP-D). Progressive disclosure: an ACTIVE
-// capsule lives inline in the injected index, so recall only ever fetches CLOSED
-// history/evidence — the capsule's DECLARED `detail:` pointer, resolved from the
-// parsed index, never a synthesized `<id>.md`.
+// tool + POST /api/memory/recall route (WP-D). A capsule body is fetchable whenever
+// its `read-if` becomes relevant, whether the capsule is active or archived. Recall
+// follows the capsule's DECLARED `detail:` pointer, resolved from the selected
+// catalog, never a synthesized `<id>.md`.
 //
 // It composes the landed pieces and never re-implements them:
-//   • memory-index-core.ts (WP-A1) — parseIndex, isValidMemoryId,
-//     safeUtf8Truncate, utf8ByteLength, RECALL_DETAIL_MAX_BYTES, MEMORY_DETAILS_DIR.
+//   • memory-index-core.ts (WP-A1) — catalog/disposal parsers, isValidMemoryId,
+//     safeUtf8Truncate, utf8ByteLength, and canonical memory paths.
 //   • review-store.ts (WP-B)       — bumpRecall (recall telemetry; fires ONLY on
 //                                     a successful ok:true fetch).
 //
 // Security contract (plans/memory-lessons-v2-implementation.md §WP-D):
 //   1. Validate `id` against MEMORY_ID_GRAMMAR BEFORE touching disk (a traversal /
 //      `..` / separator id fails the grammar → invalid_id, no disk read, no bump).
-//   2. Take the entry's declared `detail:` pointer + `status` from the PARSED
-//      capsule. An absent pointer, a pointer whose file is missing, or one whose
-//      realpath resolves OUTSIDE the exact MEMORY_DETAILS_DIR → not_found (never a
-//      disk-content leak, never a bump). Realpath-bound before any read.
-//   3. UTF-8-safe-truncate the BODY ONLY to RECALL_DETAIL_MAX_BYTES (the cap
+//   2. Select MEMORY.md before ARCHIVE.md. Duplicate ids in the selected catalog
+//      are diagnosed internally and refused outward as not_found.
+//   3. Enforce active → details/ and archived → archive/ containment before read.
+//   4. Strip the leading memory-disposal:v1 block, then UTF-8-safe-truncate the
+//      BODY ONLY to RECALL_DETAIL_MAX_BYTES (the cap
 //      excludes the JSON envelope/metadata; `truncated:true` when clipped).
-//   4. Structured result codes (invalid_id / not_found / read_error) — NEVER a
+//   5. Structured result codes (invalid_id / not_found / read_error) — NEVER a
 //      throw. `archived` capsules are served with `{ ok:true, archived:true }`.
-//   5. `bumpRecall` fires ONLY on `ok:true` (recallMemoryDetailWithTelemetry).
+//   6. `bumpRecall` fires ONLY on `ok:true` (recallMemoryDetailWithTelemetry).
 //
 // Workspace isolation is structural: the caller (the route) resolves
 // `workspaceRoot` SOLELY from the authenticated X-Workspace-Id header, so two
@@ -32,11 +32,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   parseIndex,
+  parseArchiveIndex,
   isValidMemoryId,
   safeUtf8Truncate,
   utf8ByteLength,
   RECALL_DETAIL_MAX_BYTES,
   MEMORY_DETAILS_DIR,
+  MEMORY_ARCHIVE_DIR,
+  ARCHIVE_INDEX_REL,
+  parseDisposal,
+  type ParsedEntry,
 } from '../../shared/memory-index-core';
 import { bumpRecall } from './review-store';
 
@@ -85,11 +90,49 @@ function isInsideDir(target: string, dir: string): boolean {
 
 /** The supervisor cwd / details dir / index path for a workspace root, derived
  *  from the ratified MEMORY_DETAILS_DIR constant (one source of the layout). */
-function memoryDirs(workspaceRoot: string): { supervisorDir: string; detailsDir: string; memoryMd: string } {
+function memoryDirs(workspaceRoot: string): {
+  supervisorDir: string;
+  detailsDir: string;
+  archiveDir: string;
+  memoryMd: string;
+  archiveMd: string;
+} {
   const detailsDir = path.join(workspaceRoot, ...MEMORY_DETAILS_DIR.split('/').filter(Boolean));
+  const archiveDir = path.join(workspaceRoot, ...MEMORY_ARCHIVE_DIR.split('/').filter(Boolean));
   const supervisorDir = path.resolve(detailsDir, '..', '..');
   const memoryMd = path.join(supervisorDir, 'memory', 'MEMORY.md');
-  return { supervisorDir, detailsDir, memoryMd };
+  const archiveMd = path.join(workspaceRoot, ...ARCHIVE_INDEX_REL.split('/').filter(Boolean));
+  return { supervisorDir, detailsDir, archiveDir, memoryMd, archiveMd };
+}
+
+function readCatalogEntries(indexPath: string, archive: boolean): ParsedEntry[] | null {
+  try {
+    const text = fs.readFileSync(indexPath, 'utf8');
+    return (archive ? parseArchiveIndex(text) : parseIndex(text)).entries;
+  } catch {
+    return null;
+  }
+}
+
+function ambiguousRecall(id: string, catalog: 'MEMORY.md' | 'ARCHIVE.md', count: number): RecallErr {
+  console.warn(`[memory-index] recall refused ambiguous id ${id}: ${count} records in ${catalog}`);
+  return { ok: false, code: 'not_found' };
+}
+
+/** Remove only the exact leading disposal block. The source file is never written. */
+function stripLeadingDisposal(rawBody: string): string {
+  const disposal = parseDisposal(rawBody);
+  if (!disposal.ok) return rawBody;
+
+  // Translate the normalized match length back to a raw-string offset so stripping
+  // does not also rewrite a BOM/CRLF body's remaining bytes.
+  let rawOffset = rawBody.startsWith('\uFEFF') ? 1 : 0;
+  let normalizedOffset = 0;
+  while (normalizedOffset < disposal.disposal.blockEnd) {
+    rawOffset += rawBody[rawOffset] === '\r' && rawBody[rawOffset + 1] === '\n' ? 2 : 1;
+    normalizedOffset += 1;
+  }
+  return rawBody.slice(rawOffset);
 }
 
 /**
@@ -105,19 +148,34 @@ export function recallMemoryDetail(workspaceRoot: string, id: unknown): RecallRe
     return { ok: false, code: 'invalid_id' };
   }
 
-  const { supervisorDir, detailsDir, memoryMd } = memoryDirs(workspaceRoot);
+  const { supervisorDir, detailsDir, archiveDir, memoryMd, archiveMd } = memoryDirs(workspaceRoot);
 
-  // Read + parse the index. A missing/unreadable index means the entry cannot be
-  // located → not_found (there is nothing to recall).
-  let indexText: string;
-  try {
-    indexText = fs.readFileSync(memoryMd, 'utf8');
-  } catch {
-    return { ok: false, code: 'not_found' };
+  // MEMORY.md has transaction-defining precedence: any resident record suppresses
+  // archive lookup, including an ambiguous resident set that must be refused.
+  const memoryEntries = readCatalogEntries(memoryMd, false);
+  if (memoryEntries === null) return { ok: false, code: 'not_found' };
+  const memoryMatches = memoryEntries.filter((entry) => entry.id === id);
+  let entry: ParsedEntry;
+  let expectedStatus: 'active' | 'archived';
+  let expectedDir: string;
+  if (memoryMatches.length > 0) {
+    if (memoryMatches.length !== 1) return ambiguousRecall(id, 'MEMORY.md', memoryMatches.length);
+    [entry] = memoryMatches;
+    expectedStatus = 'active';
+    expectedDir = detailsDir;
+  } else {
+    const archiveEntries = readCatalogEntries(archiveMd, true);
+    if (archiveEntries === null) return { ok: false, code: 'not_found' };
+    const archiveMatches = archiveEntries.filter((candidate) => candidate.id === id);
+    if (archiveMatches.length === 0) return { ok: false, code: 'not_found' };
+    if (archiveMatches.length !== 1) return ambiguousRecall(id, 'ARCHIVE.md', archiveMatches.length);
+    [entry] = archiveMatches;
+    expectedStatus = 'archived';
+    expectedDir = archiveDir;
   }
-  const parsed = parseIndex(indexText);
-  const entry = parsed.entries.find((e) => e.id === id);
-  if (!entry) return { ok: false, code: 'not_found' };
+
+  // Catalog/status/root must agree. Treat mismatches as non-disclosing misses.
+  if (entry.status !== expectedStatus) return { ok: false, code: 'not_found' };
 
   // (2) DECLARED pointer from the parsed capsule — never a synthesized <id>.md.
   const pointer = entry.detail;
@@ -127,11 +185,10 @@ export function recallMemoryDetail(workspaceRoot: string, id: unknown): RecallRe
   const real = tryRealpath(candidate);
   if (real === null) return { ok: false, code: 'not_found' }; // missing detail file
 
-  // Realpath-bound: must land STRICTLY beneath the exact details dir. A symlink
-  // escape, a `..` traversal in the pointer, or a location merely under memory/
-  // but outside details/ all resolve outside → refuse (never leak content).
-  const canonicalDetailsDir = tryRealpath(detailsDir);
-  if (canonicalDetailsDir === null || !isInsideDir(real, canonicalDetailsDir)) {
+  // Realpath-bound beneath the status-selected body root. A symlink escape, a
+  // traversal, or the wrong memory subtree all resolve outside and are refused.
+  const canonicalExpectedDir = tryRealpath(expectedDir);
+  if (canonicalExpectedDir === null || !isInsideDir(real, canonicalExpectedDir)) {
     return { ok: false, code: 'not_found' };
   }
 
@@ -145,8 +202,9 @@ export function recallMemoryDetail(workspaceRoot: string, id: unknown): RecallRe
     return { ok: false, code: 'read_error' };
   }
 
-  const truncated = utf8ByteLength(rawBody) > RECALL_DETAIL_MAX_BYTES;
-  const body = truncated ? safeUtf8Truncate(rawBody, RECALL_DETAIL_MAX_BYTES) : rawBody;
+  const visibleBody = stripLeadingDisposal(rawBody);
+  const truncated = utf8ByteLength(visibleBody) > RECALL_DETAIL_MAX_BYTES;
+  const body = truncated ? safeUtf8Truncate(visibleBody, RECALL_DETAIL_MAX_BYTES) : visibleBody;
 
   return {
     ok: true,

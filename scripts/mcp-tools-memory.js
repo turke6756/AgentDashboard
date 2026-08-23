@@ -3,9 +3,9 @@
 // CREATES the `memory` toolset; it is registered in mcp-dashboard.js's
 // TOOLSET_REGISTRY.
 //
-// It exposes `recall_memory`: an on-demand fetch of a CLOSED memory capsule's
-// detail body (progressive disclosure — active capsules ride inline in the
-// injected index, so nothing live is ever fetched late). The tool is a thin
+// It exposes `recall_memory`: an on-demand fetch of a memory capsule's detail
+// body. Active and archived capsules are both fetchable whenever their read-if
+// becomes relevant during work. The tool is a thin
 // shim over POST /api/memory/recall; the server derives the workspace SOLELY
 // from the authenticated X-Workspace-Id header (forwarded by apiRequest's
 // CALLER_HEADERS spread), validates the id, resolves the capsule's DECLARED
@@ -17,10 +17,10 @@ function getMemoryToolDefinitions() {
     {
       name: 'recall_memory',
       description:
-        'Fetch the full detail body for a CLOSED memory capsule by its id (e.g. ' +
-        '"mb-2026-07-28-some-slug"). Active capsules already ride inline in your injected ' +
-        'memory index — you only need this for the closed history/evidence a capsule points ' +
-        'to via its `detail:` line. Returns { ok, status, archived, body, truncated, bytes } on ' +
+        'Fetch the full detail body for a memory capsule by its id (e.g. ' +
+        '"mb-2026-07-28-some-slug"). Active and archived capsule bodies are fetchable at any ' +
+        'point mid-work when their `read-if` becomes relevant. Returns ' +
+        '{ ok, status, archived, body, truncated, bytes } on ' +
         'success (bodies over the byte cap are truncated, never split mid-character), or ' +
         '{ ok:false, code } where code is invalid_id | not_found | read_error. Workspace is ' +
         'inferred from your identity — you cannot read another workspace\'s memory.',

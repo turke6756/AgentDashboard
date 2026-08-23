@@ -207,8 +207,8 @@ const TOOLSET_REGISTRY = {
       handleToolCall: mod.handleCheckpointsToolCall,
     };
   },
-  // Memory & Lessons v2 (WP-D): the `memory` toolset — on-demand recall of a
-  // closed memory capsule's detail body. Granted to BOTH lanes
+  // Memory & Lessons v2 (WP-D): the `memory` toolset — on-demand recall of an
+  // active or archived memory capsule's detail body. Granted to BOTH lanes
   // (mcp-config-builder.toolsetsForLane); every recall becomes telemetry.
   memory: () => {
     const mod = require('./mcp-tools-memory');
