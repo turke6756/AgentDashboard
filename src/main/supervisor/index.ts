@@ -8,7 +8,7 @@ import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, Bulk
 import { assembleGuardSnapshot, evaluateStopEligibility, type AgentBrowserState, type GuardDeps } from '../lifecycle/guards';
 import {
   TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL, RESEARCHER_CLAUDE_MODEL, RESEARCHER_CODEX_MODEL,
-  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_MEMORY_MD,
+  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_AGENT_MD_V27, SUPERVISOR_MEMORY_MD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON, SUPERVISOR_CLAUDE_SETTINGS_JSON_V1, SUPERVISOR_CLAUDE_SETTINGS_JSON_V2,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V3,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL,
@@ -16,7 +16,7 @@ import {
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
   REMEMBER_SKILL,
   SCRIPT_READ_AGENT_LOG, SCRIPT_LIST_AGENTS, SCRIPT_SEND_MESSAGE, SCRIPT_GET_CONTEXT_STATS,
-  WORKER_CLAUDE_MD, WORKER_CLAUDE_MD_V1, WORKER_CLAUDE_MD_V11, WORKER_BEHAVIORAL_MD,
+  WORKER_CLAUDE_MD, WORKER_CLAUDE_MD_V1, WORKER_CLAUDE_MD_V11, WORKER_CLAUDE_MD_V13, WORKER_BEHAVIORAL_MD,
   WORKER_CLAUDE_SETTINGS_JSON, WORKER_CLAUDE_SETTINGS_JSON_V2, WORKER_CLAUDE_SETTINGS_JSON_V3,
   WORKER_CLAUDE_SETTINGS_JSON_V4, WORKER_CLAUDE_SETTINGS_JSON_V5, WORKER_CLAUDE_SETTINGS_JSON_V6,
   WORKER_CLAUDE_SETTINGS_JSON_V7, workerGrokSettingsJson, workerAgyHooksJson, workerAgyHooksJsonV2,
@@ -24,7 +24,7 @@ import {
   WORKER_CODEX_CONFIG_TOML, WORKER_CODEX_CONFIG_TOML_V1, WORKER_CODEX_CONFIG_TOML_V2,
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
   WORKER_CODEX_CONFIG_TOML_V6, WORKER_CODEX_CONFIG_TOML_V7, WORKER_CODEX_CONFIG_TOML_V8,
-  WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_BEHAVIORAL_MD,
+  WORKER_CODEX_AGENTS_MD, WORKER_CODEX_AGENTS_MD_V1, WORKER_CODEX_AGENTS_MD_V4, WORKER_CODEX_AGENTS_MD_V6, WORKER_CODEX_BEHAVIORAL_MD,
   RESEARCHER_CODEX_CONFIG_TOML, RESEARCHER_CODEX_CONFIG_TOML_V1,
   WORKER_GROK_AGENTS_MD, WORKER_AGY_AGENTS_MD,
   GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4, GUARD_GIT_DISCARD_MJS_V5,
@@ -36,7 +36,7 @@ import {
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
   TMUX_OPTION_MAX_AGE_MS, TMUX_OPTION_LAUNCH_SKEW_MS, STATUS_POLL_INTERVAL_MS,
   RESEARCH_STORE_README_MD, RESEARCH_STORE_README_MD_V2, RESEARCH_WRITE_GUARD_MJS, RESEARCHER_CLAUDE_SETTINGS_JSON,
-  RESEARCHER_CLAUDE_SETTINGS_JSON_V1, RESEARCHER_CLAUDE_SETTINGS_JSON_V2, RESEARCHER_CLAUDE_SETTINGS_JSON_V3, RESEARCHER_AGENT_MD,
+  RESEARCHER_CLAUDE_SETTINGS_JSON_V1, RESEARCHER_CLAUDE_SETTINGS_JSON_V2, RESEARCHER_CLAUDE_SETTINGS_JSON_V3, RESEARCHER_AGENT_MD, RESEARCHER_AGENT_MD_V7,
   PERSONA_CREATE_PERSONA_SKILL, PERSONA_READ_COMMENTS_SKILL, SCRIPT_READ_COMMENTS_PY,
   PERSONA_CREATE_PERSONA_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V1, PERSONA_READ_COMMENTS_SKILL_V2, PERSONA_READ_COMMENTS_SKILL_V3, PERSONA_READ_COMMENTS_SKILL_V4,
   PERSONA_CREATE_PERSONA_SKILL_V3_HASH,
@@ -1341,6 +1341,14 @@ export const WORKER_CODEX_AGENTS_MD_V4_HASH = '18ea93086f25c68096f20e27a9fe773dc
 /** WP-E: hash of frozen Codex AGENTS.md v5 before the scratch rule. */
 export const WORKER_CODEX_AGENTS_MD_V5_HASH = 'e85777adc94bd63b1a626ba1ea13c5142d4e9f3165157b67e4769fbad94a8909';
 
+/** WP-10: hashes of the five frozen orientation documents immediately before
+ * their Plan-state tools paragraphs were added. */
+export const SUPERVISOR_AGENT_MD_V27_HASH = '0a794ec21234a16885af8eb9d1cf5be07806c4ecb586a138440baed764e19baa';
+export const WORKER_CLAUDE_MD_V13_HASH = '77978b3633ef078af294e4cb040037ea37fdf8cf4787efd23332f74d97a7dfdb';
+export const WORKER_CODEX_AGENTS_MD_V6_HASH = 'f2d18706ce58b4eca3e2aee479274b73231e8d84c8aefa5015d9fa84b47e392d';
+export const RESEARCHER_AGENT_MD_V7_HASH = '2dfc3dcb6db46e168e73ceb4e881a156cc49dd6d1579bfe67eb5d694708c7627';
+export const RESEARCHER_CODEX_AGENTS_MD_V5_HASH = 'a8d160c3e075065ebcdf7db9075d8ae3eb2c5c9c7c0213485e11f55d3f5b848b';
+
 // WP-SKILLFIX — SHA-256 hex of the v1 bundled bodies of the five proposal-to-plan
 // files hardened to v2 (fresh-agent test surfaced four doc defects: orient
 // read-only contradiction, no ARC-refresh helper, unspecified artifact_id
@@ -2091,9 +2099,20 @@ is named in your system prompt for orientation. Resolve
 resulting absolute path for every report write and existence check. **Use
 absolute paths for all filesystem operations.**`;
 
-export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V4.replace(
+export const RESEARCHER_CODEX_AGENTS_MD_V5 = RESEARCHER_CODEX_AGENTS_MD_V4.replace(
   '\nThe supervisor is your only human-side interlocutor.',
   `\n${RESEARCHER_CODEX_WORKING_DIRECTORY}\n\nThe supervisor is your only human-side interlocutor.`,
+);
+
+const RESEARCHER_CODEX_PLAN_STATE = `## Plan-state tools
+
+\`list_plans\` is the cheap fleet glance: what plans exist, and what state is each in.
+\`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
+progress without opening files. For deeper content, use the \`read-planning-surface\`
+skill's progressive ladder into the plan folder.`;
+export const RESEARCHER_CODEX_AGENTS_MD = RESEARCHER_CODEX_AGENTS_MD_V5.replace(
+  '\nThe supervisor is your only human-side interlocutor.',
+  `\n${RESEARCHER_CODEX_PLAN_STATE}\n\nThe supervisor is your only human-side interlocutor.`,
 );
 
 export const RESEARCHER_AGY_AGENTS_MD_V1 = `# Researcher Agent
@@ -3938,8 +3957,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 27, // v27 corrects the Memory section to fetch details when relevant.
-      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH },
+      version: 28, // v28 replaces retired plan readers and adds the bounded plan-state orientation.
+      previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH, 27: SUPERVISOR_AGENT_MD_V27_HASH },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -4112,8 +4131,8 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/workers/claude/.claude/skills/prove-the-production-entry-point'),
     [`.lares/workers/claude/CLAUDE.md`]:                       {
       content: WORKER_CLAUDE_MD,
-      version: 13, // v13: designated, marked scratch-home rule. v12 required the structured production-reachability report.
-      previousHashes: { 1: sha256Hex(WORKER_CLAUDE_MD_V1), 2: WORKER_CLAUDE_MD_V2_HASH, 3: WORKER_CLAUDE_MD_V3_HASH, 4: WORKER_CLAUDE_MD_V4_HASH, 5: WORKER_CLAUDE_MD_V5_HASH, 6: WORKER_CLAUDE_MD_V6_HASH, 7: WORKER_CLAUDE_MD_V7_HASH, 8: WORKER_CLAUDE_MD_V8_HASH, 9: WORKER_CLAUDE_MD_V9_HASH, 10: WORKER_CLAUDE_MD_V10_HASH, 11: WORKER_CLAUDE_MD_V11_HASH, 12: WORKER_CLAUDE_MD_V12_HASH },
+      version: 14, // v14 adds the bounded plan-state orientation.
+      previousHashes: { 1: sha256Hex(WORKER_CLAUDE_MD_V1), 2: WORKER_CLAUDE_MD_V2_HASH, 3: WORKER_CLAUDE_MD_V3_HASH, 4: WORKER_CLAUDE_MD_V4_HASH, 5: WORKER_CLAUDE_MD_V5_HASH, 6: WORKER_CLAUDE_MD_V6_HASH, 7: WORKER_CLAUDE_MD_V7_HASH, 8: WORKER_CLAUDE_MD_V8_HASH, 9: WORKER_CLAUDE_MD_V9_HASH, 10: WORKER_CLAUDE_MD_V10_HASH, 11: WORKER_CLAUDE_MD_V11_HASH, 12: WORKER_CLAUDE_MD_V12_HASH, 13: WORKER_CLAUDE_MD_V13_HASH },
     },
     [`.lares/workers/claude/.claude/settings.json`]:           {
       content: WORKER_CLAUDE_SETTINGS_JSON,
@@ -4157,7 +4176,7 @@ export class AgentSupervisor extends EventEmitter {
     ...writeProposalEntry('.lares/researcher/claude/.claude/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/claude/.claude/skills/read-planning-surface'),
     [`.lares/researcher/claude/.claude/skills/research-report/SKILL.md`]: { content: WRITE_RESEARCH_REPORT_SKILL_MD, version: 1 },
-    [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 7, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH, 6: RESEARCHER_AGENT_MD_V6_HASH } },
+    [`.lares/researcher/claude/CLAUDE.md`]: { content: RESEARCHER_AGENT_MD, version: 8, previousHashes: { 1: RESEARCHER_AGENT_MD_V1_HASH, 2: RESEARCHER_AGENT_MD_V2_HASH, 3: RESEARCHER_AGENT_MD_V3_HASH, 4: RESEARCHER_AGENT_MD_V4_HASH, 5: RESEARCHER_AGENT_MD_V5_HASH, 6: RESEARCHER_AGENT_MD_V6_HASH, 7: RESEARCHER_AGENT_MD_V7_HASH } },
     [`.lares/researcher/claude/.claude/settings.json`]: { content: RESEARCHER_CLAUDE_SETTINGS_JSON, version: 4, previousHashes: { 1: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V2), 3: sha256Hex(RESEARCHER_CLAUDE_SETTINGS_JSON_V3) } },
     [`.lares/researcher/claude/scripts/research-write-guard.mjs`]: { content: RESEARCH_WRITE_GUARD_MJS, version: 8, previousHashes: { 1: RESEARCH_WRITE_GUARD_MJS_V1_HASH, 2: RESEARCH_WRITE_GUARD_MJS_V2_HASH, 3: RESEARCH_WRITE_GUARD_MJS_V3_HASH, 4: RESEARCH_WRITE_GUARD_MJS_V4_HASH, 5: RESEARCH_WRITE_GUARD_MJS_V5_HASH, 6: RESEARCH_WRITE_GUARD_MJS_V6_HASH, 7: RESEARCH_WRITE_GUARD_MJS_V7_HASH }, executable: true },
     // Persona kit (§1.4) — default skills for the researcher lane.
@@ -4167,7 +4186,7 @@ export class AgentSupervisor extends EventEmitter {
 
   /** Codex researcher identity plus the portable, version-migrated skill kit. */
   static RESEARCHER_FILES_CODEX: Record<string, ScaffoldFile> = {
-    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 5, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH, 4: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V4) } },
+    [`.lares/researcher/codex/AGENTS.md`]: { content: RESEARCHER_CODEX_AGENTS_MD, version: 6, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1), 2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2), 3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH, 4: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V4), 5: RESEARCHER_CODEX_AGENTS_MD_V5_HASH } },
     [`.lares/researcher/codex/.codex/config.toml`]: { content: RESEARCHER_CODEX_CONFIG_TOML, version: 2, previousHashes: { 1: sha256Hex(RESEARCHER_CODEX_CONFIG_TOML_V1) } },
     ...writeProposalEntry('.lares/researcher/codex/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/researcher/codex/.agents/skills/read-planning-surface'),
@@ -4351,8 +4370,8 @@ export class AgentSupervisor extends EventEmitter {
         // worker body) so a pristine v1 workspace upgrades silently.
         [`.lares/workers/codex/AGENTS.md`]: {
           content: WORKER_CODEX_AGENTS_MD,
-          version: 6, // v6: inherits the worker v12->v13 designated, marked scratch-home rule.
-          previousHashes: { 1: WORKER_CODEX_AGENTS_MD_V1_HASH, 2: WORKER_CODEX_AGENTS_MD_V2_HASH, 3: WORKER_CODEX_AGENTS_MD_V3_HASH, 4: WORKER_CODEX_AGENTS_MD_V4_HASH, 5: WORKER_CODEX_AGENTS_MD_V5_HASH },
+          version: 7, // v7 inherits the shared worker plan-state orientation.
+          previousHashes: { 1: WORKER_CODEX_AGENTS_MD_V1_HASH, 2: WORKER_CODEX_AGENTS_MD_V2_HASH, 3: WORKER_CODEX_AGENTS_MD_V3_HASH, 4: WORKER_CODEX_AGENTS_MD_V4_HASH, 5: WORKER_CODEX_AGENTS_MD_V5_HASH, 6: WORKER_CODEX_AGENTS_MD_V6_HASH },
         },
         // Memory & Lessons v2 (WP-F1): the `remember` skill for the Codex WORKER
         // skill root (WP-R proved `.agents/skills/` discovery + invocation from

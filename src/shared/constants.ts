@@ -912,9 +912,27 @@ const SUPERVISOR_AGENT_MD_V27_MEMORY_NEW = [
   '',
   'Memories and lessons serve **every** supervisor and worker in this workspace, not just their author. When something happens that future agents shouldn\'t have to relearn, reach for the `remember` skill to save it — don\'t hand-write memory or lesson files. After editing the index yourself, run `node .lares/scripts/memory-index.mjs validate <index>` (exit 0) before ending your turn.',
 ].join('\n');
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V26
+export const SUPERVISOR_AGENT_MD_V27 = SUPERVISOR_AGENT_MD_V26
   .split(SUPERVISOR_AGENT_MD_V20_MEMORY_NEW)
   .join(SUPERVISOR_AGENT_MD_V27_MEMORY_NEW);
+
+const SUPERVISOR_AGENT_MD_V28_PLAN_STATE_OLD = `- **Observe** with \`read_plan_projection\` (per-section trusted event roll-up) and
+  \`read_plan_section\` (ladder modes: \`outline\` ≈150 tokens / \`text\` / \`raw\` /
+  \`raw+editWindow\`).
+- **Gate** the returned work as you would any worker turn.`;
+const SUPERVISOR_AGENT_MD_V28_PLAN_STATE_NEW = `- **Observe** with the bounded plan-state tools below, then gate the returned work
+  as you would any worker turn.`;
+const SUPERVISOR_AGENT_MD_V28_READING_OLD = `**Reading is cheap by design:** prefer \`outline\` mode + section-scoped reads over
+whole-file reads; pull \`raw\` / \`raw+editWindow\` only when you actually need bytes.`;
+const SUPERVISOR_AGENT_MD_V28_READING_NEW = `### Plan-state tools
+
+\`list_plans\` is the cheap fleet glance: what plans exist, and what state is each in.
+\`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
+progress without opening files. For deeper content, use the \`read-planning-surface\`
+skill's progressive ladder into the plan folder.`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V27
+  .replace(SUPERVISOR_AGENT_MD_V28_PLAN_STATE_OLD, SUPERVISOR_AGENT_MD_V28_PLAN_STATE_NEW)
+  .replace(SUPERVISOR_AGENT_MD_V28_READING_OLD, SUPERVISOR_AGENT_MD_V28_READING_NEW);
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
 
@@ -1580,9 +1598,23 @@ Put disposable output in the designated scratch home, never in the repository
 root. Mark it with the Lares scratch sentinel and registration supplied for the
 work package; an unmarked directory is ordinary user work and stays visible.
 `;
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V12.replace(
+export const WORKER_CLAUDE_MD_V13 = WORKER_CLAUDE_MD_V12.replace(
   WORKER_CLAUDE_MD_V13_SCRATCH_ANCHOR,
   `${WORKER_CLAUDE_MD_V13_SCRATCH_SECTION}\n${WORKER_CLAUDE_MD_V13_SCRATCH_ANCHOR}`,
+);
+
+const WORKER_CLAUDE_MD_V14_PLAN_STATE_ANCHOR = '<!-- /section:planning-surface -->';
+const WORKER_CLAUDE_MD_V14_PLAN_STATE = `### Plan-state tools
+
+\`list_plans\` is the cheap fleet glance: what plans exist, and what state is each in.
+\`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
+progress without opening files. For deeper content, use the \`read-planning-surface\`
+skill's progressive ladder into the plan folder.
+
+`;
+export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V13.replace(
+  WORKER_CLAUDE_MD_V14_PLAN_STATE_ANCHOR,
+  `${WORKER_CLAUDE_MD_V14_PLAN_STATE}${WORKER_CLAUDE_MD_V14_PLAN_STATE_ANCHOR}`,
 );
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
@@ -1760,6 +1792,14 @@ export const WORKER_CODEX_AGENTS_MD_V4 = WORKER_CLAUDE_MD_V11
 /** WP-E: frozen v5 Codex AGENTS.md, derived from the frozen worker v12 body.
  * previousHashes[5] recognizes the exact body shipped before the scratch rule. */
 export const WORKER_CODEX_AGENTS_MD_V5 = WORKER_CLAUDE_MD_V12
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** WP-10 plan-state orientation: frozen v6 Codex AGENTS.md, derived from the
+ * frozen worker v13 body before the shared Plan-state tools paragraph. */
+export const WORKER_CODEX_AGENTS_MD_V6 = WORKER_CLAUDE_MD_V13
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
@@ -5165,9 +5205,22 @@ and Sources reprints \`n. <url> — <what it supports>\`. Negative findings stil
 cite the search or documentation pages actually opened. \`## Details\` is
 optional; keep the other four sections.`;
 
-export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V6.replace(
+export const RESEARCHER_AGENT_MD_V7 = RESEARCHER_AGENT_MD_V6.replace(
   RESEARCHER_AGENT_WRITING_V6,
   RESEARCHER_AGENT_WRITING_V7,
+);
+
+const RESEARCHER_AGENT_MD_V8_PLAN_STATE_ANCHOR = '## What you can and cannot do';
+const RESEARCHER_AGENT_MD_V8_PLAN_STATE = `## Plan-state tools
+
+\`list_plans\` is the cheap fleet glance: what plans exist, and what state is each in.
+\`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
+progress without opening files. For deeper content, use the \`read-planning-surface\`
+skill's progressive ladder into the plan folder.
+`;
+export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V7.replace(
+  RESEARCHER_AGENT_MD_V8_PLAN_STATE_ANCHOR,
+  `${RESEARCHER_AGENT_MD_V8_PLAN_STATE}\n${RESEARCHER_AGENT_MD_V8_PLAN_STATE_ANCHOR}`,
 );
 
 /** Researcher persona settings — .lares/researcher/claude/.claude/settings.json.
