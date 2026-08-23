@@ -28,6 +28,7 @@ import {
   DASHBOARD_STATUS_SCRIPT_V2_HASH,
   REMEMBER_SKILL_V1_HASH,
   REMEMBER_SKILL_V2_HASH,
+  REMEMBER_SKILL_V3_HASH,
   SCAFFOLD_SIDECAR_REL,
   SUPERVISOR_AGENT_MD_V8_HASH,
   SUPERVISOR_AGENT_MD_V9_HASH,
@@ -203,6 +204,7 @@ import {
   WORKER_CLAUDE_SETTINGS_JSON_V6,
   WORKER_CLAUDE_SETTINGS_JSON_V7,
 } from '../../shared/constants';
+import { REMEMBER_SKILL_V2_FIXTURE } from './remember-skill-old-body-fixtures';
 import { getNodeShimDir } from '../node-shim';
 import { AGY_STATUS_HOOK_ENTRY } from './agy-hooks';
 import {
@@ -1252,17 +1254,22 @@ function listResearchGuardBackups(workDir: string): string[] {
   return fs.readdirSync(dir).filter((n) => n.startsWith('research-write-guard.mjs.bak.'));
 }
 
-test('WP-10 precondition: remember keeps cumulative v1/v2 hashes and the live v3 body differs', () => {
-  assert.equal(REMEMBER_SKILL_V1_HASH, 'e97e02e3a6bce521bdb37b535a89e61f25c267e0dd6b4194480b12fe8e6c9aea');
-  assert.equal(REMEMBER_SKILL_V2_HASH, '6bd5a3dfa290f7250fd68a4486bac547c5d57e865cc8f330244324945087b40e');
+test('WP-10 precondition: frozen remember bodies prove the cumulative v1/v2/v3 hash chain', () => {
+  const v2Pointer = '- detail: memory/details/<id>.md                           # optional, for long bodies';
+  const v1Pointer = '- detail: .lares/supervisor/memory/details/<id>.md         # optional, for long bodies';
+  assert.ok(REMEMBER_SKILL_V2_FIXTURE.includes(v2Pointer), 'the frozen v2 body must carry its validator-accepted pointer');
+  const v1Body = REMEMBER_SKILL_V2_FIXTURE.replace(v2Pointer, v1Pointer);
+  assert.equal(sha256Hex(v1Body), REMEMBER_SKILL_V1_HASH, 'the reconstructed v1 body must prove previousHashes[1]');
+  assert.equal(sha256Hex(REMEMBER_SKILL_V2_FIXTURE), REMEMBER_SKILL_V2_HASH, 'the frozen v2 body must prove previousHashes[2]');
   assert.notEqual(
     sha256Hex(REMEMBER_SKILL), REMEMBER_SKILL_V1_HASH,
-    'the live v3 body must differ from the frozen v1 hash',
+    'the live v4 body must differ from the frozen v1 hash',
   );
   assert.notEqual(
     sha256Hex(REMEMBER_SKILL), REMEMBER_SKILL_V2_HASH,
-    'the live v3 body must differ from the frozen v2 hash',
+    'the live v4 body must differ from the frozen v2 hash',
   );
+  assert.notEqual(sha256Hex(REMEMBER_SKILL), REMEMBER_SKILL_V3_HASH, 'the live v4 body must differ from the frozen v3 hash');
 });
 
 test('WP-9 scaffold: pristine Codex researcher AGENTS.md v1 silently upgrades to current with portable-skill pointer', () => {

@@ -4262,10 +4262,12 @@ one grammar and copy its shape exactly.
 
 Expiry on a real Gregorian date:
 
+Use an actual date in \`YYYY-MM-DD\` form, for example:
+
 \`\`\`
 <!-- memory-disposal:v1
 kind: expires
-value: YYYY-MM-DD
+value: 2026-12-31
 -->
 <what is true now, why it matters, and the evidence a future agent needs>
 \`\`\`
