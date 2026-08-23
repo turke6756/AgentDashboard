@@ -83,3 +83,24 @@ Architecture overview: [docs/architecture.md](docs/architecture.md).
 - [docs/architecture.md](docs/architecture.md) — how it is built.
 - [docs/workflows.md](docs/workflows.md) — the multi-agent patterns.
 - [docs/security.md](docs/security.md) — the threat model.
+
+## Workspace operating rules
+
+- **Worker mix (Edward's directive):** prefer Codex workers to conserve Claude
+  credits; use grok for adversarial review, each reviewer launched in a fresh,
+  previously-unused working directory; reserve Claude workers for the hardest
+  concurrency problems.
+- **Register main-process tests:** a new main-process test file MUST be added to
+  `scripts/run-main-tests.mjs`. A green suite that is not registered there is a
+  dead bridge and proves nothing; gating requires proof through the registered
+  runner.
+- **Reachability proofs:** the `prove_reachability` tool is unusable in this
+  workspace (tsc ignores `NODE_PATH`). Discharge reachability obligations with a
+  manual revert-refutation: a committed mutation patch that makes the entering
+  suite fail through the registered runner, then a green run after revert.
+- **Plan DB fields:** `supervisor_active_plan` has never contained rows — never
+  read it. `responsible_supervisor_id` is BOTH the comment-reply authorization
+  gate AND the sole agent-card badge source — never retire or repurpose it.
+- **Windows ACLs on this host:** DENY ACEs do not bind. Enforce with
+  default-deny plus positive grants; never widen ACEs on real provider homes
+  (`~/.claude`, `~/.codex`).
