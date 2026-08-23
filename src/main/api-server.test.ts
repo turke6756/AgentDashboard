@@ -29,6 +29,17 @@ interface MigrationToolModule {
 const migrationTools = require(path.resolve('scripts/mcp-tools-migration.js')) as MigrationToolModule;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require('./database') as Record<string, unknown>;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const reviewStore = require('./memory-index/review-store') as {
+  computeFindingId(workspaceId: string, finding: unknown): string;
+  upsertFindings: (workspaceId: string, findings: unknown[]) => string[];
+};
+
+// The entering seam uses the real mover and filesystem. Replace only its
+// persistence backing because this standalone HTTP test does not initialize the
+// Electron app database; the mover's own suite covers the SQLite persistence.
+reviewStore.upsertFindings = (workspaceId, findings) => findings.map((finding) => reviewStore.computeFindingId(workspaceId, finding));
+db.getDb = () => ({ prepare: () => ({ run: () => ({ changes: 1 }) }) });
 
 interface TestCase { name: string; run(): Promise<void> | void }
 const tests: TestCase[] = [];
@@ -167,17 +178,88 @@ test('archive_memory enters through registered tool -> POST route -> mover and a
   }
 });
 
-test('archive route requires an asserted supervisor identity as a soft provenance gate', async () => {
+test('archive route retains asserted-supervisor provenance but also permits a workspace-authenticated janitor', async () => {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp6-archive-gate-'));
+  const index = [
+    DISCLOSURE_FORMAT_MARKER,
+    '',
+    `## ${MEMORY_ID}: Janitor archive fixture`,
+    '- read-if: the janitor archive fixture becomes relevant',
+    `- detail: memory/details/${MEMORY_ID}.md`,
+    '',
+  ].join('\n');
+  const body = [
+    '<!-- memory-disposal:v1',
+    'kind: expires-when',
+    'value: the janitor route test passes',
+    '-->',
+    '',
+    '# Janitor archive fixture',
+    '',
+    'Retained bytes.',
+    '',
+  ].join('\n');
+  writeAt(workDir, INDEX_REL, index);
+  writeAt(workDir, DETAIL_REL, body);
+
+  const assertedLookups: string[] = [];
   db.getWorkspace = (id: string) => id === WS_ID ? { id: WS_ID, title: 'WP-6', path: workDir } : null;
+  db.getAgent = (id: string) => {
+    assertedLookups.push(id);
+    return id === SUPERVISOR_ID
+      ? { id, workspaceId: WS_ID, isSupervisor: true, status: 'working', provider: 'codex', title: 'WP-6 supervisor' }
+      : null;
+  };
   db.getSupervisorAgent = () => null;
   const server = new ApiServer(stubSupervisor, 0, undefined, '127.0.0.1');
   const port = await server.start();
   try {
-    await assert.rejects(
-      apiRequest(port, '')('POST', '/api/memory/archive', {}),
-      (error: Error & { statusCode?: number }) => error.statusCode === 400 && /supervisor identity required/.test(error.message),
+    const asserted = await apiRequest(port)('POST', '/api/memory/archive', {
+      id: MEMORY_ID,
+      expected_prior_hash: sha('stale index'),
+      expected_body_hash: sha(body),
+    });
+    assert.deepEqual(assertedLookups, [SUPERVISOR_ID], 'asserted supervisor id is validated and retained as request provenance');
+    assert.deepEqual(
+      asserted,
+      { ok: false, code: 'cas_mismatch', message: 'live memory index changed (expected_prior_hash mismatch)' },
+      'an asserted-supervisor request proceeds through the mover',
     );
+
+    const invalidId = await apiRequest(port, '')('POST', '/api/memory/archive', {
+      id: '../escape',
+      expected_prior_hash: sha(index),
+      expected_body_hash: sha(body),
+    });
+    assert.deepEqual(invalidId, { ok: false, code: 'invalid_id' });
+    assert.equal(fs.existsSync(path.join(workDir, 'escape.md')), false, 'invalid id is refused before filesystem work');
+
+    const invalidJson = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port, path: '/api/memory/archive', method: 'POST', agent: false,
+        headers: {
+          Authorization: `Bearer ${getApiToken()}`,
+          'Content-Type': 'application/json',
+          'X-Workspace-Id': WS_ID,
+        },
+      }, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+      });
+      req.on('error', reject);
+      req.end('{not-json');
+    });
+    assert.deepEqual(invalidJson, { status: 200, body: { ok: false, code: 'invalid_json' } });
+
+    const janitor = await migrationTools.handleMigrationToolCall('archive_memory', {
+      id: MEMORY_ID,
+      expected_prior_hash: sha(index),
+      expected_body_hash: sha(body),
+    }, apiRequest(port, ''));
+    assert.deepEqual(JSON.parse(janitor!.content[0].text), { ok: true }, 'no-supervisor janitor request still reaches the mover');
+    assert.equal(fs.readFileSync(full(workDir, ARCHIVE_BODY_REL), 'utf8'), body);
   } finally {
     server.stop();
     fs.rmSync(workDir, { recursive: true, force: true });

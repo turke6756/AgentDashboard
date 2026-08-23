@@ -78,8 +78,8 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // the SUPERVISOR lane ONLY. Never granted to the worker/researcher lanes:
       // these mutate memory state and belong to the supervisor tier. This grant
       // is capability distribution, not route-level role enforcement: archive's
-      // route has an asserted-supervisor provenance gate, while recorded human
-      // migration approval separately gates every whole-bundle operation.
+      // route records an asserted supervisor as optional provenance, while
+      // recorded human migration approval separately gates every whole-bundle operation.
       return 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration';
     case 'worker':
       // QW1 (context-optimizer §3): `notebooks` removed — 0 notebook tool

@@ -63,6 +63,7 @@ import { getDb, getWorkspace as getWorkspaceRecord } from './database';
 // Memory & Lessons v2 (WP-D): the recall_memory detail fetch + recall telemetry.
 import { recallMemoryDetailWithTelemetry } from './memory-index/recall';
 import { archiveMemoryEntry } from './memory-index/archive-mover';
+import { isValidMemoryId } from '../shared/memory-index-core';
 // Memory & Lessons v2 (WP-F1): the transactional publish_lesson state machine.
 import { publishLesson } from './memory-index/publisher';
 // Memory & Lessons v2 (WP-F2): graduation proposal recording + the supervisor-only
@@ -1561,9 +1562,10 @@ export class ApiServer {
     // POST /api/memory/archive { id, expected_prior_hash, expected_body_hash }
     // — plan_1fe663ce WP-6's reachable cleanup seam. Like recall, workspace
     // scope comes SOLELY from the authenticated X-Workspace-Id assertion. An
-    // asserted X-Supervisor-Id is additionally required as a soft provenance
-    // gate. This is not route-level role authorization: supervisor-only access
-    // is distributed by placing archive_memory in the migration MCP toolset,
+    // asserted X-Supervisor-Id, when present, is validated and retained on the
+    // request identity as soft provenance; its absence does NOT refuse a
+    // workspace-authenticated janitor. This is not route-level role authorization:
+    // supervisor-only discovery is distributed through the migration MCP toolset,
     // while the shared workspace bearer/header rail authenticates this route.
     // The mover owns validation/CAS and always returns a structured result, so
     // operational refusal/failure remains a 200 body rather than an exception.
@@ -1574,27 +1576,35 @@ export class ApiServer {
           { statusCode: 400 },
         );
       }
-      if (!identity.supervisorId) {
-        throw Object.assign(
-          new Error('asserted supervisor identity required (send X-Supervisor-Id header)'),
-          { statusCode: 400 },
-        );
-      }
       const workspace = getWorkspaceRecord(identity.workspaceId);
       if (!workspace) {
         // Defensive: resolveIdentity already rejected an unknown asserted workspace.
         throw Object.assign(new Error('workspace not found'), { statusCode: 404 });
       }
       const body = await readBody(req);
-      const input = body ? JSON.parse(body) : {};
+      let input: Record<string, unknown>;
+      try {
+        const parsed: unknown = body ? JSON.parse(body) : {};
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return { ok: false, code: 'invalid_json' };
+        }
+        input = parsed as Record<string, unknown>;
+      } catch {
+        return { ok: false, code: 'invalid_json' };
+      }
+      // Match recall's traversal boundary: reject invalid/non-string ids before
+      // detectPathType or archiveMemoryEntry can perform any filesystem work.
+      if (typeof input.id !== 'string' || !isValidMemoryId(input.id)) {
+        return { ok: false, code: 'invalid_id' };
+      }
       return archiveMemoryEntry(
         identity.workspaceId,
         workspace.path,
         detectPathType(workspace.path),
         {
           id: input.id,
-          expectedPriorHash: input.expected_prior_hash,
-          expectedBodyHash: input.expected_body_hash,
+          expectedPriorHash: typeof input.expected_prior_hash === 'string' ? input.expected_prior_hash : '',
+          expectedBodyHash: typeof input.expected_body_hash === 'string' ? input.expected_body_hash : '',
         },
         new Date().toISOString(),
       );
