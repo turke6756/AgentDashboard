@@ -5,8 +5,8 @@
 //     DECLARED pointer from the parsed capsule is used, never a synthesized name);
 //   - traversal / `..` / separator ids are rejected by MEMORY_ID_GRAMMAR with NO
 //     disk read and NO increment (invalid_id);
-//   - a missing detail file → not_found with no increment; a pointer escaping
-//     MEMORY_DETAILS_DIR → not_found (no leak);
+//   - a missing/undeclared detail pointer → not_found with no increment; pointers
+//     escaping either status-selected body root → not_found (no leak);
 //   - an ARCHIVE.md capsule under memory/archive is served with
 //     { ok:true, archived:true } and DOES bump;
 //   - an oversize body is UTF-8-safe-truncated (truncated:true) without splitting
@@ -205,6 +205,20 @@ test('AC3a — an id absent from the index → not_found', () => {
   if (!r.ok) assert.equal(r.code, 'not_found');
 });
 
+test('AC3a — an undeclared detail pointer never synthesizes <id>.md and never increments', () => {
+  const ws = 'ws-no-detail';
+  const id = 'mb-2026-07-28-nodetail';
+  const { root, detailsDir } = makeWorkspace([]);
+  const memoryMd = path.resolve(detailsDir, '..', 'MEMORY.md');
+  fs.appendFileSync(memoryMd,
+    `\n## ${id}: malformed card without detail\n- read-if: relevant now\n`, 'utf8');
+  writeDetail(detailsDir, `${id}.md`, 'MUST NOT BE SERVED');
+
+  const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
+  assert.deepEqual(r, { ok: false, code: 'not_found' });
+  assert.equal(store.getRecallCount(ws, id), 0);
+});
+
 test('a pointer escaping MEMORY_DETAILS_DIR → not_found (no content leak, no increment)', () => {
   const ws = 'ws-escape';
   const id = 'mb-2026-07-28-escape';
@@ -214,6 +228,21 @@ test('a pointer escaping MEMORY_DETAILS_DIR → not_found (no content leak, no i
   const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, 'not_found');
+  assert.equal(store.getRecallCount(ws, id), 0);
+});
+
+test('an archived pointer escaping MEMORY_ARCHIVE_DIR → not_found (no content leak, no increment)', () => {
+  const ws = 'ws-archive-escape';
+  const id = 'mb-2026-07-28-archive-escape';
+  const { root } = makeWorkspace([{
+    id,
+    status: 'archived',
+    detail: 'memory/archive/../../../../outside-archive-secret.md',
+  }]);
+  fs.writeFileSync(path.join(root, 'outside-archive-secret.md'), 'ARCHIVE SECRET', 'utf8');
+
+  const r = recall.recallMemoryDetailWithTelemetry(ws, root, id, NOW);
+  assert.deepEqual(r, { ok: false, code: 'not_found' });
   assert.equal(store.getRecallCount(ws, id), 0);
 });
 

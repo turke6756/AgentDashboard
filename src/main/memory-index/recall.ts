@@ -17,8 +17,8 @@
 //      are diagnosed internally and refused outward as not_found.
 //   3. Enforce active → details/ and archived → archive/ containment before read.
 //   4. Strip the leading memory-disposal:v1 block, then UTF-8-safe-truncate the
-//      BODY ONLY to RECALL_DETAIL_MAX_BYTES (the cap
-//      excludes the JSON envelope/metadata; `truncated:true` when clipped).
+//      BODY ONLY to RECALL_DETAIL_MAX_BYTES (the cap excludes the JSON envelope /
+//      metadata; `truncated:true` when the stripped body is clipped).
 //   5. Structured result codes (invalid_id / not_found / read_error) — NEVER a
 //      throw. `archived` capsules are served with `{ ok:true, archived:true }`.
 //   6. `bumpRecall` fires ONLY on `ok:true` (recallMemoryDetailWithTelemetry).
@@ -40,7 +40,7 @@ import {
   MEMORY_DETAILS_DIR,
   MEMORY_ARCHIVE_DIR,
   ARCHIVE_INDEX_REL,
-  parseDisposal,
+  DISPOSAL_BLOCK_RE,
   type ParsedEntry,
 } from '../../shared/memory-index-core';
 import { bumpRecall } from './review-store';
@@ -54,9 +54,9 @@ export interface RecallOk {
   status: string;
   /** true iff `status === 'archived'` (served, but flagged for the reader). */
   archived: boolean;
-  /** the detail-file body, UTF-8-safe-truncated to RECALL_DETAIL_MAX_BYTES. */
+  /** the detail-file body after disposal stripping and UTF-8-safe truncation. */
   body: string;
-  /** true iff the on-disk body exceeded the cap and was clipped. */
+  /** true iff the stripped body exceeded RECALL_DETAIL_MAX_BYTES and was clipped. */
   truncated: boolean;
   /** UTF-8 byte length of the (possibly truncated) `body`. */
   bytes: number;
@@ -119,16 +119,19 @@ function ambiguousRecall(id: string, catalog: 'MEMORY.md' | 'ARCHIVE.md', count:
   return { ok: false, code: 'not_found' };
 }
 
-/** Remove only the exact leading disposal block. The source file is never written. */
+/** Remove the leading disposal-shaped block independently of grammar validity.
+ *  DISPOSAL_BLOCK_RE intentionally consumes leading blank lines as part of that
+ *  matched metadata prefix. The source file is never written. */
 function stripLeadingDisposal(rawBody: string): string {
-  const disposal = parseDisposal(rawBody);
-  if (!disposal.ok) return rawBody;
+  const normalized = rawBody.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  const match = DISPOSAL_BLOCK_RE.exec(normalized);
+  if (!match) return rawBody;
 
   // Translate the normalized match length back to a raw-string offset so stripping
   // does not also rewrite a BOM/CRLF body's remaining bytes.
   let rawOffset = rawBody.startsWith('\uFEFF') ? 1 : 0;
   let normalizedOffset = 0;
-  while (normalizedOffset < disposal.disposal.blockEnd) {
+  while (normalizedOffset < match[0].length) {
     rawOffset += rawBody[rawOffset] === '\r' && rawBody[rawOffset + 1] === '\n' ? 2 : 1;
     normalizedOffset += 1;
   }

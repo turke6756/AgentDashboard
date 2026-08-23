@@ -9,8 +9,9 @@
 // shim over POST /api/memory/recall; the server derives the workspace SOLELY
 // from the authenticated X-Workspace-Id header (forwarded by apiRequest's
 // CALLER_HEADERS spread), validates the id, resolves the capsule's DECLARED
-// `detail:` pointer, realpath-bounds it beneath the memory details dir, and
-// returns a structured result (never a throw). Modeled on mcp-tools-observability.js.
+// `detail:` pointer, realpath-bounds it beneath the selected details/ or archive/
+// body root, and returns a structured result (never a throw). Modeled on
+// mcp-tools-observability.js.
 
 function getMemoryToolDefinitions() {
   return [

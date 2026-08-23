@@ -140,7 +140,7 @@ test('successful recall strips only the leading disposal block without changing 
   const id = 'mb-2026-08-22-disposal';
   const w = workspace();
   fs.appendFileSync(w.memoryMd, activeCard(id, 'memory/details/disposal.md'));
-  const onDisk = '\uFEFF<!-- memory-disposal:v1\r\nkind: expires\r\nvalue: 2026-09-01\r\n-->\r\n# Useful body\r\n<!-- memory-disposal:v1 stays if not leading -->';
+  const onDisk = '\uFEFF<!-- memory-disposal:v1\r\nkind: expires\r\nvalue: 2026-09-01\r\n-->\r\n# Useful body\r\n<!-- memory-disposal:v1\r\nkind: open-loop\r\n-->\r\nSECOND BLOCK BODY';
   const detailPath = path.join(w.detailsDir, 'disposal.md');
   fs.writeFileSync(detailPath, onDisk, 'utf8');
   const before = fs.readFileSync(detailPath);
@@ -148,9 +148,21 @@ test('successful recall strips only the leading disposal block without changing 
   const result = recallMemoryDetail(w.root, id);
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(result.body, '# Useful body\r\n<!-- memory-disposal:v1 stays if not leading -->');
+    assert.equal(result.body, '# Useful body\r\n<!-- memory-disposal:v1\r\nkind: open-loop\r\n-->\r\nSECOND BLOCK BODY');
   }
   assert.deepEqual(fs.readFileSync(detailPath), before, 'recall must leave on-disk bytes unchanged');
+});
+
+test('recall strips a leading disposal-shaped block even when its grammar is invalid', () => {
+  const id = 'mb-2026-08-22-malformed-disposal';
+  const w = workspace();
+  fs.appendFileSync(w.memoryMd, activeCard(id, 'memory/details/malformed.md'));
+  const onDisk = '<!-- memory-disposal:v1\nkind: expires\nvalue: 2026-02-30\nextra: forbidden\n-->\nVISIBLE BODY';
+  fs.writeFileSync(path.join(w.detailsDir, 'malformed.md'), onDisk, 'utf8');
+
+  const result = recallMemoryDetail(w.root, id);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.body, 'VISIBLE BODY');
 });
 
 let failed = 0;

@@ -110,7 +110,7 @@ test('observability-core is supervisor+worker; the retired observability-analyti
 });
 
 test('toolsetsForLane: the `memory` toolset (recall_memory) is granted to BOTH the supervisor and worker lanes (WP-D)', () => {
-  // Memory & Lessons v2 WP-D: both lanes recall closed-capsule detail on demand.
+  // Memory & Lessons v2 WP-D: both lanes fetch active or archived detail on demand.
   for (const lane of ['supervisor', 'worker'] as const) {
     assert.ok(toolsetsForLane(lane).split(',').includes('memory'), `${lane} must include the memory toolset`);
   }

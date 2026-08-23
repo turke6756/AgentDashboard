@@ -1526,12 +1526,14 @@ export class ApiServer {
     }
 
     // POST /api/memory/recall { id } — Memory & Lessons v2 (WP-D) on-demand
-    // recall of a CLOSED memory capsule's detail body. Workspace identity is
+    // recall of an active or archived capsule body whenever it becomes relevant.
+    // Workspace identity is
     // derived SOLELY from the authenticated X-Workspace-Id header (resolveIdentity
     // already 403'd an unknown workspace / cross-workspace assertion); a request
     // without an asserted workspace has no scope to read and is refused. The id is
     // validated against MEMORY_ID_GRAMMAR and the capsule's DECLARED detail pointer
-    // is realpath-bounded beneath the memory details dir INSIDE the recall module,
+    // is realpath-bounded beneath its selected details/ or archive/ root INSIDE the
+    // recall module,
     // which returns structured { ok:false, code } errors (rendered as a 200 body,
     // never a throw) and increments the per-workspace recall count ONLY on ok:true.
     if (method === 'POST' && path === '/api/memory/recall') {

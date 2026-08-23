@@ -69,9 +69,9 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // the minted capability token the /api/checkpoints* routes require
       // (WP-G2.0/2.1). Do NOT add `checkpoints` to the worker or researcher grant.
       // Memory & Lessons v2 (WP-D): `memory` — the recall_memory on-demand
-      // detail-fetch toolset — is granted to BOTH lanes (worker below). Progressive
-      // disclosure: active capsules ride inline in the injected index; recall only
-      // ever fetches closed history, and every recall becomes pruning telemetry.
+      // detail-fetch toolset — is granted to BOTH lanes (worker below). Active and
+      // archived bodies are fetchable whenever relevant, and every recall becomes
+      // pruning telemetry.
       // Memory & Lessons v2 (WP-F2): `migration` — the guarded batch/bundle
       // memory-migration operations (archive_memory / publish_lessons_batch /
       // replace_memory_bundle / restore_memory_bundle) — is appended to
@@ -98,7 +98,7 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // the worker never carried those 13 schemas and its resident cost is
       // identical before and after.
       // WP-D: the worker lane also gets `memory` (recall_memory) — both lanes
-      // read closed-capsule detail on demand.
+      // fetch active or archived capsule detail whenever it becomes relevant.
       return 'comms,observability-core,browser-present,plans-read,memory';
     case 'researcher':
       // Researchers can be plan-bound too. Keep the full browser surface and
