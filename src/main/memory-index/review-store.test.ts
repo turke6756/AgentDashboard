@@ -238,6 +238,7 @@ test('never-recalled is produced for an aged closed pointer-bearing entry with c
   const nr = store.listFindings(ws).filter((f) => f.kind === 'never-recalled');
   assert.equal(nr.length, 1);
   assert.equal(nr[0].entryId, 'mb-2026-06-01-old');
+  assert.equal(nr[0].reason, 'never recalled via `recall_memory` or an observed workspace memory-file read.');
 });
 
 test('never-recalled is NEVER produced for an active capsule (even aged, pointer-bearing, uncalled)', () => {
@@ -304,6 +305,24 @@ test('a normalized read of an archived entry declared under memory/archive count
   const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'archived', date: '2026-06-01', detail: 'memory/archive/custom-archive.md' })] });
   store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
   assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
+});
+
+test('a WSL /mnt drive read matches a Windows workspace memory path', () => {
+  const ws = 'ws-wsl-mounted-read';
+  const entryId = 'mb-2026-06-01-wsl-mounted-read';
+  seedFileActivity(ws, 'C:\\repo', '/mnt/c/REPO/.lares/supervisor/memory/details/wsl-custom.md');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: 'memory/details/wsl-custom.md' })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 0);
+});
+
+test('a genuinely foreign WSL mounted drive read does not suppress never-recalled', () => {
+  const ws = 'ws-wsl-foreign-drive';
+  const entryId = 'mb-2026-06-01-wsl-foreign-drive';
+  seedFileActivity(ws, 'C:\\repo', '/mnt/d/repo/.lares/supervisor/memory/details/wsl-custom.md');
+  const parsed = mkParsed({ entries: [mkEntry({ id: entryId, status: 'done', date: '2026-06-01', detail: 'memory/details/wsl-custom.md' })] });
+  store.reconcileMemoryEvidence(ws, parsed, NOW, { evidence: FIRED });
+  assert.equal(store.listFindings(ws).filter((f) => f.kind === 'never-recalled').length, 1);
 });
 
 test('non-read file activity does not suppress never-recalled', () => {

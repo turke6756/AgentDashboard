@@ -15,6 +15,7 @@
 import crypto from 'crypto';
 import path from 'path';
 import { getDb } from '../database';
+import { wslToWindowsPath } from '../path-utils';
 import {
   CAP_PRESSURE_RATIO,
   MEMORY_ARCHIVE_DIR,
@@ -194,6 +195,11 @@ type CanonicalPath = { style: 'windows' | 'posix'; value: string };
 
 function canonicalAbsolutePath(raw: string): CanonicalPath | null {
   const value = raw.trim();
+  const mountedDrive = /^\/mnt\/([a-z])(?=\/)/i.exec(value);
+  if (mountedDrive) {
+    const normalizedMount = `/mnt/${mountedDrive[1].toLowerCase()}${value.slice(6)}`;
+    return canonicalAbsolutePath(wslToWindowsPath(normalizedMount));
+  }
   if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')) {
     return { style: 'windows', value: path.win32.normalize(value.replace(/\//g, '\\')).toLowerCase() };
   }
@@ -230,21 +236,23 @@ function workspaceMemoryPaths(ws: string): {
   const detailsDir = resolveCanonical(workspaceRoot, MEMORY_DETAILS_DIR);
   const archiveDir = resolveCanonical(workspaceRoot, MEMORY_ARCHIVE_DIR);
   const supervisorDir = resolveCanonical(detailsDir, '../..');
-  const prefix = (p: CanonicalPath): string => `${p.value.replace(/\\/g, '/').toLowerCase()}/`;
-  const detailsPrefix = prefix(detailsDir);
-  const archivePrefix = prefix(archiveDir);
+  const prefixes = [detailsDir, archiveDir].flatMap((p): string[] => {
+    const native = `${p.value.replace(/\\/g, '/').toLowerCase()}/`;
+    if (p.style !== 'windows' || !/^[a-z]:\//.test(native)) return [native];
+    return [native, `/mnt/${native[0]}${native.slice(2)}`];
+  });
+  const prefixSql = prefixes
+    .map(() => `substr(lower(replace(fa.file_path, char(92), '/')), 1, length(?)) = ?`)
+    .join(' OR ');
   const rows = db
     .prepare(
       `SELECT fa.file_path
          FROM file_activities fa
          JOIN agents a ON a.id = fa.agent_id
         WHERE a.workspace_id = ? AND fa.operation = 'read'
-          AND (
-            substr(lower(replace(fa.file_path, char(92), '/')), 1, length(?)) = ?
-            OR substr(lower(replace(fa.file_path, char(92), '/')), 1, length(?)) = ?
-          )`,
+          AND (${prefixSql})`,
     )
-    .all(ws, detailsPrefix, detailsPrefix, archivePrefix, archivePrefix) as Array<{ file_path: unknown }>;
+    .all(ws, ...prefixes.flatMap((prefix) => [prefix, prefix])) as Array<{ file_path: unknown }>;
   const reads = new Set<string>();
   for (const row of rows) {
     const normalized = canonicalAbsolutePath(String(row.file_path));
@@ -702,7 +710,7 @@ export function assessLessonEvidence(ws: string): LessonEvidence {
 }
 
 // ── Reconciliation producer ────────────────────────────────────────────────────
-const NEVER_RECALLED_REASON = 'never recalled via `recall_memory`; raw-file reads are unobserved.';
+const NEVER_RECALLED_REASON = 'never recalled via `recall_memory` or an observed workspace memory-file read.';
 const EVIDENCE_UNAVAILABLE_REASON =
   "no matching invocation observed in Claude's `.claude/projects` corpus (the parser ingests only that corpus; attribution and index completeness are not guaranteed).";
 const NEVER_FIRED_REASON = 'no matching skill invocation observed for this lesson.';
