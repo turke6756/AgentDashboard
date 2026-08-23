@@ -36,15 +36,9 @@ function test(name: string, fn: () => void) { tests.push({ name, fn }); }
 
 const MARKER = DISCLOSURE_FORMAT_MARKER;
 
-// A well-formed active capsule; `detail` defaults to the canonical location.
+// A post-WP-1 active card; lifecycle metadata lives in the detail body.
 function ACTIVE(id: string, over: Record<string, string> = {}): string {
   const f: Record<string, string> = {
-    status: 'active',
-    date: '2026-07-28',
-    owner: 'super',
-    consequence: 'things break silently',
-    state: 'constraint X holds',
-    'open-loop': 'finish Y',
     'read-if': 'before editing the schema',
     detail: `memory/details/${id}.md`,
     ...over,
@@ -77,7 +71,11 @@ function writeIndex(memoryMd: string, body: string): void {
 
 /** Write the canonical detail body for `id` so its pointer resolves cleanly. */
 function writeDetail(detailsDir: string, id: string): void {
-  fs.writeFileSync(path.join(detailsDir, `${id}.md`), `# ${id}\nclosed history\n`, 'utf8');
+  fs.writeFileSync(
+    path.join(detailsDir, `${id}.md`),
+    `<!-- memory-disposal:v1\nkind: open-loop\n-->\n\n# ${id}\nclosed history\n`,
+    'utf8',
+  );
 }
 
 const clsList = (findings: Array<{ cls: string }>) => findings.map((f) => f.cls);
@@ -191,19 +189,21 @@ test('readValidateProject: combines pure + I/O findings and carries the projecti
   assert.ok(classes.includes('malformed-schema'), `expected the pure class; got ${JSON.stringify(classes)}`);
   assert.ok(classes.includes('detail-missing'), `expected the I/O class; got ${JSON.stringify(classes)}`);
   assert.ok(r.projection && typeof r.projection.injectText === 'string', 'projection is present');
-  assert.equal(r.injectText, '', 'a HARD index (pure OR I/O) must never carry inject bytes');
+  assert.equal(r.projection.degraded, true, 'entry-local findings produce a graded projection');
+  assert.ok(!r.injectText.includes('mb-2026-07-28-a'), 'the dangling-detail card is spliced');
+  assert.ok(!r.injectText.includes('mb-2026-07-28-b'), 'the malformed card is spliced');
+  assert.ok(r.injectText.includes(MARKER), 'the valid resident preamble remains injectable');
 });
 
-test('readValidateProject: an I/O-only HARD (pure-clean) still zeroes injectText', () => {
-  // The projection only knows the PURE HARD classes, so a schema-clean index with
-  // a dangling detail pointer yields a non-empty projection.injectText — the
-  // combined HARD gate is the only thing that suppresses it here.
+test('readValidateProject: an I/O-only HARD is spliced without blanking the index', () => {
   const { root, memoryMd } = makeWorkspace();
   writeIndex(memoryMd, idx(ACTIVE('mb-2026-07-28-a'))); // schema-clean, detail file absent
   const r = readValidateProject(root, '2026-07-28T00:00:00Z');
   assert.deepEqual(clsList(r.hard), ['detail-missing'], 'only the I/O class is HARD here');
-  assert.ok(r.projection.injectText.length > 0, 'the pure projection still produced inject bytes');
-  assert.equal(r.injectText, '', 'the combined HARD gate must suppress an I/O-invalid index');
+  assert.deepEqual(r.projection.spliced, [{ id: 'mb-2026-07-28-a', classes: ['detail-missing'] }]);
+  assert.equal(r.injectText, r.projection.injectText, 'the canonical seam exposes the graded projection bytes');
+  assert.ok(r.injectText.includes(MARKER), 'entry-local damage does not blank the resident preamble');
+  assert.ok(!r.injectText.includes('mb-2026-07-28-a'));
 });
 
 test('readValidateProject: a fully-clean index injects and reports no HARD findings', () => {
