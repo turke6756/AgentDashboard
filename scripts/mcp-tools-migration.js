@@ -1,8 +1,9 @@
 // Memory & Lessons v2 (WP-F2) — the SUPERVISOR-ONLY `migration` MCP toolset.
-// The guarded, batch/bundle memory-migration operations WP-I2's signed migration
-// drives. Granted ONLY to the supervisor lane (mcp-config-builder.toolsetsForLane)
+// The guarded batch/bundle operations plus the resident-memory archive action.
+// Granted ONLY to the supervisor lane (mcp-config-builder.toolsetsForLane)
 // — never the both-lane `memory` toolset — and registered in mcp-dashboard.js's
-// TOOLSET_REGISTRY. Thin HTTP callers over the `/api/migration/*` routes; the
+// TOOLSET_REGISTRY. Thin HTTP callers over `/api/migration/*` plus the single
+// `/api/memory/archive` route; the
 // route resolves the caller's workspace + on-disk root + write dialect SOLELY
 // from the authenticated X-Workspace-Id header and runs the transactional
 // operation, returning a structured { ok, ... } body (never a throw). Modeled on
@@ -16,6 +17,24 @@
 
 function getMigrationToolDefinitions() {
   return [
+    {
+      name: 'archive_memory',
+      description:
+        'Archive one resident memory after its disposal condition has been satisfied. This is a ' +
+        'CAS-guarded, crash-safe move from MEMORY.md + memory/details/ to the archive catalog + ' +
+        'memory/archive/. expected_prior_hash is sha256 of the resident MEMORY.md used for the ' +
+        'decision; expected_body_hash is sha256 of the detail body reviewed. Returns a structured ' +
+        '{ ok:true, code?:"cleanup_pending" } or { ok:false, code, message, findings? } body.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The resident memory id to archive.' },
+          expected_prior_hash: { type: 'string', description: 'sha256 of the reviewed resident MEMORY.md (CAS).' },
+          expected_body_hash: { type: 'string', description: 'sha256 of the reviewed resident detail body (CAS).' },
+        },
+        required: ['id', 'expected_prior_hash', 'expected_body_hash'],
+      },
+    },
     {
       name: 'publish_lessons_batch',
       description:
@@ -123,6 +142,15 @@ function getMigrationToolDefinitions() {
 
 async function handleMigrationToolCall(name, args, apiRequest) {
   switch (name) {
+    case 'archive_memory': {
+      const result = await apiRequest('POST', '/api/memory/archive', {
+        id: args.id,
+        expected_prior_hash: args.expected_prior_hash,
+        expected_body_hash: args.expected_body_hash,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     case 'publish_lessons_batch': {
       const result = await apiRequest('POST', '/api/migration/publish-lessons-batch', {
         batch_id: args.batch_id,

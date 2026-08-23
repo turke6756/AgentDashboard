@@ -203,9 +203,10 @@ test('toolsetsForLane: `checkpoints` is granted to the supervisor lane ONLY (nev
 
 // ── WP-F2: the `migration` toolset is supervisor-lane ONLY ──────────────────
 // Memory & Lessons v2 WP-F2: the guarded batch/bundle memory-migration
-// operations (publish_lessons_batch / replace_memory_bundle /
-// restore_memory_bundle) are supervisor-tier + human sign-off (a recorded
-// migration approval gates every bundle op). They must NEVER reach the worker
+// operations (archive_memory / publish_lessons_batch / replace_memory_bundle /
+// restore_memory_bundle) are supervisor-tier capability distribution. A recorded
+// migration approval gates every whole-bundle op; archive_memory instead has an
+// asserted-supervisor provenance gate. They must NEVER reach the worker
 // lane — that is the acceptance criterion "the migration toolset is absent from
 // the worker grant."
 

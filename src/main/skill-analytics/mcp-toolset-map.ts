@@ -59,7 +59,8 @@ export const DASHBOARD_TOOLSETS: readonly string[] = [
   // no lane can be inferred from it.
   'memory',
   // Memory & Lessons v2 (WP-F2): supervisor-lane-only `migration` toolset. Its
-  // verbs (publish_lessons_batch / replace_memory_bundle / restore_memory_bundle)
+  // verbs (archive_memory / publish_lessons_batch / replace_memory_bundle /
+  // restore_memory_bundle)
   // are unique, so a logged `mcp__agent-dashboard__<verb>` resolves to `migration`
   // instead of a null toolset; supervisor-exclusive → lane-inferable.
   'migration',

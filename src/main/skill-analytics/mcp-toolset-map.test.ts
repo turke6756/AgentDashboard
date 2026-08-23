@@ -95,6 +95,16 @@ test('DASHBOARD_TOOLSETS lists plans-read BEFORE plans (GT-A WP-A4.5 first-wins)
   assert.ok(readIdx < plansIdx, 'plans-read must precede plans so shared read names resolve to plans-read');
 });
 
+test('archive_memory resolves to the supervisor-only migration toolset (WP-6)', () => {
+  const migrationDefs: ToolsetDefsLike = {
+    defsFor(toolset) {
+      return toolset === 'migration' ? [{ name: 'archive_memory' }] : null;
+    },
+  };
+  const m = buildMcpToolsetReverseMap(migrationDefs);
+  assert.equal(m.resolve('mcp__agent-dashboard__archive_memory'), 'migration');
+});
+
 test('plans tools map to the plans toolset', () => {
   const plansDefs: ToolsetDefsLike = {
     defsFor(t) {

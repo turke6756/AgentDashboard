@@ -73,11 +73,13 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // disclosure: active capsules ride inline in the injected index; recall only
       // ever fetches closed history, and every recall becomes pruning telemetry.
       // Memory & Lessons v2 (WP-F2): `migration` — the guarded batch/bundle
-      // memory-migration operations (publish_lessons_batch / replace_memory_bundle
-      // / restore_memory_bundle) WP-I2's signed migration drives — is appended to
+      // memory-migration operations (archive_memory / publish_lessons_batch /
+      // replace_memory_bundle / restore_memory_bundle) — is appended to
       // the SUPERVISOR lane ONLY. Never granted to the worker/researcher lanes:
-      // these mutate the whole memory tree and belong to the supervisor tier +
-      // human sign-off (a recorded migration approval gates every bundle op).
+      // these mutate memory state and belong to the supervisor tier. This grant
+      // is capability distribution, not route-level role enforcement: archive's
+      // route has an asserted-supervisor provenance gate, while recorded human
+      // migration approval separately gates every whole-bundle operation.
       return 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration';
     case 'worker':
       // QW1 (context-optimizer §3): `notebooks` removed — 0 notebook tool

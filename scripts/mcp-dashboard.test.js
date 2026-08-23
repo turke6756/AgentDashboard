@@ -17,6 +17,7 @@ const toolsetModulePaths = [
   './mcp-browser-tools',
   './mcp-tools-plans',
   './mcp-tools-memory',
+  './mcp-tools-migration',
 ];
 
 function clearProxyModules() {
@@ -269,10 +270,10 @@ test('propose_graduation POSTs { target, text, rationale } to /api/memory/propos
   assert.deepStrictEqual(JSON.parse(result.content[0].text), body);
 });
 
-test('migration toolset exposes the three guarded ops (WP-F2)', async () => {
+test('migration toolset exposes archive_memory plus the three guarded bundle ops', async () => {
   const proxy = loadProxy('migration');
   const names = namesOf(proxy.getToolDefinitions());
-  assert.deepStrictEqual(names.sort(), ['publish_lessons_batch', 'replace_memory_bundle', 'restore_memory_bundle']);
+  assert.deepStrictEqual(names.sort(), ['archive_memory', 'publish_lessons_batch', 'replace_memory_bundle', 'restore_memory_bundle']);
 });
 
 test('migration ops POST to their /api/migration/* routes', async () => {
@@ -526,6 +527,17 @@ test('31. list_my_agents schema exposes NO agent/owner id arg (owner is identity
   assert.ok(def, 'list_my_agents definition registered');
   assert.deepStrictEqual(Object.keys(def.inputSchema.properties).sort(), ['include_terminal', 'limit']);
   assert.ok(!('required' in def.inputSchema) || def.inputSchema.required.length === 0, 'no required args');
+});
+
+test('archive_memory POSTs caller CAS fields to /api/memory/archive and returns structured failures as data', async () => {
+  const proxy = loadProxy('migration');
+  const body = { ok: false, code: 'cas_mismatch', message: 'stale decision' };
+  const api = capturingApi(body);
+  const args = { id: 'mb-2026-08-22-x', expected_prior_hash: 'prior', expected_body_hash: 'body' };
+  const result = await proxy.handleToolCall('archive_memory', args, api);
+  assert.deepStrictEqual(api.calls, [{ method: 'POST', route: '/api/memory/archive', body: args }]);
+  assert.ok(!result.isError, 'a structured archive refusal is data, not a tool error');
+  assert.deepStrictEqual(JSON.parse(result.content[0].text), body);
 });
 
 test('32. production observability registration exposes and dispatches defer_continuation on the self-authored route', async () => {

@@ -62,6 +62,7 @@ import os from 'os';
 import { getDb, getWorkspace as getWorkspaceRecord } from './database';
 // Memory & Lessons v2 (WP-D): the recall_memory detail fetch + recall telemetry.
 import { recallMemoryDetailWithTelemetry } from './memory-index/recall';
+import { archiveMemoryEntry } from './memory-index/archive-mover';
 // Memory & Lessons v2 (WP-F1): the transactional publish_lesson state machine.
 import { publishLesson } from './memory-index/publisher';
 // Memory & Lessons v2 (WP-F2): graduation proposal recording + the supervisor-only
@@ -1551,6 +1552,48 @@ export class ApiServer {
         identity.workspaceId,
         workspace.path,
         input.id,
+        new Date().toISOString(),
+      );
+    }
+
+    // POST /api/memory/archive { id, expected_prior_hash, expected_body_hash }
+    // — plan_1fe663ce WP-6's reachable cleanup seam. Like recall, workspace
+    // scope comes SOLELY from the authenticated X-Workspace-Id assertion. An
+    // asserted X-Supervisor-Id is additionally required as a soft provenance
+    // gate. This is not route-level role authorization: supervisor-only access
+    // is distributed by placing archive_memory in the migration MCP toolset,
+    // while the shared workspace bearer/header rail authenticates this route.
+    // The mover owns validation/CAS and always returns a structured result, so
+    // operational refusal/failure remains a 200 body rather than an exception.
+    if (method === 'POST' && path === '/api/memory/archive') {
+      if (!identity.asserted || !identity.workspaceId) {
+        throw Object.assign(
+          new Error('workspace identity required (send X-Workspace-Id header)'),
+          { statusCode: 400 },
+        );
+      }
+      if (!identity.supervisorId) {
+        throw Object.assign(
+          new Error('asserted supervisor identity required (send X-Supervisor-Id header)'),
+          { statusCode: 400 },
+        );
+      }
+      const workspace = getWorkspaceRecord(identity.workspaceId);
+      if (!workspace) {
+        // Defensive: resolveIdentity already rejected an unknown asserted workspace.
+        throw Object.assign(new Error('workspace not found'), { statusCode: 404 });
+      }
+      const body = await readBody(req);
+      const input = body ? JSON.parse(body) : {};
+      return archiveMemoryEntry(
+        identity.workspaceId,
+        workspace.path,
+        detectPathType(workspace.path),
+        {
+          id: input.id,
+          expectedPriorHash: input.expected_prior_hash,
+          expectedBodyHash: input.expected_body_hash,
+        },
         new Date().toISOString(),
       );
     }
