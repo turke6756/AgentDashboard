@@ -503,6 +503,7 @@ const TESTS = [
   // Memory & Lessons v2 WP-A1 — pure core unit tests, the CLI exec suite
   // (shipped MEMORY_INDEX_MJS bytes vs on-disk fixtures), and the stale-artifact
   // drift check (regenerate → byte-identity with the committed generated bundle).
+  'dist/main/shared/memory-index-core.test.js',
   'dist/main/main/memory-index/core.test.js',
   'dist/main/main/memory-index/review-store.test.js',
   // Memory & Lessons v2 WP-A2 — the I/O validation layer (validateIO +
@@ -812,11 +813,20 @@ const TESTS = [
   'dist/main/main/spellcheck-context-menu.test.js',
 ]
 
+const requestedTests = process.argv.slice(2)
+const testsToRun = requestedTests.length === 0 ? TESTS : requestedTests
+for (const file of testsToRun) {
+  if (!TESTS.includes(file)) {
+    console.error(`unknown main-test path: ${file}`)
+    process.exit(2)
+  }
+}
+
 let failed = null
 const electronRuntime = path.resolve(
   'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron'
 )
-for (const file of TESTS) {
+for (const file of testsToRun) {
   // The agy reader exercises production's better-sqlite3 binding, which is
   // compiled for Electron's ABI. Run that suite with the bundled Electron in
   // Node mode; every JS-only main test keeps the faster host-Node path.
@@ -837,4 +847,4 @@ if (failed) {
   console.error(`\nx main-test suite failed at: ${failed}`)
   process.exit(1)
 }
-console.log(`\nmain-test suite: ${TESTS.length} test files passed`)
+console.log(`\nmain-test suite: ${testsToRun.length} test files passed`)

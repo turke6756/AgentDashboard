@@ -128,16 +128,14 @@ function realGregorianDate(value: string): boolean {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const date = new Date(0);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCFullYear(year, month - 1, day);
+  const date = new Date(Date.UTC(year, month - 1, day));
   return date.toISOString().slice(0, 10) === value;
 }
 
 /** Parse the exact memory-disposal:v1 grammar without reading the filesystem. */
 export function parseDisposal(bodyText: string): DisposalParseResult {
   const normalized = bodyText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-  const markerCount = (normalized.match(/^<!-- memory-disposal:v1$/gm) ?? []).length;
+  const markerCount = (normalized.match(/^[ \t]*<!-- memory-disposal:v1[ \t]*$/gm) ?? []).length;
   if (markerCount === 0) {
     return normalized.includes('<!-- memory-disposal:v1')
       ? { ok: false, error: 'malformed', message: 'memory-disposal:v1 opener must be exact' }
@@ -374,7 +372,12 @@ export function validateArchiveParsed(parsed: ParsedIndex): ValidateResult {
       : `missing ${ARCHIVE_FORMAT_MARKER}`));
   }
   if (parsed.handoffReadFirst) {
-    hardFindings.push(hard('unexpected-content', null, 'archive catalog forbids handoff-read-first'));
+    const [blockStart, blockEnd] = parsed.handoffRange!;
+    hardFindings.push({
+      ...hard('unexpected-content', null, 'archive catalog forbids handoff-read-first'),
+      blockStart,
+      blockEnd,
+    });
   }
   if (parsed.byteLength > ARCHIVE_BUDGET_BYTES || parsed.lineCount > ARCHIVE_BUDGET_LINES) {
     advisoryFindings.push(advisory('archive-growth', null, `archive is ${parsed.byteLength} bytes and ${parsed.lineCount} lines`));
@@ -485,21 +488,28 @@ export function projectParsed(parsed: ParsedIndex, opts: ProjectParsedOptions): 
     classesById.set(finding.id, classes);
   }
   for (const entry of parsed.entries) {
-    if (entry.status !== 'active' || removedEntries.has(entry) || !classesById.has(entry.id)) continue;
-    removedRanges.push([entry.blockStart, entry.blockEnd]);
-    removedEntries.add(entry);
+    if (expiredSet.has(entry.id) || !classesById.has(entry.id)) continue;
+    if (!removedEntries.has(entry)) {
+      removedRanges.push([entry.blockStart, entry.blockEnd]);
+      removedEntries.add(entry);
+    }
   }
   const spliced = [...classesById.entries()]
-    .filter(([id]) => parsed.entries.some((entry) => entry.id === id && entry.status === 'active'))
+    .filter(([id]) => parsed.entries.some((entry) => entry.id === id && !expiredSet.has(entry.id)))
     .map(([id, classes]) => ({ id, classes: [...classes].sort() }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => a.id === b.id ? 0 : a.id < b.id ? -1 : 1);
 
   const invalidHandoff = allFindings.some((finding) => finding.cls === 'invalid-handoff');
   if (invalidHandoff && parsed.handoffRange) removedRanges.push(parsed.handoffRange);
   let candidate = spliceRanges(parsed.normalized, removedRanges);
   const protectedIds = invalidHandoff ? new Set<string>() : new Set(parsed.handoffReadFirst ?? []);
   const remaining = parsed.entries.filter((entry) => entry.status === 'active' && !removedEntries.has(entry));
-  remaining.sort((a, b) => (a.idDate ?? '').localeCompare(b.idDate ?? '') || a.id.localeCompare(b.id));
+  remaining.sort((a, b) => {
+    const aDate = a.idDate ?? '';
+    const bDate = b.idDate ?? '';
+    if (aDate !== bDate) return aDate < bDate ? -1 : 1;
+    return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+  });
   const shedOrder = [...remaining.filter((entry) => !protectedIds.has(entry.id)), ...remaining.filter((entry) => protectedIds.has(entry.id))];
   const global = allFindings.find((finding) => GLOBAL_BLANK_CLASSES.has(finding.cls));
   for (const entry of global ? [] : shedOrder) {

@@ -116,21 +116,14 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
     '',
     '<!-- disclosure-format: v2 -->',
     '',
-    '## mb-2026-08-01-expired: Expired capsule',
-    '- status: active',
-    '- date: 2026-08-01',
-    '- consequence: this expired text must not be costed as resident',
-    '- state: obsolete',
+    '## mb-2026-08-01-invalid: Invalid capsule',
     '- read-if: never',
-    '- expires: 2026-08-02',
+    '- detail: memory/details/mb-2026-08-01-invalid.md',
+    '- consequence: this invalid text must not be costed as resident',
     '',
     '## mb-2026-08-20-live: Live capsule',
-    '- status: active',
-    '- date: 2026-08-20',
-    '- consequence: this live text is injected and must carry a resident cost',
-    '- state: current',
     '- read-if: always',
-    '- expires: 2999-01-01',
+    '- detail: memory/details/mb-2026-08-20-live.md',
   ].join('\r\n');
   const expectedInjectText = [
     '# Supervisor memory index',
@@ -138,12 +131,8 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
     '<!-- disclosure-format: v2 -->',
     '',
     '## mb-2026-08-20-live: Live capsule',
-    '- status: active',
-    '- date: 2026-08-20',
-    '- consequence: this live text is injected and must carry a resident cost',
-    '- state: current',
     '- read-if: always',
-    '- expires: 2999-01-01',
+    '- detail: memory/details/mb-2026-08-20-live.md',
   ].join('\n');
   const files: Record<string, string> = { [memPath]: content };
   const reader: FileReader = {
@@ -164,7 +153,7 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
   assert.equal(index!.disclosureTier, 'resident', 'the index tier is resident');
   assert.equal(body!.disclosureTier, 'on-demand', 'the body tier is on-demand');
   assert.equal(index!.estimate.tokens, expectedInjectText.length,
-    'the resident row estimates the normalized injected text with expired blocks removed');
+    'the resident row estimates the normalized partial projection with invalid blocks removed');
   assert.ok(index!.estimate.tokens > 0, 'the injected index has a non-zero resident cost');
   assert.ok(body!.estimate.tokens > 0, 'the on-demand body carries its measured size');
   assert.equal(body!.estimate.chars, content.length, 'the body row still measures the full on-demand file');

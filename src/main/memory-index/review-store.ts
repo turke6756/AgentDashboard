@@ -715,7 +715,7 @@ const EVIDENCE_UNAVAILABLE_REASON =
   "no matching invocation observed in Claude's `.claude/projects` corpus (the parser ingests only that corpus; attribution and index completeness are not guaranteed).";
 const NEVER_FIRED_REASON = 'no matching skill invocation observed for this lesson.';
 
-const CLOSED_STATUSES = new Set(['done', 'note', 'archived']);
+const CLOSED_STATUSES = new Set(['archived']);
 
 /** ISO date (YYYY-MM-DD prefix) → epoch-day count; NaN if unparseable. */
 function epochDay(dateStr: string): number {
@@ -769,8 +769,8 @@ export function reconcileMemoryEvidence(
   for (const e of parsed.entries) {
     if (!CLOSED_STATUSES.has(e.status)) continue;
     if (!e.detail) continue;
-    if (!e.date) continue;
-    const dd = epochDay(e.date);
+    if (!e.idDate) continue;
+    const dd = epochDay(e.idDate);
     if (Number.isNaN(dd) || Number.isNaN(todayDay)) continue;
     if (todayDay - dd <= NEVER_RECALLED_MIN_AGE_DAYS) continue;
     if ((counts.get(e.id) ?? 0) > 0) continue;

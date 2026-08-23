@@ -47,10 +47,14 @@ const disposalCases: Array<{ name: string; body: string; ok: boolean; kind?: str
   },
   { name: '2026-02-30', body: '<!-- memory-disposal:v1\nkind: expires\nvalue: 2026-02-30\n-->\n', ok: false },
   { name: '2026-13-01', body: '<!-- memory-disposal:v1\nkind: expires\nvalue: 2026-13-01\n-->\n', ok: false },
+  { name: 'leap day', body: '<!-- memory-disposal:v1\nkind: expires\nvalue: 2024-02-29\n-->\n', ok: true, kind: 'expires', value: '2024-02-29' },
+  { name: 'non-leap day', body: '<!-- memory-disposal:v1\nkind: expires\nvalue: 2026-02-29\n-->\n', ok: false },
+  { name: 'Date.UTC year mapping', body: '<!-- memory-disposal:v1\nkind: expires\nvalue: 0099-01-01\n-->\n', ok: false },
   { name: 'duplicate keys', body: '<!-- memory-disposal:v1\nkind: open-loop\nkind: open-loop\n-->\n', ok: false },
   { name: 'open-loop with value', body: '<!-- memory-disposal:v1\nkind: open-loop\nvalue: nope\n-->\n', ok: false },
   { name: 'unknown key', body: '<!-- memory-disposal:v1\nkind: open-loop\nowner: agent\n-->\n', ok: false },
   { name: 'second block', body: '<!-- memory-disposal:v1\nkind: open-loop\n-->\n<!-- memory-disposal:v1\nkind: open-loop\n-->\n', ok: false },
+  { name: 'indented second block', body: '<!-- memory-disposal:v1\nkind: open-loop\n-->\n  <!-- memory-disposal:v1\nkind: open-loop\n-->\n', ok: false },
   { name: 'not first content', body: 'prose\n<!-- memory-disposal:v1\nkind: open-loop\n-->\n', ok: false },
   { name: 'expires-when empty', body: '<!-- memory-disposal:v1\nkind: expires-when\nvalue:   \n-->\n', ok: false },
 ];
@@ -113,6 +117,16 @@ test('archive profile accepts only status archived plus detail', () => {
   assert.ok(residentResult.hard.some((finding) => finding.cls === 'legacy-format'));
 });
 
+test('archive handoff rejection carries its concrete preamble range', () => {
+  const id = 'mb-2026-08-22-archived-handoff';
+  const source = `${ARCHIVE_FORMAT_MARKER}\n\n## handoff-read-first\n1. ${id}\n\n## ${id}: Archived\n- status: archived\n- detail: archive/${id}.md\n`;
+  const parsed = parseArchiveIndex(source);
+  const finding = validateArchiveParsed(parsed).hard.find((row) => row.cls === 'unexpected-content');
+  assert.ok(finding);
+  assert.deepEqual([finding.blockStart, finding.blockEnd], parsed.handoffRange);
+  assert.equal(finding.id, null);
+});
+
 test('projection outcomes are disjoint and expiry alone is not degradation', () => {
   const id = 'mb-2026-08-22-expired';
   const projection = projectParsed(parseIndex(resident(card(id))), {
@@ -130,20 +144,31 @@ test('projection outcomes are disjoint and expiry alone is not degradation', () 
   assert.equal(projection.injectText.includes(id), false);
 });
 
-test('non-active blocks never reach resident injectText', () => {
+test('illegal resident status is spliced and marks the projection degraded', () => {
   const id = 'mb-2026-08-22-archived-in-resident';
-  const archived = `## ${id}: Archived\n- status: archived\n- detail: archive/${id}.md\n`;
+  const archived = `## ${id}: Archived\n- status: archived\n- read-if: before work\n- detail: archive/${id}.md\n`;
   const projection = projectParsed(parseIndex(resident(archived, card('mb-2026-08-22-live'))), {
     nowISO: '2026-08-22',
   });
   assert.equal(projection.injectText.includes(id), false);
   assert.equal(projection.injectText.includes('mb-2026-08-22-live'), true);
-  assert.deepEqual(projection.spliced, []);
-  assert.equal(projection.degraded, false);
+  assert.deepEqual(projection.spliced, [{ id, classes: ['malformed-schema', 'unexpected-field'] }]);
+  assert.equal(projection.degraded, true);
 });
 
+for (const status of ['archived', 'wibble', '']) {
+  test(`resident status ${status || '<empty>'} is a local degraded splice`, () => {
+    const id = `mb-2026-08-22-status-${status || 'empty'}`;
+    const source = resident(`## ${id}: Bad status\n- status: ${status}\n- read-if: before work\n- detail: memory/details/${id}.md\n`);
+    const projection = projectParsed(parseIndex(source), { nowISO: '2026-08-22' });
+    assert.deepEqual(projection.spliced, [{ id, classes: ['malformed-schema', 'unexpected-field'] }]);
+    assert.equal(projection.degraded, true);
+    assert.equal(projection.injectText.includes(id), false);
+  });
+}
+
 test('budget shedding is deterministic: idDate then id, with handoff protected last', () => {
-  const filler = 'x'.repeat(7000);
+  const filler = 'x'.repeat(9000);
   const a = card('mb-2026-08-01-a', filler);
   const b = card('mb-2026-08-01-b', filler);
   const oldProtected = card('mb-2026-07-01-protected', filler);
@@ -151,11 +176,27 @@ test('budget shedding is deterministic: idDate then id, with handoff protected l
   const source = `${DISCLOSURE_FORMAT_MARKER}\n\n## handoff-read-first\n1. mb-2026-07-01-protected\n\n${a}\n${b}\n${oldProtected}\n${newest}`;
   const first = projectParsed(parseIndex(source), { nowISO: '2026-08-22' });
   const second = projectParsed(parseIndex(source), { nowISO: '2026-08-22' });
-  assert.deepEqual(first.shed, ['mb-2026-08-01-a']);
+  assert.deepEqual(first.shed, ['mb-2026-08-01-a', 'mb-2026-08-01-b']);
   assert.equal(first.injectText, second.injectText);
   assert.deepEqual(first.shed, second.shed);
   assert.ok(first.budget.bytes <= MEMORY_INDEX_BUDGET_BYTES);
   assert.equal(first.injectText.includes('mb-2026-07-01-protected'), true);
+});
+
+test('budget sheds a protected id only after every unprotected id', () => {
+  const filler = 'y'.repeat(8500);
+  const ids = [
+    'mb-2026-08-01-unprotected-a',
+    'mb-2026-08-02-unprotected-b',
+    'mb-2026-07-01-protected-oldest',
+    'mb-2026-07-02-protected-middle',
+    'mb-2026-07-03-protected-newest',
+  ];
+  const source = `${DISCLOSURE_FORMAT_MARKER}\n\n## handoff-read-first\n1. ${ids[2]}\n2. ${ids[3]}\n3. ${ids[4]}\n\n${ids.map((id) => card(id, filler)).join('\n')}`;
+  const projection = projectParsed(parseIndex(source), { nowISO: '2026-08-22' });
+  assert.deepEqual(projection.shed, [ids[0], ids[1], ids[2]]);
+  assert.equal(projection.injectText.includes(ids[3]), true);
+  assert.equal(projection.injectText.includes(ids[4]), true);
 });
 
 test('global legacy format blanks instead of turning entry-local', () => {

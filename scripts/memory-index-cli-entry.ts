@@ -110,8 +110,8 @@ function main(): number {
   // command === 'project'
   const now = nowISO ?? new Date().toISOString();
   const projection = projectParsed(parsed, { nowISO: now });
-  if (projection.hard.length > 0) {
-    printFindings(projection.hard);
+  if (hard.length > 0) {
+    printFindings(hard);
     process.stderr.write(`refusing to project a HARD-invalid index\n`);
     return EXIT_HARD;
   }
@@ -119,9 +119,11 @@ function main(): number {
   process.stdout.write(projection.injectText);
   process.stderr.write(
     JSON.stringify({
-      dropped: projection.dropped,
-      conditionReview: projection.conditionReview,
-      staleActive: projection.staleActive,
+      expired: projection.expired,
+      spliced: projection.spliced,
+      shed: projection.shed,
+      blanked: projection.blanked,
+      degraded: projection.degraded,
       budget: projection.budget,
       advisory,
     }) + '\n',

@@ -191,7 +191,7 @@ function buildMemorySources(
   const projection = exists
     ? projectParsed(parseIndex(file!.content), { nowISO: deps.nowISO ?? new Date().toISOString() })
     : null;
-  const projectionIsMeasurable = projection !== null && projection.hard.length === 0;
+  const projectionIsMeasurable = projection !== null && projection.blanked === false;
   const estimateText = projectionIsMeasurable ? projection.injectText : '';
   const warnings = [
     ...(file === null

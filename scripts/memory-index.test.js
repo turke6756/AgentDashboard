@@ -38,12 +38,6 @@ function run(args) {
 
 function activeCapsule(id, over = {}) {
   const f = {
-    status: 'active',
-    date: '2026-07-28',
-    owner: 'super',
-    consequence: 'things break silently',
-    state: 'constraint X holds',
-    'open-loop': 'finish Y',
     'read-if': 'before editing the schema',
     detail: `memory/details/${id}.md`,
     ...over,
@@ -59,17 +53,15 @@ function idx(...blocks) {
 
 // ── HARD classes → exit 1 ───────────────────────────────────────────────────
 const HARD_FIXTURES = {
-  'legacy-format (missing marker)': `## mb-2026-07-28-a: T\n- status: active\n- date: 2026-07-28\n- consequence: c\n- state: s\n- open-loop: o\n- read-if: r\n`,
+  'legacy-format (missing marker)': `## mb-2026-07-28-a: T\n- read-if: r\n- detail: memory/details/mb-2026-07-28-a.md\n`,
   'legacy-format (mismatched marker)': `<!-- disclosure-format: v1 -->\n\n${activeCapsule('mb-2026-07-28-a')}\n`,
   'malformed-schema (bad status)': idx(activeCapsule('mb-2026-07-28-a', { status: 'wibble' })),
   'malformed-schema (bad id)': idx(activeCapsule('mb-NOTADATE')),
-  'missing-field (no consequence)': idx(activeCapsule('mb-2026-07-28-a', { consequence: '' })),
-  'missing-field (active names no exit)': idx(
-    activeCapsule('mb-2026-07-28-a', { 'open-loop': '', expires: '', 'expires-when': '' }),
-  ),
+  'missing-field (no read-if)': idx(activeCapsule('mb-2026-07-28-a', { 'read-if': '' })),
+  'missing-field (no detail)': idx(activeCapsule('mb-2026-07-28-a', { detail: '' })),
   'duplicate-id': idx(activeCapsule('mb-2026-07-28-dup'), activeCapsule('mb-2026-07-28-dup')),
-  'bare-scoped-pkg (prose)': idx(activeCapsule('mb-2026-07-28-a', { state: 'install @acme/widgets now' })),
-  'byte-budget': idx(activeCapsule('mb-2026-07-28-a', { state: 'x'.repeat(25100) })),
+  'bare-scoped-pkg (prose)': idx(activeCapsule('mb-2026-07-28-a', { 'read-if': 'install @acme/widgets now' })),
+  'byte-budget': idx(activeCapsule('mb-2026-07-28-a', { 'read-if': 'x'.repeat(25100) })),
   'line-budget': `${MARKER}\n${Array.from({ length: 210 }, () => 'z').join('\n')}\n\n${activeCapsule('mb-2026-07-28-a')}\n`,
   'invalid-handoff': `${MARKER}\n\n## handoff-read-first\n1. mb-2026-07-28-nope\n\n${activeCapsule('mb-2026-07-28-a')}\n`,
 };
@@ -90,7 +82,7 @@ for (const [label, body] of Object.entries(HARD_FIXTURES)) {
 
 // ── Advisory / clean → exit 0 ───────────────────────────────────────────────
 test('validate: cap-pressure advisory → exit 0', () => {
-  const p = writeFixture(idx(activeCapsule('mb-2026-07-28-a', { state: 'y'.repeat(20200) })));
+  const p = writeFixture(idx(activeCapsule('mb-2026-07-28-a', { 'read-if': 'y'.repeat(20200) })));
   const r = run(['validate', p]);
   assert.equal(r.status, 0, `advisory-only must exit 0; got ${r.status}. stderr: ${r.stderr}`);
   assert.match(r.stderr, /cap-pressure/);
@@ -102,22 +94,21 @@ test('validate: clean index → exit 0', () => {
 });
 
 test('validate: backticked @scope/pkg is clean → exit 0', () => {
-  const p = writeFixture(idx(activeCapsule('mb-2026-07-28-a', { state: 'install `@acme/widgets` now' })));
+  const p = writeFixture(idx(activeCapsule('mb-2026-07-28-a', { 'read-if': 'install `@acme/widgets` now' })));
   assert.equal(run(['validate', p]).status, 0, 'a backticked package token is clean');
 });
 
 test('validate: fenced @scope/pkg is clean → exit 0', () => {
-  const body = idx(activeCapsule('mb-2026-07-28-a', { state: 'see the detail file' }))
-    .replace(/\n$/, '\n\nsetup:\n```\n@acme/widgets\n```\n');
+  const body = `${MARKER}\n\nsetup:\n\`\`\`\n@acme/widgets\n\`\`\`\n\n${activeCapsule('mb-2026-07-28-a')}\n`;
   const p = writeFixture(body);
   assert.equal(run(['validate', p]).status, 0, 'a fenced package token is clean');
 });
 
 // ── Projection semantics + non-mutation (AC4) ───────────────────────────────
-test('project: drops the literal-expired entry only; deterministic; file unchanged', () => {
+test('project: clean v3 index is deterministic and file unchanged', () => {
   const body = idx(
     activeCapsule('mb-2026-07-28-live'),
-    activeCapsule('mb-2020-01-01-dead', { date: '2020-01-01', 'open-loop': '', expires: '2020-02-01' }),
+    activeCapsule('mb-2020-01-01-still-live'),
   );
   const p = writeFixture(body);
   const beforeBytes = fs.readFileSync(p);
@@ -128,8 +119,9 @@ test('project: drops the literal-expired entry only; deterministic; file unchang
 
   assert.equal(r1.status, 0);
   assert.ok(r1.stdout.includes('mb-2026-07-28-live'), 'live entry kept');
-  assert.ok(!r1.stdout.includes('mb-2020-01-01-dead'), 'expired entry dropped');
-  assert.match(r1.stderr, /"dropped":\["mb-2020-01-01-dead"\]/);
+  assert.ok(r1.stdout.includes('mb-2020-01-01-still-live'), 'age alone does not expire an entry');
+  assert.match(r1.stderr, /"expired":\[\]/);
+  assert.match(r1.stderr, /"degraded":false/);
   assert.equal(r1.stdout, r2.stdout, 'project is deterministic for identical (input, now)');
 
   const afterBytes = fs.readFileSync(p);
