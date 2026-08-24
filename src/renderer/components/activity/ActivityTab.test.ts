@@ -23,6 +23,40 @@ function row(
 }
 
 describe('Activity row copy', () => {
+  it('selects the File lens and issues one real file-grouped list request', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const activityPage = {
+      workspaceId: 'file-lens-ws', items: [],
+      cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
+    const list = vi.fn(async () => activityPage);
+    const markViewed = vi.fn(async () => ({ workspaceId: 'file-lens-ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
+    (window as any).api = { activity: { digest, list, markViewed } };
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'file-lens-ws', agents: [], activityPage: null,
+      activityScope: { grouping: 'time' }, activityScopeHistory: [], activityLoading: true, activityError: null,
+      setLens: initial.setLens, loadActivity: initial.loadActivity,
+    } as any);
+    try {
+      await act(async () => root.render(React.createElement(ActivityTab)));
+      const lens = container.querySelector('[aria-label="Activity lens"]')!;
+      expect(lens.querySelector('[aria-pressed="true"]')?.textContent).toBe('Time');
+      await act(async () => {
+        (Array.from(lens.querySelectorAll('button')).find((button) => button.textContent === 'File') as HTMLButtonElement).click();
+        await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+      });
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'file-lens-ws', grouping: 'file' }));
+      expect(useDashboardStore.getState().activityScope).toEqual({ grouping: 'file' });
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('REACHABILITY:wp3-file-lens-drill renders file groups, retains filters in the drill query, and restores exact history', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
@@ -78,18 +112,63 @@ describe('Activity row copy', () => {
     const initial = useDashboardStore.getInitialState();
     const rootScope = { grouping: 'file' as const, agentId: 'agent-1' };
     const middleScope = { grouping: 'time' as const, agentId: 'agent-1', pathPrefix: 'src' };
+    const activityPage = {
+      workspaceId: 'crumb-ws', items: [],
+      cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
+    const list = vi.fn(async () => activityPage);
+    const markViewed = vi.fn(async () => ({ workspaceId: 'crumb-ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
+    (window as any).api = { activity: { digest, list, markViewed } };
     useDashboardStore.setState({
-      selectedWorkspaceId: 'ws', agents: [], activityPage: null, activityLoading: true, activityError: null,
+      selectedWorkspaceId: 'crumb-ws', agents: [], activityPage: null, activityLoading: true, activityError: null,
       activityScope: { grouping: 'time', agentId: 'agent-1', pathPrefix: 'src/renderer' },
-      activityScopeHistory: [rootScope, middleScope], popToDepth: initial.popToDepth, loadActivity: vi.fn(async () => undefined),
+      activityScopeHistory: [rootScope, middleScope], popToDepth: initial.popToDepth, loadActivity: initial.loadActivity,
     } as any);
     try {
       await act(async () => root.render(React.createElement(ActivityTab)));
       const breadcrumb = container.querySelector('[aria-label="Activity drill breadcrumb"]')!;
       expect(breadcrumb.querySelectorAll('li')).toHaveLength(3);
-      await act(async () => (Array.from(breadcrumb.querySelectorAll('button')).find((button) => button.textContent === 'src') as HTMLButtonElement).click());
+      await act(async () => {
+        (Array.from(breadcrumb.querySelectorAll('button')).find((button) => button.textContent === 'src') as HTMLButtonElement).click();
+        await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+      });
+      expect(digest).toHaveBeenCalledTimes(1);
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'crumb-ws', grouping: 'time', agentId: 'agent-1', pathPrefix: 'src' }));
       expect(useDashboardStore.getState().activityScope).toEqual(middleScope);
       expect(useDashboardStore.getState().activityScopeHistory).toEqual([rootScope]);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('removing the drilled path chip also removes store-derived breadcrumb navigation', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const member = row('restorable');
+    const activityPage = {
+      workspaceId: 'chip-ws',
+      items: [{ kind: 'file-group', repoPath: 'src/renderer', displayPath: 'src/renderer', latestStartedAt: 2, members: [member], pageCounts: {} }],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 1, emitted: 1, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'chip-ws', agents: [], activityPage, activityReturnCounts: activityPage.pageCounts,
+      activityScope: { grouping: 'file', planId: 'plan-1' }, activityScopeHistory: [], activityLoading: false, activityError: null,
+      pushDrill: initial.pushDrill, removeFilter: initial.removeFilter, loadActivity: vi.fn(async () => undefined),
+    } as any);
+    try {
+      await act(async () => root.render(React.createElement(ActivityTab)));
+      await act(async () => (container.querySelector('[data-testid="activity-file-src/renderer"] button') as HTMLButtonElement).click());
+      expect(container.querySelector('[aria-label="Activity drill breadcrumb"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Remove pathPrefix filter"]')).not.toBeNull();
+      await act(async () => (container.querySelector('[aria-label="Remove pathPrefix filter"]') as HTMLButtonElement).click());
+      expect(useDashboardStore.getState().activityScopeHistory).toEqual([]);
+      expect(container.querySelector('[aria-label="Activity drill breadcrumb"]')).toBeNull();
     } finally {
       act(() => root.unmount());
     }
