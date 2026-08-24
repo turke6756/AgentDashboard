@@ -8777,3 +8777,132 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT
     '  inspect     --dir <plan-folder> [--summary]',
   );
 
+// WP-1 (plan_d85b0a78) — new managed scaffold file (v1), so no prior hash.
+export const LAND_WORK_PACKAGE_SKILL_MD = `---
+name: land-work-package
+description: >-
+  Land exactly one finished worker package without including shared-worktree
+  edits, using canonical trailers and a verified temporary-index transaction.
+---
+
+# Land a work package
+
+Use this skill for the one commit that lands a finished worker package. The
+shared worktree and real index may contain other people's work. Never use them
+as commit authority, and never clean or discard them. Never push, tag, amend,
+rebase, or reset as part of this procedure.
+
+## Message and trailers
+
+For a plan-bound worker, \`Plan\`, \`WP\`, and \`Verified\` are mandatory;
+\`Scope-omitted\` is optional. Use exact brief values:
+\`Plan: plan_[0-9a-f]{8}\` and \`WP: <exact briefed identifier>\`. Do not impose
+a numeric-only WP grammar: identifiers such as \`WP-Z\`, \`WP-HOV-1\`, and
+\`WP-PROMOTE-1\` are valid. An ad-hoc worker may use \`Verified\` but must omit
+\`Plan\` and \`WP\` rather than inventing join keys.
+
+Free prose may appear above the trailers. The trailer paragraph must be the
+final paragraph, separated from the subject or body by a blank line, and contain
+only canonical trailer lines. Each permitted key occurs at most once; for a
+plan-bound commit, \`Plan\`, \`WP\`, and \`Verified\` occur exactly once. Each
+value occupies one physical line. Folded or continuation values, duplicates,
+alternate capitalization, and unknown keys in the block are malformed.
+
+\`Verified: <command> => PASS (<evidence>)[; <command> => PASS (<evidence>)]*\`
+
+Each command must actually have run. Evidence is an observed runner count or
+summary, or \`exit 0\` for a silent command. \`n/a\`, \`not run\`, and bare
+\`green\` are forbidden for a landed plan-bound package. If a required check
+cannot run, do not commit; return blocked. Run
+\`node scripts/run-main-tests.mjs\` and, when main-process code changed,
+\`npm run build\`; quote an emitted count or summary in \`Verified\`.
+
+Write the full message to a file. Its final paragraph looks like:
+
+\`\`\`text
+Plan: plan_xxxxxxxx
+WP: WP-N
+Verified: node scripts/run-main-tests.mjs => PASS (<observed summary>)
+\`\`\`
+
+## Temporary-index commit transaction
+
+The temporary index is mandatory. The real shared index is never read as staging
+authority or modified. Save the prior \`GIT_INDEX_FILE\` state, use an absolute
+temporary path, then restore or unset it and remove the temporary file on exit.
+
+1. Capture \`BRANCH_REF = git symbolic-ref --quiet HEAD\` as the full
+   \`refs/heads/...\` name; fail if detached. Capture immutable
+   \`BASE = git rev-parse BRANCH_REF^{commit}\`.
+2. Set \`GIT_INDEX_FILE\` to the absolute temporary path and run
+   \`git read-tree BASE\`. Every index mutation below runs under that environment.
+3. For whole-file owned paths use \`git add -- <exact paths>\` only inside the
+   temporary index. It preserves modes and handles additions/deletions.
+4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
+   plus only owned hunks, hash it with \`git hash-object -w\`, preserve its exact
+   mode, and install it with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --remove -- <path>\` and expect absence.
+5. Freeze the intended changed-path set as repo-relative literal paths and each
+   intended tree entry as mode plus blob OID, or \`absent\` for a deletion.
+   Never freeze a directory, glob, or unresolved token.
+6. Run \`git write-tree\`, then
+   \`git commit-tree <tree> -p BASE -F <msgfile>\` to create the single-parent
+   candidate. Do not advance the branch yet.
+7. Before branch advancement verify:
+   - the candidate's sole parent is exactly \`BASE\`;
+   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and
+   - \`git ls-tree\` proves each exact mode/blob and every deletion's absence.
+     Do not call \`rev-parse CANDIDATE:path\` for a deleted path.
+8. Only then run
+   \`git update-ref --create-reflog <BRANCH_REF> CANDIDATE BASE\`. Read the
+   branch ref back and require equality with \`CANDIDATE\`.
+
+All path-set operations are NUL-safe. Disable rename detection so a rename is a
+deterministic deletion plus addition. Line-delimited shell arrays, text
+\`sort\`/\`diff\`, and \`--stat\` are not contract-grade verification.
+
+On CAS failure capture \`NEW_BASE\` and compare \`BASE\` with \`NEW_BASE\` for
+every intended path before any retry. If one changed, stop for reconciliation;
+replaying the frozen post-image would overwrite same-path work. Only when none
+changed may a fresh temporary index be seeded from \`NEW_BASE\`, the frozen
+entries overlaid, a new candidate fully verified, and CAS retried.
+
+## commit-only-your-paths-in-a-shared-index
+
+\`git add <paths>\` scopes staging, not a later bare commit. A shared real index
+can already contain somebody else's entries. Seed an isolated index from the
+captured branch tip and commit its prepared tree. Foreign staged and unstaged
+edits are facts to preserve; never tidy them away.
+
+## windows-partial-staging-blob
+
+On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Reconstruct \`BASE:path\` in a
+scratch artifact, replay only owned literal old-to-new replacements, assert each
+old block matches exactly once, read Git output as UTF-8 bytes, and select hunks
+by distinctive content rather than shifting line numbers. Hash the result and
+install its exact mode with \`update-index --cacheinfo\`; verify the prepared diff.
+
+## commit-prepared-index-not-pathspec
+
+Commit the prepared temporary index directly through \`write-tree\` and
+\`commit-tree\`. Never run pathspec-limited \`git commit -- <path>\` after
+installing a prepared blob: Git may refresh it from the dirty worktree and
+replace it with everybody's hunks. Verify the candidate entry equals the frozen
+blob and the worktree is unchanged.
+
+## windows-git-commit-dash-f
+
+On Windows, put the multi-line message in a file and consume it with
+\`commit-tree -F <msgfile>\` (or \`git commit -F\` outside this transaction).
+Do not encode a PowerShell here-string as a shell \`-m\` argument; mismatched
+syntax can inject literal \`@\` characters. Verify the complete candidate
+message, including subject and final trailer paragraph, before CAS.
+`;
+

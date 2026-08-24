@@ -27,6 +27,7 @@ import {
   WORKER_GROK_AGENTS_MD,
   WORKER_AGY_AGENTS_MD,
   PROPOSAL_TO_PLAN_SKILL_MD,
+  LAND_WORK_PACKAGE_SKILL_MD,
 } from '../../shared/constants';
 import {
   AGY_STATUS_HOOK_NAME,
@@ -871,6 +872,41 @@ test('WP-P0C: fresh Codex worker scaffold writes the whole proposal-to-plan tree
   } finally {
     cleanup();
     rmrf(workDir);
+  }
+});
+
+test('wp1-land-work-package-both-lanes', () => {
+  const claudeWorkDir = mktmp('land-wp-claude');
+  const codexWorkDir = mktmp('land-wp-codex');
+  const { supervisor, cleanup } = makeSupervisor();
+  const marker = 'REACHABILITY:wp1-land-work-package-both-lanes';
+  try {
+    supervisor.ensureWorkerScaffold(claudeWorkDir, 'claude', 'windows');
+    supervisor.ensureWorkerScaffold(codexWorkDir, 'codex', 'windows');
+    const claudeSkill = path.join(
+      claudeWorkDir, '.lares', 'workers', 'claude', '.claude',
+      'skills', 'land-work-package', 'SKILL.md',
+    );
+    const codexSkill = path.join(
+      codexWorkDir, '.lares', 'workers', 'codex', '.agents',
+      'skills', 'land-work-package', 'SKILL.md',
+    );
+    assert.ok(fs.existsSync(claudeSkill), `${marker}: Claude scaffold skill must exist`);
+    assert.ok(fs.existsSync(codexSkill), `${marker}: Codex scaffold skill must exist`);
+    assert.deepEqual(
+      fs.readFileSync(claudeSkill),
+      Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+      `${marker}: Claude scaffold skill must be byte-equal to the constant`,
+    );
+    assert.deepEqual(
+      fs.readFileSync(codexSkill),
+      Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+      `${marker}: Codex scaffold skill must be byte-equal to the constant`,
+    );
+  } finally {
+    cleanup();
+    rmrf(claudeWorkDir);
+    rmrf(codexWorkDir);
   }
 });
 
