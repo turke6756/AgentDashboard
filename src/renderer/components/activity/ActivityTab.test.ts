@@ -3,7 +3,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ActivityCountScope, ActivityItem, ActivityPage, TurnActivityRow } from '../../../shared/types';
+import type { ActivityCountScope, ActivityCounts, ActivityItem, ActivityPage, TurnActivityRow } from '../../../shared/types';
 import ActivityTab, { activityBadge, OtherRow } from './ActivityTab';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
@@ -32,20 +32,34 @@ function completeCountScope(overrides: Partial<ActivityCountScope> = {}): Activi
   };
 }
 
+function typedActivityPage(page: ActivityPage): ActivityPage {
+  return page;
+}
+
+function completeCounts(overrides: Partial<ActivityCounts> = {}): ActivityCounts {
+  return {
+    turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0,
+    blockedOverlapCount: { value: 0, status: 'complete' },
+    unavailableCount: { value: 0, status: 'complete' },
+    checkingCount: { value: 0, status: 'complete' },
+    ...overrides,
+  };
+}
+
 describe('Activity row copy', () => {
   it('REACHABILITY:wp4-honest-counts renders every C10 completeness branch and honest turn noun', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
-    const counts = {
+    const counts: ActivityCounts = {
       turnCount: 7, agentCount: 3, fileCount: 5, planCount: 2, commitCount: 4, noCheckpointCount: 1,
       blockedOverlapCount: { value: null, status: 'pending' as const },
       unavailableCount: { value: null, status: 'pending' as const },
       checkingCount: { value: null, status: 'pending' as const },
     };
-    const page = (scope: ActivityCountScope): ActivityPage => ({
+    const page = (scope: ActivityCountScope, pageCounts = counts): ActivityPage => ({
       workspaceId: 'counts-ws', items: [],
       cursor: { snapshot: { throughTurnSeq: 7, throughFileActivityId: 5, capturedAt: 1 }, nextOlder: null },
-      pageCounts: counts,
+      pageCounts,
       scope,
       scans: { turns: { scanned: 7, emitted: 7, exhausted: true, limit: 50 }, fileActivities: { scanned: 5, emitted: 5, exhausted: true, limit: 200 } },
     });
@@ -70,6 +84,24 @@ describe('Activity row copy', () => {
       expect(container.querySelector('[data-testid="activity-count-checking"]')?.textContent).toBe('…');
       expect(container.querySelector('[aria-label="Activity counts"]')?.textContent).not.toContain('0 blocked');
 
+      const mixed = page(completeCountScope({
+        completeness: { turns: true, agents: false, files: true, plans: false, commits: true },
+      }), {
+        ...counts,
+        blockedOverlapCount: { value: 2, status: 'complete' },
+        unavailableCount: { value: 0, status: 'complete' },
+        checkingCount: { value: 6, status: 'complete' },
+      });
+      await act(async () => useDashboardStore.setState({ activityPage: mixed }));
+      expect(container.querySelector('[data-testid="activity-count-turns"]')?.textContent).toBe('7 turns');
+      expect(container.querySelector('[data-testid="activity-count-agents"]')?.textContent).toBe('3+');
+      expect(container.querySelector('[data-testid="activity-count-files"]')?.textContent).toBe('5');
+      expect(container.querySelector('[data-testid="activity-count-plans"]')?.textContent).toBe('2+');
+      expect(container.querySelector('[data-testid="activity-count-commits"]')?.textContent).toBe('4');
+      expect(container.querySelector('[data-testid="activity-count-blocked"]')?.textContent).toBe('2');
+      expect(container.querySelector('[data-testid="activity-count-unavailable"]')?.textContent).toBe('0');
+      expect(container.querySelector('[data-testid="activity-count-checking"]')?.textContent).toBe('6');
+
       const filteredComplete = page(completeCountScope({
         grouping: 'file', turnCountBasis: 'visible-file-group-members',
         filters: { eligibleOnly: true, agentId: 'agent-1', pathPrefix: 'src/renderer' },
@@ -92,13 +124,13 @@ describe('Activity row copy', () => {
     const container = document.createElement('div');
     const root = createRoot(container);
     const initial = useDashboardStore.getInitialState();
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'file-lens-ws', items: [],
       cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope(),
       pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
     const list = vi.fn(async () => activityPage);
     const markViewed = vi.fn(async () => ({ workspaceId: 'file-lens-ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
@@ -130,14 +162,14 @@ describe('Activity row copy', () => {
     const member = row('restorable');
     member.turnId = 'file-turn';
     member.taskLabel = 'Edit activity UI';
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'ws',
-      items: [{ kind: 'file-group', repoPath: 'src/renderer/ActivityTab.tsx', displayPath: 'src/renderer/ActivityTab.tsx', latestStartedAt: 2, members: [member], pageCounts: {} }],
+      items: [{ kind: 'file-group', repoPath: 'src/renderer/ActivityTab.tsx', displayPath: 'src/renderer/ActivityTab.tsx', latestStartedAt: 2, members: [member], pageCounts: completeCounts() }],
       cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope({ grouping: 'file' }),
       pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 1, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 1, emitted: 1, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
     const list = vi.fn(async () => activityPage);
     const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 1, fileActivityId: 1, viewedAt: 1 }));
@@ -179,13 +211,13 @@ describe('Activity row copy', () => {
     const initial = useDashboardStore.getInitialState();
     const rootScope = { grouping: 'file' as const, agentId: 'agent-1' };
     const middleScope = { grouping: 'time' as const, agentId: 'agent-1', pathPrefix: 'src' };
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'crumb-ws', items: [],
       cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope(),
       pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
     const list = vi.fn(async () => activityPage);
     const markViewed = vi.fn(async () => ({ workspaceId: 'crumb-ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
@@ -217,14 +249,14 @@ describe('Activity row copy', () => {
     const root = createRoot(container);
     const initial = useDashboardStore.getInitialState();
     const member = row('restorable');
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'chip-ws',
-      items: [{ kind: 'file-group', repoPath: 'src/renderer', displayPath: 'src/renderer', latestStartedAt: 2, members: [member], pageCounts: {} }],
+      items: [{ kind: 'file-group', repoPath: 'src/renderer', displayPath: 'src/renderer', latestStartedAt: 2, members: [member], pageCounts: completeCounts() }],
       cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope({ grouping: 'file' }),
       pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 1, emitted: 1, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     useDashboardStore.setState({
       selectedWorkspaceId: 'chip-ws', agents: [], activityPage, activityReturnCounts: activityPage.pageCounts,
       activityScope: { grouping: 'file', planId: 'plan-1' }, activityScopeHistory: [], activityLoading: false, activityError: null,
@@ -319,12 +351,12 @@ describe('Activity row copy', () => {
       page: null, sinceCounts: null,
       heartbeat: { serverState: 'live', observedAt: 1 },
     }));
-    const list = vi.fn(async () => ({
+    const list = vi.fn(async () => typedActivityPage({
       workspaceId: 'ws', items: [], cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope(),
       pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
-    } as ActivityPage));
+    }));
     const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
     (window as any).api = { activity: { digest, list, markViewed } };
     const clearActivityFilters = vi.fn(initial.clearActivityFilters);
@@ -366,13 +398,13 @@ describe('Activity row copy', () => {
     const root = createRoot(container);
     const drift = row('blocked-overlap', 'accepted', 'after-snapshot-overlap');
     drift.witnessedPaths = [{ repoPath: 'src/config.ts', displayPath: 'src/config.ts' }];
-    const page = {
+    const page = typedActivityPage({
       workspaceId: 'ws', items: [drift],
       cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope(),
       pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
     expect(container.textContent).toContain('Exact restore would overwrite those changes');
@@ -387,7 +419,7 @@ describe('Activity row copy', () => {
     const container = document.createElement('div');
     const root = createRoot(container);
     const live = row('blocked-overlap', 'accepted', 'active-turn-witnesses-path');
-    const page = { workspaceId: 'ws', items: [live], cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null }, scope: completeCountScope(), pageCounts: { turnCount: 1, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } }, scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } } } as ActivityPage;
+    const page = typedActivityPage({ workspaceId: 'ws', items: [live], cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null }, scope: completeCountScope(), pageCounts: { turnCount: 1, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } }, scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } } });
     useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
     expect(container.textContent).toContain('Wait for it to finish or stop the agent');
@@ -547,17 +579,17 @@ describe('Activity row copy', () => {
     newer.turnId = 'newer'; newer.taskLabel = 'Newest work'; newer.startedAt = Date.UTC(2026, 7, 23, 18);
     const older = row('restorable');
     older.turnId = 'older'; older.taskLabel = 'Older work'; older.startedAt = Date.UTC(2026, 7, 22, 12);
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'ws',
       items: [
-        { kind: 'day-group', dayKey: '2026-08-23', timeZone: 'UTC', latestStartedAt: newer.startedAt, gapFromNewerGroupMs: null, members: [newer], pageCounts: {} },
-        { kind: 'day-group', dayKey: '2026-08-22', timeZone: 'UTC', latestStartedAt: older.startedAt, gapFromNewerGroupMs: 6 * 3_600_000, members: [older], pageCounts: {} },
+        { kind: 'day-group', dayKey: '2026-08-23', timeZone: 'UTC', latestStartedAt: newer.startedAt, gapFromNewerGroupMs: null, members: [newer], pageCounts: completeCounts() },
+        { kind: 'day-group', dayKey: '2026-08-22', timeZone: 'UTC', latestStartedAt: older.startedAt, gapFromNewerGroupMs: 6 * 3_600_000, members: [older], pageCounts: completeCounts() },
       ],
       cursor: { snapshot: { throughTurnSeq: 2, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
       scope: completeCountScope(),
       pageCounts: { turnCount: 2, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 2, emitted: 2, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
-    } as ActivityPage;
+    });
     const setLens = vi.fn();
     useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage, activityReturnCounts: activityPage.pageCounts, activityScope: { grouping: 'time' }, activityTurnWindow: 50, activityFileWindow: 200, activityLoading: false, activityError: null, setLens, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
@@ -588,13 +620,13 @@ describe('Activity row copy', () => {
   it('shows the grouped cap notice instead of a looping Load older button', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
-    const activityPage = {
+    const activityPage = typedActivityPage({
       workspaceId: 'ws', items: [],
       cursor: { snapshot: { throughTurnSeq: 8, throughFileActivityId: 13, capturedAt: 100 }, nextOlder: { turns: { before: 1, exhausted: false }, fileActivities: { before: 1, exhausted: false } } },
       scope: completeCountScope(),
       pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 200, emitted: 0, exhausted: false, limit: 200 }, fileActivities: { scanned: 10_000, emitted: 0, exhausted: false, limit: 10_000 } },
-    } as ActivityPage;
+    });
     useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage, activityScope: { grouping: 'time' }, activityTurnWindow: 200, activityFileWindow: 10_000, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
     expect(container.textContent).toContain('More history is available — switch to Flat to continue.');
