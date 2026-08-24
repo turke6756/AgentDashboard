@@ -108,4 +108,3 @@ end.
 - [Architecture](./architecture.md) — how the app is put together.
 - [Workflows](./workflows.md) — putting multiple agents to work.
 - [Security](./security.md) — what to lock down before you run agents.
-<!-- rollback probe 2026-08-24 -->
