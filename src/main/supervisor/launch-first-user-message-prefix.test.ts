@@ -44,7 +44,7 @@ function patchDb(workspacePath: string, createdAgents: Agent[]): () => void {
     'getAgent', 'addEvent', 'updateAgentLastOutput', 'updateAgentExitCode',
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent',
     'addFileActivity', 'updateAgentResumeSessionId', 'getTeamMembership',
-    'getAgentTemplate', 'getFileActivities',
+    'getAgentTemplate', 'getFileActivities', 'updateAgentDashboardMcpStatus',
   ];
   const orig: Record<string, unknown> = {};
   for (const k of keys) orig[k] = db[k];
@@ -73,6 +73,7 @@ function patchDb(workspacePath: string, createdAgents: Agent[]): () => void {
   db.getTeamMembership = () => null;
   db.getAgentTemplate = () => null;
   db.getFileActivities = () => [];
+  db.updateAgentDashboardMcpStatus = () => {};
 
   // §B3 — status writes route through applyStatusTransition; keep them in the fake.
   patchApplyStatusTransition(db as unknown as Record<string, unknown>);
@@ -196,7 +197,7 @@ test('WP3 plumbing (WSL): launchWslAgent forwards firstUserMessagePrefix to capt
     const anyS = supervisor as unknown as Record<string, unknown>;
     anyS.buildContinuationBrickBlock = () => '';
     anyS.setupFileTracker = () => null;
-    anyS.buildDashboardMcpConfigForLane = () => 'cfg';
+    anyS.buildDashboardMcpConfigForLane = () => JSON.stringify({ mcpServers: {} });
     anyS.buildTeamMcpConfigArg = () => 'team';
     anyS.resolveWslGatewayIp = () => '127.0.0.1';
     anyS.ensureSpoolTailer = () => {};

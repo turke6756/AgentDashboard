@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import type { InstallationDescriptor } from '../shared/types';
 import {
   computeInstallationDescriptor,
+  currentInstallationIdentity,
   descriptorPayloadDiffers,
   ensureInstallationDescriptor,
   ensureInstallationLauncher,
@@ -77,6 +78,14 @@ test('win32 installation carries wsl.commandWslPath (/mnt form); non-win32 omits
   assert.equal(win.wsl?.commandWslPath, '/mnt/c/Repos/Lares/node_modules/electron/dist/electron.exe');
   const linux = computeInstallationDescriptor({ ...SOURCE_IDENTITY, platform: 'linux' });
   assert.equal(linux.wsl, undefined);
+});
+
+test('plain Node identity defaults to source mode without an Electron app', () => {
+  const identity = currentInstallationIdentity();
+  assert.equal(identity.isPackaged, false);
+  assert.equal(identity.execPath, process.execPath);
+  assert.equal(identity.installRoot, process.cwd());
+  assert.ok(identity.appVersion.length > 0);
 });
 
 // ── heal comparison + writes ──────────────────────────────────────────────────
@@ -171,6 +180,13 @@ test('launcher ensure writes the shim AND the descriptor; second call is a full 
   const second = ensureInstallationLauncher(ws, 'windows', current);
   assert.equal(second.descriptorWritten, false);
   assert.equal(second.shimWrites, 0);
+});
+
+test('launcher ensure computes and writes a source descriptor under plain Node', () => {
+  const ws = tmpWorkspace();
+  const result = ensureInstallationLauncher(ws, 'windows');
+  assert.equal(result.descriptorWritten, true);
+  assert.equal(readDescriptor(ws).mode, 'source');
 });
 
 // ── runner ────────────────────────────────────────────────────────────────────

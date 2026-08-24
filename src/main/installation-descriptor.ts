@@ -54,17 +54,18 @@ export interface InstallationIdentity {
   platform: NodeJS.Platform;
 }
 
-/** Read the identity off the live Electron app. Throws outside an Electron
- *  runtime — callers on the app path use ensureInstallationLauncher, which
- *  warn-and-skips. */
+/** Read the identity off the live Electron app, with a source-mode fallback
+ *  when the module is called under plain Node. */
 export function currentInstallationIdentity(): InstallationIdentity {
+  // Under plain Node, requiring `electron` does not expose `app`; default to
+  // a source-mode identity so tests and maintenance scripts degrade cleanly.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { app } = require('electron') as typeof import('electron');
+  const { app } = require('electron') as Partial<typeof import('electron')>;
   return {
-    isPackaged: app.isPackaged,
+    isPackaged: app?.isPackaged ?? false,
     execPath: process.execPath,
-    appVersion: app.getVersion(),
-    installRoot: app.getAppPath(),
+    appVersion: app?.getVersion() ?? process.env.npm_package_version ?? '0.0.0',
+    installRoot: app?.getAppPath() ?? process.cwd(),
     // __dirname is dist/main/main at runtime; the CLI compiles beside us.
     snapshotCliJsPath: path.join(__dirname, 'analytics-export', 'analytics-snapshot-cli.js'),
     platform: process.platform,
