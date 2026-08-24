@@ -268,10 +268,10 @@ type ActivityFilterKey = 'agentId' | 'planId' | 'planItemId' | 'pathPrefix';
 
 const ACTIVITY_TURN_WINDOW_BASE = 50;
 const ACTIVITY_TURN_WINDOW_STEP = 50;
-const ACTIVITY_TURN_WINDOW_CAP = 200;
+export const ACTIVITY_TURN_WINDOW_CAP = 200;
 const ACTIVITY_FILE_WINDOW_BASE = 200;
 const ACTIVITY_FILE_WINDOW_STEP = 200;
-const ACTIVITY_FILE_WINDOW_CAP = 10_000;
+export const ACTIVITY_FILE_WINDOW_CAP = 10_000;
 
 function activityTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;

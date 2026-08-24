@@ -147,27 +147,31 @@ describe('dashboard activity store', () => {
     expect(useDashboardStore.getState().activityPage).toBe(timePage);
   });
 
-  it('scope actions reset both windows and delegate exactly one reload', () => {
-    const originalLoad = useDashboardStore.getState().loadActivity;
-    const loadActivity = vi.fn(async () => undefined);
-    useDashboardStore.setState({ loadActivity, activityTurnWindow: 200, activityFileWindow: 10_000 });
-    const assertOne = (invoke: () => void) => {
-      const before = loadActivity.mock.calls.length;
+  it('scope actions reset both windows and issue exactly one real digest/list request pair', async () => {
+    const digest = vi.fn(async () => ({ page: page(), sinceCounts: page().pageCounts, heartbeat }));
+    const list = vi.fn(async () => page());
+    const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 8, fileActivityId: 13, viewedAt: 101 }));
+    (globalThis as unknown as { window: unknown }).window = { api: { activity: { digest, list, markViewed } } };
+    const assertOne = async (invoke: () => void) => {
+      useDashboardStore.setState({ activityTurnWindow: 200, activityFileWindow: 10_000 });
+      const digestBefore = digest.mock.calls.length;
+      const listBefore = list.mock.calls.length;
       invoke();
-      expect(loadActivity.mock.calls.length - before).toBe(1);
+      await vi.waitFor(() => expect(useDashboardStore.getState().activityLoading).toBe(false));
+      expect(digest.mock.calls.length - digestBefore).toBe(1);
+      expect(list.mock.calls.length - listBefore).toBe(1);
       expect(useDashboardStore.getState().activityTurnWindow).toBe(50);
       expect(useDashboardStore.getState().activityFileWindow).toBe(200);
     };
-    assertOne(() => useDashboardStore.getState().setLens('plan'));
-    assertOne(() => useDashboardStore.getState().setAgentFilter('a'));
-    assertOne(() => useDashboardStore.getState().setPathFilter('src'));
-    assertOne(() => useDashboardStore.getState().removeFilter('pathPrefix'));
-    assertOne(() => useDashboardStore.getState().clearActivityFilters());
-    assertOne(() => useDashboardStore.getState().pushDrill({ grouping: 'time', pathPrefix: 'src' }));
-    assertOne(() => useDashboardStore.getState().popDrill());
+    await assertOne(() => useDashboardStore.getState().setLens('plan'));
+    await assertOne(() => useDashboardStore.getState().setAgentFilter('a'));
+    await assertOne(() => useDashboardStore.getState().setPathFilter('src'));
+    await assertOne(() => useDashboardStore.getState().removeFilter('pathPrefix'));
+    await assertOne(() => useDashboardStore.getState().clearActivityFilters());
+    await assertOne(() => useDashboardStore.getState().pushDrill({ grouping: 'time', pathPrefix: 'src' }));
+    await assertOne(() => useDashboardStore.getState().popDrill());
     useDashboardStore.setState({ activityScope: { grouping: 'time', pathPrefix: 'deep' }, activityScopeHistory: [{ grouping: 'plan' }, { grouping: 'time' }], activityTurnWindow: 200, activityFileWindow: 10_000 });
-    assertOne(() => useDashboardStore.getState().popToDepth(0));
-    useDashboardStore.setState({ loadActivity: originalLoad });
+    await assertOne(() => useDashboardStore.getState().popToDepth(0));
   });
 
   it('showActivity is authoritative and coalesces legacy caller duplicate loads', async () => {
@@ -197,5 +201,21 @@ describe('dashboard activity store', () => {
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ grouping: 'time', snapshot: first.cursor.snapshot, limit: 100, fileActivityLimit: 200 }));
     expect(list.mock.calls[0][0]).not.toHaveProperty('before');
     expect(useDashboardStore.getState().activityPage).toBe(regrouped);
+  });
+
+  it('grows both non-exhausted grouped sources and performs exactly one re-query', async () => {
+    const nextOlder = { turns: { before: 8, exhausted: false }, fileActivities: { before: 13, exhausted: false } };
+    const first = page({ items: [], cursor: { ...page().cursor, nextOlder } });
+    const regrouped = page();
+    const list = vi.fn(async (_request: unknown) => regrouped);
+    useDashboardStore.setState({ activityPage: first, activityScope: { grouping: 'time' }, activityTurnWindow: 50, activityFileWindow: 200 });
+    (globalThis as unknown as { window: unknown }).window = { api: { activity: { list } } };
+    await useDashboardStore.getState().loadOlderActivity('ws');
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      grouping: 'time', snapshot: first.cursor.snapshot, limit: 100, fileActivityLimit: 400,
+    }));
+    expect(useDashboardStore.getState().activityTurnWindow).toBe(100);
+    expect(useDashboardStore.getState().activityFileWindow).toBe(400);
   });
 });

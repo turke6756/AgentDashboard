@@ -122,6 +122,40 @@ describe('Activity row copy', () => {
     useDashboardStore.setState({ loadActivity: originalLoad, loadOlderActivity: originalLoadOlder });
   });
 
+  it('keeps Load older reachable in the default Time lens while a source is below cap', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const originalLoad = useDashboardStore.getState().loadActivity;
+    const originalLoadOlder = useDashboardStore.getState().loadOlderActivity;
+    const page: ActivityPage = {
+      workspaceId: 'ws', items: [],
+      cursor: {
+        snapshot: { throughTurnSeq: 8, throughFileActivityId: 13, capturedAt: 100 },
+        nextOlder: {
+          turns: { before: 8, exhausted: false },
+          fileActivities: { before: 13, exhausted: false },
+        },
+      },
+      pageCounts: {
+        turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0,
+        blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' },
+      },
+      scans: { turns: { scanned: 50, emitted: 0, exhausted: false, limit: 50 }, fileActivities: { scanned: 200, emitted: 0, exhausted: false, limit: 200 } },
+    };
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts,
+      activityScope: { grouping: 'time' }, activityTurnWindow: 50, activityFileWindow: 200,
+      activityLoading: false, activityError: null,
+      loadActivity: vi.fn(async () => undefined), loadOlderActivity: vi.fn(async () => undefined),
+    });
+    act(() => root.render(React.createElement(ActivityTab)));
+    expect(container.querySelector('[aria-label="Activity lens"] [aria-pressed="true"]')?.textContent).toBe('Time');
+    expect(container.textContent).toContain('Load older activity');
+    expect(container.textContent).not.toContain('switch to Flat to continue');
+    act(() => root.unmount());
+    useDashboardStore.setState({ loadActivity: originalLoad, loadOlderActivity: originalLoadOlder });
+  });
+
   it('explains a non-repo workspace and enables checkpoints through the existing consent flow', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
@@ -201,6 +235,7 @@ describe('Activity row copy', () => {
     expect(container.textContent).toContain('Older work');
     expect(container.textContent).toContain('6h later');
     expect(container.querySelector('[data-testid="activity-day-2026-08-23"] [role="separator"]')).toBeNull();
+    expect(container.querySelector('[data-testid="activity-day-2026-08-22"] [role="separator"]')?.textContent).toContain('6h later');
     act(() => (Array.from(lens.querySelectorAll('button')).find((button) => button.textContent === 'Plan') as HTMLButtonElement).click());
     expect(setLens).toHaveBeenCalledWith('plan');
     act(() => root.unmount());

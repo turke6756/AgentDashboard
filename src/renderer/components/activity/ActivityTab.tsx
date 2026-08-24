@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import type { ActivityItem, CheckpointTurnSummary, DayGroupRow as DayGroup, TurnActivityRow } from '../../../shared/types';
-import { useDashboardStore } from '../../stores/dashboard-store';
+import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
 
@@ -151,7 +151,10 @@ export default function ActivityTab(): React.ReactElement {
   const items = useMemo(() => page?.items ?? [], [page]);
   const nextOlder = page?.cursor.nextOlder;
   const grouped = scope.grouping !== 'none';
-  const sourceBelowCap = Boolean(nextOlder && ((!nextOlder.turns.exhausted && turnWindow < 200) || (!nextOlder.fileActivities.exhausted && fileWindow < 10_000)));
+  const sourceBelowCap = Boolean(nextOlder && (
+    (!nextOlder.turns.exhausted && turnWindow < ACTIVITY_TURN_WINDOW_CAP)
+    || (!nextOlder.fileActivities.exhausted && fileWindow < ACTIVITY_FILE_WINDOW_CAP)
+  ));
   const showLoadOlder = Boolean(nextOlder && (!grouped || sourceBelowCap));
   const showTerminalNotice = Boolean(grouped && nextOlder && !sourceBelowCap);
   const gitCapability = prerequisites?.optional.find((check) => check.id === 'git')?.git;
