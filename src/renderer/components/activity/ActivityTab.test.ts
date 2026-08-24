@@ -7,6 +7,22 @@ import type { ActivityCountScope, ActivityCounts, ActivityItem, ActivityPage, Tu
 import ActivityTab, { activityBadge, OtherRow } from './ActivityTab';
 import { useDashboardStore } from '../../stores/dashboard-store';
 
+async function browserClick(element: HTMLElement): Promise<void> {
+  await act(async () => {
+    element.focus();
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+async function typeInto(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 function row(
   state: TurnActivityRow['undo']['state'],
   status: TurnActivityRow['status'] = 'accepted',
@@ -307,7 +323,7 @@ describe('Activity row copy', () => {
     }
   });
 
-  it('shows the resolved or store-backed agent title prominently in every turn header', async () => {
+  it('renders the precise row, store-backed, and unknown agent-title fallbacks', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
     const member = row('restorable');
@@ -324,10 +340,17 @@ describe('Activity row copy', () => {
       loadActivity: vi.fn(async () => undefined),
     } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
-    const header = container.querySelector('[data-testid="activity-turn-turn-1"] .flex.items-center.gap-2');
-    expect(header?.textContent).toContain('Agent edit');
-    expect(header?.textContent).toContain('Store-backed worker');
-    expect(container.querySelector('[data-testid="activity-turn-turn-1"]')?.textContent).toContain('0 changes');
+    expect(container.querySelector('[data-testid="activity-turn-agent-title"]')?.textContent).toBe('Store-backed worker');
+
+    await act(async () => useDashboardStore.setState({ agents: [] }));
+    expect(container.querySelector('[data-testid="activity-turn-agent-title"]')?.textContent).toBe('Unknown agent');
+
+    const captured = { ...member, agentTitle: 'Captured worker' };
+    await act(async () => useDashboardStore.setState({
+      agents: [{ id: 'agent-1', workspaceId: 'ws', title: 'Conflicting store worker' }] as any,
+      activityPage: { ...activityPage, items: [captured] },
+    }));
+    expect(container.querySelector('[data-testid="activity-turn-agent-title"]')?.textContent).toBe('Captured worker');
     act(() => root.unmount());
   });
 
@@ -337,9 +360,9 @@ describe('Activity row copy', () => {
     useDashboardStore.setState({
       selectedWorkspaceId: 'ws',
       agents: [
-        { id: 'sup-1', workspaceId: 'ws', title: 'Activity supervisor', isSupervisor: true, ownerAgentId: null, status: 'working' },
-        { id: 'worker-1', workspaceId: 'ws', title: 'Nested worker', isSupervisor: false, ownerAgentId: 'sup-1', status: 'idle' },
-        { id: 'solo-1', workspaceId: 'ws', title: 'Solo agent', isSupervisor: false, ownerAgentId: null, status: 'waiting' },
+        { id: 'sup-1', slug: 'activity-supervisor', workspaceId: 'ws', title: 'Activity supervisor', isSupervisor: true, ownerAgentId: null, status: 'working' },
+        { id: 'worker-mid-token-end', slug: 'secret-handle', workspaceId: 'ws', title: 'Nested worker', isSupervisor: false, ownerAgentId: 'sup-1', status: 'idle' },
+        { id: 'solo-1', slug: 'solo-agent', workspaceId: 'ws', title: 'Solo agent', isSupervisor: false, ownerAgentId: null, status: 'waiting' },
       ] as any,
       activityPage: null, activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
       setAgentFilter: vi.fn(), loadActivity: vi.fn(async () => undefined),
@@ -349,18 +372,106 @@ describe('Activity row copy', () => {
     expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Activity supervisor');
     expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Unowned');
     expect(container.querySelector('[role="listbox"]')?.textContent).not.toContain('Nested worker');
-    await act(async () => (container.querySelector('[aria-label="Show agents owned by Activity supervisor"]') as HTMLButtonElement).click());
-    expect(container.querySelector('[aria-label="Agents owned by Activity supervisor"]')?.textContent).toContain('Nested worker');
+    const chevron = container.querySelector('[aria-label="Show agents owned by Activity supervisor"]') as HTMLButtonElement;
+    await browserClick(chevron);
+    const ownedPanel = container.querySelector('[aria-label="Agents owned by Activity supervisor"]');
+    expect(ownedPanel?.textContent).toContain('Nested worker');
+    expect(ownedPanel?.classList.contains('max-h-64')).toBe(true);
+    expect(ownedPanel?.classList.contains('overflow-y-auto')).toBe(true);
+    await browserClick(chevron);
+    expect(container.querySelector('[aria-label="Agents owned by Activity supervisor"]')).toBeNull();
+    await browserClick(chevron);
 
     const search = container.querySelector('[aria-label="Search agents"]') as HTMLInputElement;
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      valueSetter?.call(search, 'nested');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await typeInto(search, 'mid-token');
     expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Nested worker');
     expect(container.querySelector('[role="listbox"]')?.textContent).not.toContain('Activity supervisor');
     expect(container.querySelector('[aria-label="Agents owned by Activity supervisor"]')).toBeNull();
+    await typeInto(search, 'handle');
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Nested worker');
+    act(() => root.unmount());
+  });
+
+  it('bounds large grouped lists and treats invalid owner links as Unowned', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const agents = Array.from({ length: 300 }, (_, index) => ({
+      id: `orphan-${index}`,
+      slug: `orphan-${index}`,
+      workspaceId: 'ws',
+      title: index === 0 ? 'Missing-owner worker' : `Unowned worker ${index}`,
+      isSupervisor: false,
+      ownerAgentId: index === 0 ? 'missing-sup' : null,
+      status: 'idle',
+    }));
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: agents as any, activityPage: null,
+      activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
+      setAgentFilter: vi.fn(), loadActivity: vi.fn(async () => undefined),
+    } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    await browserClick(container.querySelector('[aria-label="Filter activity by agent"]') as HTMLButtonElement);
+    const groupedPane = container.querySelector('[data-testid="activity-agent-grouped-pane"]');
+    expect(groupedPane?.classList.contains('max-h-64')).toBe(true);
+    expect(groupedPane?.classList.contains('overflow-y-auto')).toBe(true);
+    expect(groupedPane?.textContent).toContain('Unowned');
+    expect(groupedPane?.textContent).toContain('Missing-owner worker');
+    act(() => root.unmount());
+  });
+
+  it('resets search and owned-panel state on Escape and outside click', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws',
+      agents: [{ id: 'solo-agent', slug: 'solo-agent', workspaceId: 'ws', title: 'Solo agent', isSupervisor: false, ownerAgentId: null, status: 'idle' }] as any,
+      activityPage: null, activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
+      setAgentFilter: vi.fn(), loadActivity: vi.fn(async () => undefined),
+    } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const trigger = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLButtonElement;
+    await browserClick(trigger);
+    await typeInto(container.querySelector('[aria-label="Search agents"]') as HTMLInputElement, 'solo');
+    expect(container.querySelector('[role="listbox"]')?.textContent).not.toContain('Unowned');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    await browserClick(trigger);
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Unowned');
+
+    await typeInto(container.querySelector('[aria-label="Search agents"]') as HTMLInputElement, 'solo');
+    await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    await browserClick(trigger);
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Unowned');
+    act(() => root.unmount());
+  });
+
+  it('resets expanded day groups across workspace and lens changes', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const member = row('restorable');
+    member.taskLabel = 'Workspace-specific turn';
+    const day = { kind: 'day-group' as const, dayKey: '2026-08-23', timeZone: 'UTC', latestStartedAt: Date.UTC(2026, 7, 23), gapFromNewerGroupMs: null, members: [member], pageCounts: completeCounts() };
+    const activityPage = typedActivityPage({
+      workspaceId: 'ws-a', items: [day],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      scope: completeCountScope(), pageCounts: completeCounts({ turnCount: 1 }),
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    });
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws-a', agents: [], activityPage, activityReturnCounts: activityPage.pageCounts, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const dayGroup = () => container.querySelector('[data-testid="activity-day-2026-08-23"]')!;
+    await browserClick(dayGroup().querySelector('[aria-expanded]') as HTMLButtonElement);
+    expect(dayGroup().textContent).toContain('Workspace-specific turn');
+
+    await act(async () => useDashboardStore.setState({ selectedWorkspaceId: 'ws-b', activityPage: { ...activityPage, workspaceId: 'ws-b' } }));
+    expect(dayGroup().textContent).not.toContain('Workspace-specific turn');
+    await browserClick(dayGroup().querySelector('[aria-expanded]') as HTMLButtonElement);
+    expect(dayGroup().textContent).toContain('Workspace-specific turn');
+
+    await act(async () => useDashboardStore.setState({ activityScope: { grouping: 'plan' } }));
+    await act(async () => useDashboardStore.setState({ activityScope: { grouping: 'time' } }));
+    expect(dayGroup().textContent).not.toContain('Workspace-specific turn');
     act(() => root.unmount());
   });
 
