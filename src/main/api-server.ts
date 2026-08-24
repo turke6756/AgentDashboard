@@ -551,6 +551,11 @@ export class ApiServer {
         if (!this.checkpointRoutes?.listWindowPaths) throw new Error('checkpoint-engine-unavailable');
         return this.checkpointRoutes.listWindowPaths(turnId, repoRoot);
       },
+      resolvePlanTitles: (planIds) => new Map(planIds.map((id) => {
+        const plan = getPlan(id) as (ReturnType<typeof getPlan> & { title?: string | null });
+        return [id, plan?.title ?? plan?.slug ?? null];
+      })),
+      resolveAgentTitles: (agentIds) => new Map(agentIds.map((id) => [id, getAgent(id)?.title ?? null])),
     });
   }
 

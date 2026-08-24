@@ -292,6 +292,7 @@ function projectTurn(
   workspacePrefix: string,
   previews: ReadonlyMap<string, TurnPreviewAttachment> | undefined,
   commitOids: readonly string[],
+  agentTitles: ReadonlyMap<string, string | null> | undefined,
 ): TurnActivityRow {
   const stamp = classifyTurnPlanStamp(turn);
   const witnessedPaths = uniquePaths((turn.touched ?? [])
@@ -304,7 +305,7 @@ function projectTurn(
     turnId: turn.id,
     turnSeq: turn.turnSeq,
     agentId: turn.agentId,
-    agentTitle: turn.agentTitle,
+    agentTitle: turn.agentTitle ?? (turn.agentId === null ? null : agentTitles?.get(turn.agentId)) ?? null,
     taskLabel: turn.taskLabel,
     planId: stamp.planStampStatus === 'verified' ? stamp.planId : null,
     planItemId: stamp.planStampStatus === 'verified' ? stamp.planItemId : null,
@@ -399,6 +400,7 @@ export function projectTurnActivity(input: TurnProjectionInput): TurnProjectionR
       workspacePrefix,
       input.previews,
       commitOidsByTurn.get(turn.id) ?? [],
+      input.agentTitles,
     ));
   const turns = pathPrefix === undefined
     ? loadedTurns

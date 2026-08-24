@@ -72,6 +72,12 @@ export interface ActivityRouteDeps {
     repoRoot: string,
   ) => Promise<WindowPathList>;
   listCommitLinks?: typeof listCommitLinksForTurns;
+  resolvePlanTitles?: (planIds: string[]) => ReadonlyMap<string, string | null>;
+  resolveAgentTitles?: (agentIds: string[]) => ReadonlyMap<string, string | null>;
+}
+
+function distinctIds(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
 function unavailablePreview(reason: string): TurnPreviewAttachment {
@@ -231,6 +237,13 @@ export class ActivityRoutes {
         repoRoot: context.repoRoot,
         workspacePrefix: context.workspacePrefix,
         previews: completedPreviews,
+        planTitles: this.deps.resolvePlanTitles?.(distinctIds(
+          source.turns.rows.filter((row) => row.turnSeq > since.turnSeq).map((row) => row.planId),
+        )),
+        agentTitles: this.deps.resolveAgentTitles?.(distinctIds([
+          ...source.turns.rows.filter((row) => row.turnSeq > since.turnSeq).map((row) => row.agentId),
+          ...source.fileActivities.rows.filter((row) => row.id > since.fileActivityId).map((row) => row.agentId),
+        ])),
       });
       sinceCounts = projection.pageCounts;
     }
@@ -344,6 +357,11 @@ export class ActivityRoutes {
     }
 
     const render = (): ActivityPage => {
+      const planTitles = this.deps.resolvePlanTitles?.(distinctIds(source.turns.rows.map((row) => row.planId)));
+      const agentTitles = this.deps.resolveAgentTitles?.(distinctIds([
+        ...source.turns.rows.map((row) => row.agentId),
+        ...source.fileActivities.rows.map((row) => row.agentId),
+      ]));
       const projection = projectTurnActivity({
         turns: source.turns.rows,
         fileActivities: source.fileActivities.rows,
@@ -352,6 +370,8 @@ export class ActivityRoutes {
         previews,
         windowPaths,
         commitLinks,
+        planTitles,
+        agentTitles,
         turnScanExhausted: source.turns.exhausted,
         turnsComplete,
         filesComplete,

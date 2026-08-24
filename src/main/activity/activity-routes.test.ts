@@ -29,6 +29,8 @@ function test(name: string, run: TestCase['run']): void { tests.push({ name, run
 const db = require('../database') as Record<string, unknown>;
 db.getWorkspace = (id: string) => ({ id, title: 'Workspace', path: '/repo', pathType: 'windows' });
 db.getSupervisorAgent = () => null;
+db.getPlan = () => null;
+db.getAgent = () => null;
 db.getAllAgents = () => [];
 db.getAgentsByWorkspace = () => [];
 
@@ -136,6 +138,26 @@ test('WP-9 default plan page gains the additive scope golden without ancillary',
     turnCountBasis: 'loaded-turns',
   });
   assert.equal(page.ancillary, undefined);
+});
+
+test('WP-5 route projection resolves human-readable plan and missing agent titles', async () => {
+  const sourceTurn = turn({
+    agentTitle: null,
+    planId: 'plan-serial',
+    planItemId: 'WP-5',
+    planStampSource: 'explicit',
+  });
+  const routes = makeRoutes({
+    listTurns: () => sourcePage([sourceTurn], 7),
+    resolvePlanTitles: (ids) => new Map(ids.map((id) => [id, 'Activity lens UI'])),
+    resolveAgentTitles: (ids) => new Map(ids.map((id) => [id, 'Activity worker'])),
+  });
+
+  const page = await routes.list({ workspaceId: 'ws', grouping: 'plan', preview: 'none' });
+  const group = page.items.find((item) => item.kind === 'plan-group');
+  assert.ok(group && group.kind === 'plan-group');
+  assert.equal(group.planTitle, 'Activity lens UI');
+  assert.equal(group.members[0]?.agentTitle, 'Activity worker');
 });
 
 test('WP-9 continuation exhaustion does not claim first-page turn completeness', async () => {
