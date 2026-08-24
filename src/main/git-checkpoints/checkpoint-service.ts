@@ -2045,11 +2045,9 @@ export class CheckpointService {
         await this.git(repoRoot, ['rm', '--cached', '--ignore-unmatch', '--', ...absent]);
       }
 
-      const changed = await this.git(repoRoot, ['diff', '--cached', '--quiet', '--', ...paths], {
-        allowNonzero: true,
-      });
-      if (changed.code === 0) return { skipped: 'nothing-to-commit' };
-      if (changed.code !== 1) return { skipped: `diff-check-failed:${changed.code}` };
+      const staged = await this.git(repoRoot, ['diff', '--cached', '--name-only', '-z', '--', ...paths]);
+      const commitPaths = staged.stdout.split('\0').filter((p) => p.length > 0);
+      if (commitPaths.length === 0) return { skipped: 'nothing-to-commit' };
 
       const subject = `[lares] revert: turn ${turnId.slice(0, 8)} (${kind})`;
       const body = [
@@ -2063,7 +2061,7 @@ export class CheckpointService {
       ].join('\n');
       await this.git(repoRoot, [
         ...this.longpaths(), '-c', 'commit.gpgsign=false',
-        'commit', '--no-verify', '-m', subject, '-m', body, '--', ...paths,
+        'commit', '--no-verify', '-m', subject, '-m', body, '--', ...commitPaths,
       ], { mode: 'commit', timeoutMs: 60_000 });
       const oid = (await this.git(repoRoot, ['rev-parse', '--verify', 'HEAD'])).stdout.trim();
       return OID_RE.test(oid) ? { oid } : { skipped: 'commit-oid-invalid' };

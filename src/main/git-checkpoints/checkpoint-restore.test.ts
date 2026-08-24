@@ -708,6 +708,42 @@ test('successful exact revert writes one strict-pathspec commit with parseable t
   assert.deepEqual(rowResult.rollbackCommit, result.rollbackCommit);
 });
 
+test('rollback commit excludes a never-tracked restored deletion while recording every completed path', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'before\n');
+  commitAll(repo, 'base');
+  const turnId = 'never-tracked-create-turn';
+  const operationId = 'rollback-known-paths-only';
+  const s = await setupBefore(repo, turnId, 'WS', [
+    { path: 'never-tracked.txt', op: 'create' },
+    { path: 'tracked.txt', op: 'write' },
+  ]);
+  fs.writeFileSync(path.join(repo, 'never-tracked.txt'), 'created by turn\n');
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'after\n');
+  await captureAfter(repo, turnId, 'WS', s.svc);
+  git(repo, ['add', '--', 'tracked.txt']);
+  git(repo, ['commit', '-m', 'agent turn', '--', 'tracked.txt']);
+
+  const result = await s.svc.revertTurn({
+    turnId, workspaceId: 'WS', actor: 'human-ipc', operationId, capability: capFor(repo),
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), (result.rollbackCommit as { oid: string }).oid);
+  assert.equal(fs.existsSync(path.join(repo, 'never-tracked.txt')), false);
+  assert.equal(fs.readFileSync(path.join(repo, 'tracked.txt'), 'utf8'), 'before\n');
+  assert.equal(git(repo, ['show', '--stat', '--format=', 'HEAD']).trim().split(/\r?\n/)[0]?.split('|')[0].trim(), 'tracked.txt');
+  assert.equal(git(repo, ['show', '--format=', '--name-only', 'HEAD']).trim(), 'tracked.txt');
+  const message = git(repo, ['show', '-s', '--format=%B', 'HEAD']);
+  assert.match(message, /Restored paths:\r?\n- never-tracked\.txt\r?\n- tracked\.txt/);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Reverts-Turn,valueonly)']).trim(), turnId);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Recovery-Operation,valueonly)']).trim(), operationId);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Restore-Kind,valueonly)']).trim(), 'revert_turn');
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Actor,valueonly)']).trim(), 'human-ipc');
+});
+
 test('rollback commit leaves a foreign dirty file unstaged and uncommitted', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'restored.txt'), 'before\n');
