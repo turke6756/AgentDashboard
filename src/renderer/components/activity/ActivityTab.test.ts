@@ -23,6 +23,78 @@ function row(
 }
 
 describe('Activity row copy', () => {
+  it('REACHABILITY:wp3-file-lens-drill renders file groups, retains filters in the drill query, and restores exact history', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const member = row('restorable');
+    member.turnId = 'file-turn';
+    member.taskLabel = 'Edit activity UI';
+    const activityPage = {
+      workspaceId: 'ws',
+      items: [{ kind: 'file-group', repoPath: 'src/renderer/ActivityTab.tsx', displayPath: 'src/renderer/ActivityTab.tsx', latestStartedAt: 2, members: [member], pageCounts: {} }],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 1, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 1, emitted: 1, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    const digest = vi.fn(async () => ({ page: null, sinceCounts: null, heartbeat: { serverState: 'live', observedAt: 1 } }));
+    const list = vi.fn(async () => activityPage);
+    const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 1, fileActivityId: 1, viewedAt: 1 }));
+    (window as any).api = { activity: { digest, list, markViewed } };
+    const priorScope = { grouping: 'file' as const, agentId: 'agent-1', planId: 'plan-1', planItemId: 'WP-3' };
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [], activityPage, activityReturnCounts: activityPage.pageCounts,
+      activityScope: priorScope, activityScopeHistory: [], activityLoading: false, activityError: null,
+      loadActivity: initial.loadActivity, pushDrill: initial.pushDrill, popDrill: initial.popDrill, popToDepth: initial.popToDepth,
+    } as any);
+    try {
+      await act(async () => root.render(React.createElement(ActivityTab)));
+      expect(container.querySelector('[aria-label="Activity lens"]')?.textContent).toContain('File');
+      expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe('File');
+      const fileGroup = container.querySelector('[data-testid="activity-file-src/renderer/ActivityTab.tsx"]');
+      expect(fileGroup?.textContent).toContain('Edit activity UI');
+
+      await act(async () => {
+        (fileGroup?.querySelector('button') as HTMLButtonElement).click();
+        await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+      });
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({
+        grouping: 'time', pathPrefix: 'src/renderer/ActivityTab.tsx', agentId: 'agent-1', planId: 'plan-1', planItemId: 'WP-3',
+      }));
+      expect(useDashboardStore.getState().activityScopeHistory).toEqual([priorScope]);
+      expect(container.querySelectorAll('[aria-label="Activity drill breadcrumb"] li')).toHaveLength(2);
+
+      await act(async () => (Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Back') as HTMLButtonElement).click());
+      expect(useDashboardStore.getState().activityScope).toEqual(priorScope);
+      expect(useDashboardStore.getState().activityScopeHistory).toEqual([]);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('pops a breadcrumb to its represented history depth', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const rootScope = { grouping: 'file' as const, agentId: 'agent-1' };
+    const middleScope = { grouping: 'time' as const, agentId: 'agent-1', pathPrefix: 'src' };
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [], activityPage: null, activityLoading: true, activityError: null,
+      activityScope: { grouping: 'time', agentId: 'agent-1', pathPrefix: 'src/renderer' },
+      activityScopeHistory: [rootScope, middleScope], popToDepth: initial.popToDepth, loadActivity: vi.fn(async () => undefined),
+    } as any);
+    try {
+      await act(async () => root.render(React.createElement(ActivityTab)));
+      const breadcrumb = container.querySelector('[aria-label="Activity drill breadcrumb"]')!;
+      expect(breadcrumb.querySelectorAll('li')).toHaveLength(3);
+      await act(async () => (Array.from(breadcrumb.querySelectorAll('button')).find((button) => button.textContent === 'src') as HTMLButtonElement).click());
+      expect(useDashboardStore.getState().activityScope).toEqual(middleScope);
+      expect(useDashboardStore.getState().activityScopeHistory).toEqual([rootScope]);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('REACHABILITY:wp2-agent-picker-chips selects an agent and renders its removable chip', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);

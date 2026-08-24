@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, X } from 'lucide-react';
-import type { ActivityItem, Agent, CheckpointTurnSummary, DayGroupRow as DayGroup, TurnActivityRow } from '../../../shared/types';
+import type { ActivityItem, Agent, CheckpointTurnSummary, DayGroupRow as DayGroup, FileGroupRow as FileGroup, TurnActivityRow } from '../../../shared/types';
 import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore, type ActivityScope } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
@@ -119,10 +119,48 @@ export function DayGroupRow({ group, onUndo }: { group: DayGroup; onUndo: (row: 
   </div>;
 }
 
-function LensSwitcher({ value, onChange }: { value: 'time' | 'file' | 'plan' | 'none'; onChange: (grouping: 'time' | 'plan' | 'none') => void }): React.ReactElement {
+export function FileGroupRow({ group, onDrill, onUndo }: {
+  group: FileGroup;
+  onDrill: (repoPath: string) => void;
+  onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void;
+}): React.ReactElement {
+  return <section className="space-y-2" data-testid={`activity-file-${group.repoPath}`}>
+    <button type="button" className="ui-card flex w-full items-center justify-between p-3 text-left" onClick={() => onDrill(group.repoPath)}>
+      <span className="min-w-0 truncate font-mono text-[12px] text-gray-300">{group.displayPath}</span>
+      <span className="shrink-0 text-[11px] text-gray-500">{group.members.length} {group.members.length === 1 ? 'turn' : 'turns'} · {when(group.latestStartedAt)}</span>
+    </button>
+    <div className="space-y-2 pl-3">{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</div>
+  </section>;
+}
+
+function LensSwitcher({ value, onChange }: { value: ActivityScope['grouping']; onChange: (grouping: ActivityScope['grouping']) => void }): React.ReactElement {
   return <div className="flex rounded border border-white/10 p-0.5" aria-label="Activity lens">
-    {([['time', 'Time'], ['plan', 'Plan'], ['none', 'Flat']] as const).map(([grouping, label]) => <button key={grouping} type="button" aria-pressed={value === grouping} className={`rounded px-2 py-1 text-[11px] ${value === grouping ? 'bg-white/10 text-gray-100' : 'text-gray-500'}`} onClick={() => onChange(grouping)}>{label}</button>)}
+    {([['time', 'Time'], ['file', 'File'], ['plan', 'Plan'], ['none', 'Flat']] as const).map(([grouping, label]) => <button key={grouping} type="button" aria-pressed={value === grouping} className={`rounded px-2 py-1 text-[11px] ${value === grouping ? 'bg-white/10 text-gray-100' : 'text-gray-500'}`} onClick={() => onChange(grouping)}>{label}</button>)}
   </div>;
+}
+
+function scopeLabel(scope: ActivityScope, depth: number): string {
+  const lens = scope.grouping === 'none' ? 'Flat' : `${scope.grouping[0].toUpperCase()}${scope.grouping.slice(1)}`;
+  return scope.pathPrefix ? scope.pathPrefix : depth === 0 ? lens : `${lens} view`;
+}
+
+function Breadcrumb({ history, current, onBack, onPopToDepth }: {
+  history: ActivityScope[];
+  current: ActivityScope;
+  onBack: () => void;
+  onPopToDepth: (depth: number) => void;
+}): React.ReactElement | null {
+  if (history.length === 0) return null;
+  return <nav className="mb-4 flex items-center gap-2 text-[11px] text-gray-500" aria-label="Activity drill breadcrumb">
+    <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={onBack}>Back</button>
+    <ol className="flex min-w-0 items-center gap-2">
+      {history.map((scope, depth) => <li key={`${depth}:${scope.grouping}:${scope.pathPrefix ?? ''}`} className="flex min-w-0 items-center gap-2">
+        <button type="button" className="max-w-48 truncate hover:text-gray-200" onClick={() => onPopToDepth(depth)}>{scopeLabel(scope, depth)}</button>
+        <span aria-hidden="true">/</span>
+      </li>)}
+      <li className="max-w-64 truncate text-gray-300" aria-current="page">{scopeLabel(current, history.length)}</li>
+    </ol>
+  </nav>;
 }
 
 type ActivityFilterKey = 'agentId' | 'pathPrefix' | 'planId' | 'planItemId';
@@ -169,6 +207,7 @@ export default function ActivityTab(): React.ReactElement {
   const page = useDashboardStore((state) => state.activityPage);
   const counts = useDashboardStore((state) => state.activityReturnCounts);
   const scope = useDashboardStore((state) => state.activityScope);
+  const scopeHistory = useDashboardStore((state) => state.activityScopeHistory);
   const turnWindow = useDashboardStore((state) => state.activityTurnWindow);
   const fileWindow = useDashboardStore((state) => state.activityFileWindow);
   const loading = useDashboardStore((state) => state.activityLoading);
@@ -180,6 +219,9 @@ export default function ActivityTab(): React.ReactElement {
   const setAgentFilter = useDashboardStore((state) => state.setAgentFilter);
   const removeFilter = useDashboardStore((state) => state.removeFilter);
   const clearActivityFilters = useDashboardStore((state) => state.clearActivityFilters);
+  const pushDrill = useDashboardStore((state) => state.pushDrill);
+  const popDrill = useDashboardStore((state) => state.popDrill);
+  const popToDepth = useDashboardStore((state) => state.popToDepth);
   const prerequisites = useDashboardStore((state) => state.prerequisites);
   const [undoDialog, setUndoDialog] = useState<{ row: TurnActivityRow; strategy: 'exact' | 'merge-undo' } | null>(null);
 
@@ -213,6 +255,7 @@ export default function ActivityTab(): React.ReactElement {
           </div>
         </div>
         <FilterChips scope={scope} agents={agents} onRemove={removeFilter} onClear={clearActivityFilters} />
+        <Breadcrumb history={scopeHistory} current={scope} onBack={popDrill} onPopToDepth={popToDepth} />
         {gitCapability?.protectedRoot ? (
           <div className="ui-card mb-4 border-accent-orange/30 p-4" data-testid="checkpoints-protected-root">
             <h3 className="text-[13px] font-medium text-gray-200">Checkpoints are unavailable for this workspace</h3>
@@ -239,7 +282,7 @@ export default function ActivityTab(): React.ReactElement {
                 <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
                 {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={(selectedRow, strategy) => setUndoDialog({ row: selectedRow, strategy })} />)}
               </section>
-            ) : item.kind === 'day-group' ? <DayGroupRow key={`day:${item.dayKey ?? 'unknown'}`} group={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'file-group' ? null : <OtherRow key={item.id} item={item} />)}
+            ) : item.kind === 'day-group' ? <DayGroupRow key={`day:${item.dayKey ?? 'unknown'}`} group={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'file-group' ? <FileGroupRow key={`file:${item.repoPath}`} group={item} onDrill={(repoPath) => pushDrill({ ...scope, grouping: 'time', pathPrefix: repoPath })} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : <OtherRow key={item.id} item={item} />)}
             {showLoadOlder && (
               <button type="button" className="ui-btn ui-btn-ghost mx-auto flex text-[11px]" disabled={loading} onClick={() => void loadOlderActivity(workspaceId)}>
                 {loading ? 'Loading older activity...' : 'Load older activity'}
