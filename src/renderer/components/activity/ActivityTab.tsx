@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, X } from 'lucide-react';
-import type { ActivityItem, CheckpointTurnSummary, TurnActivityRow } from '../../../shared/types';
+import type { ActivityItem, CheckpointTurnSummary, DayGroupRow as DayGroup, TurnActivityRow } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
@@ -102,25 +102,58 @@ export function OtherRow({ item }: { item: Extract<ActivityItem, { kind: 'tool-u
   );
 }
 
+function gapLabel(milliseconds: number): string {
+  const hours = Math.max(1, Math.round(milliseconds / 3_600_000));
+  if (hours < 24) return `${hours}h later`;
+  const days = Math.max(1, Math.round(hours / 24));
+  return `${days} ${days === 1 ? 'day' : 'days'} later`;
+}
+
+export function DayGroupRow({ group, onUndo }: { group: DayGroup; onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void }): React.ReactElement {
+  const label = group.latestStartedAt === null
+    ? 'Time unavailable'
+    : new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeZone: group.timeZone }).format(group.latestStartedAt);
+  return <div className="space-y-2" data-testid={`activity-day-${group.dayKey ?? 'unknown'}`}>
+    {group.gapFromNewerGroupMs !== null && <div className="flex items-center gap-3 py-2 text-[10px] text-gray-500" role="separator"><span className="h-px flex-1 bg-white/10" /><span>{gapLabel(group.gapFromNewerGroupMs)}</span><span className="h-px flex-1 bg-white/10" /></div>}
+    <section className="space-y-2"><h3 className="px-1 text-[11px] font-medium text-gray-400">{label}</h3>{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</section>
+  </div>;
+}
+
+function LensSwitcher({ value, onChange }: { value: 'time' | 'file' | 'plan' | 'none'; onChange: (grouping: 'time' | 'plan' | 'none') => void }): React.ReactElement {
+  return <div className="flex rounded border border-white/10 p-0.5" aria-label="Activity lens">
+    {([['time', 'Time'], ['plan', 'Plan'], ['none', 'Flat']] as const).map(([grouping, label]) => <button key={grouping} type="button" aria-pressed={value === grouping} className={`rounded px-2 py-1 text-[11px] ${value === grouping ? 'bg-white/10 text-gray-100' : 'text-gray-500'}`} onClick={() => onChange(grouping)}>{label}</button>)}
+  </div>;
+}
+
 export default function ActivityTab(): React.ReactElement {
   const workspaceId = useDashboardStore((state) => state.selectedWorkspaceId);
   const page = useDashboardStore((state) => state.activityPage);
   const counts = useDashboardStore((state) => state.activityReturnCounts);
-  const filter = useDashboardStore((state) => state.activityFilter);
+  const scope = useDashboardStore((state) => state.activityScope);
+  const turnWindow = useDashboardStore((state) => state.activityTurnWindow);
+  const fileWindow = useDashboardStore((state) => state.activityFileWindow);
   const loading = useDashboardStore((state) => state.activityLoading);
   const error = useDashboardStore((state) => state.activityError);
   const loadActivity = useDashboardStore((state) => state.loadActivity);
   const loadOlderActivity = useDashboardStore((state) => state.loadOlderActivity);
-  const showActivity = useDashboardStore((state) => state.showActivity);
+  const setLens = useDashboardStore((state) => state.setLens);
+  const clearActivityFilters = useDashboardStore((state) => state.clearActivityFilters);
   const prerequisites = useDashboardStore((state) => state.prerequisites);
   const [undoDialog, setUndoDialog] = useState<{ row: TurnActivityRow; strategy: 'exact' | 'merge-undo' } | null>(null);
 
   useEffect(() => {
-    if (workspaceId) void loadActivity(workspaceId, filter, true);
-  }, [filter.agentId, filter.planId, filter.planItemId, loadActivity, workspaceId]);
+    if (!workspaceId) return;
+    const state = useDashboardStore.getState();
+    if (state.activityPage === null && !state.activityLoading && !state.activityError) void loadActivity(workspaceId, state.activityScope, true);
+  }, [workspaceId, loadActivity]);
 
   const newCount = counts?.turnCount ?? 0;
   const items = useMemo(() => page?.items ?? [], [page]);
+  const nextOlder = page?.cursor.nextOlder;
+  const grouped = scope.grouping !== 'none';
+  const sourceBelowCap = Boolean(nextOlder && ((!nextOlder.turns.exhausted && turnWindow < 200) || (!nextOlder.fileActivities.exhausted && fileWindow < 10_000)));
+  const showLoadOlder = Boolean(nextOlder && (!grouped || sourceBelowCap));
+  const showTerminalNotice = Boolean(grouped && nextOlder && !sourceBelowCap);
   const gitCapability = prerequisites?.optional.find((check) => check.id === 'git')?.git;
   if (!workspaceId) return <div className="flex-1 p-6 text-gray-500">Select a workspace to view activity.</div>;
 
@@ -129,9 +162,12 @@ export default function ActivityTab(): React.ReactElement {
       <div className="mx-auto max-w-4xl">
         <div className="flex items-center justify-between gap-3 mb-4">
           <div><h2 className="text-[16px] text-gray-100 font-semibold">While you were away</h2><p className="text-[11px] text-gray-500">Newest activity first</p></div>
-          {(filter.agentId || filter.planId || filter.planItemId) && (
-            <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={() => { showActivity({}); void loadActivity(workspaceId, {}); }}><X className="w-3 h-3" /> Clear filter</button>
-          )}
+          <div className="flex items-center gap-2">
+            <LensSwitcher value={scope.grouping} onChange={setLens} />
+            {(scope.agentId || scope.planId || scope.planItemId || scope.pathPrefix) && (
+              <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={clearActivityFilters}><X className="w-3 h-3" /> Clear filter</button>
+            )}
+          </div>
         </div>
         {gitCapability?.protectedRoot ? (
           <div className="ui-card mb-4 border-accent-orange/30 p-4" data-testid="checkpoints-protected-root">
@@ -159,16 +195,17 @@ export default function ActivityTab(): React.ReactElement {
                 <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
                 {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={(selectedRow, strategy) => setUndoDialog({ row: selectedRow, strategy })} />)}
               </section>
-            ) : item.kind === 'day-group' || item.kind === 'file-group' ? null : <OtherRow key={item.id} item={item} />)}
-            {page?.cursor.nextOlder && (
+            ) : item.kind === 'day-group' ? <DayGroupRow key={`day:${item.dayKey ?? 'unknown'}`} group={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'file-group' ? null : <OtherRow key={item.id} item={item} />)}
+            {showLoadOlder && (
               <button type="button" className="ui-btn ui-btn-ghost mx-auto flex text-[11px]" disabled={loading} onClick={() => void loadOlderActivity(workspaceId)}>
                 {loading ? 'Loading older activity...' : 'Load older activity'}
               </button>
             )}
+            {showTerminalNotice && <p className="text-center text-[11px] text-gray-500">More history is available — switch to Flat to continue.</p>}
           </div>
         )}
       </div>
-      {undoDialog && <RestoreDialog workspaceId={workspaceId} agentId={undoDialog.row.agentId ?? ''} turn={asCheckpointTurn(undoDialog.row)} mode="revert" paths={undoDialog.row.witnessedPaths.map((path) => path.repoPath)} initialStrategy={undoDialog.strategy} onClose={() => setUndoDialog(null)} onDone={() => void loadActivity(workspaceId, filter, false)} />}
+      {undoDialog && <RestoreDialog workspaceId={workspaceId} agentId={undoDialog.row.agentId ?? ''} turn={asCheckpointTurn(undoDialog.row)} mode="revert" paths={undoDialog.row.witnessedPaths.map((path) => path.repoPath)} initialStrategy={undoDialog.strategy} onClose={() => setUndoDialog(null)} onDone={() => void loadActivity(workspaceId, useDashboardStore.getState().activityScope, false)} />}
     </section>
   );
 }

@@ -245,7 +245,7 @@ function patchActivityUndo(page: ActivityPage, turnId: string, undo: import('../
     ...page,
     items: page.items.map((item) => {
       if (item.kind === 'turn') return item.turnId === turnId ? { ...item, undo } : item;
-      if (item.kind === 'plan-group') {
+      if (item.kind === 'plan-group' || item.kind === 'day-group' || item.kind === 'file-group') {
         return { ...item, members: item.members.map((row) => row.turnId === turnId ? { ...row, undo } : row) };
       }
       return item;
@@ -258,6 +258,30 @@ export interface ActivityFilter {
   planId?: string;
   planItemId?: string;
 }
+
+export interface ActivityScope extends ActivityFilter {
+  grouping: 'time' | 'file' | 'plan' | 'none';
+  pathPrefix?: string;
+}
+
+type ActivityFilterKey = 'agentId' | 'planId' | 'planItemId' | 'pathPrefix';
+
+const ACTIVITY_TURN_WINDOW_BASE = 50;
+const ACTIVITY_TURN_WINDOW_STEP = 50;
+const ACTIVITY_TURN_WINDOW_CAP = 200;
+const ACTIVITY_FILE_WINDOW_BASE = 200;
+const ACTIVITY_FILE_WINDOW_STEP = 200;
+const ACTIVITY_FILE_WINDOW_CAP = 10_000;
+
+function activityTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+function completeActivityScope(scope: ActivityScope | ActivityFilter = {}): ActivityScope {
+  return { grouping: 'time', ...scope };
+}
+
+let activeActivityRequestKey: string | null = null;
 
 interface DashboardState {
   workspaces: Workspace[];
@@ -323,12 +347,24 @@ interface DashboardState {
   activityHeartbeat: ActivityHeartbeatSnapshot | null;
   activityReturnCounts: ActivityCounts | null;
   activityLastViewed: ActivityViewedResult | null;
-  activityFilter: ActivityFilter;
+  activityScope: ActivityScope;
+  activityScopeHistory: ActivityScope[];
+  activityTurnWindow: number;
+  activityFileWindow: number;
+  activityRequestSeq: number;
   activityLoading: boolean;
   activityError: string | null;
   lastHeartbeatOkAt: number | null;
   activityDegradedStreak: number;
-  loadActivity: (workspaceId: string, filter?: ActivityFilter, markViewed?: boolean) => Promise<void>;
+  setLens: (grouping: ActivityScope['grouping']) => void;
+  setAgentFilter: (agentId?: string) => void;
+  setPathFilter: (pathPrefix?: string) => void;
+  removeFilter: (key: ActivityFilterKey) => void;
+  clearActivityFilters: () => void;
+  pushDrill: (scope: ActivityScope) => void;
+  popDrill: () => void;
+  popToDepth: (depth: number) => void;
+  loadActivity: (workspaceId: string, scope?: ActivityScope | ActivityFilter, markViewed?: boolean) => Promise<void>;
   loadOlderActivity: (workspaceId: string) => Promise<void>;
   pollActivityHeartbeat: (workspaceId: string) => Promise<void>;
   subscribeActivity: (workspaceId: string) => () => void;
@@ -561,7 +597,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   activityHeartbeat: null,
   activityReturnCounts: null,
   activityLastViewed: null,
-  activityFilter: {},
+  activityScope: { grouping: 'time' },
+  activityScopeHistory: [],
+  activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE,
+  activityFileWindow: ACTIVITY_FILE_WINDOW_BASE,
+  activityRequestSeq: 0,
   activityLoading: false,
   activityError: null,
   lastHeartbeatOkAt: null,
@@ -1492,14 +1532,20 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set({ plansOpen: true, fileViewerOpen: false, browserOpen: false, saveCardOpen: false, activityOpen: false }),
 
   showActivity: (filter = {}) => {
+    const scope = completeActivityScope(filter);
     set({
       activityOpen: true,
-      activityFilter: filter,
+      activityScope: scope,
+      activityScopeHistory: [],
+      activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE,
+      activityFileWindow: ACTIVITY_FILE_WINDOW_BASE,
       fileViewerOpen: false,
       browserOpen: false,
       saveCardOpen: false,
       plansOpen: false,
     });
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, scope);
   },
 
   // WP-P1S — SaveCard calls this on mount once it has recorded the voluntary-open
@@ -1675,41 +1721,104 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   // ── Git-Native WP-G2.4 — checkpoint time rail ──────────────────────────────
-  loadActivity: async (workspaceId, filter = get().activityFilter, markViewed = true) => {
-    set({ activityLoading: true, activityError: null, activityFilter: filter });
+  setLens: (grouping) => {
+    set((state) => ({ activityScope: { ...state.activityScope, grouping }, activityScopeHistory: [], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  setAgentFilter: (agentId) => {
+    set((state) => ({ activityScope: { ...state.activityScope, agentId }, activityScopeHistory: [], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  setPathFilter: (pathPrefix) => {
+    set((state) => ({ activityScope: { ...state.activityScope, pathPrefix }, activityScopeHistory: [], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  removeFilter: (key) => {
+    set((state) => {
+      const activityScope = { ...state.activityScope };
+      delete activityScope[key];
+      return { activityScope, activityScopeHistory: [], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE };
+    });
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  clearActivityFilters: () => {
+    set((state) => ({ activityScope: { grouping: state.activityScope.grouping }, activityScopeHistory: [], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  pushDrill: (scope) => {
+    set((state) => ({ activityScope: scope, activityScopeHistory: [...state.activityScopeHistory, state.activityScope], activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  popDrill: () => {
+    if (get().activityScopeHistory.length === 0) return;
+    set((state) => ({ activityScope: state.activityScopeHistory[state.activityScopeHistory.length - 1], activityScopeHistory: state.activityScopeHistory.slice(0, -1), activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE }));
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  popToDepth: (depth) => {
+    const history = get().activityScopeHistory;
+    if (!Number.isInteger(depth) || depth < 0 || depth >= history.length) return;
+    set({ activityScope: history[depth], activityScopeHistory: history.slice(0, depth), activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE, activityFileWindow: ACTIVITY_FILE_WINDOW_BASE });
+    const workspaceId = get().selectedWorkspaceId;
+    if (workspaceId) void get().loadActivity(workspaceId, get().activityScope);
+  },
+
+  loadActivity: async (workspaceId, requestedScope = get().activityScope, markViewed = true) => {
+    const scope = completeActivityScope(requestedScope);
+    const turnWindow = get().activityTurnWindow;
+    const fileWindow = get().activityFileWindow;
+    const requestKey = JSON.stringify({ workspaceId, scope, turnWindow, fileWindow, markViewed });
+    if (activeActivityRequestKey === requestKey) return;
+    activeActivityRequestKey = requestKey;
+    const seq = get().activityRequestSeq + 1;
+    set({ activityLoading: true, activityError: null, activityPage: null, activityScope: scope, activityRequestSeq: seq });
     try {
       const lastViewed = get().activityLastViewed;
       const request = {
         workspaceId,
-        ...filter,
-        limit: 50,
-        fileActivityLimit: 200,
+        ...scope,
+        timeZone: activityTimeZone(),
+        limit: turnWindow,
+        fileActivityLimit: fileWindow,
         ...(lastViewed?.workspaceId === workspaceId ? {
           since: { turnSeq: lastViewed.turnSeq, fileActivityId: lastViewed.fileActivityId },
         } : {}),
       };
       const digest: ActivityDigest = await window.api.activity.digest(request);
-      if (get().selectedWorkspaceId !== workspaceId) return;
+      if (seq !== get().activityRequestSeq || get().selectedWorkspaceId !== workspaceId) return;
       set({
-        activityPage: digest.page,
         activityHeartbeat: digest.heartbeat,
         activityReturnCounts: digest.sinceCounts,
         lastHeartbeatOkAt: Date.now(),
         activityDegradedStreak: digest.heartbeat.serverState === 'degraded-visible' ? 1 : 0,
       });
       const livePage = await window.api.activity.list({ ...request, preview: 'none' });
-      if (get().selectedWorkspaceId !== workspaceId) return;
+      if (seq !== get().activityRequestSeq || get().selectedWorkspaceId !== workspaceId) return;
       set({ activityPage: livePage });
       if (markViewed) {
         const viewed = await window.api.activity.markViewed({ workspaceId, snapshot: livePage.cursor.snapshot });
-        if (get().selectedWorkspaceId === workspaceId) set({ activityLastViewed: viewed });
+        if (seq === get().activityRequestSeq && get().selectedWorkspaceId === workspaceId) set({ activityLastViewed: viewed });
       }
     } catch (error) {
-      if (get().selectedWorkspaceId === workspaceId) {
+      if (seq === get().activityRequestSeq && get().selectedWorkspaceId === workspaceId) {
         set({ activityError: error instanceof Error ? error.message : String(error) });
       }
     } finally {
-      if (get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
+      if (activeActivityRequestKey === requestKey) activeActivityRequestKey = null;
+      if (seq === get().activityRequestSeq && get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
     }
   },
 
@@ -1717,21 +1826,34 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const current = get().activityPage;
     const before = current?.cursor.nextOlder;
     if (!current || !before || current.workspaceId !== workspaceId || get().activityLoading) return;
-    set({ activityLoading: true, activityError: null });
+    const scope = get().activityScope;
+    const grouped = scope.grouping !== 'none';
+    const growTurns = !before.turns.exhausted && get().activityTurnWindow < ACTIVITY_TURN_WINDOW_CAP;
+    const growFiles = !before.fileActivities.exhausted && get().activityFileWindow < ACTIVITY_FILE_WINDOW_CAP;
+    if (grouped && !growTurns && !growFiles) return;
+    const nextTurnWindow = grouped && growTurns
+      ? Math.min(ACTIVITY_TURN_WINDOW_CAP, get().activityTurnWindow + ACTIVITY_TURN_WINDOW_STEP)
+      : get().activityTurnWindow;
+    const nextFileWindow = grouped && growFiles
+      ? Math.min(ACTIVITY_FILE_WINDOW_CAP, get().activityFileWindow + ACTIVITY_FILE_WINDOW_STEP)
+      : get().activityFileWindow;
+    const seq = get().activityRequestSeq + 1;
+    set({ activityLoading: true, activityError: null, activityRequestSeq: seq, activityTurnWindow: nextTurnWindow, activityFileWindow: nextFileWindow });
     try {
       const older = await window.api.activity.list({
         workspaceId,
-        ...get().activityFilter,
+        ...scope,
+        timeZone: activityTimeZone(),
         preview: 'none',
         snapshot: current.cursor.snapshot,
-        before,
-        limit: 50,
-        fileActivityLimit: 200,
+        ...(grouped ? {} : { before }),
+        limit: nextTurnWindow,
+        fileActivityLimit: nextFileWindow,
       });
-      if (get().selectedWorkspaceId !== workspaceId) return;
+      if (seq !== get().activityRequestSeq || get().selectedWorkspaceId !== workspaceId) return;
       set((state) => state.activityPage?.cursor.snapshot.capturedAt === current.cursor.snapshot.capturedAt
         ? {
-            activityPage: {
+            activityPage: grouped ? older : {
               ...state.activityPage,
               items: [...state.activityPage.items, ...older.items],
               cursor: older.cursor,
@@ -1740,11 +1862,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
           }
         : {});
     } catch (error) {
-      if (get().selectedWorkspaceId === workspaceId) {
+      if (seq === get().activityRequestSeq && get().selectedWorkspaceId === workspaceId) {
         set({ activityError: error instanceof Error ? error.message : String(error) });
       }
     } finally {
-      if (get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
+      if (seq === get().activityRequestSeq && get().selectedWorkspaceId === workspaceId) set({ activityLoading: false });
     }
   },
 
@@ -1961,7 +2083,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       activityOpen: false,
       activityPage: null,
       activityReturnCounts: null,
-      activityFilter: {},
+      activityScope: { grouping: 'time' },
+      activityScopeHistory: [],
+      activityTurnWindow: ACTIVITY_TURN_WINDOW_BASE,
+      activityFileWindow: ACTIVITY_FILE_WINDOW_BASE,
+      activityRequestSeq: get().activityRequestSeq + 1,
+      activityLoading: false,
+      activityError: null,
       detailPane: nextDetailPane,
       workspaceViewState,
     });

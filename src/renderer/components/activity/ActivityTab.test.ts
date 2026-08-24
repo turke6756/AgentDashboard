@@ -44,7 +44,7 @@ describe('Activity row copy', () => {
       pageCounts: { turnCount: 1, agentCount: 1, fileCount: 1, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
       scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
     } as ActivityPage;
-    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityFilter: {}, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
     expect(container.textContent).toContain('Exact restore would overwrite those changes');
     expect(container.textContent).not.toContain('line conflict');
@@ -59,7 +59,7 @@ describe('Activity row copy', () => {
     const root = createRoot(container);
     const live = row('blocked-overlap', 'accepted', 'active-turn-witnesses-path');
     const page = { workspaceId: 'ws', items: [live], cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 1, capturedAt: 1 }, nextOlder: null }, pageCounts: { turnCount: 1, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } }, scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } } } as ActivityPage;
-    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityFilter: {}, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
     await act(async () => root.render(React.createElement(ActivityTab)));
     expect(container.textContent).toContain('Wait for it to finish or stop the agent');
     act(() => root.unmount());
@@ -112,7 +112,7 @@ describe('Activity row copy', () => {
     };
     useDashboardStore.setState({
       selectedWorkspaceId: 'ws', activityPage: page, activityReturnCounts: page.pageCounts,
-      activityFilter: {}, activityLoading: false, activityError: null,
+      activityScope: { grouping: 'none' }, activityLoading: false, activityError: null,
       loadActivity: vi.fn(async () => undefined), loadOlderActivity: vi.fn(async () => undefined),
     });
     act(() => root.render(React.createElement(ActivityTab)));
@@ -139,7 +139,7 @@ describe('Activity row copy', () => {
       } as any,
       activityPage: null,
       activityReturnCounts: null,
-      activityFilter: {}, activityLoading: false, activityError: null,
+      activityScope: { grouping: 'time' }, activityLoading: false, activityError: null,
       loadActivity: vi.fn(async () => undefined),
       loadPrerequisites: vi.fn(async () => null),
       checkHealth: vi.fn(async () => undefined),
@@ -164,7 +164,7 @@ describe('Activity row copy', () => {
       } as any,
       activityPage: null,
       activityReturnCounts: null,
-      activityFilter: {}, activityLoading: false, activityError: null,
+      activityScope: { grouping: 'time' }, activityLoading: false, activityError: null,
       loadActivity: vi.fn(async () => undefined),
     } as any);
 
@@ -172,6 +172,65 @@ describe('Activity row copy', () => {
     expect(container.textContent).toContain('This folder is a protected root.');
     expect(container.textContent).toContain('Open a specific project subfolder instead.');
     expect(container.querySelector('[data-testid="git-init-enable"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it('REACHABILITY:wp1-day-group-render opens on Time and renders older day gaps before the older group', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const newer = row('restorable');
+    newer.turnId = 'newer'; newer.taskLabel = 'Newest work'; newer.startedAt = Date.UTC(2026, 7, 23, 18);
+    const older = row('restorable');
+    older.turnId = 'older'; older.taskLabel = 'Older work'; older.startedAt = Date.UTC(2026, 7, 22, 12);
+    const activityPage = {
+      workspaceId: 'ws',
+      items: [
+        { kind: 'day-group', dayKey: '2026-08-23', timeZone: 'UTC', latestStartedAt: newer.startedAt, gapFromNewerGroupMs: null, members: [newer], pageCounts: {} },
+        { kind: 'day-group', dayKey: '2026-08-22', timeZone: 'UTC', latestStartedAt: older.startedAt, gapFromNewerGroupMs: 6 * 3_600_000, members: [older], pageCounts: {} },
+      ],
+      cursor: { snapshot: { throughTurnSeq: 2, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 2, agentCount: 1, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 2, emitted: 2, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    } as ActivityPage;
+    const setLens = vi.fn();
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage, activityReturnCounts: activityPage.pageCounts, activityScope: { grouping: 'time' }, activityTurnWindow: 50, activityFileWindow: 200, activityLoading: false, activityError: null, setLens, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const lens = container.querySelector('[aria-label="Activity lens"]')!;
+    expect(lens.querySelector('[aria-pressed="true"]')?.textContent).toBe('Time');
+    expect(container.textContent).toContain('Newest work');
+    expect(container.textContent).toContain('Older work');
+    expect(container.textContent).toContain('6h later');
+    expect(container.querySelector('[data-testid="activity-day-2026-08-23"] [role="separator"]')).toBeNull();
+    act(() => (Array.from(lens.querySelectorAll('button')).find((button) => button.textContent === 'Plan') as HTMLButtonElement).click());
+    expect(setLens).toHaveBeenCalledWith('plan');
+    act(() => root.unmount());
+  });
+
+  it('uses the guarded mount fallback once and does not reload on scope changes', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const loadActivity = vi.fn(async () => undefined);
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage: null, activityScope: { grouping: 'time' }, activityLoading: false, activityError: null, loadActivity } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(loadActivity).toHaveBeenCalledTimes(1);
+    await act(async () => useDashboardStore.setState({ activityScope: { grouping: 'plan' } }));
+    expect(loadActivity).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  it('shows the grouped cap notice instead of a looping Load older button', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const activityPage = {
+      workspaceId: 'ws', items: [],
+      cursor: { snapshot: { throughTurnSeq: 8, throughFileActivityId: 13, capturedAt: 100 }, nextOlder: { turns: { before: 1, exhausted: false }, fileActivities: { before: 1, exhausted: false } } },
+      pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 200, emitted: 0, exhausted: false, limit: 200 }, fileActivities: { scanned: 10_000, emitted: 0, exhausted: false, limit: 10_000 } },
+    } as ActivityPage;
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', activityPage, activityScope: { grouping: 'time' }, activityTurnWindow: 200, activityFileWindow: 10_000, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(container.textContent).toContain('More history is available — switch to Flat to continue.');
+    expect(container.textContent).not.toContain('Load older activity');
     act(() => root.unmount());
   });
 });
