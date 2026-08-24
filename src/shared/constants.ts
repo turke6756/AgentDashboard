@@ -8859,8 +8859,8 @@ authorized in the frozen brief, but it cannot weaken or revise the expected set.
 If scope changes, revise and re-freeze the dispatch evidence before acceptance.
 `;
 
-// WP-1 (plan_d85b0a78) — new managed scaffold file (v1), so no prior hash.
-export const LAND_WORK_PACKAGE_SKILL_MD = `---
+// WP-1 (plan_d85b0a78) — frozen managed scaffold file v1.
+export const LAND_WORK_PACKAGE_SKILL_MD_V1 = `---
 name: land-work-package
 description: >-
   Land exactly one finished worker package without including shared-worktree
@@ -8987,4 +8987,122 @@ Do not encode a PowerShell here-string as a shell \`-m\` argument; mismatched
 syntax can inject literal \`@\` characters. Verify the complete candidate
 message, including subject and final trailer paragraph, before CAS.
 `;
+
+// WP-1b (plan_d85b0a78) — corrected retry, raw-byte, deletion, and NUL-safe
+// transaction contract. Derived from the frozen v1 body for managed migration.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V1
+  .replace(
+    `1. Capture \`BRANCH_REF = git symbolic-ref --quiet HEAD\` as the full
+   \`refs/heads/...\` name; fail if detached. Capture immutable
+   \`BASE = git rev-parse BRANCH_REF^{commit}\`.`,
+    `1. Capture \`BRANCH_REF = git symbolic-ref --quiet HEAD\` as the full
+   \`refs/heads/...\` name; fail if detached. Capture immutable
+   \`BASE = git rev-parse "$BRANCH_REF^{commit}"\`. Keep the rev expression
+   quoted in every shell; PowerShell otherwise parses \`{commit}\` as a
+   ScriptBlock.`,
+  )
+  .replace(
+    `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
+   plus only owned hunks, hash it with \`git hash-object -w\`, preserve its exact
+   mode, and install it with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --remove -- <path>\` and expect absence.`,
+    `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
+   plus only owned hunks. Write the scratch post-image as raw bytes with no CRLF
+   conversion and no BOM. For example, resolve the base blob OID and use
+   \`git cat-file blob <oid> > <file>\` in Git Bash, or PowerShell
+   \`[IO.File]::WriteAllBytes(...)\`; never use \`Set-Content\`, \`Out-File\`, or
+   text redirection. \`git hash-object -w\` accepts either a file path or
+   \`--stdin\`. After hashing, require \`git diff <base-oid> <new-oid>\` to show
+   only the owned hunks and no whole-file line-ending churn. Preserve the exact
+   mode and install the blob with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+  )
+  .replace(
+    `6. Run \`git write-tree\`, then
+   \`git commit-tree <tree> -p BASE -F <msgfile>\` to create the single-parent
+   candidate. Do not advance the branch yet.
+7. Before branch advancement verify:
+   - the candidate's sole parent is exactly \`BASE\`;
+   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and
+   - \`git ls-tree\` proves each exact mode/blob and every deletion's absence.
+     Do not call \`rev-parse CANDIDATE:path\` for a deleted path.
+8. Only then run
+   \`git update-ref --create-reflog <BRANCH_REF> CANDIDATE BASE\`. Read the
+   branch ref back and require equality with \`CANDIDATE\`.`,
+    `6. Run \`git write-tree\`, then
+   \`git commit-tree <tree> -p BASE -F <msgfile>\` to create the single-parent
+   candidate. Do not advance the branch yet.
+7. Before branch advancement verify against the same \`BASE\` that seeded this
+   temporary index:
+   - the candidate's sole parent is exactly \`BASE\`;
+   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and
+   - \`git ls-tree -z\` proves each exact mode/blob and every deletion's absence.
+     Do not call \`rev-parse CANDIDATE:path\` for a deleted path.
+8. Only then run
+   \`git update-ref --create-reflog <BRANCH_REF> CANDIDATE BASE\`. The candidate
+   parent and the CAS old-value are always the exact tip from which the current
+   temporary index was seeded. Read the branch ref back and require equality
+   with \`CANDIDATE\`.`,
+  )
+  .replace(
+    `All path-set operations are NUL-safe. Disable rename detection so a rename is a
+deterministic deletion plus addition. Line-delimited shell arrays, text`,
+    `All path-set operations are NUL-safe. Disable rename detection. Freeze a rename
+as both entries: the old path expected absent and the new path expected present.
+It is verified deterministically as deletion plus addition. Line-delimited shell arrays, text`,
+  )
+  .replace(
+    `On CAS failure capture \`NEW_BASE\` and compare \`BASE\` with \`NEW_BASE\` for
+every intended path before any retry. If one changed, stop for reconciliation;
+replaying the frozen post-image would overwrite same-path work. Only when none
+changed may a fresh temporary index be seeded from \`NEW_BASE\`, the frozen
+entries overlaid, a new candidate fully verified, and CAS retried.`,
+    `On CAS failure capture \`NEW_BASE\` and compare \`BASE\` with \`NEW_BASE\` for
+every intended path before any retry. If one changed, stop for reconciliation;
+replaying the frozen post-image would overwrite same-path work. Only when none
+changed may the transaction restart with \`BASE := NEW_BASE\`: create a fresh
+temporary index seeded from \`NEW_BASE\`, overlay the frozen entries, create the
+candidate with \`-p NEW_BASE\`, perform all step-7 verification against
+\`NEW_BASE\` (including \`diff-tree NEW_BASE CANDIDATE\`), and retry with
+\`git update-ref --create-reflog <BRANCH_REF> CANDIDATE NEW_BASE\`. The candidate
+parent and CAS old-value must always equal the tip that seeded that attempt's
+temporary index.`,
+  )
+  .replace(
+    `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Reconstruct \`BASE:path\` in a
+scratch artifact, replay only owned literal old-to-new replacements, assert each
+old block matches exactly once, read Git output as UTF-8 bytes, and select hunks
+by distinctive content rather than shifting line numbers. Hash the result and
+install its exact mode with \`update-index --cacheinfo\`; verify the prepared diff.`,
+    `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Reconstruct \`BASE:path\` in a
+scratch artifact, replay only owned literal old-to-new replacements, assert each
+old block matches exactly once, and select hunks by distinctive content rather
+than shifting line numbers. The write side is byte-oriented: use
+\`[IO.File]::WriteAllBytes\` (or Git Bash \`git cat-file blob <oid> > <file>\`),
+never \`Set-Content\`, \`Out-File\`, or text redirection. Hash the file by path or
+with \`hash-object -w --stdin\`, then diff the base and new blob OIDs to reject
+BOM or line-ending churn before installing its exact mode with \`update-index
+--cacheinfo\`.`,
+  )
+  .replace(
+    `On Windows, put the multi-line message in a file and consume it with
+\`commit-tree -F <msgfile>\` (or \`git commit -F\` outside this transaction).`,
+    `On Windows, put the multi-line message in a file and consume it with
+\`commit-tree -F <msgfile>\`.`,
+  );
 

@@ -28,6 +28,7 @@ import {
   WORKER_AGY_AGENTS_MD,
   PROPOSAL_TO_PLAN_SKILL_MD,
   LAND_WORK_PACKAGE_SKILL_MD,
+  LAND_WORK_PACKAGE_SKILL_MD_V1,
 } from '../../shared/constants';
 import {
   AGY_STATUS_HOOK_NAME,
@@ -903,6 +904,56 @@ test('wp1-land-work-package-both-lanes', () => {
       Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
       `${marker}: Codex scaffold skill must be byte-equal to the constant`,
     );
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('--force-remove'),
+      `${marker}: v2 must force-remove deletions from the temporary index`);
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('git ls-tree -z'),
+      `${marker}: v2 tree-entry verification must be NUL-safe`);
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('CANDIDATE NEW_BASE'),
+      `${marker}: v2 CAS retry must use NEW_BASE as the old-value`);
+
+    const migrationCases = [
+      {
+        workDir: claudeWorkDir,
+        provider: 'claude',
+        skillPath: claudeSkill,
+        sidecarKey: 'workers/claude/.claude/skills/land-work-package/SKILL.md',
+      },
+      {
+        workDir: codexWorkDir,
+        provider: 'codex',
+        skillPath: codexSkill,
+        sidecarKey: 'workers/codex/.agents/skills/land-work-package/SKILL.md',
+      },
+    ];
+    for (const migration of migrationCases) {
+      fs.writeFileSync(migration.skillPath, LAND_WORK_PACKAGE_SKILL_MD_V1, 'utf-8');
+      const sidecarPath = path.join(
+        migration.workDir,
+        ...SCAFFOLD_SIDECAR_REL.split('/'),
+      );
+      const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8')) as Record<string, number>;
+      sidecar[migration.sidecarKey] = 1;
+      fs.writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureWorkerScaffold(migration.workDir, migration.provider, 'windows');
+
+      assert.deepEqual(
+        fs.readFileSync(migration.skillPath),
+        Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v2`,
+      );
+      const migratedSidecar = JSON.parse(
+        fs.readFileSync(sidecarPath, 'utf-8'),
+      ) as Record<string, number>;
+      assert.equal(migratedSidecar[migration.sidecarKey], 2,
+        `${marker}: ${migration.provider} sidecar must advance from v1 to v2`);
+      assert.equal(
+        fs.readdirSync(path.dirname(migration.skillPath))
+          .some((name) => name.startsWith('SKILL.md.bak.')),
+        false,
+        `${marker}: pristine ${migration.provider} v1 upgrade must not create a backup`,
+      );
+    }
   } finally {
     cleanup();
     rmrf(claudeWorkDir);
