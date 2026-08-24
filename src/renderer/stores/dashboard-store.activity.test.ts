@@ -10,6 +10,10 @@ function page(overrides: Partial<ActivityPage> = {}): ActivityPage {
       turnCount: 8, agentCount: 2, fileCount: 4, planCount: 1, commitCount: 1, noCheckpointCount: 0,
       blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' },
     },
+    scope: {
+      grouping: 'time', turnCountBasis: 'loaded-turns', filters: { eligibleOnly: true },
+      completeness: { turns: true, agents: true, files: true, plans: true, commits: true },
+    },
     scans: { turns: { scanned: 8, emitted: 8, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 50 } },
     ...overrides,
   };

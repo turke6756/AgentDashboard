@@ -2428,8 +2428,8 @@ export interface ActivityPage {
   items: ActivityItem[];
   cursor: ActivityPageCursor;
   pageCounts: ActivityCounts;
-  /** Every production route populates this; optional until foreign renderer fixtures migrate. */
-  scope?: ActivityCountScope;
+  /** Completeness and filter envelope governing every displayed page count. */
+  scope: ActivityCountScope;
   ancillary?: ActivityAncillary;
   scans: {
     turns: ActivityScanStats;

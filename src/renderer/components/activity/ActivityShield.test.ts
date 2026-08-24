@@ -30,6 +30,10 @@ function page(turnCount: number): ActivityPage {
       unavailableCount: { value: 0, status: 'complete' },
       checkingCount: { value: 0, status: 'complete' },
     },
+    scope: {
+      grouping: 'time', turnCountBasis: 'loaded-turns', filters: { eligibleOnly: true },
+      completeness: { turns: true, agents: true, files: true, plans: true, commits: true },
+    },
     scans: {
       turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 },
       fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 50 },

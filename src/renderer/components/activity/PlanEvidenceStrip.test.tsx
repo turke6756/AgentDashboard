@@ -19,6 +19,10 @@ beforeEach(() => {
           turnCount: 3, agentCount: 2, fileCount: 5, planCount: 1, commitCount: 1, noCheckpointCount: 1,
           blockedOverlapCount: { value: 1, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' },
         },
+        scope: {
+          grouping: 'plan', turnCountBasis: 'loaded-turns', filters: { eligibleOnly: true },
+          completeness: { turns: true, agents: true, files: true, plans: true, commits: true },
+        },
       })),
     },
   };

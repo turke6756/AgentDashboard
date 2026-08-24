@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, X } from 'lucide-react';
-import type { ActivityItem, Agent, CheckpointTurnSummary, DayGroupRow as DayGroup, FileGroupRow as FileGroup, TurnActivityRow } from '../../../shared/types';
+import type { ActivityCountScope, ActivityCounts, ActivityItem, Agent, CheckpointTurnSummary, CountStat, DayGroupRow as DayGroup, FileGroupRow as FileGroup, TurnActivityRow } from '../../../shared/types';
 import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore, type ActivityScope } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
@@ -202,6 +202,34 @@ function FilterChips({ scope, agents, onRemove, onClear }: {
   </div>;
 }
 
+function boundedCount(value: number, complete: boolean, markPartial = false): string {
+  if (complete) return String(value);
+  return `${value}+${markPartial ? ' (partial)' : ''}`;
+}
+
+function countStat(stat: CountStat): string {
+  return stat.status === 'pending' ? '…' : String(stat.value);
+}
+
+function CountSummary({ counts, scope }: { counts: ActivityCounts; scope: ActivityCountScope }): React.ReactElement {
+  const turnValue = boundedCount(counts.turnCount, scope.completeness.turns, true);
+  const turnNoun = scope.turnCountBasis === 'loaded-turns'
+    ? 'turns'
+    : scope.filters.pathPrefix
+      ? 'visible turns under this path'
+      : 'visible turns in file groups';
+  return <dl className="mb-4 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500" aria-label="Activity counts">
+    <div><dt className="sr-only">Turns</dt><dd data-testid="activity-count-turns">{turnValue} {turnNoun}</dd></div>
+    <div><dt className="sr-only">Agents</dt><dd><span data-testid="activity-count-agents">{boundedCount(counts.agentCount, scope.completeness.agents)}</span> agents</dd></div>
+    <div><dt className="sr-only">Files</dt><dd><span data-testid="activity-count-files">{boundedCount(counts.fileCount, scope.completeness.files)}</span> files</dd></div>
+    <div><dt className="sr-only">Plans</dt><dd><span data-testid="activity-count-plans">{boundedCount(counts.planCount, scope.completeness.plans)}</span> plans</dd></div>
+    <div><dt className="sr-only">Commits</dt><dd><span data-testid="activity-count-commits">{boundedCount(counts.commitCount, scope.completeness.commits)}</span> commits</dd></div>
+    <div><dt className="sr-only">Blocked overlaps</dt><dd><span data-testid="activity-count-blocked">{countStat(counts.blockedOverlapCount)}</span> blocked overlaps</dd></div>
+    <div><dt className="sr-only">Unavailable</dt><dd><span data-testid="activity-count-unavailable">{countStat(counts.unavailableCount)}</span> unavailable</dd></div>
+    <div><dt className="sr-only">Checking</dt><dd><span data-testid="activity-count-checking">{countStat(counts.checkingCount)}</span> checking</dd></div>
+  </dl>;
+}
+
 export default function ActivityTab(): React.ReactElement {
   const workspaceId = useDashboardStore((state) => state.selectedWorkspaceId);
   const page = useDashboardStore((state) => state.activityPage);
@@ -256,6 +284,7 @@ export default function ActivityTab(): React.ReactElement {
         </div>
         <FilterChips scope={scope} agents={agents} onRemove={removeFilter} onClear={clearActivityFilters} />
         <Breadcrumb history={scopeHistory} current={scope} onBack={popDrill} onPopToDepth={popToDepth} />
+        {page && <CountSummary counts={page.pageCounts} scope={page.scope} />}
         {gitCapability?.protectedRoot ? (
           <div className="ui-card mb-4 border-accent-orange/30 p-4" data-testid="checkpoints-protected-root">
             <h3 className="text-[13px] font-medium text-gray-200">Checkpoints are unavailable for this workspace</h3>
