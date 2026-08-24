@@ -198,6 +198,8 @@ import {
   PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V5,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
   SUPERVISOR_CONTEXT_ANALYTICS_SKILL,
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL,
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1,
   WORKER_CLAUDE_MD,
   WORKER_CLAUDE_MD_V1,
   WORKER_CLAUDE_MD_V8,
@@ -208,6 +210,7 @@ import {
   WORKER_CLAUDE_MD_V12,
   WORKER_CODEX_AGENTS_MD,
   WORKER_CODEX_AGENTS_MD_V1,
+  WORKER_CODEX_AGENTS_MD_V8,
   WORKER_GROK_AGENTS_MD,
   WORKER_AGY_AGENTS_MD,
   WORKER_CODEX_CONFIG_TOML,
@@ -6143,6 +6146,8 @@ test('wp2-worker-claude-md-v16-upgrade', () => {
   const managed = workerClaudeFilesMap()['.lares/workers/claude/CLAUDE.md'];
   assert.equal(managed.previousHashes?.[15], sha256Hex(WORKER_CLAUDE_MD_V15));
   assert.equal(managed.version, 16);
+  assert.match(WORKER_CLAUDE_MD, /land-work-package/);
+  assert.match(WORKER_CLAUDE_MD, /## Landing a finished work package/);
 
   const workDir = mktmp('wp2-worker-claude-md-v16-upgrade');
   const { supervisor, cleanup } = makeSupervisor();
@@ -6155,12 +6160,94 @@ test('wp2-worker-claude-md-v16-upgrade', () => {
 
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
 
-    assert.equal(fs.readFileSync(mdPath, 'utf-8'), WORKER_CLAUDE_MD);
+    const upgraded = fs.readFileSync(mdPath, 'utf-8');
+    assert.equal(upgraded, WORKER_CLAUDE_MD);
+    assert.match(upgraded, /land-work-package/);
+    assert.match(upgraded, /## Landing a finished work package/);
     assert.equal(fs.readdirSync(path.dirname(mdPath)).filter((name) => name.startsWith('CLAUDE.md.bak.')).length, 0);
     assert.equal(readSidecar(workDir)['workers/claude/CLAUDE.md'], 16);
   } finally {
     cleanup();
     rmrf(workDir);
+  }
+});
+
+test('wp2-worker-codex-agents-md-v9-upgrade', () => {
+  const workDir = mktmp('wp2-worker-codex-agents-md-v9-upgrade');
+  const { supervisor, cleanup } = makeSupervisor();
+  const scaffoldSurface = supervisor as unknown as {
+    writeScaffoldMap(root: string, files: Record<string, ScaffoldFile>, pathType: string): boolean;
+  };
+  const writeScaffoldMap = scaffoldSurface.writeScaffoldMap.bind(scaffoldSurface);
+  let managed: ScaffoldFile | undefined;
+  scaffoldSurface.writeScaffoldMap = (root, files, pathType) => {
+    managed = files['.lares/workers/codex/AGENTS.md'] ?? managed;
+    return writeScaffoldMap(root, files, pathType);
+  };
+  try {
+    const mdPath = path.join(workDir, '.lares', 'workers', 'codex', 'AGENTS.md');
+    fs.mkdirSync(path.dirname(mdPath), { recursive: true });
+    fs.writeFileSync(mdPath, WORKER_CODEX_AGENTS_MD_V8, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ 'workers/codex/AGENTS.md': 8 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'codex', 'windows');
+
+    assert.equal(
+      managed?.previousHashes?.[8],
+      sha256Hex(WORKER_CODEX_AGENTS_MD_V8),
+      'REACHABILITY:wp2-worker-codex-agents-md-v9-upgrade previousHashes[8] must preserve the pristine v8 body',
+    );
+    assert.equal(managed?.version, 9, 'REACHABILITY:wp2-worker-codex-agents-md-v9-upgrade current version must be 9');
+    assert.equal(fs.readFileSync(mdPath, 'utf-8'), WORKER_CODEX_AGENTS_MD,
+      'REACHABILITY:wp2-worker-codex-agents-md-v9-upgrade pristine v8 content must upgrade to v9');
+    assert.equal(fs.readdirSync(path.dirname(mdPath)).filter((name) => name.startsWith('AGENTS.md.bak.')).length, 0,
+      'REACHABILITY:wp2-worker-codex-agents-md-v9-upgrade pristine v8 content must not create a backup');
+    assert.equal(readSidecar(workDir)['workers/codex/AGENTS.md'], 9,
+      'REACHABILITY:wp2-worker-codex-agents-md-v9-upgrade sidecar must advance to 9');
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('wp2b-gate-landed-work-package-v2-upgrade', () => {
+  const cases = [
+    {
+      map: supFilesMap(),
+      rel: '.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md',
+      key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md',
+    },
+    {
+      map: supCodexFilesMap(),
+      rel: '.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md',
+      key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md',
+    },
+  ];
+
+  for (const entry of cases) {
+    const managed = entry.map[entry.rel];
+    assert.equal(managed.previousHashes?.[1], sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1));
+    assert.equal(managed.version, 2);
+
+    const workDir = mktmp('wp2b-gate-skill-v2-upgrade');
+    const { supervisor, cleanup } = makeSupervisor();
+    try {
+      const skillPath = path.join(workDir, entry.rel);
+      fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+      fs.writeFileSync(skillPath, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1, 'utf-8');
+      fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+      fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [entry.key]: 1 }, null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureSupervisorScaffold(workDir, 'windows');
+
+      assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL);
+      assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
+      assert.equal(readSidecar(workDir)[entry.key], 2);
+    } finally {
+      cleanup();
+      rmrf(workDir);
+    }
   }
 });
 

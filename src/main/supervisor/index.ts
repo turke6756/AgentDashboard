@@ -50,7 +50,7 @@ import {
   WRITE_PROPOSAL_SKILL_MD_V2,
   WRITE_RESEARCH_REPORT_SKILL_MD,
   LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V1,
-  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL,
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1,
   READ_PLANNING_SURFACE_SKILL_MD as READ_PLANNING_SURFACE_SKILL_MD_V2,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
   PROPOSAL_TO_PLAN_SKILL_MD,
@@ -3961,7 +3961,11 @@ export class AgentSupervisor extends EventEmitter {
     ...writeProposalEntry('.lares/supervisor/.claude/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/supervisor/.claude/skills/read-planning-surface'),
     ...proveProductionEntryPointEntry('.lares/supervisor/.claude/skills/prove-the-production-entry-point'),
-    [`.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md`]: { content: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, version: 1 },
+    [`.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md`]: {
+      content: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL,
+      version: 2,
+      previousHashes: { 1: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1) },
+    },
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
       version: 29, // v29 briefs land-work-package and the immutable dispatch-evidence gate.
@@ -4049,7 +4053,11 @@ export class AgentSupervisor extends EventEmitter {
     ...writeProposalEntry('.lares/supervisor/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/supervisor/.agents/skills/read-planning-surface'),
     ...proveProductionEntryPointEntry('.lares/supervisor/.agents/skills/prove-the-production-entry-point'),
-    [`.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md`]: { content: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, version: 1 },
+    [`.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md`]: {
+      content: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL,
+      version: 2,
+      previousHashes: { 1: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1) },
+    },
     [`.lares/supervisor/AGENTS.md`]: {
       content: SUPERVISOR_AGENT_MD,
       version: 29,

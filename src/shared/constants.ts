@@ -8820,7 +8820,7 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT
   );
 
 // WP-2 (plan_d85b0a78) — supervisor read-back gate paired with land-work-package.
-export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL = `---
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1 = `---
 name: gate-landed-work-package
 description: >-
   Gate a dispatched work package against immutable dispatch evidence, canonical
@@ -8858,6 +8858,18 @@ Never infer it from current state and never fall back to a recent-history window
 authorized in the frozen brief, but it cannot weaken or revise the expected set.
 If scope changes, revise and re-freeze the dispatch evidence before acceptance.
 `;
+
+// WP-2b (plan_d85b0a78) — name the first-parent traversal command explicitly.
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1.replace(
+    `3. Enumerate every commit on the first-parent range
+   \`DISPATCH_TIP..GATE_TIP\`. Do not use \`git log -1\`, \`-n 200\`, or an
+   unbounded history query.`,
+    `3. Enumerate every commit with
+   \`git rev-list --first-parent DISPATCH_TIP..GATE_TIP\`. Plain \`A..B\` is NOT a
+   first-parent walk. Do not use \`git log -1\`, \`-n 200\`, or an unbounded
+   history query.`,
+  );
 
 // WP-1 (plan_d85b0a78) — frozen managed scaffold file v1.
 export const LAND_WORK_PACKAGE_SKILL_MD_V1 = `---
