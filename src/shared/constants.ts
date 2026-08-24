@@ -1612,10 +1612,35 @@ progress without opening files. For deeper content, use the \`read-planning-surf
 skill's progressive ladder into the plan folder.
 
 `;
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V13.replace(
+export const WORKER_CLAUDE_MD_V14 = WORKER_CLAUDE_MD_V13.replace(
   WORKER_CLAUDE_MD_V14_PLAN_STATE_ANCHOR,
   `${WORKER_CLAUDE_MD_V14_PLAN_STATE}${WORKER_CLAUDE_MD_V14_PLAN_STATE_ANCHOR}`,
 );
+
+// Worker planning-surface repair: freeze v14 above, then replace its bounded
+// plan-state paragraph with the complete plans-read contract. The section marker
+// advances independently from the scaffold-file version so deployed text can be
+// identified without reviving the retired PLAN-EVENT ceremony.
+const WORKER_CLAUDE_MD_V15_PLANNING_MARKER_OLD = '<!-- section:planning-surface v1 -->';
+const WORKER_CLAUDE_MD_V15_PLANNING_MARKER_NEW = '<!-- section:planning-surface v2 -->';
+const WORKER_CLAUDE_MD_V15_PLAN_STATE_OLD = WORKER_CLAUDE_MD_V14_PLAN_STATE.trimEnd();
+const WORKER_CLAUDE_MD_V15_PLAN_STATE_NEW = `### Plan-state tools
+
+\`list_plans\` is the cheap fleet glance: what plans exist, and what state is each in.
+\`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
+progress without opening files. \`record_planning_event\` records proposal-authoring
+or promotion-request telemetry; it does not edit a plan. Those are the three tools
+available in the worker \`plans-read\` toolset. \`focus_plan\` and \`unfocus_plan\` are
+supervisor-only and are not available to workers.
+
+For plan content, use the \`read-planning-surface\` skill's progressive ladder and
+native file reads of the plan folder: \`.lares/plans/<folder>/plan.md\`, \`OVERVIEW.md\`,
+and relevant files under \`supplements/\`. Edit plan content only with native file
+edits (\`Edit\` / \`MultiEdit\`), never change a \`data-anchor\` value, and do not look
+for a plan-write or section/edit-window MCP tool; none exists.`;
+export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V14
+  .replace(WORKER_CLAUDE_MD_V15_PLANNING_MARKER_OLD, WORKER_CLAUDE_MD_V15_PLANNING_MARKER_NEW)
+  .replace(WORKER_CLAUDE_MD_V15_PLAN_STATE_OLD, WORKER_CLAUDE_MD_V15_PLAN_STATE_NEW);
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
  *  to <workspace>/.lares/workers/claude/behavioral.md on first Claude worker
@@ -1800,6 +1825,14 @@ export const WORKER_CODEX_AGENTS_MD_V5 = WORKER_CLAUDE_MD_V12
 /** WP-10 plan-state orientation: frozen v6 Codex AGENTS.md, derived from the
  * frozen worker v13 body before the shared Plan-state tools paragraph. */
 export const WORKER_CODEX_AGENTS_MD_V6 = WORKER_CLAUDE_MD_V13
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** Worker planning-surface repair: frozen v7 Codex AGENTS.md, derived from the
+ * frozen worker v14 body before the complete plans-read contract. */
+export const WORKER_CODEX_AGENTS_MD_V7 = WORKER_CLAUDE_MD_V14
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
