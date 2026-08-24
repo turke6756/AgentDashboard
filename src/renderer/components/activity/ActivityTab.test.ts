@@ -185,10 +185,14 @@ describe('Activity row copy', () => {
       expect(container.querySelector('[aria-label="Activity lens"]')?.textContent).toContain('File');
       expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe('File');
       const fileGroup = container.querySelector('[data-testid="activity-file-src/renderer/ActivityTab.tsx"]');
+      expect(fileGroup?.textContent).not.toContain('Edit activity UI');
+
+      await act(async () => (fileGroup?.querySelector('[aria-label^="Expand"]') as HTMLButtonElement).click());
       expect(fileGroup?.textContent).toContain('Edit activity UI');
+      expect(list).not.toHaveBeenCalled();
 
       await act(async () => {
-        (fileGroup?.querySelector('button') as HTMLButtonElement).click();
+        (Array.from(fileGroup?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Open') as HTMLButtonElement).click();
         await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
       });
       expect(list).toHaveBeenCalledWith(expect.objectContaining({
@@ -264,7 +268,7 @@ describe('Activity row copy', () => {
     } as any);
     try {
       await act(async () => root.render(React.createElement(ActivityTab)));
-      await act(async () => (container.querySelector('[data-testid="activity-file-src/renderer"] button') as HTMLButtonElement).click());
+      await act(async () => (Array.from(container.querySelectorAll('[data-testid="activity-file-src/renderer"] button')).find((button) => button.textContent === 'Open') as HTMLButtonElement).click());
       expect(container.querySelector('[aria-label="Activity drill breadcrumb"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Remove pathPrefix filter"]')).not.toBeNull();
       await act(async () => (container.querySelector('[aria-label="Remove pathPrefix filter"]') as HTMLButtonElement).click());
@@ -287,11 +291,13 @@ describe('Activity row copy', () => {
     });
     try {
       await act(async () => root.render(React.createElement(ActivityTab)));
-      const picker = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLSelectElement;
+      const picker = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLButtonElement;
       expect(picker).not.toBeNull();
       await act(async () => {
-        picker.value = 'agent-2';
-        picker.dispatchEvent(new Event('change', { bubbles: true }));
+        picker.click();
+      });
+      await act(async () => {
+        (Array.from(container.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Review worker')) as HTMLButtonElement).click();
       });
       expect(setAgentFilter).toHaveBeenCalledWith('agent-2');
       expect(container.querySelector('[aria-label="Active activity filters"]')?.textContent).toContain('Agent: Review worker');
@@ -299,6 +305,85 @@ describe('Activity row copy', () => {
     } finally {
       act(() => root.unmount());
     }
+  });
+
+  it('shows the resolved or store-backed agent title prominently in every turn header', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const member = row('restorable');
+    member.agentTitle = null;
+    const activityPage = typedActivityPage({
+      workspaceId: 'ws', items: [member],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      scope: completeCountScope({ grouping: 'none' }), pageCounts: completeCounts({ turnCount: 1, agentCount: 1 }),
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    });
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [{ id: 'agent-1', workspaceId: 'ws', title: 'Store-backed worker' }] as any,
+      activityPage, activityReturnCounts: activityPage.pageCounts, activityScope: { grouping: 'none' }, activityLoading: false, activityError: null,
+      loadActivity: vi.fn(async () => undefined),
+    } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const header = container.querySelector('[data-testid="activity-turn-turn-1"] .flex.items-center.gap-2');
+    expect(header?.textContent).toContain('Agent edit');
+    expect(header?.textContent).toContain('Store-backed worker');
+    expect(container.querySelector('[data-testid="activity-turn-turn-1"]')?.textContent).toContain('0 changes');
+    act(() => root.unmount());
+  });
+
+  it('groups workers under supervisors and flattens all agents while searching', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws',
+      agents: [
+        { id: 'sup-1', workspaceId: 'ws', title: 'Activity supervisor', isSupervisor: true, ownerAgentId: null, status: 'working' },
+        { id: 'worker-1', workspaceId: 'ws', title: 'Nested worker', isSupervisor: false, ownerAgentId: 'sup-1', status: 'idle' },
+        { id: 'solo-1', workspaceId: 'ws', title: 'Solo agent', isSupervisor: false, ownerAgentId: null, status: 'waiting' },
+      ] as any,
+      activityPage: null, activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
+      setAgentFilter: vi.fn(), loadActivity: vi.fn(async () => undefined),
+    } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    await act(async () => (container.querySelector('[aria-label="Filter activity by agent"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Activity supervisor');
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Unowned');
+    expect(container.querySelector('[role="listbox"]')?.textContent).not.toContain('Nested worker');
+    await act(async () => (container.querySelector('[aria-label="Show agents owned by Activity supervisor"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[aria-label="Agents owned by Activity supervisor"]')?.textContent).toContain('Nested worker');
+
+    const search = container.querySelector('[aria-label="Search agents"]') as HTMLInputElement;
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      valueSetter?.call(search, 'nested');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain('Nested worker');
+    expect(container.querySelector('[role="listbox"]')?.textContent).not.toContain('Activity supervisor');
+    expect(container.querySelector('[aria-label="Agents owned by Activity supervisor"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it('keeps plan groups collapsed until their explicit toggle is used', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const member = row('restorable');
+    member.taskLabel = 'Hidden planned turn';
+    const activityPage = typedActivityPage({
+      workspaceId: 'ws',
+      items: [{ kind: 'plan-group', planId: 'plan-serial', planTitle: 'Readable plan', latestTurnSeq: 1, latestStartedAt: 2, members: [member], pageCounts: completeCounts(), countsComplete: true, nextOlderCursor: { turnSeq: null } }],
+      cursor: { snapshot: { throughTurnSeq: 1, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      scope: completeCountScope({ grouping: 'plan' }), pageCounts: completeCounts({ turnCount: 1, planCount: 1 }),
+      scans: { turns: { scanned: 1, emitted: 1, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    });
+    useDashboardStore.setState({ selectedWorkspaceId: 'ws', agents: [], activityPage, activityReturnCounts: activityPage.pageCounts, activityScope: { grouping: 'plan' }, activityLoading: false, activityError: null, loadActivity: vi.fn(async () => undefined) } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const group = container.querySelector('[data-testid="activity-plan-plan-serial"]')!;
+    expect(group.textContent).toContain('Readable plan');
+    expect(group.textContent).not.toContain('Hidden planned turn');
+    await act(async () => (group.querySelector('[aria-label^="Expand"]') as HTMLButtonElement).click());
+    expect(group.textContent).toContain('Hidden planned turn');
+    act(() => root.unmount());
   });
 
   it('renders every incoming default filter as a removable chip and removal clears drill history', async () => {
@@ -595,11 +680,13 @@ describe('Activity row copy', () => {
     await act(async () => root.render(React.createElement(ActivityTab)));
     const lens = container.querySelector('[aria-label="Activity lens"]')!;
     expect(lens.querySelector('[aria-pressed="true"]')?.textContent).toBe('Time');
-    expect(container.textContent).toContain('Newest work');
-    expect(container.textContent).toContain('Older work');
+    expect(container.textContent).not.toContain('Newest work');
+    expect(container.textContent).not.toContain('Older work');
     expect(container.textContent).toContain('6h later');
     expect(container.querySelector('[data-testid="activity-day-2026-08-23"] [role="separator"]')).toBeNull();
     expect(container.querySelector('[data-testid="activity-day-2026-08-22"] [role="separator"]')?.textContent).toContain('6h later');
+    await act(async () => (container.querySelector('[data-testid="activity-day-2026-08-23"] [aria-label^="Expand"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('Newest work');
     act(() => (Array.from(lens.querySelectorAll('button')).find((button) => button.textContent === 'Plan') as HTMLButtonElement).click());
     expect(setLens).toHaveBeenCalledWith('plan');
     act(() => root.unmount());

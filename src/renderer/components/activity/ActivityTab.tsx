@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { RotateCcw, X } from 'lucide-react';
-import type { ActivityCountScope, ActivityCounts, ActivityItem, Agent, CheckpointTurnSummary, CountStat, DayGroupRow as DayGroup, FileGroupRow as FileGroup, TurnActivityRow } from '../../../shared/types';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, RotateCcw, Search, X } from 'lucide-react';
+import type { ActivityCountScope, ActivityCounts, ActivityItem, Agent, CheckpointTurnSummary, CountStat, DayGroupRow as DayGroup, FileGroupRow as FileGroup, PlanGroupRow as PlanGroup, TurnActivityRow } from '../../../shared/types';
 import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore, type ActivityScope } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
@@ -53,16 +53,19 @@ function asCheckpointTurn(row: TurnActivityRow): CheckpointTurnSummary {
 
 function TurnRow({ row, onUndo }: { row: TurnActivityRow; onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void }): React.ReactElement {
   const badge = activityBadge(row);
+  const storeTitle = useDashboardStore((state) => state.agents.find((agent) => agent.id === row.agentId)?.title);
+  const agentTitle = row.agentTitle ?? storeTitle ?? 'Unknown agent';
   return (
     <article className="ui-card p-3" data-testid={`activity-turn-${row.turnId}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[10px] uppercase tracking-wider text-gray-500">Agent edit</span>
+            <span className="truncate text-[11px] font-medium text-gray-300">{agentTitle}</span>
             <span className="text-[11px] text-gray-600">{when(row.endedAt ?? row.startedAt)}</span>
           </div>
           <h3 className="mt-1 text-[13px] text-gray-200 truncate">{row.taskLabel || `Turn ${row.turnSeq}`}</h3>
-          <p className="text-[11px] text-gray-500">{row.agentTitle ?? 'Unknown agent'} · {row.writeCount} changes</p>
+          <p className="text-[11px] text-gray-500">{row.writeCount} changes</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className={`rounded px-1.5 py-0.5 text-[10px] ${badgeTone(badge)}`}>{badge}</span>
@@ -109,27 +112,57 @@ function gapLabel(milliseconds: number): string {
   return `${days} ${days === 1 ? 'day' : 'days'} later`;
 }
 
-export function DayGroupRow({ group, onUndo }: { group: DayGroup; onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void }): React.ReactElement {
+export function DayGroupRow({ group, expanded, onToggle, onUndo }: { group: DayGroup; expanded: boolean; onToggle: () => void; onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void }): React.ReactElement {
   const label = group.latestStartedAt === null
     ? 'Time unavailable'
     : new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeZone: group.timeZone }).format(group.latestStartedAt);
   return <div className="space-y-2" data-testid={`activity-day-${group.dayKey ?? 'unknown'}`}>
     {group.gapFromNewerGroupMs !== null && <div className="flex items-center gap-3 py-2 text-[10px] text-gray-500" role="separator"><span className="h-px flex-1 bg-white/10" /><span>{gapLabel(group.gapFromNewerGroupMs)}</span><span className="h-px flex-1 bg-white/10" /></div>}
-    <section className="space-y-2"><h3 className="px-1 text-[11px] font-medium text-gray-400">{label}</h3>{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</section>
+    <section className="space-y-2">
+      <button type="button" className="ui-card flex w-full items-center gap-2 p-3 text-left" aria-expanded={expanded} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`} onClick={onToggle}>
+        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-gray-400">{label}</span>
+        <span className="shrink-0 text-[11px] text-gray-500">{group.members.length} {group.members.length === 1 ? 'turn' : 'turns'} · {when(group.latestStartedAt)}</span>
+      </button>
+      {expanded && <div className="space-y-2 pl-3">{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</div>}
+    </section>
   </div>;
 }
 
-export function FileGroupRow({ group, onDrill, onUndo }: {
+function PlanGroupRow({ group, expanded, onToggle, onUndo }: {
+  group: PlanGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void;
+}): React.ReactElement {
+  const label = group.planTitle ?? group.planId;
+  return <section className="space-y-2" data-testid={`activity-plan-${group.planId}`}>
+    <button type="button" className="ui-card flex w-full items-center gap-2 p-3 text-left" aria-expanded={expanded} aria-label={`${expanded ? 'Collapse' : 'Expand'} plan ${label}`} onClick={onToggle}>
+      {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+      <span className="min-w-0 flex-1 truncate text-[11px] text-accent-purple">Plan: {label}</span>
+      <span className="shrink-0 text-[11px] text-gray-500">{group.members.length} {group.members.length === 1 ? 'turn' : 'turns'} · {when(group.latestStartedAt)}</span>
+    </button>
+    {expanded && <div className="space-y-2 pl-3">{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</div>}
+  </section>;
+}
+
+export function FileGroupRow({ group, expanded, onToggle, onDrill, onUndo }: {
   group: FileGroup;
+  expanded: boolean;
+  onToggle: () => void;
   onDrill: (repoPath: string) => void;
   onUndo: (row: TurnActivityRow, strategy: 'exact' | 'merge-undo') => void;
 }): React.ReactElement {
   return <section className="space-y-2" data-testid={`activity-file-${group.repoPath}`}>
-    <button type="button" className="ui-card flex w-full items-center justify-between p-3 text-left" onClick={() => onDrill(group.repoPath)}>
-      <span className="min-w-0 truncate font-mono text-[12px] text-gray-300">{group.displayPath}</span>
+    <div className="ui-card flex w-full items-center gap-2 p-3">
+      <button type="button" className="shrink-0 text-gray-500 hover:text-gray-200" aria-expanded={expanded} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.displayPath}`} onClick={onToggle}>
+        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </button>
+      <button type="button" className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-gray-300 hover:text-gray-100" onClick={() => onDrill(group.repoPath)}>{group.displayPath}</button>
       <span className="shrink-0 text-[11px] text-gray-500">{group.members.length} {group.members.length === 1 ? 'turn' : 'turns'} · {when(group.latestStartedAt)}</span>
-    </button>
-    <div className="space-y-2 pl-3">{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</div>
+      <button type="button" className="ui-btn ui-btn-ghost px-2 py-1 text-[10px]" onClick={() => onDrill(group.repoPath)}>Open</button>
+    </div>
+    {expanded && <div className="space-y-2 pl-3">{group.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={onUndo} />)}</div>}
   </section>;
 }
 
@@ -165,16 +198,73 @@ function Breadcrumb({ history, current, onBack, onPopToDepth }: {
 
 type ActivityFilterKey = 'agentId' | 'pathPrefix' | 'planId' | 'planItemId';
 
-function AgentPicker({ agents, value, onChange }: { agents: Agent[]; value?: string; onChange: (agentId?: string) => void }): React.ReactElement {
-  return <select
-    aria-label="Filter activity by agent"
-    className="rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-gray-300"
-    value={value ?? ''}
-    onChange={(event) => onChange(event.target.value || undefined)}
-  >
-    <option value="">All agents</option>
-    {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.title || agent.id}</option>)}
-  </select>;
+function AgentPicker({ agents, workspaceId, value, onChange }: { agents: Agent[]; workspaceId: string; value?: string; onChange: (agentId?: string) => void }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [flyoutId, setFlyoutId] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const workspaceAgents = useMemo(() => agents.filter((agent) => agent.workspaceId === workspaceId), [agents, workspaceId]);
+  const selected = workspaceAgents.find((agent) => agent.id === value);
+  const supervisors = workspaceAgents.filter((agent) => agent.isSupervisor === true || agent.privilegeLane === 'supervisor');
+  const supervisorIds = new Set(supervisors.map((agent) => agent.id));
+  const unowned = workspaceAgents.filter((agent) => !supervisorIds.has(agent.id) && !agent.ownerAgentId);
+  const filtered = query.trim() === '' ? [] : workspaceAgents.filter((agent) => {
+    const needle = query.trim().toLowerCase();
+    return agent.title.toLowerCase().includes(needle) || agent.id.toLowerCase().startsWith(needle);
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeEscape);
+    };
+  }, [open]);
+
+  const choose = (agentId?: string) => {
+    onChange(agentId);
+    setOpen(false);
+    setQuery('');
+    setFlyoutId(null);
+  };
+  const option = (agent: Agent) => <button key={agent.id} type="button" role="option" aria-selected={value === agent.id} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-[11px] text-gray-300 hover:bg-white/5 focus:bg-white/5 focus:outline-none" onClick={() => choose(agent.id)}>
+    <span className="truncate">{agent.title || agent.id}</span><span className="ml-2 text-[9px] uppercase text-gray-600">{agent.status}</span>
+  </button>;
+
+  return <div className="relative" ref={rootRef}>
+    <button type="button" aria-label="Filter activity by agent" aria-haspopup="listbox" aria-expanded={open} className="flex items-center gap-1 rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-gray-300" onClick={() => setOpen((current) => !current)}>
+      <span className="max-w-40 truncate">{selected?.title || 'All agents'}</span><ChevronDown className="h-3 w-3" />
+    </button>
+    {open && <div className="absolute right-0 z-30 mt-1 w-64 rounded border border-white/10 bg-surface-0 p-2 shadow-xl" role="listbox" aria-label="Activity agents">
+      <div className="relative mb-2">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+        <input autoFocus value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search agents" aria-label="Search agents" className="w-full rounded border border-white/10 bg-black/20 py-1.5 pl-7 pr-2 text-[11px] text-gray-200 placeholder:text-gray-600 focus:border-accent-blue/60 focus:outline-none" />
+      </div>
+      {query.trim() !== '' ? <div className="max-h-64 overflow-y-auto">{filtered.length > 0 ? filtered.map(option) : <div className="px-2 py-2 text-[11px] text-gray-500">No matching agents.</div>}</div> : <div className="space-y-1">
+        <button type="button" role="option" aria-selected={!value} className="w-full rounded px-2 py-1.5 text-left text-[11px] text-gray-300 hover:bg-white/5" onClick={() => choose(undefined)}>All agents</button>
+        {supervisors.map((supervisor) => {
+          const workers = workspaceAgents.filter((agent) => agent.ownerAgentId === supervisor.id);
+          const showFlyout = flyoutId === supervisor.id && workers.length > 0;
+          return <div key={supervisor.id} className="relative" onMouseEnter={() => setFlyoutId(supervisor.id)} onMouseLeave={() => setFlyoutId((current) => current === supervisor.id ? null : current)}>
+            <div className="flex items-center rounded hover:bg-white/5 focus-within:bg-white/5">
+              <button type="button" role="option" aria-selected={value === supervisor.id} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-[11px] text-gray-300 focus:outline-none" onFocus={() => setFlyoutId(supervisor.id)} onClick={() => choose(supervisor.id)}>{supervisor.title || supervisor.id}</button>
+              {workers.length > 0 && <button type="button" aria-label={`Show agents owned by ${supervisor.title || supervisor.id}`} aria-expanded={showFlyout} className="p-1.5 text-gray-500 hover:text-gray-200" onFocus={() => setFlyoutId(supervisor.id)} onClick={() => setFlyoutId((current) => current === supervisor.id ? null : supervisor.id)}><ChevronRight className="h-3 w-3" /></button>}
+            </div>
+            {showFlyout && <div className="absolute left-full top-0 z-40 ml-1 w-60 rounded border border-white/10 bg-surface-0 p-1 shadow-xl" aria-label={`Agents owned by ${supervisor.title || supervisor.id}`}>{workers.map(option)}</div>}
+          </div>;
+        })}
+        {unowned.length > 0 && <div className="border-t border-white/10 pt-1"><div className="px-2 py-1 text-[9px] uppercase tracking-wider text-gray-600">Unowned</div>{unowned.map(option)}</div>}
+      </div>}
+    </div>}
+  </div>;
 }
 
 function FilterChips({ scope, agents, onRemove, onClear }: {
@@ -270,6 +360,12 @@ export default function ActivityTab(): React.ReactElement {
   const showLoadOlder = Boolean(nextOlder && (!grouped || sourceBelowCap));
   const showTerminalNotice = Boolean(grouped && nextOlder && !sourceBelowCap);
   const gitCapability = prerequisites?.optional.find((check) => check.id === 'git')?.git;
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (key: string) => setExpandedGroups((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
   if (!workspaceId) return <div className="flex-1 p-6 text-gray-500">Select a workspace to view activity.</div>;
 
   return (
@@ -278,7 +374,7 @@ export default function ActivityTab(): React.ReactElement {
         <div className="flex items-center justify-between gap-3 mb-4">
           <div><h2 className="text-[16px] text-gray-100 font-semibold">While you were away</h2><p className="text-[11px] text-gray-500">Newest activity first</p></div>
           <div className="flex items-center gap-2">
-            <AgentPicker agents={agents} value={scope.agentId} onChange={setAgentFilter} />
+            <AgentPicker agents={agents} workspaceId={workspaceId} value={scope.agentId} onChange={setAgentFilter} />
             <LensSwitcher value={scope.grouping} onChange={setLens} />
           </div>
         </div>
@@ -306,12 +402,15 @@ export default function ActivityTab(): React.ReactElement {
         {loading && items.length === 0 ? <div className="text-gray-500">Loading activity…</div> : (
           <div className="space-y-2">
             {items.length === 0 && <div className="ui-card p-6 text-center text-gray-500">No activity observed on this page.</div>}
-            {items.map((item) => item.kind === 'turn' ? <TurnRow key={item.turnId} row={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'plan-group' ? (
-              <section key={`plan:${item.planId}:${item.latestTurnSeq}`} className="space-y-2">
-                <div className="px-1 text-[11px] text-accent-purple">Plan: {item.planTitle ?? item.planId} · observed evidence</div>
-                {item.members.map((row) => <TurnRow key={row.turnId} row={row} onUndo={(selectedRow, strategy) => setUndoDialog({ row: selectedRow, strategy })} />)}
-              </section>
-            ) : item.kind === 'day-group' ? <DayGroupRow key={`day:${item.dayKey ?? 'unknown'}`} group={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : item.kind === 'file-group' ? <FileGroupRow key={`file:${item.repoPath}`} group={item} onDrill={(repoPath) => pushDrill({ ...scope, grouping: 'time', pathPrefix: repoPath })} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} /> : <OtherRow key={item.id} item={item} />)}
+            {items.map((item) => {
+              const groupKey = item.kind === 'plan-group' ? `plan:${item.planId}` : item.kind === 'day-group' ? `time:${item.dayKey ?? 'unknown'}` : item.kind === 'file-group' ? `file:${item.repoPath}` : null;
+              const expanded = groupKey !== null && expandedGroups.has(groupKey);
+              return item.kind === 'turn' ? <TurnRow key={item.turnId} row={item} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} />
+                : item.kind === 'plan-group' ? <PlanGroupRow key={`plan:${item.planId}:${item.latestTurnSeq}`} group={item} expanded={expanded} onToggle={() => toggleGroup(groupKey!)} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} />
+                  : item.kind === 'day-group' ? <DayGroupRow key={`day:${item.dayKey ?? 'unknown'}`} group={item} expanded={expanded} onToggle={() => toggleGroup(groupKey!)} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} />
+                    : item.kind === 'file-group' ? <FileGroupRow key={`file:${item.repoPath}`} group={item} expanded={expanded} onToggle={() => toggleGroup(groupKey!)} onDrill={(repoPath) => pushDrill({ ...scope, grouping: 'time', pathPrefix: repoPath })} onUndo={(row, strategy) => setUndoDialog({ row, strategy })} />
+                      : <OtherRow key={item.id} item={item} />;
+            })}
             {showLoadOlder && (
               <button type="button" className="ui-btn ui-btn-ghost mx-auto flex text-[11px]" disabled={loading} onClick={() => void loadOlderActivity(workspaceId)}>
                 {loading ? 'Loading older activity...' : 'Load older activity'}
