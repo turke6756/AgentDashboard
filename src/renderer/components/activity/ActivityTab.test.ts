@@ -33,17 +33,20 @@ describe('Activity row copy', () => {
       activityPage: null, activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
       setAgentFilter, loadActivity: vi.fn(async () => undefined),
     });
-    await act(async () => root.render(React.createElement(ActivityTab)));
-    const picker = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLSelectElement;
-    expect(picker).not.toBeNull();
-    await act(async () => {
-      picker.value = 'agent-2';
-      picker.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(setAgentFilter).toHaveBeenCalledWith('agent-2');
-    expect(container.querySelector('[aria-label="Active activity filters"]')?.textContent).toContain('Agent: Review worker');
-    expect(container.querySelector('[aria-label="Remove agentId filter"]')).not.toBeNull();
-    act(() => root.unmount());
+    try {
+      await act(async () => root.render(React.createElement(ActivityTab)));
+      const picker = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLSelectElement;
+      expect(picker).not.toBeNull();
+      await act(async () => {
+        picker.value = 'agent-2';
+        picker.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(setAgentFilter).toHaveBeenCalledWith('agent-2');
+      expect(container.querySelector('[aria-label="Active activity filters"]')?.textContent).toContain('Agent: Review worker');
+      expect(container.querySelector('[aria-label="Remove agentId filter"]')).not.toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
   });
 
   it('renders every incoming default filter as a removable chip and removal clears drill history', async () => {
@@ -66,6 +69,25 @@ describe('Activity row copy', () => {
     expect(removeFilter).toHaveBeenCalledWith('pathPrefix');
     expect(useDashboardStore.getState().activityScope.pathPrefix).toBeUndefined();
     expect(useDashboardStore.getState().activityScopeHistory).toEqual([]);
+    await act(async () => (container.querySelector('[aria-label="Remove planId filter"]') as HTMLButtonElement).click());
+    expect(removeFilter).toHaveBeenCalledWith('planId');
+    await act(async () => (container.querySelector('[aria-label="Remove planItemId filter"]') as HTMLButtonElement).click());
+    expect(removeFilter).toHaveBeenCalledWith('planItemId');
+    await act(async () => (container.querySelector('[aria-label="Remove agentId filter"]') as HTMLButtonElement).click());
+    expect(removeFilter).toHaveBeenCalledWith('agentId');
+    act(() => root.unmount());
+  });
+
+  it('does not render Clear all for an unfiltered Time view', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [], activityPage: null,
+      activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
+      loadActivity: vi.fn(async () => undefined),
+    });
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === 'Clear all')).toBe(false);
     act(() => root.unmount());
   });
 
