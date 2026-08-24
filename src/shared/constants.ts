@@ -930,9 +930,31 @@ const SUPERVISOR_AGENT_MD_V28_READING_NEW = `### Plan-state tools
 \`read_plan_progress {plan_id, detail:'card'|'packages'}\` gives one plan's bounded
 progress without opening files. For deeper content, use the \`read-planning-surface\`
 skill's progressive ladder into the plan folder.`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V27
+export const SUPERVISOR_AGENT_MD_V28 = SUPERVISOR_AGENT_MD_V27
   .replace(SUPERVISOR_AGENT_MD_V28_PLAN_STATE_OLD, SUPERVISOR_AGENT_MD_V28_PLAN_STATE_NEW)
   .replace(SUPERVISOR_AGENT_MD_V28_READING_OLD, SUPERVISOR_AGENT_MD_V28_READING_NEW);
+
+const SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_OLD = SUPERVISOR_AGENT_MD_V24_COMMIT_POLICY_SECTION.trimEnd();
+const SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW = `## Worker commit policy
+
+Every finished work package must be committed through the \`land-work-package\`
+skill. Its canonical trailer block uses \`Plan:\`, \`WP:\`, \`Verified:\`, and
+optional \`Scope-omitted:\` trailers. A work package is not accepted until exactly
+one commit carrying its exact \`Plan:\` and \`WP:\` values is visible in the
+dispatch range and that commit changes exactly the briefed path set.
+
+At worker launch, the dispatching supervisor must persist the full branch ref,
+dispatch-tip OID, exact plan id, exact WP id, and frozen expected landed-path
+set. Missing dispatch evidence is a hard gate failure; never guess a history
+window. Use the \`gate-landed-work-package\` skill for read-back. A worker's
+\`Scope-omitted:\` trailer is audit prose only and cannot revise the frozen scope.
+
+Workers must never push, tag, amend, rebase, or reset, and must use only the
+app-bundled local Git. No remote is configured or required.`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V28.replace(
+  SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_OLD,
+  SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW,
+);
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
 
@@ -1638,9 +1660,22 @@ native file reads of the plan folder: \`.lares/plans/<folder>/plan.md\`, \`OVERV
 and relevant files under \`supplements/\`. Edit plan content only with native file
 edits (\`Edit\` / \`MultiEdit\`), never change a \`data-anchor\` value, and do not look
 for a plan-write or section/edit-window MCP tool; none exists.`;
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V14
+export const WORKER_CLAUDE_MD_V15 = WORKER_CLAUDE_MD_V14
   .replace(WORKER_CLAUDE_MD_V15_PLANNING_MARKER_OLD, WORKER_CLAUDE_MD_V15_PLANNING_MARKER_NEW)
   .replace(WORKER_CLAUDE_MD_V15_PLAN_STATE_OLD, WORKER_CLAUDE_MD_V15_PLAN_STATE_NEW);
+
+const WORKER_CLAUDE_MD_V16_LANDING_ANCHOR = '## Never use git to discard uncommitted work';
+const WORKER_CLAUDE_MD_V16_LANDING_SECTION = `## Landing a finished work package
+
+When the package is finished and verified, follow the \`land-work-package\` skill
+to create its one commit. Its temporary-index transaction and canonical
+\`Plan:\`, \`WP:\`, \`Verified:\`, and optional \`Scope-omitted:\` trailers are
+the commit contract; do not substitute an ordinary shared-index commit.
+`;
+export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V15.replace(
+  WORKER_CLAUDE_MD_V16_LANDING_ANCHOR,
+  `${WORKER_CLAUDE_MD_V16_LANDING_SECTION}\n${WORKER_CLAUDE_MD_V16_LANDING_ANCHOR}`,
+);
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
  *  to <workspace>/.lares/workers/claude/behavioral.md on first Claude worker
@@ -1833,6 +1868,13 @@ export const WORKER_CODEX_AGENTS_MD_V6 = WORKER_CLAUDE_MD_V13
 /** Worker planning-surface repair: frozen v7 Codex AGENTS.md, derived from the
  * frozen worker v14 body before the complete plans-read contract. */
 export const WORKER_CODEX_AGENTS_MD_V7 = WORKER_CLAUDE_MD_V14
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** Frozen v8 Codex worker instructions, derived from the frozen worker v15 body. */
+export const WORKER_CODEX_AGENTS_MD_V8 = WORKER_CLAUDE_MD_V15
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
@@ -8776,6 +8818,46 @@ export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS = PROPOSAL_TO_PLAN_SCRIPT
     '  inspect     --dir <plan-folder>',
     '  inspect     --dir <plan-folder> [--summary]',
   );
+
+// WP-2 (plan_d85b0a78) — supervisor read-back gate paired with land-work-package.
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL = `---
+name: gate-landed-work-package
+description: >-
+  Gate a dispatched work package against immutable dispatch evidence, canonical
+  commit trailers, and its frozen expected changed-path set.
+---
+
+# Gate a landed work package
+
+Use the dispatch record captured at launch. It must contain the full branch ref,
+dispatch-tip OID (\`DISPATCH_TIP\`), exact plan id, exact WP id, and frozen
+expected repo-relative path set. If any field is missing, hard-fail the gate.
+Never infer it from current state and never fall back to a recent-history window.
+
+1. Resolve the recorded full branch ref once and capture its commit as immutable
+   \`GATE_TIP\`. Do not use moving \`HEAD\` after this point.
+2. Run \`git merge-base --is-ancestor DISPATCH_TIP GATE_TIP\`. Reject if the
+   dispatch tip is not an ancestor.
+3. Enumerate every commit on the first-parent range
+   \`DISPATCH_TIP..GATE_TIP\`. Do not use \`git log -1\`, \`-n 200\`, or an
+   unbounded history query.
+4. For every candidate, read the complete message. Parse trailers with
+   \`git interpret-trailers --parse\` and separately count physical keys in the
+   full message. Reject malformed final trailer blocks, duplicate keys, folded
+   or multiline values, alternate capitalization, and unknown keys. Select only
+   commits with exactly one \`Plan\` and one \`WP\` whose values exactly equal
+   the dispatch record. Exactly one matching commit is required; zero or more
+   than one rejects the package.
+5. Require the match to have exactly one parent. Compare its complete changed-
+   path set relative to that parent, using
+   \`git diff-tree -r -z --no-renames <parent> <match>\`, with the frozen
+   expected path set. Comparison must remain NUL-safe. Missing expected paths and
+   unbriefed extra paths both reject.
+
+\`Scope-omitted\` is audit prose only. It may explain an exclusion already
+authorized in the frozen brief, but it cannot weaken or revise the expected set.
+If scope changes, revise and re-freeze the dispatch evidence before acceptance.
+`;
 
 // WP-1 (plan_d85b0a78) — new managed scaffold file (v1), so no prior hash.
 export const LAND_WORK_PACKAGE_SKILL_MD = `---
