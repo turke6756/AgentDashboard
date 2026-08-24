@@ -23,6 +23,91 @@ function row(
 }
 
 describe('Activity row copy', () => {
+  it('REACHABILITY:wp2-agent-picker-chips selects an agent and renders its removable chip', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const setAgentFilter = vi.fn(initial.setAgentFilter);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [{ id: 'agent-2', workspaceId: 'ws', title: 'Review worker' }] as any,
+      activityPage: null, activityScope: { grouping: 'time' }, activityLoading: true, activityError: null,
+      setAgentFilter, loadActivity: vi.fn(async () => undefined),
+    });
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const picker = container.querySelector('[aria-label="Filter activity by agent"]') as HTMLSelectElement;
+    expect(picker).not.toBeNull();
+    await act(async () => {
+      picker.value = 'agent-2';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(setAgentFilter).toHaveBeenCalledWith('agent-2');
+    expect(container.querySelector('[aria-label="Active activity filters"]')?.textContent).toContain('Agent: Review worker');
+    expect(container.querySelector('[aria-label="Remove agentId filter"]')).not.toBeNull();
+    act(() => root.unmount());
+  });
+
+  it('renders every incoming default filter as a removable chip and removal clears drill history', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const removeFilter = vi.fn(initial.removeFilter);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [], activityPage: null, activityLoading: true, activityError: null,
+      activityScope: { grouping: 'time', agentId: 'missing-agent', pathPrefix: 'src/main', planId: 'plan-1', planItemId: 'WP-2' },
+      activityScopeHistory: [{ grouping: 'plan' }], removeFilter, loadActivity: vi.fn(async () => undefined),
+    });
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const chips = container.querySelector('[aria-label="Active activity filters"]')!;
+    expect(chips.textContent).toContain('Agent: missing-agent');
+    expect(chips.textContent).toContain('Path: src/main');
+    expect(chips.textContent).toContain('Plan: plan-1');
+    expect(chips.textContent).toContain('Plan item: WP-2');
+    await act(async () => (container.querySelector('[aria-label="Remove pathPrefix filter"]') as HTMLButtonElement).click());
+    expect(removeFilter).toHaveBeenCalledWith('pathPrefix');
+    expect(useDashboardStore.getState().activityScope.pathPrefix).toBeUndefined();
+    expect(useDashboardStore.getState().activityScopeHistory).toEqual([]);
+    act(() => root.unmount());
+  });
+
+  it('clears multiple filters atomically through one clear action and one request pair', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const initial = useDashboardStore.getInitialState();
+    const digest = vi.fn(async () => ({
+      page: null, sinceCounts: null,
+      heartbeat: { serverState: 'live', observedAt: 1 },
+    }));
+    const list = vi.fn(async () => ({
+      workspaceId: 'ws', items: [], cursor: { snapshot: { throughTurnSeq: 0, throughFileActivityId: 0, capturedAt: 1 }, nextOlder: null },
+      pageCounts: { turnCount: 0, agentCount: 0, fileCount: 0, planCount: 0, commitCount: 0, noCheckpointCount: 0, blockedOverlapCount: { value: 0, status: 'complete' }, unavailableCount: { value: 0, status: 'complete' }, checkingCount: { value: 0, status: 'complete' } },
+      scans: { turns: { scanned: 0, emitted: 0, exhausted: true, limit: 50 }, fileActivities: { scanned: 0, emitted: 0, exhausted: true, limit: 200 } },
+    } as ActivityPage));
+    const markViewed = vi.fn(async () => ({ workspaceId: 'ws', turnSeq: 0, fileActivityId: 0, viewedAt: 1 }));
+    (window as any).api = { activity: { digest, list, markViewed } };
+    const clearActivityFilters = vi.fn(initial.clearActivityFilters);
+    const removeFilter = vi.fn(initial.removeFilter);
+    useDashboardStore.setState({
+      selectedWorkspaceId: 'ws', agents: [], activityPage: list.mock.results[0]?.value ?? null,
+      activityScope: { grouping: 'time', agentId: 'agent-1', planId: 'plan-1', pathPrefix: 'src' },
+      activityScopeHistory: [{ grouping: 'plan' }], activityLoading: true, activityError: null,
+      clearActivityFilters, removeFilter, loadActivity: initial.loadActivity,
+    } as any);
+    await act(async () => root.render(React.createElement(ActivityTab)));
+    const clearAll = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Clear all') as HTMLButtonElement;
+    expect(clearAll).not.toBeNull();
+    await act(async () => {
+      clearAll.click();
+      await vi.waitFor(() => expect(useDashboardStore.getState().activityLoading).toBe(false));
+    });
+    expect(clearActivityFilters).toHaveBeenCalledTimes(1);
+    expect(removeFilter).not.toHaveBeenCalled();
+    expect(digest).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(useDashboardStore.getState().activityScope).toEqual({ grouping: 'time' });
+    expect(useDashboardStore.getState().activityScopeHistory).toEqual([]);
+    act(() => root.unmount());
+  });
+
   it('uses the settled compact badge vocabulary', () => {
     expect(activityBadge(row('restorable'))).toBe('Restorable');
     expect(activityBadge(row('no-checkpoint'))).toBe('No restore point');

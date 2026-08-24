@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, X } from 'lucide-react';
-import type { ActivityItem, CheckpointTurnSummary, DayGroupRow as DayGroup, TurnActivityRow } from '../../../shared/types';
-import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore } from '../../stores/dashboard-store';
+import type { ActivityItem, Agent, CheckpointTurnSummary, DayGroupRow as DayGroup, TurnActivityRow } from '../../../shared/types';
+import { ACTIVITY_FILE_WINDOW_CAP, ACTIVITY_TURN_WINDOW_CAP, useDashboardStore, type ActivityScope } from '../../stores/dashboard-store';
 import RestoreDialog from '../checkpoints/RestoreDialog';
 import GitInitConsent from '../onboarding/GitInitConsent';
 
@@ -125,6 +125,45 @@ function LensSwitcher({ value, onChange }: { value: 'time' | 'file' | 'plan' | '
   </div>;
 }
 
+type ActivityFilterKey = 'agentId' | 'pathPrefix' | 'planId' | 'planItemId';
+
+function AgentPicker({ agents, value, onChange }: { agents: Agent[]; value?: string; onChange: (agentId?: string) => void }): React.ReactElement {
+  return <select
+    aria-label="Filter activity by agent"
+    className="rounded border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-gray-300"
+    value={value ?? ''}
+    onChange={(event) => onChange(event.target.value || undefined)}
+  >
+    <option value="">All agents</option>
+    {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.title || agent.id}</option>)}
+  </select>;
+}
+
+function FilterChips({ scope, agents, onRemove, onClear }: {
+  scope: ActivityScope;
+  agents: Agent[];
+  onRemove: (key: ActivityFilterKey) => void;
+  onClear: () => void;
+}): React.ReactElement | null {
+  const agentLabel = scope.agentId
+    ? agents.find((agent) => agent.id === scope.agentId)?.title || scope.agentId
+    : null;
+  const filters: Array<{ key: ActivityFilterKey; label: string }> = [
+    ...(scope.agentId ? [{ key: 'agentId' as const, label: `Agent: ${agentLabel}` }] : []),
+    ...(scope.pathPrefix ? [{ key: 'pathPrefix' as const, label: `Path: ${scope.pathPrefix}` }] : []),
+    ...(scope.planId ? [{ key: 'planId' as const, label: `Plan: ${scope.planId}` }] : []),
+    ...(scope.planItemId ? [{ key: 'planItemId' as const, label: `Plan item: ${scope.planItemId}` }] : []),
+  ];
+  if (filters.length === 0) return null;
+  return <div className="mb-4 flex flex-wrap items-center gap-2" aria-label="Active activity filters">
+    {filters.map((filter) => <span key={filter.key} className="inline-flex items-center gap-1 rounded-full bg-white/[0.06] px-2 py-1 text-[11px] text-gray-300">
+      {filter.label}
+      <button type="button" className="rounded text-gray-500 hover:text-gray-200" aria-label={`Remove ${filter.key} filter`} onClick={() => onRemove(filter.key)}><X className="h-3 w-3" /></button>
+    </span>)}
+    <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={onClear}>Clear all</button>
+  </div>;
+}
+
 export default function ActivityTab(): React.ReactElement {
   const workspaceId = useDashboardStore((state) => state.selectedWorkspaceId);
   const page = useDashboardStore((state) => state.activityPage);
@@ -137,6 +176,9 @@ export default function ActivityTab(): React.ReactElement {
   const loadActivity = useDashboardStore((state) => state.loadActivity);
   const loadOlderActivity = useDashboardStore((state) => state.loadOlderActivity);
   const setLens = useDashboardStore((state) => state.setLens);
+  const agents = useDashboardStore((state) => state.agents);
+  const setAgentFilter = useDashboardStore((state) => state.setAgentFilter);
+  const removeFilter = useDashboardStore((state) => state.removeFilter);
   const clearActivityFilters = useDashboardStore((state) => state.clearActivityFilters);
   const prerequisites = useDashboardStore((state) => state.prerequisites);
   const [undoDialog, setUndoDialog] = useState<{ row: TurnActivityRow; strategy: 'exact' | 'merge-undo' } | null>(null);
@@ -166,12 +208,11 @@ export default function ActivityTab(): React.ReactElement {
         <div className="flex items-center justify-between gap-3 mb-4">
           <div><h2 className="text-[16px] text-gray-100 font-semibold">While you were away</h2><p className="text-[11px] text-gray-500">Newest activity first</p></div>
           <div className="flex items-center gap-2">
+            <AgentPicker agents={agents} value={scope.agentId} onChange={setAgentFilter} />
             <LensSwitcher value={scope.grouping} onChange={setLens} />
-            {(scope.agentId || scope.planId || scope.planItemId || scope.pathPrefix) && (
-              <button type="button" className="ui-btn ui-btn-ghost text-[11px]" onClick={clearActivityFilters}><X className="w-3 h-3" /> Clear filter</button>
-            )}
           </div>
         </div>
+        <FilterChips scope={scope} agents={agents} onRemove={removeFilter} onClear={clearActivityFilters} />
         {gitCapability?.protectedRoot ? (
           <div className="ui-card mb-4 border-accent-orange/30 p-4" data-testid="checkpoints-protected-root">
             <h3 className="text-[13px] font-medium text-gray-200">Checkpoints are unavailable for this workspace</h3>
