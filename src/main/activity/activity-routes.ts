@@ -72,7 +72,7 @@ export interface ActivityRouteDeps {
     repoRoot: string,
   ) => Promise<WindowPathList>;
   listCommitLinks?: typeof listCommitLinksForTurns;
-  resolvePlanTitles?: (planIds: string[]) => ReadonlyMap<string, string | null>;
+  resolvePlanTitles?: (workspaceId: string, planIds: string[]) => ReadonlyMap<string, string | null>;
   resolveAgentTitles?: (agentIds: string[]) => ReadonlyMap<string, string | null>;
 }
 
@@ -237,7 +237,7 @@ export class ActivityRoutes {
         repoRoot: context.repoRoot,
         workspacePrefix: context.workspacePrefix,
         previews: completedPreviews,
-        planTitles: this.deps.resolvePlanTitles?.(distinctIds(
+        planTitles: this.deps.resolvePlanTitles?.(request.workspaceId, distinctIds(
           source.turns.rows.filter((row) => row.turnSeq > since.turnSeq).map((row) => row.planId),
         )),
         agentTitles: this.deps.resolveAgentTitles?.(distinctIds([
@@ -357,7 +357,10 @@ export class ActivityRoutes {
     }
 
     const render = (): ActivityPage => {
-      const planTitles = this.deps.resolvePlanTitles?.(distinctIds(source.turns.rows.map((row) => row.planId)));
+      const planTitles = this.deps.resolvePlanTitles?.(
+        request.workspaceId,
+        distinctIds(source.turns.rows.map((row) => row.planId)),
+      );
       const agentTitles = this.deps.resolveAgentTitles?.(distinctIds([
         ...source.turns.rows.map((row) => row.agentId),
         ...source.fileActivities.rows.map((row) => row.agentId),

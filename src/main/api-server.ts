@@ -551,10 +551,14 @@ export class ApiServer {
         if (!this.checkpointRoutes?.listWindowPaths) throw new Error('checkpoint-engine-unavailable');
         return this.checkpointRoutes.listWindowPaths(turnId, repoRoot);
       },
-      resolvePlanTitles: (planIds) => new Map(planIds.map((id) => {
-        const plan = getPlan(id) as (ReturnType<typeof getPlan> & { title?: string | null });
-        return [id, plan?.title ?? plan?.slug ?? null];
-      })),
+      resolvePlanTitles: (workspaceId, planIds) => {
+        const workspace = getWorkspace(workspaceId);
+        const promotedTitles = new Map((workspace
+          ? listPromotedPlanFolders(workspaceId, workspace.path, workspace.pathType).plans
+          : []
+        ).map((plan) => [plan.planId, plan.title]));
+        return new Map(planIds.map((id) => [id, promotedTitles.get(id) ?? getPlan(id)?.slug ?? null]));
+      },
       resolveAgentTitles: (agentIds) => new Map(agentIds.map((id) => [id, getAgent(id)?.title ?? null])),
     });
   }

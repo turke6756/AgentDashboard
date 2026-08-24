@@ -141,6 +141,7 @@ test('WP-9 default plan page gains the additive scope golden without ancillary',
 });
 
 test('WP-5 route projection resolves human-readable plan and missing agent titles', async () => {
+  let resolvedWorkspaceId: string | null = null;
   const sourceTurn = turn({
     agentTitle: null,
     planId: 'plan-serial',
@@ -149,13 +150,17 @@ test('WP-5 route projection resolves human-readable plan and missing agent title
   });
   const routes = makeRoutes({
     listTurns: () => sourcePage([sourceTurn], 7),
-    resolvePlanTitles: (ids) => new Map(ids.map((id) => [id, 'Activity lens UI'])),
+    resolvePlanTitles: (workspaceId, ids) => {
+      resolvedWorkspaceId = workspaceId;
+      return new Map(ids.map((id) => [id, 'Activity lens UI']));
+    },
     resolveAgentTitles: (ids) => new Map(ids.map((id) => [id, 'Activity worker'])),
   });
 
   const page = await routes.list({ workspaceId: 'ws', grouping: 'plan', preview: 'none' });
   const group = page.items.find((item) => item.kind === 'plan-group');
   assert.ok(group && group.kind === 'plan-group');
+  assert.equal(resolvedWorkspaceId, 'ws');
   assert.equal(group.planTitle, 'Activity lens UI');
   assert.equal(group.members[0]?.agentTitle, 'Activity worker');
 });
