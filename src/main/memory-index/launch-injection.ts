@@ -181,6 +181,7 @@ function degradedFinding(r: ReadValidateProjectResult): FindingInput {
 }
 
 const ADVISORY_KINDS = new Set(['cap-pressure', 'stale-active', 'condition-review']);
+const RECONCILED_EVIDENCE_KINDS = new Set(['never-recalled', 'never-fired', 'evidence-unavailable']);
 const ENTRY_VALIDATOR_KINDS = new Set([
   'disposal-missing', 'disposal-malformed', 'detail-missing', 'detail-escape',
   'detail-unreadable', 'duplicate-id', 'duplicate-field', 'unexpected-field',
@@ -220,9 +221,18 @@ function reconciliationKeepIds(
     } else if (finding.kind === 'projection-degraded') {
       mayClear = !launchCurrent.projection.degraded;
     } else if (ADVISORY_KINDS.has(finding.kind)) {
-      mayClear = finding.entryId === null
-        ? !evaluated.projection.blanked
-        : projected.has(finding.entryId);
+      const entryExists = finding.entryId !== null
+        && evaluated.parsed.entries.some((entry) => entry.id === finding.entryId);
+      mayClear = !evaluated.projection.blanked && (
+        finding.entryId === null
+        || !entryExists
+        || projected.has(finding.entryId)
+      );
+    } else if (RECONCILED_EVIDENCE_KINDS.has(finding.kind)) {
+      // reconcileMemoryEvidence upserts this pass's live rows before clearing,
+      // and its findingIds protect those rows. A usable evaluated projection
+      // therefore owns clearing only stale/superseded copies here.
+      mayClear = !evaluated.projection.blanked;
     } else if (ENTRY_VALIDATOR_KINDS.has(finding.kind) && finding.entryId) {
       const disposal = evaluated.disposal.get(finding.entryId);
       const entryExists = evaluated.parsed.entries.some((entry) => entry.id === finding.entryId);

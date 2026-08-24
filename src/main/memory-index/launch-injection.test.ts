@@ -215,6 +215,43 @@ test('a repeat launch does not duplicate review-queue rows', () => {
     'the aged active entry surfaced as a stale-active review finding');
 });
 
+test('a valid index clears an advisory for an entry deleted from the evaluated source', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const deleted = 'mb-2026-06-01-deleted-advisory';
+  const keep = 'mb-2026-07-28-current';
+  const [oldId] = store.upsertFindings(ws, [{
+    kind: 'stale-active',
+    entryId: deleted,
+    sourceHash: 'deleted-entry-hash',
+    reason: 'review whether this old entry is still current',
+  }], NOW);
+  writeIndex(memoryMd, idx(ACTIVE(keep)));
+  writeDetail(detailsDir, keep);
+
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  assert.equal(store.listFindings(ws).find((finding) => finding.findingId === oldId)?.status, 'cleared');
+});
+
+test('a changed valid source clears superseded evidence-unavailable and keeps the current finding pending', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const id = 'mb-2026-07-28-evidence-hash';
+  writeIndex(memoryMd, idx(ACTIVE(id)));
+  writeDetail(detailsDir, id);
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'valid');
+  const first = store.listFindings(ws, 'pending').find((finding) => finding.kind === 'evidence-unavailable');
+  assert.ok(first, 'first valid source produces evidence-unavailable');
+
+  writeIndex(memoryMd, idx(ACTIVE(id, { 'read-if': 'after the source hash changes' })));
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, '2026-07-29T00:00:00Z').outcome, 'valid');
+  const evidenceRows = store.listFindings(ws).filter((finding) => finding.kind === 'evidence-unavailable');
+  assert.equal(evidenceRows.length, 2, 'the changed source hash creates a distinct finding row');
+  assert.equal(evidenceRows.find((finding) => finding.findingId === first.findingId)?.status, 'cleared');
+  assert.equal(evidenceRows.find((finding) => finding.findingId !== first.findingId)?.status, 'pending',
+    'reconcileMemoryEvidence findingIds protect the current pass finding');
+});
+
 test('a valid launch CLEARS a previously-set last_runtime_error', () => {
   const ws = nextWs();
   const { root, detailsDir, memoryMd } = makeWorkspace();
@@ -422,6 +459,25 @@ test('preamble-only over-budget is budget-unrecoverable and takes banner-only, n
   assert.equal(r.injectText, inj.BANNER_ONLY);
   assert.ok(!store.listFindings(ws, 'pending').some((finding) => finding.kind === 'projection-degraded'),
     'a globally blanked projection is not labeled degraded');
+});
+
+test('a blanked projection keeps an advisory pending', () => {
+  const ws = nextWs();
+  const { root, detailsDir, memoryMd } = makeWorkspace();
+  const id = 'mb-2026-07-28-blanked-advisory';
+  const [findingId] = store.upsertFindings(ws, [{
+    kind: 'condition-review',
+    entryId: id,
+    sourceHash: 'blanked-entry-hash',
+    reason: 'review the condition',
+  }], NOW);
+  const source = `${MARKER}\n${'p'.repeat(26_000)}\n\n${ACTIVE(id)}\n`;
+  writeIndex(memoryMd, source);
+  writeDetail(detailsDir, id);
+  assert.ok(validateProjectSource(source, root, NOW).projection.blanked, 'fixture precondition: projection is blanked');
+
+  assert.equal(inj.computeSupervisorMemoryInjection(ws, root, NOW).outcome, 'banner-only');
+  assert.equal(store.listFindings(ws).find((finding) => finding.findingId === findingId)?.status, 'pending');
 });
 
 test('reconciliation does NOT run or clear against a structurally-invalid current parse', () => {
