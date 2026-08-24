@@ -245,9 +245,6 @@ function craftBeforeEdge(
   return commit;
 }
 
-function indexChecksum(repo: string): string {
-  return require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(repo, '.git', 'index'))).digest('hex');
-}
 function refsHeads(repo: string): string { return git(repo, ['for-each-ref', 'refs/heads']); }
 function porcelain(repo: string): string { return git(repo, ['status', '--porcelain=v2']); }
 function preOf(rs: FakeRecoveryStore, opId: string): PreIncludedPath[] {
@@ -270,7 +267,7 @@ function assertNoPre(repo: string, rs: FakeRecoveryStore, outcome: RestoreOutcom
 
 // ══ byte-exact restore + invariant #1 ═══════════════════════════════════════════
 
-test('scrambled file restored byte-exact; index checksum + HEAD + all branch refs unchanged; porcelain unchanged for unaffected paths', async () => {
+test('scrambled file restored byte-exact; no-byte HEAD result skips commit; unaffected paths stay dirty', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'a.txt'), 'orig-a\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'orig-b\n');
@@ -284,7 +281,6 @@ test('scrambled file restored byte-exact; index checksum + HEAD + all branch ref
   await captureAfter(repo, 'T', 'WS', s.svc);
 
   const headBefore = git(repo, ['rev-parse', 'HEAD']);
-  const idxBefore = indexChecksum(repo);
   const refsBefore = refsHeads(repo);
   const porcBBefore = porcelain(repo).split('\n').filter((l) => l.includes('b.txt')).join('\n');
 
@@ -298,9 +294,9 @@ test('scrambled file restored byte-exact; index checksum + HEAD + all branch ref
   assert.ok(res.preRef && res.preOid, 'A: a matching after-image permits restore and creates PRE');
   // Affected entry reflects restored bytes exactly (byte compare, not git restore).
   assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), Buffer.from('orig-a\n'));
-  // Invariant #1: HEAD / real index checksum / ALL branch refs untouched.
+  assert.deepEqual(res.rollbackCommit, { skipped: 'nothing-to-commit' });
+  // Restored bytes equal HEAD, so there is intentionally no empty rollback commit.
   assert.equal(git(repo, ['rev-parse', 'HEAD']), headBefore, 'HEAD unchanged');
-  assert.equal(indexChecksum(repo), idxBefore, 'real index checksum unchanged');
   assert.equal(refsHeads(repo), refsBefore, 'all refs/heads/* unchanged');
   // Porcelain for the UNAFFECTED b.txt is identical.
   const porcBAfter = porcelain(repo).split('\n').filter((l) => l.includes('b.txt')).join('\n');
@@ -657,6 +653,7 @@ test('restorePaths rejects a non-witnessed path visibly (no lock, no row)', asyn
   fs.writeFileSync(path.join(repo, 'a.txt'), 'v1\n');
   commitAll(repo);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
+  const headBefore = git(repo, ['rev-parse', 'HEAD']).trim();
   const res = await s.svc.restorePaths({
     turnId: 'T', requestedPaths: ['a.txt', 'never-witnessed.txt'], workspaceId: 'WS', actor: 'human-ipc', capability: capFor(repo),
   });
@@ -664,6 +661,97 @@ test('restorePaths rejects a non-witnessed path visibly (no lock, no row)', asyn
   assert.equal(res.failureReason, 'non-witnessed-paths');
   assert.deepEqual(res.rejectedPaths, ['never-witnessed.txt']);
   assert.equal(s.recoveryStore.rows.size, 0, 'no recovery row created for a rejected request');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), headBefore, 'refused restore writes no commit');
+});
+
+// ══ rollback commit history ═══════════════════════════════════════════════════
+
+test('successful exact revert writes one strict-pathspec commit with parseable trailers', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'modified.txt'), 'before\n');
+  commitAll(repo, 'base');
+  const turnId = '12345678-full-turn-id';
+  const operationId = 'rollback-operation-1';
+  const s = await setupBefore(repo, turnId, 'WS', [
+    { path: 'modified.txt', op: 'write' },
+    { path: 'created.txt', op: 'create' },
+  ]);
+  fs.writeFileSync(path.join(repo, 'modified.txt'), 'after\n');
+  fs.writeFileSync(path.join(repo, 'created.txt'), 'created\n');
+  await captureAfter(repo, turnId, 'WS', s.svc);
+  commitAll(repo, 'agent turn');
+  const countBefore = Number(git(repo, ['rev-list', '--count', 'HEAD']).trim());
+
+  const result = await s.svc.revertTurn({
+    turnId, workspaceId: 'WS', actor: 'human-ipc', operationId, capability: capFor(repo),
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(Number(git(repo, ['rev-list', '--count', 'HEAD']).trim()), countBefore + 1);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Reverts-Turn,valueonly)']).trim(), turnId);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Recovery-Operation,valueonly)']).trim(), operationId);
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Restore-Kind,valueonly)']).trim(), 'revert_turn');
+  assert.equal(git(repo, ['log', '-1', '--format=%(trailers:key=Actor,valueonly)']).trim(), 'human-ipc');
+  assert.deepEqual(
+    git(repo, ['show', '--format=', '--name-only', 'HEAD']).trim().split(/\r?\n/).sort(),
+    ['created.txt', 'modified.txt'],
+  );
+  const statPaths = git(repo, ['show', '--stat', '--format=', '--stat-width=1000', 'HEAD'])
+    .split(/\r?\n/)
+    .filter((line) => line.includes('|'))
+    .map((line) => line.split('|')[0].trim())
+    .sort();
+  assert.deepEqual(statPaths, ['created.txt', 'modified.txt']);
+  const rowResult = JSON.parse(String(s.recoveryStore.rows.get(operationId)!.result));
+  assert.deepEqual(rowResult.rollbackCommit, result.rollbackCommit);
+});
+
+test('rollback commit leaves a foreign dirty file unstaged and uncommitted', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'restored.txt'), 'before\n');
+  fs.writeFileSync(path.join(repo, 'foreign.txt'), 'clean\n');
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'foreign-turn', 'WS', [{ path: 'restored.txt', op: 'write' }]);
+  fs.writeFileSync(path.join(repo, 'restored.txt'), 'after\n');
+  await captureAfter(repo, 'foreign-turn', 'WS', s.svc);
+  commitAll(repo, 'agent turn');
+  fs.writeFileSync(path.join(repo, 'foreign.txt'), 'foreign dirty\n');
+
+  const result = await s.svc.restorePaths({
+    turnId: 'foreign-turn', requestedPaths: ['restored.txt'], workspaceId: 'WS',
+    actor: 'human-ipc', capability: capFor(repo),
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(git(repo, ['diff', '--cached', '--name-only']).trim(), '', 'foreign file is not staged');
+  assert.equal(git(repo, ['show', '--format=', '--name-only', 'HEAD']).trim(), 'restored.txt');
+  assert.match(git(repo, ['status', '--porcelain', '--', 'foreign.txt']), /^ M foreign\.txt/);
+  assert.equal(fs.readFileSync(path.join(repo, 'foreign.txt'), 'utf8'), 'foreign dirty\n');
+});
+
+test('successful restore with no byte change records a skipped rollback commit', async () => {
+  const repo = mkRepo();
+  fs.writeFileSync(path.join(repo, 'same.txt'), 'same\n');
+  commitAll(repo, 'base');
+  const s = await setupBefore(repo, 'same-turn', 'WS', [{ path: 'same.txt', op: 'write' }]);
+  await captureAfter(repo, 'same-turn', 'WS', s.svc);
+  const headBefore = git(repo, ['rev-parse', 'HEAD']).trim();
+
+  const result = await s.svc.restorePaths({
+    turnId: 'same-turn', requestedPaths: ['same.txt'], workspaceId: 'WS',
+    actor: 'human-ipc', capability: capFor(repo),
+  });
+  await s.svc.settleCleanups();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.rollbackCommit, { skipped: 'nothing-to-commit' });
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), headBefore);
+  const rowResult = JSON.parse(String(s.recoveryStore.rows.get(result.operationId)!.result));
+  assert.deepEqual(rowResult.rollbackCommit, { skipped: 'nothing-to-commit' });
 });
 
 // ══ revertTurn whole witnessed set ══════════════════════════════════════════════
@@ -1014,13 +1102,12 @@ test('open-turn contention is recomputed and refuses matching bytes before PRE',
   assert.deepEqual(fs.readFileSync(path.join(repo, 'a.txt')), Buffer.from('target-after\n'));
 });
 
-test('merge undo reaches runRestore before the exact after-snapshot gate and preserves distant staged work', async () => {
+test('merge undo reaches runRestore, preserves distant staged edits, and commits the merged path', async () => {
   const repo = mkRepo({ config: [['core.autocrlf', 'true']] });
   fs.writeFileSync(path.join(repo, '.gitattributes'), '*.txt text\n');
   const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
   fs.writeFileSync(path.join(repo, 'a.txt'), `${base.join('\n')}\n`);
   commitAll(repo, 'base');
-  const head = git(repo, ['rev-parse', 'HEAD']).trim();
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'a.txt', op: 'write' }]);
   const after = [...base];
   after[3] = 'turn-change';
@@ -1050,18 +1137,19 @@ test('merge undo reaches runRestore before the exact after-snapshot gate and pre
   assert.equal(worktree[3], base[3]);
   assert.equal(worktree[35], 'later-staged-change');
   assert.deepEqual(worktree, index, 'merge undo updates coherent index and worktree together');
-  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), head);
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), (result.rollbackCommit as { oid: string }).oid);
+  assert.equal(git(repo, ['show', '--format=', '--name-only', 'HEAD']).trim(), 'a.txt');
   const pre = s.recoveryStore.rows.get(result.operationId)!.preIncludedPaths as PreIncludedPath[];
   assert.equal(pre[0].indexState, 'present');
   assert.ok(pre[0].indexOid);
   assert.ok(pre[0].oid);
 });
 
-test('merge undo treats an untracked file as worktree-only and leaves it untracked', async () => {
+test('merge undo treats an untracked file as worktree-only during apply, then records it in the rollback commit', async () => {
   const repo = mkRepo();
   fs.writeFileSync(path.join(repo, 'keep.txt'), 'anchor\n');
   commitAll(repo, 'base'); // HEAD anchor; note.txt below is never staged
-  const head = git(repo, ['rev-parse', 'HEAD']).trim();
   const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
   fs.writeFileSync(path.join(repo, 'note.txt'), `${base.join('\n')}\n`);
   const s = await setupBefore(repo, 'T', 'WS', [{ path: 'note.txt', op: 'write' }]);
@@ -1090,9 +1178,9 @@ test('merge undo treats an untracked file as worktree-only and leaves it untrack
   const worktree = fs.readFileSync(path.join(repo, 'note.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
   assert.equal(worktree[3], base[3], 'turn edit reverted in worktree');
   assert.equal(worktree[35], 'later-untracked-change', 'later untracked edit preserved');
-  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), '', 'file remains untracked: no index entry written');
-  assert.match(git(repo, ['status', '--porcelain', '--', 'note.txt']), /^\?\? note\.txt/, 'still reported as untracked');
-  assert.equal(git(repo, ['rev-parse', 'HEAD']).trim(), head);
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), 'note.txt', 'rollback commit records the completed path');
+  assert.equal(git(repo, ['status', '--porcelain', '--', 'note.txt']).trim(), '', 'committed path is clean');
 });
 
 test('merge undo refuses a conflicting untracked file and mutates nothing', async () => {
@@ -1128,7 +1216,7 @@ test('merge undo refuses a conflicting untracked file and mutates nothing', asyn
   assertNoPre(repo, s.recoveryStore, result);
 });
 
-test('merge undo mixed selection updates the index only for the tracked path', async () => {
+test('merge undo mixed selection applies index semantics, then commits both completed paths', async () => {
   const repo = mkRepo();
   const base = Array.from({ length: 40 }, (_, i) => `line-${i + 1}`);
   fs.writeFileSync(path.join(repo, 'tracked.txt'), `${base.join('\n')}\n`);
@@ -1170,7 +1258,12 @@ test('merge undo mixed selection updates the index only for the tracked path', a
   const noteWorktree = fs.readFileSync(path.join(repo, 'note.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd().split('\n');
   assert.equal(noteWorktree[3], base[3]);
   assert.equal(noteWorktree[35], 'later-change');
-  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), '', 'untracked path never entered the index');
+  assert.ok(result.rollbackCommit && 'oid' in result.rollbackCommit);
+  assert.equal(git(repo, ['ls-files', '--', 'note.txt']).trim(), 'note.txt', 'rollback commit records the completed path');
+  assert.deepEqual(
+    git(repo, ['show', '--format=', '--name-only', 'HEAD']).trim().split(/\r?\n/).sort(),
+    ['note.txt', 'tracked.txt'],
+  );
 });
 
 test('merge undo refuses index/worktree divergence before PRE or mutation', async () => {

@@ -410,6 +410,7 @@ export interface CaptureBoundaryResult {
 // ── the zero OID (delete form) ──────────────────────────────────────────────────
 
 const SHA1_ZERO = '0'.repeat(40);
+const OID_RE = /^[0-9a-f]{40,64}$/;
 
 /** ~30 000 chars — a conservative bound well under the Windows CreateProcess
  *  command-line limit (32 767 UTF-16 units) once the exe + fixed flags are counted. */
@@ -1838,11 +1839,14 @@ export class CheckpointService {
         }
       }
       const status: RestoreOutcome['status'] = failures.length === 0 ? 'completed' : 'partial';
+      const rollbackCommit = completed.length > 0
+        ? await this.writeRollbackCommit(repoRoot, args.turnId, operationId, kind, args.actor, completed)
+        : undefined;
       this.recoveryStore.updateRecoveryOperation(operationId, {
         status,
         completedPaths: completed,
         failureReason: failures.length > 0 ? failures.map((entry) => `${entry.path}:${entry.reason}`).join('; ') : null,
-        result: JSON.stringify({ completed, failures }),
+        result: JSON.stringify({ completed, failures, ...(rollbackCommit ? { rollbackCommit } : {}) }),
         endedAt: this.now(),
       });
       return {
@@ -1857,6 +1861,7 @@ export class CheckpointService {
         failures,
         contention,
         failureReason: null,
+        ...(rollbackCommit ? { rollbackCommit } : {}),
       };
     }
 
@@ -1990,11 +1995,14 @@ export class CheckpointService {
     }
 
     const status: RestoreOutcome['status'] = failures.length === 0 ? 'completed' : 'partial';
+    const rollbackCommit = completed.length > 0
+      ? await this.writeRollbackCommit(repoRoot, args.turnId, operationId, kind, args.actor, completed)
+      : undefined;
     this.recoveryStore.updateRecoveryOperation(operationId, {
       status,
       completedPaths: completed,
       failureReason: failures.length > 0 ? failures.map((f) => `${f.path}:${f.reason}`).join('; ') : null,
-      result: JSON.stringify({ completed, failures }),
+      result: JSON.stringify({ completed, failures, ...(rollbackCommit ? { rollbackCommit } : {}) }),
       endedAt: this.now(),
     });
 
@@ -2010,7 +2018,58 @@ export class CheckpointService {
       failures,
       contention,
       failureReason: null,
+      ...(rollbackCommit ? { rollbackCommit } : {}),
     };
+  }
+
+  /** Record a successful restore as one ordinary commit while preserving unrelated
+   *  staged/dirty work. The caller already holds the repository queue lock. A commit
+   *  failure is diagnostic only: restored worktree bytes remain the operation truth. */
+  private async writeRollbackCommit(
+    repoRoot: string,
+    turnId: string,
+    operationId: string,
+    kind: RestoreOutcome['kind'],
+    actor: string,
+    completedPaths: readonly string[],
+  ): Promise<RollbackCommitResult> {
+    const paths = dedupe([...completedPaths]);
+    try {
+      const present: string[] = [];
+      const absent: string[] = [];
+      for (const p of paths) {
+        (this.lstatAbs(this.abs(this.canonicalRoot(repoRoot), p)) ? present : absent).push(p);
+      }
+      if (present.length > 0) await this.git(repoRoot, ['add', '--', ...present]);
+      if (absent.length > 0) {
+        await this.git(repoRoot, ['rm', '--cached', '--ignore-unmatch', '--', ...absent]);
+      }
+
+      const changed = await this.git(repoRoot, ['diff', '--cached', '--quiet', '--', ...paths], {
+        allowNonzero: true,
+      });
+      if (changed.code === 0) return { skipped: 'nothing-to-commit' };
+      if (changed.code !== 1) return { skipped: `diff-check-failed:${changed.code}` };
+
+      const subject = `[lares] revert: turn ${turnId.slice(0, 8)} (${kind})`;
+      const body = [
+        'Restored paths:',
+        ...paths.map((p) => `- ${p}`),
+        '',
+        `Reverts-Turn: ${turnId}`,
+        `Recovery-Operation: ${operationId}`,
+        `Restore-Kind: ${kind}`,
+        `Actor: ${actor}`,
+      ].join('\n');
+      await this.git(repoRoot, [
+        ...this.longpaths(), '-c', 'commit.gpgsign=false',
+        'commit', '--no-verify', '-m', subject, '-m', body, '--', ...paths,
+      ], { mode: 'commit', timeoutMs: 60_000 });
+      const oid = (await this.git(repoRoot, ['rev-parse', '--verify', 'HEAD'])).stdout.trim();
+      return OID_RE.test(oid) ? { oid } : { skipped: 'commit-oid-invalid' };
+    } catch (err) {
+      return { skipped: describeError(err) };
+    }
   }
 
   /** Same-path write/create witnesses from other currently-open turns. */
@@ -2594,7 +2653,11 @@ export interface RestoreOutcome {
   overlap?: AfterSnapshotOverlap;
   /** Op-level failure reason (classification / before-edge / pre-snapshot). */
   failureReason: string | null;
+  /** Best-effort history record for a successful non-empty restore. */
+  rollbackCommit?: RollbackCommitResult;
 }
+
+export type RollbackCommitResult = { oid: string } | { skipped: string };
 
 // ── internals ────────────────────────────────────────────────────────────────
 
