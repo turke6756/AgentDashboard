@@ -9120,7 +9120,7 @@ BOM or line-ending churn before installing its exact mode with \`update-index
 
 // WP-1c (plan_d85b0a78) — byte-safe shared-file reconstruction and concrete
 // line-ending/BOM rejection gates. Derived from the frozen v2 managed body.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V2
+export const LAND_WORK_PACKAGE_SKILL_MD_V3 = LAND_WORK_PACKAGE_SKILL_MD_V2
   .replace(
     `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
    plus only owned hunks. Write the scratch post-image as raw bytes with no CRLF
@@ -9173,4 +9173,94 @@ export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V2
      line-for-line; any mismatch aborts before the update-ref CAS;
    - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
      set exactly equal to the frozen set; and`,
+  );
+
+// WP-1d (plan_d85b0a78) — host-neutral byte preservation, exact numstat-pair
+// gates, and commit-wide CRLF/BOM rejection. Derived from the frozen v3 body.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V3
+  .replace(
+    `4. For a shared file, start from the repository blob bytes, NEVER from the
+   worktree file: reconstruct the exact owned post-image from
+   \`git cat-file blob BASE:<path>\` plus only owned hunks. Preserve those raw
+   bytes, for example with \`git cat-file blob BASE:<path> > <file>\` under Git
+   Bash or PowerShell \`[IO.File]::WriteAllBytes\` after \`git cat-file --batch\`.
+   This checkout uses \`core.autocrlf=true\`: worktree files are CRLF while
+   repository blobs are LF, so a worktree-derived post-image re-encodes every
+   line. Never use \`Set-Content\`, \`Out-File\`, or text redirection in
+   PowerShell. Hash the finished raw-byte post-image with \`git hash-object -w\`.
+
+   Before \`git update-index --cacheinfo\` installs the new blob, state the
+   expected added and deleted line counts for the worker's intended hunks. Run
+   \`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+   \`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\`.
+   The outputs MUST be identical, and added plus deleted MUST equal the stated
+   intended hunk line count. Also inspect the blob prefix and reject a new UTF-8
+   BOM (bytes \`EF BB BF\`) when the base blob did not have one. Any mismatch
+   means abort: do not install the blob and do not commit. Preserve the base
+   mode and install only a blob that passes every gate with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+    `4. For a shared file, start from the repository blob bytes, NEVER from the
+   worktree file: reconstruct the exact owned post-image from
+   \`git cat-file blob BASE:<path>\` plus only owned hunks. The worktree MAY
+   differ from repository blob bytes because of \`core.autocrlf\` or
+   \`.gitattributes\`; preserve the \`cat-file\` bytes exactly and never normalize
+   line endings in either direction. Use byte-oriented writes such as
+   \`[IO.File]::WriteAllBytes\`; never use \`Set-Content\`, \`Out-File\`, or text
+   redirection in PowerShell. Hash the finished raw-byte post-image with
+   \`git hash-object -w\`.
+
+   Before running the diff, state the expected numstat pair (added, deleted) for
+   the edit. A one-line substitution is \`1\\t1\`. Run
+   \`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+   \`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\`.
+   The two numstat outputs MUST be byte-identical, and their added/deleted
+   columns MUST equal the pre-stated pair. Numstat equality does NOT catch a new
+   BOM: inspect the blob prefix as the only BOM guard, and reject leading bytes
+   \`EF BB BF\` when the base blob had none. Any mismatch means abort: do not
+   install the blob and do not commit. Preserve the base mode and install only a
+   blob that passes every gate with \`git update-index --cacheinfo
+   <mode>,<oid>,<path>\`. If reconstruction is uncertain, stop. For explicit
+   deletions use \`git update-index --force-remove -- <path>\` and expect absence
+   even when the worktree file is still present.
+
+   The step-7 diff-tree check is commit-wide. A path staged with plain \`git add\`
+   in step 3 can still abort the CAS when its repository blob stores CRLF but
+   \`autocrlf\` re-encodes it as LF. Whole-file owners of CRLF-stored blobs MUST
+   use this same prepared-blob and \`update-index --cacheinfo\` path.`,
+  )
+  .replace(
+    `   - \`git diff-tree -r --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     line-for-line; any mismatch aborts before the update-ref CAS;`,
+    `   - \`git diff-tree -r --no-renames --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     byte-for-byte; any mismatch aborts before the update-ref CAS;`,
+  )
+  .replace(
+    `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Reconstruct \`BASE:path\` in a
+scratch artifact, replay only owned literal old-to-new replacements, assert each
+old block matches exactly once, and select hunks by distinctive content rather
+than shifting line numbers. The write side is byte-oriented: use
+\`[IO.File]::WriteAllBytes\` (or Git Bash \`git cat-file blob <oid> > <file>\`),
+never \`Set-Content\`, \`Out-File\`, or text redirection. Hash the file by path or
+with \`hash-object -w --stdin\`, then diff the base and new blob OIDs to reject
+BOM or line-ending churn before installing its exact mode with \`update-index
+--cacheinfo\`.`,
+    `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Start the post-image from
+\`git cat-file blob BASE:<path>\` bytes, NEVER from worktree bytes, replay only
+owned literal old-to-new replacements, and assert each old block matches exactly
+once. Preserve the base bytes exactly and use byte-oriented writes such as
+\`[IO.File]::WriteAllBytes\`; never normalize line endings in either direction.
+Before installing the prepared blob, apply the same step-4 gates: pre-state the
+expected (added, deleted) pair; require \`git diff --numstat
+<BASE_BLOB_OID> <NEW_BLOB_OID>\` and \`git diff --ignore-cr-at-eol --numstat
+<BASE_BLOB_OID> <NEW_BLOB_OID>\` to be byte-identical with added/deleted columns
+equal to that pair; and inspect the prefix as the only BOM guard, rejecting
+leading \`EF BB BF\` when the base blob had none. Install its exact mode only
+after every gate passes, using \`git update-index --cacheinfo\`.`,
   );
