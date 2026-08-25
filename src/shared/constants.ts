@@ -9267,7 +9267,7 @@ after every gate passes, using \`git update-index --cacheinfo\`.`,
 
 // WP-1e (plan_d85b0a78) — byte-level EOL/BOM gates and filtered-path routing.
 // Derived from the frozen v4 managed body.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V4
+export const LAND_WORK_PACKAGE_SKILL_MD_V5 = LAND_WORK_PACKAGE_SKILL_MD_V4
   .replace(
     `3. For whole-file owned paths use \`git add -- <exact paths>\` only inside the
    temporary index. It preserves modes and handles additions/deletions.`,
@@ -9407,4 +9407,169 @@ Compare each three-byte prefix with
 MUST be unchanged between base and new blob. Any BOM mismatch MUST abort. Only
 after every gate passes may the exact base mode be installed with
 \`git update-index --cacheinfo <mode>,<oid>,<path>\`.`,
+  );
+
+// WP-1f (plan_d85b0a78) — declared mode/blob manifest and byte-exact landing
+// gate. Derived from the frozen v5 managed body.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V5
+  .replace(
+    `3. For whole-file owned paths, plain \`git add -- <exact paths>\` is allowed
+   only inside the temporary index and only when an existing text path's
+   worktree bytes outside the owned hunks equal the bytes from
+   \`git cat-file blob BASE:<path>\`. Prove that with a byte comparison: extract
+   the base blob, remove the same owned byte ranges from base and worktree
+   copies, then require Git Bash \`cmp -s <base-outside-owned>
+   <worktree-outside-owned>\` or PowerShell
+   \`[Linq.Enumerable]::SequenceEqual(<base-bytes>, <worktree-bytes>)\` to
+   succeed. If bytes outside the owned hunks differ, the path is subject to
+   filtering and MUST use the step-4 prepared-blob plus
+   \`git update-index --cacheinfo\` path; any comparison failure MUST abort.
+   This includes CRLF-stored blobs whose worktree bytes are filtered by
+   \`core.autocrlf\`. Plain \`git add\` is permitted only after the outside-hunk
+   byte comparison passes. Additions and deletions still preserve their exact
+   intended modes through the temporary index.`,
+    `Before step 3, declare a manifest for EVERY path in the frozen set in the
+turn record or commit-time notes. Each line is exactly \`<path> <mode> <expected
+post-image blob OID>\`, or \`<path> ABSENT\` for a deletion. Build each expected
+post-image from raw \`git cat-file blob BASE:<path>\` bytes plus only owned hunks,
+or from the worker-controlled raw bytes for a genuinely new file, then run
+\`git hash-object -w <raw-post-image>\`. Whole-file owners and new files are not
+exempt. Declare a rename as an ABSENT old path plus a new path with mode and OID.
+If any path, mode, or expected OID is uncertain, MUST abort before index mutation.
+
+3. Install EVERY declared present path only with \`git update-index --cacheinfo
+   <mode>,<oid>,<path>\`. Install EVERY declared deletion only with
+   \`git update-index --force-remove -- <path>\`. Plain \`git add\` is REMOVED
+   from this recipe because clean filters may rewrite even a whole-file owner's
+   bytes. The declared manifest, not worktree content, is staging authority.`,
+  )
+  .replace(
+    `4. For a shared or filtered existing text file, start from repository blob
+   bytes, NEVER from the worktree file: reconstruct the exact owned post-image
+   from \`git cat-file blob BASE:<path>\` plus only owned hunks. The worktree MAY
+   differ because of \`core.autocrlf\` or \`.gitattributes\`; preserve the
+   \`cat-file\` bytes exactly. Use byte-oriented writes such as
+   \`[IO.File]::WriteAllBytes\`; never use \`Set-Content\`, \`Out-File\`, or text
+   redirection in PowerShell. Hash the raw-byte post-image with
+   \`git hash-object -w\`.
+
+   Before running the diff, pre-state the expected numstat pair (added, deleted)
+   and the expected CR count. A one-line substitution is \`1\\t1\`. Run exactly
+   \`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+   \`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\`.
+   The two outputs MUST be byte-identical and their columns MUST equal the
+   pre-stated pair. This equality does NOT detect line-ending churn on lines
+   edited anyway, and it does NOT detect a BOM.
+
+   Add a byte-level EOL gate. Count CR bytes in each blob with Git Bash
+   \`git cat-file blob <oid> | tr -cd '\\r' | wc -c\`, or count byte \`0x0D\`
+   in PowerShell after \`git cat-file --batch\`. Pre-state
+   \`EXPECTED_CR = BASE_CR + ADDED_HUNK_CR - DELETED_HUNK_CR\`, where the hunk
+   terms are CR bytes in the exact intended added and deleted line slices. If
+   \`BASE_CR\` is zero, \`NEW_CR\` MUST be zero. Otherwise the new CR count MUST
+   equal the pre-stated expected CR count. Any CR mismatch MUST abort.
+
+   Inspect each prefix with \`git cat-file blob <oid> | head -c 3 | xxd -p\`
+   (or compare the first three PowerShell bytes) for \`EF BB BF\`. BOM presence
+   MUST be unchanged between base and new blob. Any BOM mismatch MUST abort.
+   Do not install or commit after any gate failure. Preserve the base mode and
+   install only a blob that passes every gate with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+    `4. For every modified existing path, construct the declared post-image from
+   repository blob bytes, NEVER from worktree bytes. In Git Bash run
+   \`git cat-file blob BASE:<path> > <raw-post-image>\` (the redirect MUST occur
+   inside Git Bash), replay only owned hunks, then run \`git hash-object -w
+   <raw-post-image>\`. Alternatively, after the Git Bash extraction, use
+   \`[IO.File]::ReadAllBytes\` and \`[IO.File]::WriteAllBytes\` on that file.
+   PowerShell capture or redirection of native \`git cat-file\` stdout is
+   forbidden: PowerShell 5.1 string-converts native output and drops CR bytes.
+   Never use native Git batch-mode output through PowerShell, \`Set-Content\`, or
+   \`Out-File\` for blob bytes. The resulting OID MUST equal the manifest OID.
+
+   As construction-time sanity checks, pre-state the expected numstat pair
+   (added, deleted) and expected CR count. Run exactly \`git diff --numstat
+   <BASE_BLOB_OID> <NEW_BLOB_OID>\` and \`git diff --ignore-cr-at-eol --numstat
+   <BASE_BLOB_OID> <NEW_BLOB_OID>\`; the outputs MUST be byte-identical and their
+   columns MUST equal the pre-stated pair. Count CR bytes only in Git Bash with
+   \`git cat-file blob <oid> | tr -cd '\\r' | wc -c\` and require
+   \`EXPECTED_CR = BASE_CR + ADDED_HUNK_CR - DELETED_HUNK_CR\`. Inspect prefixes
+   with \`git cat-file blob <oid> | head -c 3 | xxd -p\` for \`EF BB BF\`; BOM
+   presence MUST be unchanged. Any mismatch MUST abort construction.
+
+   These numstat, CR-count, and BOM checks are advisory sanity checks on the way
+   to the declared OID. They are not landing gates and cannot prove byte equality.
+   Only the declared mode/OID manifest is the landing gate.`,
+  )
+  .replace(
+    `   - \`git diff-tree -r --no-renames --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     byte-for-byte; any mismatch MUST abort before the update-ref CAS;
+   - run \`git diff-tree -r --no-renames --name-status BASE CANDIDATE\` and, for
+     EVERY \`M\` entry, resolve both blob OIDs with \`git rev-parse
+     BASE:<path>\` and \`git rev-parse CANDIDATE:<path>\` (or \`git ls-tree\`).
+     Before checking, pre-state the intended hunk numstat and
+     \`EXPECTED_CR = BASE_CR + ADDED_HUNK_CR - DELETED_HUNK_CR\` for each path.
+     Count CR bytes with \`git cat-file blob <oid> | tr -cd '\\r' | wc -c\`.
+     For an LF-only base, candidate CR count MUST be zero; otherwise the new CR
+     count MUST equal the pre-stated expected CR count. Compare each prefix with
+     \`git cat-file blob <oid> | head -c 3 | xxd -p\` for \`EF BB BF\`; BOM
+     presence MUST be unchanged between base and candidate blob. This applies
+     to all modified existing text paths, not only shared paths. Any CR or BOM
+     mismatch MUST abort before the update-ref CAS;`,
+    `   - \`git diff-tree -r --no-renames --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     byte-for-byte as an additional check; any mismatch MUST abort before the
+     update-ref CAS;
+   - \`git diff-tree -r --no-renames --name-only BASE CANDIDATE\` MUST yield
+     exactly the frozen set, using NUL-safe comparison where paths are consumed;
+     any missing or extra path MUST abort before the update-ref CAS; and
+   - \`git ls-tree -r -z CANDIDATE -- <every frozen path>\` MUST produce exactly
+     the declared manifest: the declared mode and OID for every present path and
+     no entry for every \`ABSENT\` path. Parse and compare the NUL-delimited output;
+     any mismatch MUST abort before the update-ref CAS. Because every declared
+     OID was computed from raw bytes the worker controls, an OID match proves
+     byte-exact content. No CR-count, BOM, or numstat heuristic can substitute,
+     and none is needed for \`A\` or \`D\` entries;`,
+  )
+  .replace(
+    `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared or filtered text file. Start the post-image
+from \`git cat-file blob BASE:<path>\` bytes, NEVER from worktree bytes, replay
+only owned literal old-to-new replacements, and assert each old block matches
+exactly once. Preserve base bytes and use byte-oriented writes such as
+\`[IO.File]::WriteAllBytes\`; never normalize line endings in either direction.
+
+Before installing the prepared blob, pre-state the expected numstat pair and
+\`EXPECTED_CR = BASE_CR + ADDED_HUNK_CR - DELETED_HUNK_CR\`. Require exactly
+\`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+\`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` to be
+byte-identical with columns equal to the pre-stated pair. Numstat equality does
+NOT detect line-ending churn on edited lines and does NOT detect a BOM. Count CR
+bytes with \`git cat-file blob <oid> | tr -cd '\\r' | wc -c\`: when
+\`BASE_CR\` is zero, \`NEW_CR\` MUST be zero; otherwise the new CR count MUST
+equal the pre-stated expected CR count. Any CR mismatch MUST abort.
+
+Compare each three-byte prefix with
+\`git cat-file blob <oid> | head -c 3 | xxd -p\` for \`EF BB BF\`. BOM presence
+MUST be unchanged between base and new blob. Any BOM mismatch MUST abort. Only
+after every gate passes may the exact base mode be installed with
+\`git update-index --cacheinfo <mode>,<oid>,<path>\`.`,
+    `On Windows, declare \`<path> <mode> <expected post-image blob OID>\` or
+\`<path> ABSENT\` for EVERY frozen path before staging. Read a base blob only by
+running \`git cat-file blob BASE:<path> > <raw-post-image>\` with the redirect
+inside Git Bash. PowerShell 5.1 capture or redirection of native Git stdout, and
+PowerShell native Git batch-mode output are forbidden because string conversion can
+drop CR bytes. \`[IO.File]::ReadAllBytes\` is byte-accurate only after that Git
+Bash extraction. Replay only owned byte changes, assert each old block matches
+exactly once, and hash with \`git hash-object -w <raw-post-image>\`.
+
+The resulting OID MUST equal the declared OID. Install present entries only with
+\`git update-index --cacheinfo <mode>,<oid>,<path>\` and deletions only with
+\`git update-index --force-remove -- <path>\`. Plain \`git add\` is not an install
+command in this recipe. Before CAS, \`git ls-tree -r -z CANDIDATE -- <every
+frozen path>\` MUST match the declared mode/OID/ABSENT manifest exactly; mismatch
+MUST abort. The OID comparison is the byte-exact landing gate.`,
   );
