@@ -6225,6 +6225,9 @@ test('wp2b-gate-landed-work-package-v2-upgrade', () => {
     },
   ];
 
+  assert.match(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, /git rev-list --first-parent/);
+  assert.notEqual(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1);
+
   for (const entry of cases) {
     const managed = entry.map[entry.rel];
     assert.equal(managed.previousHashes?.[1], sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1));
@@ -6241,7 +6244,9 @@ test('wp2b-gate-landed-work-package-v2-upgrade', () => {
 
       supervisor.ensureSupervisorScaffold(workDir, 'windows');
 
-      assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL);
+      const upgraded = fs.readFileSync(skillPath, 'utf-8');
+      assert.equal(upgraded, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL);
+      assert.match(upgraded, /git rev-list --first-parent/);
       assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
       assert.equal(readSidecar(workDir)[entry.key], 2);
     } finally {
