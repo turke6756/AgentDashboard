@@ -32,6 +32,7 @@ import {
   LAND_WORK_PACKAGE_SKILL_MD_V1,
   LAND_WORK_PACKAGE_SKILL_MD_V2,
   LAND_WORK_PACKAGE_SKILL_MD_V3,
+  LAND_WORK_PACKAGE_SKILL_MD_V4,
 } from '../../shared/constants';
 import {
   AGY_STATUS_HOOK_NAME,
@@ -886,13 +887,15 @@ test('wp1-land-work-package-both-lanes', () => {
   const marker = 'REACHABILITY:wp1-land-work-package-both-lanes';
   try {
     // Frozen SHA-256 values computed from the dispatch-tip runtime bodies before
-    // WP-1d edited the file; these guard every deployed historical body.
+    // WP-1e edited the file; these guard every deployed historical body.
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V1).digest('hex'),
       'c6b725d512a160d0644b6656e6a4b8c22abc5c36d27ebcc2e59a5decfa36b99c');
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V2).digest('hex'),
       'd97b84d641560574b2f9678b22a24c2b650ac17559fa2cb62c1d68be0941deb8');
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V3).digest('hex'),
       'daaf43602edd1eb682fbf7744a326fb9f56dca548b863a7b0625aa420e70cf5f');
+    assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V4).digest('hex'),
+      'd04568a13e8e548503edca3a605afeb4ff633c7225e78aff736fc4d1d0ace756');
 
     const v3ReplacementLiterals = [
       `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
@@ -960,8 +963,63 @@ BOM or line-ending churn before installing its exact mode with \`update-index
     for (const [index, literal] of v4ReplacementLiterals.entries()) {
       assert.equal(LAND_WORK_PACKAGE_SKILL_MD_V3.split(literal).length - 1, 1,
         `${marker}: v4 replacement literal ${index + 1} must match v3 exactly once`);
-      assert.equal(LAND_WORK_PACKAGE_SKILL_MD.split(literal).length - 1, 0,
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD_V4.split(literal).length - 1, 0,
         `${marker}: v4 replacement literal ${index + 1} must be absent from v4`);
+    }
+
+    const v5ReplacementLiterals = [
+      `3. For whole-file owned paths use \`git add -- <exact paths>\` only inside the
+   temporary index. It preserves modes and handles additions/deletions.`,
+      `4. For a shared file, start from the repository blob bytes, NEVER from the
+   worktree file: reconstruct the exact owned post-image from
+   \`git cat-file blob BASE:<path>\` plus only owned hunks. The worktree MAY
+   differ from repository blob bytes because of \`core.autocrlf\` or
+   \`.gitattributes\`; preserve the \`cat-file\` bytes exactly and never normalize
+   line endings in either direction. Use byte-oriented writes such as
+   \`[IO.File]::WriteAllBytes\`; never use \`Set-Content\`, \`Out-File\`, or text
+   redirection in PowerShell. Hash the finished raw-byte post-image with
+   \`git hash-object -w\`.
+
+   Before running the diff, state the expected numstat pair (added, deleted) for
+   the edit. A one-line substitution is \`1\\t1\`. Run
+   \`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+   \`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\`.
+   The two numstat outputs MUST be byte-identical, and their added/deleted
+   columns MUST equal the pre-stated pair. Numstat equality does NOT catch a new
+   BOM: inspect the blob prefix as the only BOM guard, and reject leading bytes
+   \`EF BB BF\` when the base blob had none. Any mismatch means abort: do not
+   install the blob and do not commit. Preserve the base mode and install only a
+   blob that passes every gate with \`git update-index --cacheinfo
+   <mode>,<oid>,<path>\`. If reconstruction is uncertain, stop. For explicit
+   deletions use \`git update-index --force-remove -- <path>\` and expect absence
+   even when the worktree file is still present.
+
+   The step-7 diff-tree check is commit-wide. A path staged with plain \`git add\`
+   in step 3 can still abort the CAS when its repository blob stores CRLF but
+   \`autocrlf\` re-encodes it as LF. Whole-file owners of CRLF-stored blobs MUST
+   use this same prepared-blob and \`update-index --cacheinfo\` path.`,
+      `   - \`git diff-tree -r --no-renames --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     byte-for-byte; any mismatch aborts before the update-ref CAS;`,
+      `On Windows, do not depend on interactive \`git add -p\` or filtered
+\`git apply --cached\` for a shared CRLF file. Start the post-image from
+\`git cat-file blob BASE:<path>\` bytes, NEVER from worktree bytes, replay only
+owned literal old-to-new replacements, and assert each old block matches exactly
+once. Preserve the base bytes exactly and use byte-oriented writes such as
+\`[IO.File]::WriteAllBytes\`; never normalize line endings in either direction.
+Before installing the prepared blob, apply the same step-4 gates: pre-state the
+expected (added, deleted) pair; require \`git diff --numstat
+<BASE_BLOB_OID> <NEW_BLOB_OID>\` and \`git diff --ignore-cr-at-eol --numstat
+<BASE_BLOB_OID> <NEW_BLOB_OID>\` to be byte-identical with added/deleted columns
+equal to that pair; and inspect the prefix as the only BOM guard, rejecting
+leading \`EF BB BF\` when the base blob had none. Install its exact mode only
+after every gate passes, using \`git update-index --cacheinfo\`.`,
+    ];
+    for (const [index, literal] of v5ReplacementLiterals.entries()) {
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD_V4.split(literal).length - 1, 1,
+        `${marker}: v5 replacement literal ${index + 1} must match v4 exactly once`);
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD.split(literal).length - 1, 0,
+        `${marker}: v5 replacement literal ${index + 1} must be absent from v5`);
     }
 
     supervisor.ensureWorkerScaffold(claudeWorkDir, 'claude', 'windows');
@@ -994,31 +1052,63 @@ BOM or line-ending churn before installing its exact mode with \`update-index
       `${marker}: v3 CAS retry must use NEW_BASE as the old-value`);
     assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('git cat-file blob BASE:<path>'),
       `${marker}: v3 shared-file post-images must start from repository blob bytes`);
-    assert.ok(
-      LAND_WORK_PACKAGE_SKILL_MD.includes(
-        'git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>',
-      ) && LAND_WORK_PACKAGE_SKILL_MD.includes(
-        'git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>',
-      ),
-      `${marker}: v4 must independently specify both blob-level numstat gates`,
+    const section = (start: string, end: string): string => {
+      const startIndex = LAND_WORK_PACKAGE_SKILL_MD.indexOf(start);
+      const endIndex = LAND_WORK_PACKAGE_SKILL_MD.indexOf(end, startIndex);
+      assert.ok(startIndex >= 0 && endIndex > startIndex,
+        `${marker}: section markers must exist in order: ${start} .. ${end}`);
+      return LAND_WORK_PACKAGE_SKILL_MD.slice(startIndex, endIndex);
+    };
+    const count = (body: string, literal: string): number => body.split(literal).length - 1;
+    const step4 = section('4. For a shared or filtered existing text file', '\n5. Freeze');
+    const appendix = section(
+      '## windows-partial-staging-blob',
+      '\n## commit-prepared-index-not-pathspec',
     );
-    assert.ok(
-      LAND_WORK_PACKAGE_SKILL_MD.includes('EF BB BF')
-        && LAND_WORK_PACKAGE_SKILL_MD.includes('when the base blob had none'),
-      `${marker}: v4 must name the base-blob BOM absence condition`,
+    const step7 = section(
+      '7. Before branch advancement verify against the same `BASE`',
+      '\n8. Only then run',
     );
-    assert.ok(
-      LAND_WORK_PACKAGE_SKILL_MD.includes(
-        'git diff-tree -r --no-renames --numstat BASE CANDIDATE',
-      )
-        && LAND_WORK_PACKAGE_SKILL_MD.includes(
-          'git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE',
-        )
-        && LAND_WORK_PACKAGE_SKILL_MD.includes('byte-for-byte; any mismatch aborts before the update-ref CAS'),
-      `${marker}: v4 step 7 must require no-renames diff-tree numstat equality before CAS`,
+    for (const [name, body] of [['step 4', step4], ['Windows appendix', appendix]] as const) {
+      assert.equal(count(body, 'git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>'), 1,
+        `${marker}: ${name} must contain the plain numstat command exactly once`);
+      assert.equal(
+        count(body, 'git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>'),
+        1,
+        `${marker}: ${name} must contain the CR-ignoring numstat command exactly once`,
+      );
+      assert.equal(count(body, 'EF BB BF'), 1,
+        `${marker}: ${name} must contain the BOM bytes exactly once`);
+      assert.equal(count(body, 'BOM presence'), 1,
+        `${marker}: ${name} must name BOM presence exactly once`);
+      assert.equal(count(body, 'MUST be unchanged between base and new blob'), 1,
+        `${marker}: ${name} must require unchanged BOM presence exactly once`);
+      assert.equal(count(body, 'new CR count MUST'), 1,
+        `${marker}: ${name} must state the new-CR requirement exactly once`);
+      assert.equal(count(body, 'equal the pre-stated expected CR count'), 1,
+        `${marker}: ${name} must contain the CR-count equation exactly once`);
+    }
+    assert.equal(count(step7, 'git diff-tree -r --no-renames --numstat BASE CANDIDATE'), 1,
+      `${marker}: step 7 must contain the plain no-renames numstat command exactly once`);
+    assert.equal(
+      count(step7, 'git diff-tree -r --no-renames --ignore-cr-at-eol --numstat BASE CANDIDATE'),
+      1,
+      `${marker}: step 7 must contain the CR-ignoring no-renames numstat command exactly once`,
     );
+    assert.equal(count(step7, 'git diff-tree -r --no-renames --name-status BASE CANDIDATE'), 1,
+      `${marker}: step 7 must enumerate modified paths exactly once`);
+    assert.equal(count(step7, 'EF BB BF'), 1,
+      `${marker}: step 7 must contain the BOM bytes exactly once`);
+    assert.equal(count(step7, 'BOM\n     presence'), 1,
+      `${marker}: step 7 must name BOM presence exactly once`);
+    assert.equal(count(step7, 'MUST be unchanged between base and candidate blob'), 1,
+      `${marker}: step 7 must require unchanged BOM presence exactly once`);
+    assert.equal(count(step7, 'new CR\n     count MUST'), 1,
+      `${marker}: step 7 must state the new-CR requirement exactly once`);
+    assert.equal(count(step7, 'equal the pre-stated expected CR count'), 1,
+      `${marker}: step 7 must contain the CR-count equation exactly once`);
     assert.ok(!LAND_WORK_PACKAGE_SKILL_MD.includes('reject BOM or line-ending churn'),
-      `${marker}: v4 appendix must not retain the qualitative v2 gate`);
+      `${marker}: v5 must not retain the qualitative v2 gate`);
 
     const migrationCases = [
       {
@@ -1049,13 +1139,13 @@ BOM or line-ending churn before installing its exact mode with \`update-index
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v4`,
+        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v5`,
       );
       const migratedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(migratedSidecar[migration.sidecarKey], 4,
-        `${marker}: ${migration.provider} sidecar must advance from v1 to v4`);
+      assert.equal(migratedSidecar[migration.sidecarKey], 5,
+        `${marker}: ${migration.provider} sidecar must advance from v1 to v5`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1072,13 +1162,13 @@ BOM or line-ending churn before installing its exact mode with \`update-index
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v4`,
+        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v5`,
       );
-      const v4Sidecar = JSON.parse(
+      const v5Sidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v4Sidecar[migration.sidecarKey], 4,
-        `${marker}: ${migration.provider} sidecar must advance from v2 to v4`);
+      assert.equal(v5Sidecar[migration.sidecarKey], 5,
+        `${marker}: ${migration.provider} sidecar must advance from v2 to v5`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1087,26 +1177,49 @@ BOM or line-ending churn before installing its exact mode with \`update-index
       );
 
       fs.writeFileSync(migration.skillPath, LAND_WORK_PACKAGE_SKILL_MD_V3, 'utf-8');
-      v4Sidecar[migration.sidecarKey] = 3;
-      fs.writeFileSync(sidecarPath, JSON.stringify(v4Sidecar, null, 2) + '\n', 'utf-8');
+      v5Sidecar[migration.sidecarKey] = 3;
+      fs.writeFileSync(sidecarPath, JSON.stringify(v5Sidecar, null, 2) + '\n', 'utf-8');
 
       supervisor.ensureWorkerScaffold(migration.workDir, migration.provider, 'windows');
 
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v4`,
+        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v5`,
       );
       const upgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(upgradedSidecar[migration.sidecarKey], 4,
-        `${marker}: ${migration.provider} sidecar must advance from v3 to v4`);
+      assert.equal(upgradedSidecar[migration.sidecarKey], 5,
+        `${marker}: ${migration.provider} sidecar must advance from v3 to v5`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
         false,
         `${marker}: pristine ${migration.provider} v3 upgrade must not create a backup`,
+      );
+
+      fs.writeFileSync(migration.skillPath, LAND_WORK_PACKAGE_SKILL_MD_V4, 'utf-8');
+      upgradedSidecar[migration.sidecarKey] = 4;
+      fs.writeFileSync(sidecarPath, JSON.stringify(upgradedSidecar, null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureWorkerScaffold(migration.workDir, migration.provider, 'windows');
+
+      assert.deepEqual(
+        fs.readFileSync(migration.skillPath),
+        Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+        `${marker}: pristine ${migration.provider} v4 skill must upgrade byte-exactly to v5`,
+      );
+      const v4UpgradedSidecar = JSON.parse(
+        fs.readFileSync(sidecarPath, 'utf-8'),
+      ) as Record<string, number>;
+      assert.equal(v4UpgradedSidecar[migration.sidecarKey], 5,
+        `${marker}: ${migration.provider} sidecar must advance from v4 to v5`);
+      assert.equal(
+        fs.readdirSync(path.dirname(migration.skillPath))
+          .some((name) => name.startsWith('SKILL.md.bak.')),
+        false,
+        `${marker}: pristine ${migration.provider} v4 upgrade must not create a backup`,
       );
     }
   } finally {

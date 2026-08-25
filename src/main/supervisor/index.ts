@@ -49,7 +49,7 @@ import {
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2,
   WRITE_RESEARCH_REPORT_SKILL_MD,
-  LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V1, LAND_WORK_PACKAGE_SKILL_MD_V2, LAND_WORK_PACKAGE_SKILL_MD_V3,
+  LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V1, LAND_WORK_PACKAGE_SKILL_MD_V2, LAND_WORK_PACKAGE_SKILL_MD_V3, LAND_WORK_PACKAGE_SKILL_MD_V4,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1,
   READ_PLANNING_SURFACE_SKILL_MD as READ_PLANNING_SURFACE_SKILL_MD_V2,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
@@ -4154,11 +4154,12 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/workers/claude/.claude/skills/prove-the-production-entry-point'),
     [`.lares/workers/claude/.claude/skills/land-work-package/SKILL.md`]: {
       content: LAND_WORK_PACKAGE_SKILL_MD,
-      version: 4,
+      version: 5,
       previousHashes: {
         1: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V1),
         2: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V2),
         3: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V3),
+        4: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V4),
       },
     },
     [`.lares/workers/claude/CLAUDE.md`]:                       {
@@ -4378,11 +4379,12 @@ export class AgentSupervisor extends EventEmitter {
         ...proveProductionEntryPointEntry('.lares/workers/codex/.agents/skills/prove-the-production-entry-point'),
         [`.lares/workers/codex/.agents/skills/land-work-package/SKILL.md`]: {
           content: LAND_WORK_PACKAGE_SKILL_MD,
-          version: 4,
+          version: 5,
           previousHashes: {
             1: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V1),
             2: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V2),
             3: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V3),
+            4: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V4),
           },
         },
         [`.lares/workers/codex/.codex/config.toml`]: {
