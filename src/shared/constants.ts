@@ -9411,7 +9411,7 @@ after every gate passes may the exact base mode be installed with
 
 // WP-1f (plan_d85b0a78) — declared mode/blob manifest and byte-exact landing
 // gate. Derived from the frozen v5 managed body.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V5
+export const LAND_WORK_PACKAGE_SKILL_MD_V6 = LAND_WORK_PACKAGE_SKILL_MD_V5
   .replace(
     `3. For whole-file owned paths, plain \`git add -- <exact paths>\` is allowed
    only inside the temporary index and only when an existing text path's
@@ -9572,4 +9572,84 @@ The resulting OID MUST equal the declared OID. Install present entries only with
 command in this recipe. Before CAS, \`git ls-tree -r -z CANDIDATE -- <every
 frozen path>\` MUST match the declared mode/OID/ABSENT manifest exactly; mismatch
 MUST abort. The OID comparison is the byte-exact landing gate.`,
+  );
+
+// WP-1g (plan_d85b0a78) — cacheinfo additions, gitlink refusal, NUL-safe
+// frozen-set verification, and consistent deletion tokens. Derived from v6.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V6
+  .replace(
+    `Before step 3, declare a manifest for EVERY path in the frozen set in the
+turn record or commit-time notes. Each line is exactly \`<path> <mode> <expected
+post-image blob OID>\`, or \`<path> ABSENT\` for a deletion. Build each expected
+post-image from raw \`git cat-file blob BASE:<path>\` bytes plus only owned hunks,
+or from the worker-controlled raw bytes for a genuinely new file, then run
+\`git hash-object -w <raw-post-image>\`. Whole-file owners and new files are not
+exempt. Declare a rename as an ABSENT old path plus a new path with mode and OID.
+If any path, mode, or expected OID is uncertain, MUST abort before index mutation.
+
+3. Install EVERY declared present path only with \`git update-index --cacheinfo
+   <mode>,<oid>,<path>\`. Install EVERY declared deletion only with
+   \`git update-index --force-remove -- <path>\`. Plain \`git add\` is REMOVED
+   from this recipe because clean filters may rewrite even a whole-file owner's
+   bytes. The declared manifest, not worktree content, is staging authority.`,
+    `Before step 3, declare a NUL-safe manifest for EVERY path in the frozen set
+in the turn record or commit-time notes, with one record per path. Each record is
+\`<path> <mode> <expected
+post-image blob OID>\`, or \`<path> ABSENT\` for a deletion, where \`<path>\` is
+the exact byte string Git reports under \`-z\`. A line-oriented rendering is
+permitted only after rejecting paths containing a newline byte; any frozen path
+containing a newline, or bytes that cannot be represented unambiguously, MUST
+abort before index mutation. Git paths cannot contain NUL.
+
+This recipe supports modes \`100644\`, \`100755\`, and \`120000\` only. Before
+step 3, inspect every frozen path: if the frozen set contains a \`160000\`
+(submodule) entry, or the base tree has an entry of type \`commit\` at any frozen
+path, MUST abort and escalate the out-of-scope package to the supervisor. Do not
+attempt mode-sensitive commit-OID construction.
+
+Build each expected post-image from raw \`git cat-file blob BASE:<path>\` bytes
+plus only owned hunks, or from the worker-controlled raw bytes for a genuinely
+new file, then run \`git hash-object -w <raw-post-image>\`. Whole-file owners and
+new files are not exempt. Declare a rename as an ABSENT old path plus a new path
+with mode and OID. If any path, mode, or expected OID is uncertain, MUST abort
+before index mutation.
+
+3. Install EVERY declared present path only with \`git update-index --add --cacheinfo
+   <mode>,<oid>,<path>\`. Install EVERY declared deletion only with
+   \`git update-index --force-remove -- <path>\`. Plain \`git add\` is REMOVED
+   from this recipe because clean filters may rewrite even a whole-file owner's
+   bytes. The declared manifest, not worktree content, is staging authority.`,
+  )
+  .replace(
+    `   These numstat, CR-count, and BOM checks are advisory sanity checks on the way
+   to the declared OID. They are not landing gates and cannot prove byte equality.
+   Only the declared mode/OID manifest is the landing gate.`,
+    `   These numstat, CR-count, and BOM checks are advisory sanity checks on the way
+   to the declared OID. Those checks are not landing gates and cannot prove byte equality.
+   Only the declared mode/OID manifest is the landing gate. Install the declared
+   present entry with \`git update-index --add --cacheinfo <mode>,<oid>,<path>\`.`,
+  )
+  .replace(
+    `5. Freeze the intended changed-path set as repo-relative literal paths and each
+   intended tree entry as mode plus blob OID, or \`absent\` for a deletion.`,
+    `5. Freeze the intended changed-path set as repo-relative literal paths and each
+   intended tree entry as mode plus blob OID, or \`ABSENT\` for a deletion.`,
+  )
+  .replace(
+    `   - \`git diff-tree -r --no-renames --name-only BASE CANDIDATE\` MUST yield
+     exactly the frozen set, using NUL-safe comparison where paths are consumed;`,
+    `   - \`git diff-tree -r -z --no-renames --name-only BASE CANDIDATE\` MUST
+     yield exactly the frozen set, consumed and compared as NUL-delimited paths;`,
+  )
+  .replace(
+    `Freeze a rename
+as both entries: the old path expected absent and the new path expected present.`,
+    `Freeze a rename
+as both entries: the old path expected ABSENT and the new path expected present.`,
+  )
+  .replace(
+    `The resulting OID MUST equal the declared OID. Install present entries only with
+\`git update-index --cacheinfo <mode>,<oid>,<path>\` and deletions only with`,
+    `The resulting OID MUST equal the declared OID. Install present entries only with
+\`git update-index --add --cacheinfo <mode>,<oid>,<path>\` and deletions only with`,
   );

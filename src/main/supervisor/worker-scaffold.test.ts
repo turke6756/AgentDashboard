@@ -14,6 +14,7 @@
 //   node dist/main/main/supervisor/worker-scaffold.test.js
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,6 +35,7 @@ import {
   LAND_WORK_PACKAGE_SKILL_MD_V3,
   LAND_WORK_PACKAGE_SKILL_MD_V4,
   LAND_WORK_PACKAGE_SKILL_MD_V5,
+  LAND_WORK_PACKAGE_SKILL_MD_V6,
 } from '../../shared/constants';
 import {
   AGY_STATUS_HOOK_NAME,
@@ -881,6 +883,74 @@ test('WP-P0C: fresh Codex worker scaffold writes the whole proposal-to-plan tree
   }
 });
 
+test('wp1g-land-work-package-documented-cacheinfo-installs-additions', () => {
+  const repoDir = mktmp('wp1g-cacheinfo-add');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    const git = (args: string[], options: Record<string, unknown> = {}): Buffer =>
+      execFileSync('git', args, { cwd: repoDir, ...options });
+    git(['init', '--quiet']);
+    fs.writeFileSync(path.join(repoDir, 'rename-source.txt'), 'rename source\n');
+    git(['add', '--', 'rename-source.txt']);
+    git(['-c', 'user.name=Lares Test', '-c', 'user.email=lares@example.invalid',
+      'commit', '--quiet', '-m', 'base']);
+
+    supervisor.ensureWorkerScaffold(repoDir, 'codex', 'windows');
+    const deployedSkill = fs.readFileSync(path.join(
+      repoDir, '.lares', 'workers', 'codex', '.agents', 'skills',
+      'land-work-package', 'SKILL.md',
+    ), 'utf8');
+    const appendixStart = deployedSkill.indexOf('## windows-partial-staging-blob');
+    const appendixEnd = deployedSkill.indexOf(
+      '\n## commit-prepared-index-not-pathspec', appendixStart,
+    );
+    assert.ok(appendixStart >= 0 && appendixEnd > appendixStart,
+      'WP-1g executed install test must find the Windows appendix');
+    const appendix = deployedSkill.slice(appendixStart, appendixEnd);
+    const documented = appendix.match(
+      /`(git update-index (?:--add )?--cacheinfo <mode>,<oid>,<path>)`/,
+    )?.[1];
+    assert.ok(documented, 'WP-1g executed install test must extract the documented command');
+
+    const indexPath = path.join(repoDir, 'candidate.index');
+    const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+    git(['read-tree', 'HEAD'], { env });
+    const newOid = git(['hash-object', '-w', '--stdin'], {
+      input: Buffer.from('genuinely new\n'),
+    }).toString('utf8').trim();
+    const renameOid = git(['hash-object', '-w', '--stdin'], {
+      input: Buffer.from('rename target\n'),
+    }).toString('utf8').trim();
+
+    const runDocumentedInstall = (oid: string, repoPath: string): void => {
+      const command = documented
+        .replace('<mode>', '100644')
+        .replace('<oid>', oid)
+        .replace('<path>', repoPath);
+      const [program, ...args] = command.split(/\s+/);
+      execFileSync(program, args, { cwd: repoDir, env });
+    };
+    runDocumentedInstall(newOid, 'genuinely-new.txt');
+    runDocumentedInstall(renameOid, 'rename-target.txt');
+    git(['update-index', '--force-remove', '--', 'rename-source.txt'], { env });
+    const tree = git(['write-tree'], { env }).toString('utf8').trim();
+    const records = git(['ls-tree', '-r', '-z', tree]).toString('utf8')
+      .split('\0').filter(Boolean);
+    const entries = new Map(records.map((record) => {
+      const match = record.match(/^(\d+) blob ([0-9a-f]+)\t(.*)$/s);
+      assert.ok(match, `unexpected ls-tree record: ${JSON.stringify(record)}`);
+      return [match[3], { mode: match[1], oid: match[2] }];
+    }));
+    assert.deepEqual(entries.get('genuinely-new.txt'), { mode: '100644', oid: newOid });
+    assert.deepEqual(entries.get('rename-target.txt'), { mode: '100644', oid: renameOid });
+    assert.equal(entries.has('rename-source.txt'), false,
+      'rename source must be ABSENT after --force-remove');
+  } finally {
+    cleanup();
+    rmrf(repoDir);
+  }
+});
+
 test('wp1-land-work-package-both-lanes', () => {
   const claudeWorkDir = mktmp('land-wp-claude');
   const codexWorkDir = mktmp('land-wp-codex');
@@ -888,7 +958,7 @@ test('wp1-land-work-package-both-lanes', () => {
   const marker = 'REACHABILITY:wp1-land-work-package-both-lanes';
   try {
     // Frozen SHA-256 values computed from the dispatch-tip runtime bodies before
-    // WP-1f edited the file; these guard every deployed historical body.
+    // WP-1g edited the file; these guard every deployed historical body.
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V1).digest('hex'),
       'c6b725d512a160d0644b6656e6a4b8c22abc5c36d27ebcc2e59a5decfa36b99c');
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V2).digest('hex'),
@@ -899,6 +969,8 @@ test('wp1-land-work-package-both-lanes', () => {
       'd04568a13e8e548503edca3a605afeb4ff633c7225e78aff736fc4d1d0ace756');
     assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V5).digest('hex'),
       '14533fa7e6eb0906c963cb7beb0f9716d9aa960ab4dcd096406f6fa3cc465579');
+    assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V6).digest('hex'),
+      '1406b367736cad82c20666264c528e6067e10e9fc9a9972f7adb1a4fce673248');
 
     const v3ReplacementLiterals = [
       `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
@@ -1120,6 +1192,40 @@ after every gate passes may the exact base mode be installed with
         `${marker}: v6 replacement literal ${index + 1} must be absent from v6`);
     }
 
+    const v7ReplacementLiterals = [
+      `Before step 3, declare a manifest for EVERY path in the frozen set in the
+turn record or commit-time notes. Each line is exactly \`<path> <mode> <expected
+post-image blob OID>\`, or \`<path> ABSENT\` for a deletion. Build each expected
+post-image from raw \`git cat-file blob BASE:<path>\` bytes plus only owned hunks,
+or from the worker-controlled raw bytes for a genuinely new file, then run
+\`git hash-object -w <raw-post-image>\`. Whole-file owners and new files are not
+exempt. Declare a rename as an ABSENT old path plus a new path with mode and OID.
+If any path, mode, or expected OID is uncertain, MUST abort before index mutation.
+
+3. Install EVERY declared present path only with \`git update-index --cacheinfo
+   <mode>,<oid>,<path>\`. Install EVERY declared deletion only with
+   \`git update-index --force-remove -- <path>\`. Plain \`git add\` is REMOVED
+   from this recipe because clean filters may rewrite even a whole-file owner's
+   bytes. The declared manifest, not worktree content, is staging authority.`,
+      `   These numstat, CR-count, and BOM checks are advisory sanity checks on the way
+   to the declared OID. They are not landing gates and cannot prove byte equality.
+   Only the declared mode/OID manifest is the landing gate.`,
+      `5. Freeze the intended changed-path set as repo-relative literal paths and each
+   intended tree entry as mode plus blob OID, or \`absent\` for a deletion.`,
+      `   - \`git diff-tree -r --no-renames --name-only BASE CANDIDATE\` MUST yield
+     exactly the frozen set, using NUL-safe comparison where paths are consumed;`,
+      `Freeze a rename
+as both entries: the old path expected absent and the new path expected present.`,
+      `The resulting OID MUST equal the declared OID. Install present entries only with
+\`git update-index --cacheinfo <mode>,<oid>,<path>\` and deletions only with`,
+    ];
+    for (const [index, literal] of v7ReplacementLiterals.entries()) {
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD_V6.split(literal).length - 1, 1,
+        `${marker}: v7 replacement literal ${index + 1} must match v6 exactly once`);
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD.split(literal).length - 1, 0,
+        `${marker}: v7 replacement literal ${index + 1} must be absent from v7`);
+    }
+
     supervisor.ensureWorkerScaffold(claudeWorkDir, 'claude', 'windows');
     supervisor.ensureWorkerScaffold(codexWorkDir, 'codex', 'windows');
     const claudeSkill = path.join(
@@ -1158,8 +1264,9 @@ after every gate passes may the exact base mode be installed with
       return LAND_WORK_PACKAGE_SKILL_MD.slice(startIndex, endIndex);
     };
     const count = (body: string, literal: string): number => body.split(literal).length - 1;
-    const manifest = section('Before step 3, declare a manifest', '\n4. For every modified');
+    const manifest = section('Before step 3, declare a NUL-safe manifest', '\n4. For every modified');
     const step4 = section('4. For every modified existing path', '\n5. Freeze');
+    const step5 = section('5. Freeze', '\n6. Run');
     const appendix = section(
       '## windows-partial-staging-blob',
       '\n## commit-prepared-index-not-pathspec',
@@ -1172,7 +1279,7 @@ after every gate passes may the exact base mode be installed with
       `${marker}: manifest declaration must define ABSENT exactly once`);
     assert.equal(count(manifest, 'git hash-object -w <raw-post-image>'), 1,
       `${marker}: manifest declaration must hash raw post-images exactly once`);
-    assert.equal(count(manifest, 'git update-index --cacheinfo'), 1,
+    assert.equal(count(manifest, 'git update-index --add --cacheinfo'), 1,
       `${marker}: manifest section must install present entries exactly once`);
     assert.equal(count(manifest, 'git update-index --force-remove'), 1,
       `${marker}: manifest section must install ABSENT entries exactly once`);
@@ -1188,6 +1295,10 @@ after every gate passes may the exact base mode be installed with
       `${marker}: step 4 must retain the CR-ignoring numstat sanity check exactly once`);
     assert.equal(count(step4, 'Only the declared mode/OID manifest is the landing gate'), 1,
       `${marker}: step 4 must identify the sole landing gate exactly once`);
+    assert.equal(count(step4, 'git update-index --add --cacheinfo'), 1,
+      `${marker}: step 4 must install present entries with --add exactly once`);
+    assert.equal(count(step5, '`ABSENT`'), 1,
+      `${marker}: step 5 must use ABSENT exactly once`);
     assert.equal(count(appendix, '<path> ABSENT'), 1,
       `${marker}: Windows appendix must mirror ABSENT exactly once`);
     assert.equal(count(appendix, 'git cat-file blob BASE:<path> > <raw-post-image>'), 1,
@@ -1196,6 +1307,8 @@ after every gate passes may the exact base mode be installed with
       `${marker}: Windows appendix must mirror manifest verification exactly once`);
     assert.equal(count(appendix, 'Plain `git add` is not an install'), 1,
       `${marker}: Windows appendix must reject plain git add exactly once`);
+    assert.equal(count(appendix, 'git update-index --add --cacheinfo'), 1,
+      `${marker}: Windows appendix must install present entries with --add exactly once`);
     assert.equal(count(step7, 'git diff-tree -r --no-renames --numstat BASE CANDIDATE'), 1,
       `${marker}: step 7 must contain the plain no-renames numstat command exactly once`);
     assert.equal(
@@ -1203,7 +1316,7 @@ after every gate passes may the exact base mode be installed with
       1,
       `${marker}: step 7 must contain the CR-ignoring no-renames numstat command exactly once`,
     );
-    assert.equal(count(step7, 'git diff-tree -r --no-renames --name-only BASE CANDIDATE'), 1,
+    assert.equal(count(step7, 'git diff-tree -r -z --no-renames --name-only BASE CANDIDATE'), 1,
       `${marker}: step 7 must compare the frozen path set exactly once`);
     assert.equal(count(step7, 'git ls-tree -r -z CANDIDATE -- <every frozen path>'), 1,
       `${marker}: step 7 must compare the declared manifest exactly once`);
@@ -1217,6 +1330,28 @@ after every gate passes may the exact base mode be installed with
       `${marker}: v6 must remove the PowerShell cat-file batch variant`);
     assert.equal(count(LAND_WORK_PACKAGE_SKILL_MD, 'git add -- <exact paths>'), 0,
       `${marker}: v6 recipe must contain no plain git-add install command`);
+    assert.equal(count(LAND_WORK_PACKAGE_SKILL_MD, 'git update-index --cacheinfo <mode>'), 0,
+      `${marker}: v7 must contain no cacheinfo install without --add`);
+    assert.equal(
+      count(LAND_WORK_PACKAGE_SKILL_MD,
+        'git diff-tree -r --no-renames --name-only BASE CANDIDATE'),
+      0,
+      `${marker}: v7 must contain no line-oriented frozen-set command`,
+    );
+    assert.equal(count(manifest, '`100644`, `100755`, and `120000` only'), 1,
+      `${marker}: manifest must scope supported modes exactly once`);
+    assert.equal(count(manifest, '`160000`\n(submodule) entry'), 1,
+      `${marker}: manifest must refuse gitlinks exactly once`);
+    assert.equal(count(manifest, 'entry of type `commit` at any frozen\npath'), 1,
+      `${marker}: manifest must refuse base commit entries exactly once`);
+    assert.equal(count(manifest, 'escalate the out-of-scope package to the supervisor'), 1,
+      `${marker}: manifest must escalate gitlinks exactly once`);
+    assert.equal(count(LAND_WORK_PACKAGE_SKILL_MD, '`absent`'), 0,
+      `${marker}: v7 must use the canonical ABSENT token`);
+    assert.equal(count(manifest, 'newline byte'), 1,
+      `${marker}: manifest must reject newline-bearing paths up front`);
+    assert.equal(count(appendix, 'ABSENT'), 2,
+      `${marker}: Windows appendix must use ABSENT in declaration and verification`);
     assert.ok(!LAND_WORK_PACKAGE_SKILL_MD.includes('reject BOM or line-ending churn'),
       `${marker}: v5 must not retain the qualitative v2 gate`);
 
@@ -1249,13 +1384,13 @@ after every gate passes may the exact base mode be installed with
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v6`,
+        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v7`,
       );
       const migratedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(migratedSidecar[migration.sidecarKey], 6,
-        `${marker}: ${migration.provider} sidecar must advance from v1 to v6`);
+      assert.equal(migratedSidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v1 to v7`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1272,13 +1407,13 @@ after every gate passes may the exact base mode be installed with
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v6`,
+        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v7`,
       );
       const v6Sidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v6Sidecar[migration.sidecarKey], 6,
-        `${marker}: ${migration.provider} sidecar must advance from v2 to v6`);
+      assert.equal(v6Sidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v2 to v7`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1295,13 +1430,13 @@ after every gate passes may the exact base mode be installed with
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v6`,
+        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v7`,
       );
       const upgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(upgradedSidecar[migration.sidecarKey], 6,
-        `${marker}: ${migration.provider} sidecar must advance from v3 to v6`);
+      assert.equal(upgradedSidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v3 to v7`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1318,13 +1453,13 @@ after every gate passes may the exact base mode be installed with
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v4 skill must upgrade byte-exactly to v6`,
+        `${marker}: pristine ${migration.provider} v4 skill must upgrade byte-exactly to v7`,
       );
       const v4UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v4UpgradedSidecar[migration.sidecarKey], 6,
-        `${marker}: ${migration.provider} sidecar must advance from v4 to v6`);
+      assert.equal(v4UpgradedSidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v4 to v7`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1341,18 +1476,41 @@ after every gate passes may the exact base mode be installed with
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v5 skill must upgrade byte-exactly to v6`,
+        `${marker}: pristine ${migration.provider} v5 skill must upgrade byte-exactly to v7`,
       );
       const v5UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v5UpgradedSidecar[migration.sidecarKey], 6,
-        `${marker}: ${migration.provider} sidecar must advance from v5 to v6`);
+      assert.equal(v5UpgradedSidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v5 to v7`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
         false,
         `${marker}: pristine ${migration.provider} v5 upgrade must not create a backup`,
+      );
+
+      fs.writeFileSync(migration.skillPath, LAND_WORK_PACKAGE_SKILL_MD_V6, 'utf-8');
+      v5UpgradedSidecar[migration.sidecarKey] = 6;
+      fs.writeFileSync(sidecarPath, JSON.stringify(v5UpgradedSidecar, null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureWorkerScaffold(migration.workDir, migration.provider, 'windows');
+
+      assert.deepEqual(
+        fs.readFileSync(migration.skillPath),
+        Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+        `${marker}: pristine ${migration.provider} v6 skill must upgrade byte-exactly to v7`,
+      );
+      const v6UpgradedSidecar = JSON.parse(
+        fs.readFileSync(sidecarPath, 'utf-8'),
+      ) as Record<string, number>;
+      assert.equal(v6UpgradedSidecar[migration.sidecarKey], 7,
+        `${marker}: ${migration.provider} sidecar must advance from v6 to v7`);
+      assert.equal(
+        fs.readdirSync(path.dirname(migration.skillPath))
+          .some((name) => name.startsWith('SKILL.md.bak.')),
+        false,
+        `${marker}: pristine ${migration.provider} v6 upgrade must not create a backup`,
       );
     }
   } finally {
