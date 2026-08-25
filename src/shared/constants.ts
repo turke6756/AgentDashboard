@@ -9576,7 +9576,7 @@ MUST abort. The OID comparison is the byte-exact landing gate.`,
 
 // WP-1g (plan_d85b0a78) — cacheinfo additions, gitlink refusal, NUL-safe
 // frozen-set verification, and consistent deletion tokens. Derived from v6.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V6
+export const LAND_WORK_PACKAGE_SKILL_MD_V7 = LAND_WORK_PACKAGE_SKILL_MD_V6
   .replace(
     `Before step 3, declare a manifest for EVERY path in the frozen set in the
 turn record or commit-time notes. Each line is exactly \`<path> <mode> <expected
@@ -9653,3 +9653,16 @@ as both entries: the old path expected ABSENT and the new path expected present.
     `The resulting OID MUST equal the declared OID. Install present entries only with
 \`git update-index --add --cacheinfo <mode>,<oid>,<path>\` and deletions only with`,
   );
+
+// WP-1h (plan_d85b0a78) — remove stale step-7 verification bullets.
+// Derived from the frozen v7 managed body.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V7.replace(
+  `     byte-exact content. No CR-count, BOM, or numstat heuristic can substitute,
+     and none is needed for \`A\` or \`D\` entries;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and
+   - \`git ls-tree -z\` proves each exact mode/blob and every deletion's absence.
+     Do not call \`rev-parse CANDIDATE:path\` for a deleted path.`,
+  `     byte-exact content. No CR-count, BOM, or numstat heuristic can substitute,
+     and none is needed for \`A\` or \`D\` entries.`,
+);
