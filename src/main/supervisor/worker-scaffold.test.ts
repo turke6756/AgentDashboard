@@ -14,6 +14,7 @@
 //   node dist/main/main/supervisor/worker-scaffold.test.js
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +30,7 @@ import {
   PROPOSAL_TO_PLAN_SKILL_MD,
   LAND_WORK_PACKAGE_SKILL_MD,
   LAND_WORK_PACKAGE_SKILL_MD_V1,
+  LAND_WORK_PACKAGE_SKILL_MD_V2,
 } from '../../shared/constants';
 import {
   AGY_STATUS_HOOK_NAME,
@@ -882,6 +884,38 @@ test('wp1-land-work-package-both-lanes', () => {
   const { supervisor, cleanup } = makeSupervisor();
   const marker = 'REACHABILITY:wp1-land-work-package-both-lanes';
   try {
+    // Frozen SHA-256 values computed from HEAD:src/shared/constants.ts before
+    // WP-1c edited the file; these guard both deployed historical bodies.
+    assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V1).digest('hex'),
+      'c6b725d512a160d0644b6656e6a4b8c22abc5c36d27ebcc2e59a5decfa36b99c');
+    assert.equal(createHash('sha256').update(LAND_WORK_PACKAGE_SKILL_MD_V2).digest('hex'),
+      'd97b84d641560574b2f9678b22a24c2b650ac17559fa2cb62c1d68be0941deb8');
+
+    const v3ReplacementLiterals = [
+      `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
+   plus only owned hunks. Write the scratch post-image as raw bytes with no CRLF
+   conversion and no BOM. For example, resolve the base blob OID and use
+   \`git cat-file blob <oid> > <file>\` in Git Bash, or PowerShell
+   \`[IO.File]::WriteAllBytes(...)\`; never use \`Set-Content\`, \`Out-File\`, or
+   text redirection. \`git hash-object -w\` accepts either a file path or
+   \`--stdin\`. After hashing, require \`git diff <base-oid> <new-oid>\` to show
+   only the owned hunks and no whole-file line-ending churn. Preserve the exact
+   mode and install the blob with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+      `   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and`,
+    ];
+    for (const [index, literal] of v3ReplacementLiterals.entries()) {
+      assert.equal(LAND_WORK_PACKAGE_SKILL_MD_V2.split(literal).length - 1, 1,
+        `${marker}: v3 replacement literal ${index + 1} must match v2 exactly once`);
+    }
+
     supervisor.ensureWorkerScaffold(claudeWorkDir, 'claude', 'windows');
     supervisor.ensureWorkerScaffold(codexWorkDir, 'codex', 'windows');
     const claudeSkill = path.join(
@@ -905,11 +939,25 @@ test('wp1-land-work-package-both-lanes', () => {
       `${marker}: Codex scaffold skill must be byte-equal to the constant`,
     );
     assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('--force-remove'),
-      `${marker}: v2 must force-remove deletions from the temporary index`);
+      `${marker}: v3 must force-remove deletions from the temporary index`);
     assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('git ls-tree -z'),
-      `${marker}: v2 tree-entry verification must be NUL-safe`);
+      `${marker}: v3 tree-entry verification must be NUL-safe`);
     assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('CANDIDATE NEW_BASE'),
-      `${marker}: v2 CAS retry must use NEW_BASE as the old-value`);
+      `${marker}: v3 CAS retry must use NEW_BASE as the old-value`);
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('git cat-file blob BASE:<path>'),
+      `${marker}: v3 shared-file post-images must start from repository blob bytes`);
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('--ignore-cr-at-eol --numstat'),
+      `${marker}: v3 must compare ordinary and CR-ignoring numstat`);
+    assert.ok(LAND_WORK_PACKAGE_SKILL_MD.includes('EF BB BF'),
+      `${marker}: v3 must reject a newly introduced UTF-8 BOM`);
+    assert.ok(
+      LAND_WORK_PACKAGE_SKILL_MD.includes('git diff-tree -r --numstat BASE CANDIDATE')
+        && LAND_WORK_PACKAGE_SKILL_MD.includes(
+          'git diff-tree -r --ignore-cr-at-eol --numstat BASE CANDIDATE',
+        )
+        && LAND_WORK_PACKAGE_SKILL_MD.includes('line-for-line; any mismatch aborts before the update-ref CAS'),
+      `${marker}: v3 step 7 must require line-for-line diff-tree numstat equality before CAS`,
+    );
 
     const migrationCases = [
       {
@@ -940,18 +988,41 @@ test('wp1-land-work-package-both-lanes', () => {
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v2`,
+        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v3`,
       );
       const migratedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(migratedSidecar[migration.sidecarKey], 2,
-        `${marker}: ${migration.provider} sidecar must advance from v1 to v2`);
+      assert.equal(migratedSidecar[migration.sidecarKey], 3,
+        `${marker}: ${migration.provider} sidecar must advance from v1 to v3`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
         false,
         `${marker}: pristine ${migration.provider} v1 upgrade must not create a backup`,
+      );
+
+      fs.writeFileSync(migration.skillPath, LAND_WORK_PACKAGE_SKILL_MD_V2, 'utf-8');
+      migratedSidecar[migration.sidecarKey] = 2;
+      fs.writeFileSync(sidecarPath, JSON.stringify(migratedSidecar, null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureWorkerScaffold(migration.workDir, migration.provider, 'windows');
+
+      assert.deepEqual(
+        fs.readFileSync(migration.skillPath),
+        Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
+        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v3`,
+      );
+      const v3Sidecar = JSON.parse(
+        fs.readFileSync(sidecarPath, 'utf-8'),
+      ) as Record<string, number>;
+      assert.equal(v3Sidecar[migration.sidecarKey], 3,
+        `${marker}: ${migration.provider} sidecar must advance from v2 to v3`);
+      assert.equal(
+        fs.readdirSync(path.dirname(migration.skillPath))
+          .some((name) => name.startsWith('SKILL.md.bak.')),
+        false,
+        `${marker}: pristine ${migration.provider} v2 upgrade must not create a backup`,
       );
     }
   } finally {

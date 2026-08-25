@@ -9002,7 +9002,7 @@ message, including subject and final trailer paragraph, before CAS.
 
 // WP-1b (plan_d85b0a78) — corrected retry, raw-byte, deletion, and NUL-safe
 // transaction contract. Derived from the frozen v1 body for managed migration.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V1
+export const LAND_WORK_PACKAGE_SKILL_MD_V2 = LAND_WORK_PACKAGE_SKILL_MD_V1
   .replace(
     `1. Capture \`BRANCH_REF = git symbolic-ref --quiet HEAD\` as the full
    \`refs/heads/...\` name; fail if detached. Capture immutable
@@ -9118,3 +9118,59 @@ BOM or line-ending churn before installing its exact mode with \`update-index
 \`commit-tree -F <msgfile>\`.`,
   );
 
+// WP-1c (plan_d85b0a78) — byte-safe shared-file reconstruction and concrete
+// line-ending/BOM rejection gates. Derived from the frozen v2 managed body.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V2
+  .replace(
+    `4. For a shared file, reconstruct the exact owned post-image from \`BASE:path\`
+   plus only owned hunks. Write the scratch post-image as raw bytes with no CRLF
+   conversion and no BOM. For example, resolve the base blob OID and use
+   \`git cat-file blob <oid> > <file>\` in Git Bash, or PowerShell
+   \`[IO.File]::WriteAllBytes(...)\`; never use \`Set-Content\`, \`Out-File\`, or
+   text redirection. \`git hash-object -w\` accepts either a file path or
+   \`--stdin\`. After hashing, require \`git diff <base-oid> <new-oid>\` to show
+   only the owned hunks and no whole-file line-ending churn. Preserve the exact
+   mode and install the blob with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+    `4. For a shared file, start from the repository blob bytes, NEVER from the
+   worktree file: reconstruct the exact owned post-image from
+   \`git cat-file blob BASE:<path>\` plus only owned hunks. Preserve those raw
+   bytes, for example with \`git cat-file blob BASE:<path> > <file>\` under Git
+   Bash or PowerShell \`[IO.File]::WriteAllBytes\` after \`git cat-file --batch\`.
+   This checkout uses \`core.autocrlf=true\`: worktree files are CRLF while
+   repository blobs are LF, so a worktree-derived post-image re-encodes every
+   line. Never use \`Set-Content\`, \`Out-File\`, or text redirection in
+   PowerShell. Hash the finished raw-byte post-image with \`git hash-object -w\`.
+
+   Before \`git update-index --cacheinfo\` installs the new blob, state the
+   expected added and deleted line counts for the worker's intended hunks. Run
+   \`git diff --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\` and
+   \`git diff --ignore-cr-at-eol --numstat <BASE_BLOB_OID> <NEW_BLOB_OID>\`.
+   The outputs MUST be identical, and added plus deleted MUST equal the stated
+   intended hunk line count. Also inspect the blob prefix and reject a new UTF-8
+   BOM (bytes \`EF BB BF\`) when the base blob did not have one. Any mismatch
+   means abort: do not install the blob and do not commit. Preserve the base
+   mode and install only a blob that passes every gate with
+   \`git update-index --cacheinfo <mode>,<oid>,<path>\`. If reconstruction is
+   uncertain, stop. For explicit deletions use
+   \`git update-index --force-remove -- <path>\` and expect absence even when the
+   worktree file is still present.`,
+  )
+  .replace(
+    `   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and`,
+    `   - the complete message satisfies the contract, using
+     \`git interpret-trailers --parse\` plus explicit key counts over the full
+     message to reject duplicates and folded physical lines;
+   - \`git diff-tree -r --numstat BASE CANDIDATE\` equals
+     \`git diff-tree -r --ignore-cr-at-eol --numstat BASE CANDIDATE\`
+     line-for-line; any mismatch aborts before the update-ref CAS;
+   - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
+     set exactly equal to the frozen set; and`,
+  );
