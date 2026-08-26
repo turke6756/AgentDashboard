@@ -108,6 +108,18 @@ export interface TransitionResult {
   replayed: boolean;
 }
 
+export type CompletionReadinessFinding =
+  | { kind: 'required-gate-not-passed'; gateKey: string }
+  | { kind: 'confirmed-dispatch-missing' }
+  | { kind: 'implementation-commit-required' }
+  | { kind: 'implementation-commit-not-observed'; commitOid: string }
+  | { kind: 'implementation-commit-not-gate-covered'; commitOid: string }
+  | { kind: 'finalization-boundary-unavailable' }
+  | { kind: 'explicit-deployment-state-missing' }
+  | { kind: 'deployment-state-missing'; environment: string }
+  | { kind: 'reachability-witness-missing' }
+  | { kind: 'reachability-not-fresh' };
+
 type Marker = {
   version: 1; digest: string; result: Omit<TransitionResult, 'replayed'>;
   evidence?: unknown;
@@ -228,7 +240,104 @@ function appendStateProjection(
   return id;
 }
 
-function requireCompletion(command: Extract<PlanPackageCommand, { type: 'complete' }>, witness: PlanPackageWitness): void {
+export function evaluateCompletionReadiness(
+  packageId: string,
+  revision: number,
+  declaration: CompletionDeclaration,
+  completionWitness: Extract<PlanPackageWitness, { kind: 'completion' }>,
+  options: { boundary?: 'prospective' | 'ready' } = {},
+): CompletionReadinessFinding[] {
+  const projection = getPlanPackageEvidenceProjection(packageId, revision);
+  if (!projection) throw new Error('package-ledger: package evidence unavailable');
+  if (declaration.kind !== 'code') return [];
+  for (const ref of declaration.implementationCommits) {
+    if (!FULL_OID.test(ref.commitOid)) throw new Error('package-ledger: full commit OID required');
+  }
+
+  const findings: CompletionReadinessFinding[] = [];
+  const latestGates = new Map(projection.latestGateAttempts.map((gate) => [gate.gateKey, gate]));
+  for (const gateKey of declaration.requiredGateKeys) {
+    if (latestGates.get(gateKey)?.outcome !== 'passed') {
+      findings.push({ kind: 'required-gate-not-passed', gateKey });
+    }
+  }
+  if (declaration.requireDispatch !== false && !projection.dispatchAttempts.some(
+    (attempt) => attempt.packageRevision === revision
+      && attempt.confirmedTurnId !== null && (attempt.state === 'delivered' || attempt.state === 'reconciled'),
+  )) findings.push({ kind: 'confirmed-dispatch-missing' });
+  if (declaration.implementationCommits.length === 0) {
+    findings.push({ kind: 'implementation-commit-required' });
+  }
+  for (const ref of declaration.implementationCommits) {
+    const record = getDb().prepare(
+      'SELECT 1 AS ok FROM commit_records WHERE repository_key = ? AND commit_oid = ?',
+    ).get(ref.repositoryKey, ref.commitOid);
+    if (!record) findings.push({ kind: 'implementation-commit-not-observed', commitOid: ref.commitOid });
+    const covered = declaration.requiredGateKeys.some((key) => {
+      const gate = latestGates.get(key);
+      return gate?.outcome === 'passed' && listPlanPackageGateCommitLinks(gate.id)
+        .some((link) => link.repositoryKey === ref.repositoryKey && link.commitOid === ref.commitOid);
+    });
+    if (!covered) findings.push({ kind: 'implementation-commit-not-gate-covered', commitOid: ref.commitOid });
+  }
+  if (options.boundary !== 'prospective') {
+    const finalization = projection.package.revision === revision
+      ? getDb().prepare(
+          `SELECT boundary_status, lifecycle_status FROM package_finalizations
+            WHERE package_id = ? AND package_revision = ? ORDER BY finalized_at DESC LIMIT 1`,
+        ).get(packageId, revision) as
+          { boundary_status: string; lifecycle_status: string } | undefined
+      : undefined;
+    if (!finalization || finalization.boundary_status !== 'ready'
+        || finalization.lifecycle_status !== (declaration.boundary === 'ready' ? 'active' : 'committed')) {
+      findings.push({ kind: 'finalization-boundary-unavailable' });
+    }
+  }
+  const latestDeployments = new Map(projection.latestDeploymentEvents.map((event) => [event.environment, event.state]));
+  for (const environment of declaration.deploymentEnvironments) {
+    const state = latestDeployments.get(environment);
+    if (state !== 'deployed' && state !== 'not_required') {
+      findings.push({ kind: 'deployment-state-missing', environment });
+    }
+  }
+  if (declaration.deploymentEnvironments.length === 0 || projection.latestDeploymentEvents.length === 0) {
+    findings.push({ kind: 'explicit-deployment-state-missing' });
+  }
+  const obligations = listPlanWpReachabilityObligations(packageId);
+  if (obligations.length > 0) {
+    if (!completionWitness.candidateTreeOid || !completionWitness.verificationTargetVersion
+        || !completionWitness.mutationBlobOidByObligationId) {
+      findings.push({ kind: 'reachability-witness-missing' });
+    } else {
+      const clearance = getPlanWpReachabilityClearance({
+        packageId,
+        candidateTreeOid: completionWitness.candidateTreeOid,
+        verificationTargetVersion: completionWitness.verificationTargetVersion,
+        mutationBlobOidByObligationId: completionWitness.mutationBlobOidByObligationId,
+      });
+      if (!clearance.cleared) findings.push({ kind: 'reachability-not-fresh' });
+    }
+  }
+  return findings;
+}
+
+function completionFindingMessage(finding: CompletionReadinessFinding, boundary: CompletionDeclaration): string {
+  switch (finding.kind) {
+    case 'required-gate-not-passed': return `package-ledger: required gate '${finding.gateKey}' has not passed`;
+    case 'confirmed-dispatch-missing': return 'package-ledger: confirmed dispatch required';
+    case 'implementation-commit-required': return 'package-ledger: code package requires implementation commits';
+    case 'implementation-commit-not-observed': return `package-ledger: implementation commit ${finding.commitOid} not observed`;
+    case 'implementation-commit-not-gate-covered': return `package-ledger: implementation commit ${finding.commitOid} is not gate-covered`;
+    case 'finalization-boundary-unavailable':
+      return `package-ledger: ${boundary.kind === 'code' ? boundary.boundary : 'ready'} finalization boundary required`;
+    case 'explicit-deployment-state-missing': return 'package-ledger: explicit deployment state required';
+    case 'deployment-state-missing': return `package-ledger: terminal deployment evidence required for ${finding.environment}`;
+    case 'reachability-witness-missing': return 'package-ledger: reachability freshness witness required';
+    case 'reachability-not-fresh': return 'package-ledger: reachability obligations are not freshly cleared';
+  }
+}
+
+export function requireCompletion(command: Extract<PlanPackageCommand, { type: 'complete' }>, witness: PlanPackageWitness): void {
   const completion = requireWitness(witness, 'completion');
   const projection = getPlanPackageEvidenceProjection(command.packageId, command.packageRevision);
   if (!projection) throw new Error('package-ledger: package evidence unavailable');
@@ -243,62 +352,10 @@ function requireCompletion(command: Extract<PlanPackageCommand, { type: 'complet
 
   const declaration = command.declaration;
   if (declaration.kind === 'code') {
-    requireGates(declaration.requiredGateKeys);
-    if (declaration.requireDispatch !== false && !projection.dispatchAttempts.some(
-      (attempt) => attempt.packageRevision === command.packageRevision
-        && attempt.confirmedTurnId !== null && (attempt.state === 'delivered' || attempt.state === 'reconciled'),
-    )) throw new Error('package-ledger: confirmed dispatch required');
-    if (declaration.implementationCommits.length === 0) {
-      throw new Error('package-ledger: code package requires implementation commits');
-    }
-    for (const ref of declaration.implementationCommits) {
-      if (!FULL_OID.test(ref.commitOid)) throw new Error('package-ledger: full commit OID required');
-      const record = getDb().prepare(
-        'SELECT 1 AS ok FROM commit_records WHERE repository_key = ? AND commit_oid = ?',
-      ).get(ref.repositoryKey, ref.commitOid);
-      if (!record) throw new Error(`package-ledger: implementation commit ${ref.commitOid} not observed`);
-      const covered = declaration.requiredGateKeys.some((key) => {
-        const gate = latestGates.get(key);
-        return gate?.outcome === 'passed' && listPlanPackageGateCommitLinks(gate.id)
-          .some((link) => link.repositoryKey === ref.repositoryKey && link.commitOid === ref.commitOid);
-      });
-      if (!covered) throw new Error(`package-ledger: implementation commit ${ref.commitOid} is not gate-covered`);
-    }
-    const finalization = projection.package.revision === command.packageRevision
-      ? getDb().prepare(
-          `SELECT boundary_status, lifecycle_status FROM package_finalizations
-            WHERE package_id = ? AND package_revision = ? ORDER BY finalized_at DESC LIMIT 1`,
-        ).get(command.packageId, command.packageRevision) as
-          { boundary_status: string; lifecycle_status: string } | undefined
-      : undefined;
-    if (!finalization || finalization.boundary_status !== 'ready'
-        || finalization.lifecycle_status !== (declaration.boundary === 'ready' ? 'active' : 'committed')) {
-      throw new Error(`package-ledger: ${declaration.boundary} finalization boundary required`);
-    }
-    const latestDeployments = new Map(projection.latestDeploymentEvents.map((event) => [event.environment, event.state]));
-    for (const environment of declaration.deploymentEnvironments) {
-      const state = latestDeployments.get(environment);
-      if (state !== 'deployed' && state !== 'not_required') {
-        throw new Error(`package-ledger: terminal deployment evidence required for ${environment}`);
-      }
-    }
-    if (declaration.deploymentEnvironments.length === 0 || projection.latestDeploymentEvents.length === 0) {
-      throw new Error('package-ledger: explicit deployment state required');
-    }
-    const obligations = listPlanWpReachabilityObligations(command.packageId);
-    if (obligations.length > 0) {
-        if (!completion.candidateTreeOid || !completion.verificationTargetVersion
-            || !completion.mutationBlobOidByObligationId) {
-          throw new Error('package-ledger: reachability freshness witness required');
-        }
-        const clearance = getPlanWpReachabilityClearance({
-          packageId: command.packageId,
-          candidateTreeOid: completion.candidateTreeOid,
-          verificationTargetVersion: completion.verificationTargetVersion,
-          mutationBlobOidByObligationId: completion.mutationBlobOidByObligationId,
-        });
-        if (!clearance.cleared) throw new Error('package-ledger: reachability obligations are not freshly cleared');
-    }
+    const finding = evaluateCompletionReadiness(
+      command.packageId, command.packageRevision, declaration, completion, { boundary: 'ready' },
+    )[0];
+    if (finding) throw new Error(completionFindingMessage(finding, declaration));
   } else if (declaration.kind === 'research') {
     requireGates(declaration.requiredGateKeys);
     const output = getPackageFinalization(declaration.outputFinalizationId);

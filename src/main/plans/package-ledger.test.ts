@@ -239,6 +239,163 @@ test('code completion refuses missing evidence, then requires gate-covered commi
   assert.equal(dbm.listPlanWpLifecycleEvents('pkg-code').filter((row) => (row.toState as string) === 'done').length, 1);
 });
 
+function seedReadinessObligation(packageId: string): void {
+  dbm.getDb().prepare(
+    `INSERT INTO plan_wp_reachability_obligations
+       (id, package_id, package_content_hash, schema_version, obligation_kind,
+        ordinal, declared_json, mutation_path, verification_target, expect_failure_id)
+     VALUES (?, ?, ?, 2, 'entry-link', 0, '{}', 'mutation.patch', 'target', 'failure')`,
+  ).run(`ob-${packageId}`, packageId, `hash-${packageId}`);
+}
+
+function seedReadinessFixture(packageId: string, options: {
+  commit?: boolean; gateLink?: boolean; dispatch?: boolean; boundary?: boolean;
+  deploymentEnvironment?: string | null; obligation?: boolean;
+} = {}): void {
+  const settings = {
+    commit: true, gateLink: true, dispatch: true, boundary: true,
+    deploymentEnvironment: 'production', obligation: false,
+    ...options,
+  };
+  seedPackage(packageId);
+  if (settings.commit) recordCommit(packageId);
+  passGate(packageId, 'production-entry', settings.gateLink ? OID_A : null, `gate-${packageId}`);
+  if (settings.dispatch) seedDispatch(packageId);
+  if (settings.boundary) seedFinalization(packageId);
+  if (settings.deploymentEnvironment) {
+    service.transitionPlanPackage(identity('deployment-observed', packageId, `deploy-${packageId}`), {
+      kind: 'deployment', actor: 'deployer', observedAt: 70,
+      environment: settings.deploymentEnvironment, state: 'deployed',
+      repositoryKey: 'repo', commitOid: OID_A,
+    });
+  }
+  if (settings.obligation) seedReadinessObligation(packageId);
+}
+
+function readinessDeclaration(over: Record<string, unknown> = {}): any {
+  return {
+    kind: 'code', requiredGateKeys: ['production-entry'],
+    implementationCommits: [{ repositoryKey: 'repo', commitOid: OID_A }],
+    boundary: 'ready', deploymentEnvironments: ['production'], behavior: true,
+    ...over,
+  };
+}
+
+test('REACHABILITY:wp3-readiness-parity keeps every code guard in evaluator/requireCompletion parity', () => {
+  const cases = [
+    {
+      id: 'required-gate',
+      setup: () => seedReadinessFixture('parity-required-gate'),
+      declaration: readinessDeclaration({ requiredGateKeys: ['production-entry', 'secondary'] }),
+      witness: completion(),
+      kind: 'required-gate-not-passed',
+    },
+    {
+      id: 'dispatch',
+      setup: () => seedReadinessFixture('parity-dispatch', { dispatch: false }),
+      declaration: readinessDeclaration(), witness: completion(), kind: 'confirmed-dispatch-missing',
+    },
+    {
+      id: 'commit-required',
+      setup: () => seedReadinessFixture('parity-commit-required'),
+      declaration: readinessDeclaration({ implementationCommits: [] }),
+      witness: completion(), kind: 'implementation-commit-required',
+    },
+    {
+      id: 'commit-observed',
+      setup: () => {
+        seedReadinessFixture('parity-commit-observed', { commit: false, gateLink: false });
+        const latestGate = dbm.listLatestPlanPackageGateAttempts('parity-commit-observed', 1)[0];
+        dbm.insertPlanPackageGateCommitLink({
+          gateAttemptId: latestGate.id, repositoryKey: 'repo', commitOid: '1'.repeat(40), createdAt: 51,
+        });
+      },
+      declaration: readinessDeclaration({
+        implementationCommits: [{ repositoryKey: 'repo', commitOid: '1'.repeat(40) }],
+      }),
+      witness: completion(), kind: 'implementation-commit-not-observed',
+    },
+    {
+      id: 'commit-covered',
+      setup: () => seedReadinessFixture('parity-commit-covered', { gateLink: false }),
+      declaration: readinessDeclaration(), witness: completion(), kind: 'implementation-commit-not-gate-covered',
+    },
+    {
+      id: 'boundary',
+      setup: () => seedReadinessFixture('parity-boundary', { boundary: false }),
+      declaration: readinessDeclaration(), witness: completion(), kind: 'finalization-boundary-unavailable',
+    },
+    {
+      id: 'explicit-deployment',
+      setup: () => seedReadinessFixture('parity-explicit-deployment'),
+      declaration: readinessDeclaration({ deploymentEnvironments: [] }),
+      witness: completion(), kind: 'explicit-deployment-state-missing',
+    },
+    {
+      id: 'deployment',
+      setup: () => seedReadinessFixture('parity-deployment', { deploymentEnvironment: 'staging' }),
+      declaration: readinessDeclaration(), witness: completion(), kind: 'deployment-state-missing',
+    },
+    {
+      id: 'reachability-witness',
+      setup: () => seedReadinessFixture('parity-reachability-witness', { obligation: true }),
+      declaration: readinessDeclaration(), witness: completion(), kind: 'reachability-witness-missing',
+    },
+    {
+      id: 'reachability-freshness',
+      setup: () => seedReadinessFixture('parity-reachability-freshness', { obligation: true }),
+      declaration: readinessDeclaration(),
+      witness: {
+        ...completion(), candidateTreeOid: OID_C, verificationTargetVersion: 'v1',
+        mutationBlobOidByObligationId: { 'ob-parity-reachability-freshness': OID_B },
+      },
+      kind: 'reachability-not-fresh',
+    },
+  ] as const;
+
+  for (const entry of cases) {
+    entry.setup();
+    const packageId = `parity-${entry.id}`;
+    const findings = service.evaluateCompletionReadiness(
+      packageId, 1, entry.declaration, entry.witness, { boundary: 'ready' },
+    );
+    // Each fixture supplies all other evidence; only the named guard can produce a finding.
+    assert.deepEqual(findings.map((finding) => finding.kind), [entry.kind], entry.id);
+    const command = { ...identity('complete', packageId, `complete-${entry.id}`), declaration: entry.declaration };
+    assert.throws(() => service.requireCompletion(command, entry.witness), entry.id);
+  }
+
+  seedReadinessFixture('parity-ready');
+  const declaration = readinessDeclaration();
+  assert.deepEqual(service.evaluateCompletionReadiness('parity-ready', 1, declaration, completion()), []);
+  assert.doesNotThrow(() => service.requireCompletion(
+    { ...identity('complete', 'parity-ready', 'complete-ready'), declaration }, completion(),
+  ));
+  const invalidOid = readinessDeclaration({
+    implementationCommits: [{ repositoryKey: 'repo', commitOid: 'short' }],
+  });
+  assert.throws(() => service.evaluateCompletionReadiness(
+    'parity-ready', 1, invalidOid, completion(),
+  ), /full commit OID required/);
+  assert.throws(() => service.requireCompletion(
+    { ...identity('complete', 'parity-ready', 'complete-invalid-oid'), declaration: invalidOid }, completion(),
+  ), /full commit OID required/);
+  assert.throws(() => service.evaluateCompletionReadiness(
+    'missing-package', 1, declaration, completion(),
+  ), /package evidence unavailable/);
+});
+
+test('prospective completion readiness omits only the not-yet-created finalization boundary', () => {
+  seedReadinessFixture('prospective-boundary', { boundary: false });
+  const declaration = readinessDeclaration();
+  assert.deepEqual(service.evaluateCompletionReadiness(
+    'prospective-boundary', 1, declaration, completion(), { boundary: 'prospective' },
+  ), []);
+  assert.deepEqual(service.evaluateCompletionReadiness(
+    'prospective-boundary', 1, declaration, completion(), { boundary: 'ready' },
+  ), [{ kind: 'finalization-boundary-unavailable' }]);
+});
+
 test('research and no-change completion refuse without their kind-specific evidence and succeed with it', () => {
   seedPackage('pkg-research');
   const research = {

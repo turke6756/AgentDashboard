@@ -687,6 +687,9 @@ const TESTS = [
   'dist/main/main/plans/planning-reader.test.js',
   // Save-card Stage ③ SC-WP-3E — plan-lens finalize IPC facade (WP-3Z registration).
   'dist/main/main/plans/plan-ipc.finalize.test.js',
+  // Landed-loop WP-3: shared completion readiness + accepted-commit enrichment.
+  'dist/main/main/plans/package-ledger.test.js',
+  'dist/main/main/plans/landed-finalize-enrichment.test.js',
   // Planning-surface Stage P2 (gate P2Z) — folder-per-plan ingest + proposals.
   // WP-P2A: proposals table schema/accessors.
   'dist/main/main/database.proposals.test.js',

@@ -282,6 +282,10 @@ export interface FinalizePlanItemDoneRequest {
   // ── freeze inputs (temp-index base + git seam) ──
   repoRoot: string;
   pinnedHeadOid: string | null;
+  /** Server-derived reachability witness for the exact accepted commit tree. */
+  candidateTreeOid?: string;
+  verificationTargetVersion?: string;
+  mutationBlobOidByObligationId?: Readonly<Record<string, string>>;
   gitExe?: string;
   deadlineAt?: number;
 }
@@ -310,6 +314,8 @@ export interface PlanFinalizeRoutes {
 
 export interface FinalizePlanItemDoneDeps {
   getPlanWorkPackage?: (id: string) => PlanWorkPackage | null;
+  getPlanArtifactId?: (planId: string) => string | null;
+  getCompletionDeclaration?: (packageId: string, packageRevision: number) => CompletionDeclaration;
   finalize?: (
     ...args: Parameters<typeof finalizePackage>
   ) => ReturnType<typeof finalizePackage>;
@@ -347,6 +353,7 @@ export async function finalizePlanItemDone(
   const getPkg = deps.getPlanWorkPackage ?? dbGetPlanWorkPackage;
   const finalize = deps.finalize ?? finalizePackage;
   const complete = deps.complete ?? transitionPlanPackage;
+  const completionDeclaration = deps.getCompletionDeclaration ?? codeCompletionDeclaration;
   const routeCompletion = deps.complete !== undefined || deps.finalize === undefined;
 
   const pkg = getPkg(request.planItemId);
@@ -376,9 +383,11 @@ export async function finalizePlanItemDone(
   };
   if (!routeCompletion) return finalize(finalizeRequest);
 
-  const planIdentity = getDb().prepare('SELECT artifact_id FROM plans WHERE id = ?').get(pkg.planId) as
-    { artifact_id: string | null } | undefined;
-  if (!planIdentity?.artifact_id || !pkg.intentId) {
+  const planArtifactId = deps.getPlanArtifactId
+    ? deps.getPlanArtifactId(pkg.planId)
+    : (getDb().prepare('SELECT artifact_id FROM plans WHERE id = ?').get(pkg.planId) as
+        { artifact_id: string | null } | undefined)?.artifact_id ?? null;
+  if (!planArtifactId || !pkg.intentId) {
     throw new Error('cannot finalize plan-package done: package lacks portable plan/intent identity');
   }
   return finalize(finalizeRequest, {
@@ -386,11 +395,14 @@ export async function finalizePlanItemDone(
       complete({
         type: 'complete', idempotencyKey: `finalization-complete:${finalization.id}`,
         workspaceId: pkg.workspaceId, planId: pkg.planId,
-        planArtifactId: planIdentity.artifact_id!, intentId: pkg.intentId!,
+        planArtifactId, intentId: pkg.intentId!,
         packageId: pkg.id, packageRevision: pkg.revision,
-        declaration: codeCompletionDeclaration(pkg.id, pkg.revision),
+        declaration: completionDeclaration(pkg.id, pkg.revision),
       }, {
         kind: 'completion', actor: request.finalizedBy, observedAt: finalization.finalizedAt,
+        candidateTreeOid: request.candidateTreeOid,
+        verificationTargetVersion: request.verificationTargetVersion,
+        mutationBlobOidByObligationId: request.mutationBlobOidByObligationId,
       });
     },
   });
