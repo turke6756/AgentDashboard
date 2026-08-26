@@ -149,7 +149,8 @@ test('schema has the exact dispatch-attempt columns and bounded states', () => {
     'id', 'package_id', 'plan_id', 'execution_run_id', 'target_agent_id',
     'requested_plan_item_id', 'confirmed_turn_id', 'state', 'created_at',
     'confirmed_at', 'reconciled_at', 'intent_id', 'package_revision',
-    'orchestration_id', 'target_session_id',
+    'orchestration_id', 'target_session_id', 'repository_key', 'branch_ref',
+    'dispatch_tip_oid', 'frozen_paths_json', 'capture_status', 'capture_failure',
   ]);
 });
 

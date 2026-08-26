@@ -29,6 +29,7 @@ import {
   getPlan,
   getWorkspace,
   getPlanWorkPackage,
+  listPlanWorkPackagePaths,
   insertPlanDispatchAttempt,
   markPlanDispatchAttemptFailed,
   planItemInPlan,
@@ -43,6 +44,7 @@ import {
   type PlanWpLifecycleEvent,
   type PlanWpTransitionState,
 } from '../database';
+import { runGit, type GitRunResult } from '../git-checkpoints/git-command';
 import { deletePlanBaselineRefs } from '../git-checkpoints/plan-baseline-refs';
 import { workspaceStateDir } from '../workspace-state-dir';
 import {
@@ -92,11 +94,58 @@ export interface PackageDispatchDeps {
   insertAttempt?: typeof insertPlanDispatchAttempt;
   markFailed?: typeof markPlanDispatchAttemptFailed;
   confirmAttempt?: typeof confirmPlanDispatchAttempt;
+  listPackagePaths?: typeof listPlanWorkPackagePaths;
+  runGit?: (cwd: string, args: string[]) => Promise<GitRunResult>;
   deliver: (input: {
     targetAgentId: string;
     promptText: string;
     dispatch: DispatchContext;
   }) => Promise<PackageDeliveryResult>;
+}
+
+type DispatchEnvelopeInput = {
+  repositoryKey: string | null;
+  branchRef: string | null;
+  dispatchTipOid: string | null;
+  frozenPaths: string[] | null;
+  captureStatus: 'captured' | 'unavailable';
+  captureFailure: string | null;
+};
+
+async function captureDispatchEnvelope(
+  packageId: string,
+  activity: NonNullable<ReturnType<typeof getActivePlanningActivityWorktree>>,
+  deps: PackageDispatchDeps,
+): Promise<DispatchEnvelopeInput> {
+  const unavailable = (reason: string): DispatchEnvelopeInput => ({
+    repositoryKey: null, branchRef: null, dispatchTipOid: null, frozenPaths: null,
+    captureStatus: 'unavailable', captureFailure: reason,
+  });
+  try {
+    const repositoryKey = activity.activityRepositoryKey;
+    if (!repositoryKey || /[\n\0]/.test(repositoryKey)) return unavailable('repository-key-invalid');
+    const frozenPaths = (deps.listPackagePaths ?? listPlanWorkPackagePaths)(packageId).map((entry) => entry.path);
+    if (frozenPaths.length === 0 || frozenPaths.some((value) => !value || /[\n\0]/.test(value))) {
+      return unavailable('frozen-paths-invalid');
+    }
+    const git = deps.runGit ?? ((cwd: string, args: string[]) => runGit(cwd, args, {
+      maxBytes: 64 * 1024, timeoutMs: 10_000, allowNonzero: true,
+    }));
+    const branch = await git(activity.path, ['symbolic-ref', '--quiet', 'HEAD']);
+    const branchRef = branch.code === 0 ? branch.stdout.trim() : '';
+    if (!branchRef.startsWith('refs/heads/') || /[\n\0]/.test(branchRef)) {
+      return unavailable('branch-ref-unavailable');
+    }
+    const tip = await git(activity.path, ['rev-parse', '--verify', `${branchRef}^{commit}`]);
+    const dispatchTipOid = tip.code === 0 ? tip.stdout.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{40}$/.test(dispatchTipOid)) return unavailable('dispatch-tip-unavailable');
+    return {
+      repositoryKey, branchRef, dispatchTipOid, frozenPaths,
+      captureStatus: 'captured', captureFailure: null,
+    };
+  } catch (err) {
+    return unavailable(`git-capture-failed:${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function normalizedBriefDigest(promptText: string): string {
@@ -244,6 +293,7 @@ export async function dispatchPlanPackage(
       return { ok: false, attempt: null, disposition: null, failure: 'target-agent-worktree-mismatch' };
     }
   }
+  const envelope = await captureDispatchEnvelope(input.packageId, activity, deps);
   let attempt = insertAttempt({
     id: input.attemptId,
     packageId: input.packageId,
@@ -252,6 +302,7 @@ export async function dispatchPlanPackage(
     targetAgentId: input.targetAgentId,
     requestedPlanItemId: input.planItemId,
     createdAt: input.createdAt,
+    ...envelope,
     intent: {
       id: `svi_${randomUUID()}`,
       workspaceId: pkg.workspaceId,

@@ -2847,6 +2847,12 @@ function initContextOptimizerSchema(): void {
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN package_revision INTEGER`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN orchestration_id TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN target_session_id TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN repository_key TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN branch_ref TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN dispatch_tip_oid TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN frozen_paths_json TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN capture_status TEXT NOT NULL DEFAULT 'unavailable'`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN capture_failure TEXT`); } catch { /* exists */ }
 
   db.exec(`
     UPDATE plan_dispatch_attempts
@@ -4893,9 +4899,6 @@ export function freezeContinuationAttemptBinding(
   if (binding.source !== 'continuation-carry') {
     throw new Error(`continuation attempt requires continuation-carry, got '${binding.source}'`);
   }
-  if (binding.planItemId !== null) {
-    throw new Error('plan_item_id is unsupported until plan_work_packages exists');
-  }
   const tx = db.transaction(() => {
     const attempt = queryOne(
       `SELECT plan_id, plan_item_id, plan_stamp_source, intent_id, dashboard_agent_id
@@ -4903,6 +4906,13 @@ export function freezeContinuationAttemptBinding(
       [attemptId],
     );
     if (!attempt) throw new Error(`freezeContinuationAttemptBinding: no attempt ${attemptId}`);
+    if (binding.planItemId !== null) {
+      const agent = getAgent(attempt.dashboard_agent_id);
+      if (!agent || binding.planId === null
+          || !planItemInPlan(agent.workspaceId, binding.planId, binding.planItemId)) {
+        throw new Error('continuation plan_item_id is not a work package in the bound plan');
+      }
+    }
     if (attempt.plan_stamp_source === 'legacy-unstamped') {
       const latestIntent = queryOne(
         `SELECT intent_id FROM turn_records
@@ -8969,6 +8979,12 @@ export interface PlanDispatchAttempt {
   packageRevision: number | null;
   orchestrationId: string | null;
   targetSessionId: string | null;
+  repositoryKey: string | null;
+  branchRef: string | null;
+  dispatchTipOid: string | null;
+  frozenPaths: string[] | null;
+  captureStatus: 'captured' | 'unavailable';
+  captureFailure: string | null;
   requestedPlanItemId: string;
   confirmedTurnId: string | null;
   state: PlanDispatchAttemptState;
@@ -8978,6 +8994,16 @@ export interface PlanDispatchAttempt {
 }
 
 function rowToPlanDispatchAttempt(row: any): PlanDispatchAttempt {
+  let frozenPaths: string[] | null = null;
+  try {
+    const parsed = row.frozen_paths_json == null ? null : JSON.parse(row.frozen_paths_json);
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) frozenPaths = parsed;
+  } catch { /* malformed historical rows remain unavailable */ }
+  const captured = row.capture_status === 'captured'
+    && typeof row.repository_key === 'string' && row.repository_key.length > 0
+    && typeof row.branch_ref === 'string' && row.branch_ref.startsWith('refs/heads/')
+    && typeof row.dispatch_tip_oid === 'string' && /^[0-9a-f]{40}$/.test(row.dispatch_tip_oid)
+    && frozenPaths !== null && frozenPaths.length > 0;
   return {
     id: row.id,
     packageId: row.package_id,
@@ -8988,6 +9014,12 @@ function rowToPlanDispatchAttempt(row: any): PlanDispatchAttempt {
     packageRevision: row.package_revision ?? null,
     orchestrationId: row.orchestration_id ?? null,
     targetSessionId: row.target_session_id ?? null,
+    repositoryKey: captured ? row.repository_key : null,
+    branchRef: captured ? row.branch_ref : null,
+    dispatchTipOid: captured ? row.dispatch_tip_oid : null,
+    frozenPaths: captured ? frozenPaths : null,
+    captureStatus: captured ? 'captured' : 'unavailable',
+    captureFailure: captured ? null : (row.capture_failure ?? 'dispatch envelope unavailable'),
     requestedPlanItemId: row.requested_plan_item_id,
     confirmedTurnId: row.confirmed_turn_id ?? null,
     state: row.state,
@@ -9010,6 +9042,12 @@ export function insertPlanDispatchAttempt(input: {
   createdAt: number;
   orchestrationId?: string | null;
   targetSessionId?: string | null;
+  repositoryKey?: string | null;
+  branchRef?: string | null;
+  dispatchTipOid?: string | null;
+  frozenPaths?: string[] | null;
+  captureStatus?: 'captured' | 'unavailable';
+  captureFailure?: string | null;
   intent?: {
     id: string;
     workspaceId: string;
@@ -9018,6 +9056,17 @@ export function insertPlanDispatchAttempt(input: {
     createdById: string | null;
   };
 }): PlanDispatchAttempt {
+  const captureStatus = input.captureStatus ?? 'unavailable';
+  const frozenPathsJson = input.frozenPaths == null ? null : JSON.stringify(input.frozenPaths);
+  if (captureStatus === 'captured') {
+    if (!input.repositoryKey || /[\n\0]/.test(input.repositoryKey)
+        || !input.branchRef?.startsWith('refs/heads/') || /[\n\0]/.test(input.branchRef)
+        || !input.dispatchTipOid || !/^[0-9a-f]{40}$/.test(input.dispatchTipOid)
+        || !input.frozenPaths?.length
+        || input.frozenPaths.some((value) => !value || /[\n\0]/.test(value))) {
+      throw new Error('insertPlanDispatchAttempt: captured envelope is incomplete or invalid');
+    }
+  }
   return getDb().transaction((): PlanDispatchAttempt => {
     const existing = getPlanDispatchAttempt(input.id);
     if (existing) {
@@ -9067,11 +9116,17 @@ export function insertPlanDispatchAttempt(input: {
        (id, package_id, plan_id, execution_run_id, target_agent_id,
           requested_plan_item_id, confirmed_turn_id, state, created_at,
           confirmed_at, reconciled_at, package_revision, orchestration_id,
-          target_session_id, intent_id)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL, NULL, ?, ?, ?, ?)`,
+          target_session_id, intent_id, repository_key, branch_ref,
+          dispatch_tip_oid, frozen_paths_json, capture_status, capture_failure)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.id, input.packageId, input.planId, input.executionRunId,
         input.targetAgentId, input.requestedPlanItemId, input.createdAt, pkg.revision,
-        input.orchestrationId ?? null, input.targetSessionId ?? null, intentId],
+        input.orchestrationId ?? null, input.targetSessionId ?? null, intentId,
+        captureStatus === 'captured' ? input.repositoryKey ?? null : null,
+        captureStatus === 'captured' ? input.branchRef ?? null : null,
+        captureStatus === 'captured' ? input.dispatchTipOid ?? null : null,
+        captureStatus === 'captured' ? frozenPathsJson : null,
+        captureStatus, input.captureFailure ?? null],
     );
     return getPlanDispatchAttempt(input.id)!;
   })();

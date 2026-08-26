@@ -780,6 +780,8 @@ const TESTS = [
   'dist/main/main/git-checkpoints/dispatch-default.activePlan.test.js',
   // WP-P5-dispatch: package dispatch + persisted attempt/reconciliation (confirmed_turn_id).
   'dist/main/main/plans/package-dispatch.test.js',
+  // plan_16910c64 WP-1: MCP -> HTTP -> launchAgent durable dispatch envelope.
+  'dist/main/main/plans/dispatch-envelope.test.js',
   // Planning-surface Stage P6 (gate P6Z) — live mission board.
   // WP-SEP: stamped-evidence projection (live-activity + durable-trail base).
   'dist/main/main/plans/stamped-evidence-projection.test.js',

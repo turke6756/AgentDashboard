@@ -2375,6 +2375,9 @@ export class ApiServer {
       if (input && input.plan_id !== undefined && input.planId === undefined) {
         input.planId = input.plan_id;
       }
+      if (input && input.plan_item_id !== undefined && input.planItemId === undefined) {
+        input.planItemId = input.plan_item_id;
+      }
       if (input && input.plan_section !== undefined && input.planSection === undefined) {
         input.planSection = input.plan_section;
       }

@@ -28,6 +28,7 @@ function getOrchestrationToolDefinitions() {
           mode: { type: 'string', enum: ['worker', 'supervisor-peer'], description: 'Launch class (default: worker). `worker` launches an owned child under you. `supervisor-peer` launches a TOP-LEVEL peer supervisor with NO owner edge (renders un-nested), with the supervisor toolset and .lares/supervisor cwd. Peer mode is the ONLY way to launch into a workspace other than your own (pass `workspace_id`), and cross-workspace peer launch requires supervisor privilege. `supervisor-peer` is incompatible with `is_researcher`/`persona`.' },
           fresh_session: { type: 'boolean', description: 'Codex-only hint (default: false). When true, the agent launches without `codex resume` so the codex CLI mints a fresh conversation rather than inheriting any prior rollout in this workspace. The dashboard still discovers and binds the new session id. Use this when you want a clean context but parallel agents in the same workspace. No-op for non-codex providers.' },
           plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: `${PLAN_ID_DESCRIPTION} Frozen onto the agent at launch and injected as AGENT_DASHBOARD_PLAN_ID.` },
+          plan_item_id: { type: 'string', description: 'Work-package id to dispatch. Requires plan_id and an active plan execution run.' },
           section_anchor: { type: 'string', description: 'Planning-surface rail: the section this agent is dispatched to update. Frozen at launch and injected as AGENT_DASHBOARD_PLAN_SECTION. The plan-bound brief must identify the owned write target and required durable writeback.' },
         },
         required: ['title'],
@@ -238,7 +239,9 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
       // so the launch rail injects AGENT_DASHBOARD_PLAN_ID/_PLAN_SECTION at both
       // env sites. The route validates plan_id existence (400 on unknown).
       if (args.plan_id !== undefined) input.planId = args.plan_id;
+      if (args.plan_item_id !== undefined) input.planItemId = args.plan_item_id;
       if (args.section_anchor !== undefined) input.planSection = args.section_anchor;
+      if (args.plan_item_id !== undefined && args.prompt) input.initialUserPrompt = args.prompt;
       // Researcher role-lane: a hardcoded app primitive. AgentSupervisor keeps
       // the requested supported provider, derives .lares/researcher/<provider>/
       // as the cwd, and applies only the controls that provider actually has.
@@ -265,6 +268,10 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
         input.owner_agent_id = process.env.AGENT_DASHBOARD_SELF_ID;
       }
       const agent = await apiRequest('POST', '/api/agents', input);
+      if (agent && agent.ok === false) {
+        const created = agent.createdAgentId ? ` (created agent ${agent.createdAgentId}; prompt not delivered)` : '';
+        return { content: [{ type: 'text', text: `Launch refused: ${agent.failure}${created}` }] };
+      }
       let text = `Launched agent "${agent.title}" (${agent.id}) in workspace ${agent.workspaceId}`;
       if (args.is_researcher) {
         const provider = agent.provider || args.provider || 'claude';
@@ -272,7 +279,7 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
           + `Settings and session history are shared with your own ${provider} environment.`;
       }
       if (args.template_id) text += `\nTemplate: ${args.template_id}`;
-      if (args.prompt) {
+      if (args.prompt && args.plan_item_id === undefined) {
         // Poll until the worker leaves 'launching'/'working' before posting the
         // prompt. The /input route returns 409 in those states (the per-agent
         // input queue blocks reentry), and a Claude cold-start needs >8s of

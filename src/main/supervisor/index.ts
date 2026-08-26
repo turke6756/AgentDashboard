@@ -220,7 +220,12 @@ import {
   saveAgentContextStats, getAgentContextStats, deleteAgentContextStats,
   getDb,
   bindPromotionAgentAtomic,
+  assignPlanWorkPackage,
+  getActivePlanExecutionRun,
+  getActivePlanningActivityWorktree,
+  getPlanWorkPackage,
 } from '../database';
+import { dispatchPlanPackage, reconcilePackageDispatches } from '../plans/plan-lifecycle';
 import { detectPathType, windowsToWslPath, uncToWslPath, wslToWindowsPath } from '../path-utils';
 import { getScriptPath, getLaresNativeDir } from './paths';
 import {
@@ -3390,6 +3395,34 @@ export class AgentSupervisor extends EventEmitter {
       }
     }
 
+    // WP-1 dispatch envelope: all package/run/activity refusals happen before
+    // createAgent. The activity worktree is server-authoritative and replaces a
+    // caller-supplied cwd for this launch.
+    let packageLaunch: {
+      packageId: string;
+      planId: string;
+      executionRunId: string;
+      activityPath: string;
+    } | null = null;
+    if (resolvedInput.planItemId !== undefined) {
+      const pkg = getPlanWorkPackage(resolvedInput.planItemId);
+      const activeRun = resolvedInput.planId ? getActivePlanExecutionRun(resolvedInput.planId) : null;
+      const activity = resolvedInput.planId ? getActivePlanningActivityWorktree(resolvedInput.planId) : null;
+      if (!pkg || !resolvedInput.planId || pkg.planId !== resolvedInput.planId
+          || pkg.workspaceId !== resolvedInput.workspaceId || pkg.state !== 'ready'
+          || !activeRun || !activity || activity.executionRunId !== activeRun.id) {
+        return { ok: false, failure: 'package-not-ready' } as never;
+      }
+      if (pkg.assigneeAgentId !== null) {
+        return { ok: false, failure: 'package-already-assigned' } as never;
+      }
+      packageLaunch = {
+        packageId: pkg.id, planId: pkg.planId, executionRunId: activeRun.id,
+        activityPath: activity.path,
+      };
+      resolvedInput.workingDirectory = activity.path;
+    }
+
     const requestedProvider = resolvedInput.provider || 'claude';
     if (requestedProvider === 'gemini') {
       throw Object.assign(
@@ -3596,7 +3629,8 @@ export class AgentSupervisor extends EventEmitter {
     const sep = pathType === 'windows' ? path.sep : '/';
     const normRoot = normalizeLaunchPath(workDir);
     const normExplicitCwd = explicitAgentCwd ? normalizeLaunchPath(explicitAgentCwd) : null;
-    const shouldDeriveLane = !explicitAgentCwd || normExplicitCwd === normRoot;
+    const shouldDeriveLane = packageLaunch === null
+      && (!explicitAgentCwd || normExplicitCwd === normRoot);
 
     let agentCwd = explicitAgentCwd || workDir;
     if (shouldDeriveLane && resolvedInput.persona) {
@@ -3627,7 +3661,9 @@ export class AgentSupervisor extends EventEmitter {
     // unrelated absolute path.
     {
       const normCwd = normalizeLaunchPath(agentCwd);
-      if (normCwd !== normRoot && !normCwd.startsWith(normRoot + sep)) {
+      const isAuthoritativeActivityCwd = packageLaunch !== null
+        && normCwd === normalizeLaunchPath(packageLaunch.activityPath);
+      if (!isAuthoritativeActivityCwd && normCwd !== normRoot && !normCwd.startsWith(normRoot + sep)) {
         throw new Error(
           `agentCwd '${agentCwd}' resolves outside workspace root '${workDir}'`,
         );
@@ -3636,7 +3672,7 @@ export class AgentSupervisor extends EventEmitter {
       // A caller may revive/fork/resurrect an agent directly into its canonical
       // lane. Reject every other explicit path containing a Lares state-dir
       // segment so a typo cannot become a nested scaffold or an incidental cwd.
-      if (explicitAgentCwd) {
+      if (explicitAgentCwd && !isAuthoritativeActivityCwd) {
         const comparableCwd = pathType === 'windows' ? normCwd.toLowerCase() : normCwd;
         const stateSegments = comparableCwd.split(/[\\/]+/);
         const laresName = pathType === 'windows' ? LARES_DIR_NAME.toLowerCase() : LARES_DIR_NAME;
@@ -3753,6 +3789,53 @@ export class AgentSupervisor extends EventEmitter {
           ts: new Date().toISOString(),
         })
       : createAgent(agentCreateInput);
+
+    let packageDispatch: DispatchContext | undefined;
+    if (packageLaunch) {
+      try {
+        assignPlanWorkPackage(packageLaunch.packageId, agent.id, Date.now());
+      } catch {
+        return {
+          ok: false, failure: 'assignment-failed', createdAgentId: agent.id, delivered: false,
+        } as never;
+      }
+      try {
+        const recorded = await dispatchPlanPackage({
+          attemptId: `dispatch_${uuidv4()}`,
+          lifecycleEventId: `dispatch-confirm_${uuidv4()}`,
+          packageId: packageLaunch.packageId,
+          planId: packageLaunch.planId,
+          planItemId: packageLaunch.packageId,
+          targetAgentId: agent.id,
+          ownerAgentId,
+          promptText: resolvedInput.initialUserPrompt ?? '',
+          createdAt: Date.now(),
+        }, {
+          deliver: async ({ promptText, dispatch }) => {
+            packageDispatch = dispatch;
+            if (promptText) {
+              this.pendingInitialPrompts.set(agent.id, {
+                text: promptText,
+                expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
+                dispatch,
+              });
+            }
+            return { disposition: 'delivered-unconfirmed' };
+          },
+        });
+        if (!recorded.ok || !recorded.attempt || !packageDispatch) {
+          return {
+            ok: false, failure: 'dispatch-attempt-insert-failed',
+            createdAgentId: agent.id, delivered: false,
+          } as never;
+        }
+      } catch {
+        return {
+          ok: false, failure: 'dispatch-attempt-insert-failed',
+          createdAgentId: agent.id, delivered: false,
+        } as never;
+      }
+    }
 
     // WP-A.2 (F9) — if this launch is joining a team, record the membership now,
     // BEFORE the launch functions read `getTeamMembership` to inject the team
@@ -3925,12 +4008,15 @@ export class AgentSupervisor extends EventEmitter {
     // researchers, and Claude keep the plain initialUserPrompt path.
     let stagedSupervisorMemory = false;
     if (provider !== 'claude') {
-      stagedSupervisorMemory = this.stageSupervisorMemoryInjection(agent.id, resolvedInput.initialUserPrompt ?? '');
+      stagedSupervisorMemory = this.stageSupervisorMemoryInjection(
+        agent.id, resolvedInput.initialUserPrompt ?? '', packageDispatch,
+      );
     }
-    if (!stagedSupervisorMemory && resolvedInput.initialUserPrompt) {
+    if (!packageLaunch && !stagedSupervisorMemory && resolvedInput.initialUserPrompt) {
       this.pendingInitialPrompts.set(agent.id, {
         text: resolvedInput.initialUserPrompt,
         expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
+        ...(packageDispatch ? { dispatch: packageDispatch } : {}),
       });
     }
 
@@ -8209,11 +8295,13 @@ export class AgentSupervisor extends EventEmitter {
     if (!this.hasRunner(agentId)) return;
     this.pendingInitialPrompts.delete(agentId);
     if (pending.continuation) this.beginContinuationOrientation(agentId, pending.continuation);
-    this.sendInput(agentId, pending.text, {}, pending.dispatch).catch((err: Error) => {
-      if (pending.continuation) this.failContinuationOrientation(agentId, err.message);
-      console.error(`[initial-prompt] Delivery to ${agentId} failed:`, err);
-      this.emit('sendInputError', { agentId, error: err.message });
-    });
+    this.sendInput(agentId, pending.text, {}, pending.dispatch)
+      .then(() => { reconcilePackageDispatches(); })
+      .catch((err: Error) => {
+        if (pending.continuation) this.failContinuationOrientation(agentId, err.message);
+        console.error(`[initial-prompt] Delivery to ${agentId} failed:`, err);
+        this.emit('sendInputError', { agentId, error: err.message });
+      });
   }
 
   /** WP-C — the provider-neutral supervisor memory-index projection for ONE

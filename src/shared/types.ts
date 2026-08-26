@@ -1088,6 +1088,9 @@ export interface CreateWorkspaceInput {
 
 export interface LaunchAgentInput {
   workspaceId: string;
+  /** Package-bound launches persist their dispatch envelope before the initial
+   * user prompt becomes deliverable. Requires planId. */
+  planItemId?: string;
   title: string;
   roleDescription?: string;
   workingDirectory?: string;
