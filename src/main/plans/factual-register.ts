@@ -39,6 +39,12 @@ export interface FactualRegisterDeps {
   checkArc(planId: string, arcPath: string, states: ReadonlyMap<string, MissionBoardPackageState>): Promise<ArcStatusCheckResult>;
   evaluateReadiness: typeof evaluateCompletionReadiness;
   cacheKey(planId: string, arcPath: string | null): Promise<string>;
+  now(): number;
+}
+
+export interface FactualRegisterRuntimeDeps {
+  readArcFile(arcPath: string): Promise<Buffer>;
+  now(): number;
 }
 
 const cache = new Map<string, { key: string; value: PlanFactualRegister }>();
@@ -67,7 +73,11 @@ function countStampedTurns(planId: string, packageId: string): number {
   return Number(row.count);
 }
 
-async function defaultCacheKey(planId: string, arcPath: string | null): Promise<string> {
+async function defaultCacheKey(
+  planId: string,
+  arcPath: string | null,
+  runtime: FactualRegisterRuntimeDeps,
+): Promise<string> {
   const db = getDb();
   // These append-only maxima/counts are evidence high-water marks. State-bearing
   // rows include their mutable terminal columns so reconciliation updates also
@@ -114,7 +124,7 @@ async function defaultCacheKey(planId: string, arcPath: string | null): Promise<
   }
   let arcDigest = 'absent';
   if (arcPath) {
-    try { arcDigest = digest(await readFile(arcPath)); } catch { arcDigest = 'unavailable'; }
+    try { arcDigest = digest(await runtime.readArcFile(arcPath)); } catch { arcDigest = 'unavailable'; }
   }
   return digest(JSON.stringify({ marks, tips, arcDigest }));
 }
@@ -131,6 +141,7 @@ function latestAcceptedLinks(projection: PlanPackageEvidenceProjection) {
 function readiness(
   projection: PlanPackageEvidenceProjection,
   evaluate: typeof evaluateCompletionReadiness,
+  now: () => number,
 ): CompletionReadinessFinding[] {
   const latestIds = new Set(projection.latestGateAttempts.map((gate) => gate.id));
   const commits = projection.gateCommitLinks.filter((link) => latestIds.has(link.gateAttemptId));
@@ -146,7 +157,7 @@ function readiness(
     behavior: true,
   };
   const witness: Extract<PlanPackageWitness, { kind: 'completion' }> = {
-    kind: 'completion', actor: 'factual-register', observedAt: Date.now(),
+    kind: 'completion', actor: 'factual-register', observedAt: now(),
   };
   try { return evaluate(projection.package.id, projection.package.revision, declaration, witness, { boundary: 'prospective' }); }
   catch (error) {
@@ -177,7 +188,14 @@ function projectLanded(
   };
 }
 
-function defaults(): FactualRegisterDeps {
+export function createFactualRegisterDeps(
+  overrides: Partial<FactualRegisterRuntimeDeps> = {},
+): FactualRegisterDeps {
+  const runtime: FactualRegisterRuntimeDeps = {
+    readArcFile: readFile,
+    now: Date.now,
+    ...overrides,
+  };
   return {
     listPackages: listPlanWorkPackagesOrdered,
     discoverAsserted: discoverAssertedDispatchEvidence,
@@ -187,13 +205,14 @@ function defaults(): FactualRegisterDeps {
     resolveArcPath,
     checkArc: checkArcAgainstLedger,
     evaluateReadiness: evaluateCompletionReadiness,
-    cacheKey: defaultCacheKey,
+    cacheKey: (planId, arcPath) => defaultCacheKey(planId, arcPath, runtime),
+    now: runtime.now,
   };
 }
 
 export async function projectPlanFactualRegister(
   planId: string,
-  deps: FactualRegisterDeps = defaults(),
+  deps: FactualRegisterDeps = createFactualRegisterDeps(),
 ): Promise<PlanFactualRegister> {
   const arcPath = deps.resolveArcPath(planId);
   const key = await deps.cacheKey(planId, arcPath);
@@ -237,7 +256,7 @@ export async function projectPlanFactualRegister(
         if (declaration && pkg.state !== 'done') findings.push({
           kind: 'accepted-not-landed', commitOid,
           gateAttemptId: declaration.gate.id,
-          unmet: readiness(projection, deps.evaluateReadiness),
+          unmet: readiness(projection, deps.evaluateReadiness, deps.now),
         });
         else if (!declaration) findings.push({ kind: 'commit-without-declaration', commitOid });
       }

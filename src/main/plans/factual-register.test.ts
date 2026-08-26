@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,9 +14,11 @@ import type {
   PlanPackageEvidenceProjection,
   PlanWorkPackage,
 } from '../database';
+import * as database from '../database';
 import { checkArcAgainstLedger } from './arc-status-check';
 import {
   clearFactualRegisterCache,
+  createFactualRegisterDeps,
   projectPlanFactualRegister,
   type FactualRegisterDeps,
 } from './factual-register';
@@ -73,6 +75,7 @@ function deps(input: {
     checkArc: checkArcAgainstLedger,
     evaluateReadiness: () => [{ kind: 'explicit-deployment-state-missing' }],
     cacheKey: async () => `${Math.random()}`,
+    now: () => 1,
   };
 }
 
@@ -160,20 +163,56 @@ test('cache invalidates on commit-link high-water while package updatedAt is unc
 });
 
 test('cache invalidates on a same-size ARC content digest change', async () => {
+  if (process.env.LARES_FACTUAL_REAL_DB_CHILD !== '1') {
+    execFileSync(path.resolve('node_modules', 'electron', 'dist', 'electron.exe'), [__filename], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', LARES_FACTUAL_REAL_DB_CHILD: '1' },
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    return;
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'factual-cache-arc-'));
-  const arcPath = path.join(root, 'ARC.md');
-  fs.writeFileSync(arcPath, 'alpha');
-  clearFactualRegisterCache();
-  let projections = 0;
-  const base = deps({ arcPath });
-  const cacheDeps: FactualRegisterDeps = {
-    ...base,
-    getProjection: (...args) => { projections += 1; return base.getProjection(...args); },
-    cacheKey: async () => createHash('sha256').update(fs.readFileSync(arcPath)).digest('hex'),
-  };
-  await projectPlanFactualRegister('plan-cache-arc', cacheDeps);
-  fs.writeFileSync(arcPath, 'omega');
-  await projectPlanFactualRegister('plan-cache-arc', cacheDeps);
-  assert.equal(projections, 2, 'same byte length must not preserve the cached register');
-  fs.rmSync(root, { recursive: true, force: true });
+  const priorAppData = process.env.APPDATA;
+  process.env.APPDATA = path.join(root, 'appdata');
+  try {
+    database.initDatabase();
+    const workspace = database.createWorkspace({ title: 'cache', path: root, pathType: 'windows' });
+    const plan = database.createOrRevivePlan({
+      workspaceId: workspace.id, path: 'plan.md', format: 'structured', runState: 'ready',
+    });
+    const folderRelPath = '.lares/plans/cache-production';
+    database.getDb().prepare(
+      'UPDATE plans SET artifact_id = ?, folder_rel_path = ? WHERE id = ?',
+    ).run('plan_16910c64', folderRelPath, plan.id);
+    database.upsertPlanWorkPackage({
+      id: 'WP-5-cache', workspaceId: workspace.id, planId: plan.id, intentId: 'intent-cache',
+      schemaVersion: 2, contentHash: 'hash', projectionStatus: 'synced', title: 'cache',
+      acceptanceCondition: null, state: 'executing', assigneeAgentId: null, revision: 1,
+      createdAt: 1, updatedAt: 1,
+    });
+    const folder = path.join(root, '.lares', 'plans', 'cache-production');
+    fs.mkdirSync(folder, { recursive: true });
+    const arcPath = path.join(folder, 'ARC.md');
+    const prefix = '## Package status\n| WP | State |\n| --- | --- |\n';
+    const firstArc = `${prefix}| WP-5-cache | ready |\n`;
+    const secondArc = `${prefix}| WP-5-cache | done  |\n`;
+    assert.equal(Buffer.byteLength(firstArc), Buffer.byteLength(secondArc));
+
+    fs.writeFileSync(arcPath, firstArc);
+    clearFactualRegisterCache();
+    const productionDeps = createFactualRegisterDeps({ now: () => 1 });
+    const first = await projectPlanFactualRegister(plan.id, productionDeps);
+    fs.writeFileSync(arcPath, secondArc);
+    const second = await projectPlanFactualRegister(plan.id, productionDeps);
+    const arcClaim = (register: PlanFactualRegister) => register.packages[0].findings
+      .find((finding) => finding.kind === 'arc-contradicts-ledger')?.arcClaim;
+    assert.equal(arcClaim(first), 'ready');
+    assert.equal(arcClaim(second), 'done',
+      'REACHABILITY:wpf2-same-size-cache production digest must invalidate equal-length ARC edits');
+  } finally {
+    database.closeDatabaseForTests();
+    if (priorAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = priorAppData;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
