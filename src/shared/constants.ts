@@ -951,9 +951,21 @@ window. Use the \`gate-landed-work-package\` skill for read-back. A worker's
 
 Workers must never push, tag, amend, rebase, or reset, and must use only the
 app-bundled local Git. No remote is configured or required.`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V28.replace(
+export const SUPERVISOR_AGENT_MD_V29 = SUPERVISOR_AGENT_MD_V28.replace(
   SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_OLD,
   SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW,
+);
+
+const SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW = `${SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW}
+
+Launch every plan-bound worker through \`launch_agent\` with both the plan rail's
+\`plan_id\` and the work package's \`plan_item_id\`; those fields create the
+immutable dispatch envelope before prompt delivery. After the worker lands, a
+package is accepted only through \`gate_landed_work_package\`, using the recorded
+dispatch attempt and the sole matching commit OID.`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V29.replace(
+  SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW,
+  SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
@@ -8860,7 +8872,7 @@ If scope changes, revise and re-freeze the dispatch evidence before acceptance.
 `;
 
 // WP-2b (plan_d85b0a78) — name the first-parent traversal command explicitly.
-export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2 =
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1.replace(
     `3. Enumerate every commit on the first-parent range
    \`DISPATCH_TIP..GATE_TIP\`. Do not use \`git log -1\`, \`-n 200\`, or an
@@ -8868,8 +8880,28 @@ export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
     `3. Enumerate every commit with
    \`git rev-list --first-parent DISPATCH_TIP..GATE_TIP\`. Plain \`A..B\` is NOT a
    first-parent walk. Do not use \`git log -1\`, \`-n 200\`, or an unbounded
-   history query.`,
+    history query.`,
   );
+
+// WP-7 (plan_16910c64) — close the manual read-back loop through the shipped
+// supervisor-only declaration seam without weakening any completion guard.
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
+  `${SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2.trimEnd()}
+
+6. After the manual read-back above succeeds — including the immutable dispatch
+   record, complete first-parent range, exactly one matching \`Plan\`/\`WP\`
+   commit, frozen changed-path equality, and CRLF-parity checks — call the
+   supervisor-only \`gate_landed_work_package\` tool. Pass the plan rail DB UUID
+   as \`plan_id\`, the dispatch record's \`dispatch_attempt_id\`, and the sole
+   matching commit's full 40-hex OID as \`commit_oid\`. The service re-derives
+   branch, dispatch tip, package revision, and frozen paths from that attempt;
+   do not supply or substitute current-state authority.
+7. Accept the package only when the tool returns \`outcome: 'landed'\`. An
+   \`accepted-not-landed\` result means observation and supervisor acceptance are
+   durable but its typed \`unmet\` evidence is still owed. Supply that deployment,
+   finalization-boundary, or reachability evidence and retry the same gate call;
+   never bypass or relax a completion guard.
+`;
 
 // WP-1 (plan_d85b0a78) — frozen managed scaffold file v1.
 export const LAND_WORK_PACKAGE_SKILL_MD_V1 = `---
