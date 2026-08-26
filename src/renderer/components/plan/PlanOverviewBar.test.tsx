@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlanDocumentsModel } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import { useMissionBoardStore } from '../../stores/mission-board-store';
 import PlanDocumentTabs from './PlanDocumentTabs';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,6 +30,7 @@ describe('PlanOverviewBar through PlanDocumentTabs (WP-9)', () => {
   let root: Root;
 
   beforeEach(async () => {
+    useMissionBoardStore.setState({ boards: {}, factualRegisters: {} });
     (window as unknown as { api: unknown }).api = {
       plans: {
         documents: vi.fn(async () => model),
@@ -49,9 +51,21 @@ describe('PlanOverviewBar through PlanDocumentTabs (WP-9)', () => {
           updatedAt: '2026-08-09T00:00:00Z',
         })),
         listIntents: vi.fn(async () => null),
+        factualRegister: vi.fn(async () => ({
+          packages: [],
+          arcFindings: [{ kind: 'arc-status-not-declared' }, { kind: 'arc-status-unparseable' }],
+        })),
       },
     };
-    useDashboardStore.setState({ agents: [], selectedWorkspaceId: 'ws-1' } as never);
+    useDashboardStore.setState({
+      agents: [],
+      selectedWorkspaceId: 'ws-1',
+      openTabs: [{
+        id: 'plan:plan-1', kind: 'plan', planId: 'plan-1', workspaceId: 'ws-1',
+        rootDirectory: 'C:/workspace', filePath: '', pathType: 'windows', label: 'Plan',
+      }],
+      activeTabId: 'plan:plan-1',
+    } as never);
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -97,5 +111,17 @@ describe('PlanOverviewBar through PlanDocumentTabs (WP-9)', () => {
     await act(async () => toggle.click());
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(content.hidden).toBe(true);
+  });
+
+  it('renders both plan-level ARC disagreements above the overview document', async () => {
+    const toggle = document.querySelector('[data-testid="plan-overview-toggle"]') as HTMLButtonElement;
+    await act(async () => {
+      toggle.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-testid="overview-factual-finding-arc-status-not-declared"]')?.textContent)
+      .toContain('package status is not declared');
+    expect(document.querySelector('[data-testid="overview-factual-finding-arc-status-unparseable"]')?.textContent)
+      .toContain('package status roster is unparseable');
   });
 });

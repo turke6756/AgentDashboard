@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { MissionBoardCard } from '../../../shared/types';
+import type { FactualFinding, MissionBoardCard, PlanFactualRegister } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { useMissionBoardStore } from '../../stores/mission-board-store';
 
@@ -30,6 +30,9 @@ let fileHistory: ReturnType<typeof vi.fn>;
 let diff: ReturnType<typeof vi.fn>;
 let boardList: ReturnType<typeof vi.fn>;
 let getReviewProjection: ReturnType<typeof vi.fn>;
+let factualRegister: ReturnType<typeof vi.fn>;
+
+const EMPTY_REGISTER: PlanFactualRegister = { packages: [], arcFindings: [] };
 
 function activeCard(): MissionBoardCard {
   return {
@@ -43,7 +46,7 @@ function activeCard(): MissionBoardCard {
     revision: 2,
     createdAt: 1,
     updatedAt: 2,
-    plannedPaths: [],
+    plannedPaths: [{ path: 'src/renderer/components/plan/MissionBoard.tsx', intentKind: 'edit' }],
     liveActivity: [{
       turnId: 'turn-9',
       workspaceId: 'ws-1',
@@ -64,19 +67,29 @@ function activeCard(): MissionBoardCard {
   };
 }
 
-async function renderBoard(listCards = vi.fn(async () => [activeCard()])): Promise<void> {
+async function renderBoard(
+  listCards = vi.fn(async () => [activeCard()]),
+  readFactualRegister = factualRegister,
+): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(<MissionBoard planId="plan-1" paneVisible listCards={listCards} />);
+    root!.render(
+      <MissionBoard
+        planId="plan-1"
+        paneVisible
+        listCards={listCards}
+        readFactualRegister={readFactualRegister}
+      />,
+    );
     await Promise.resolve();
     await Promise.resolve();
   });
 }
 
 beforeEach(() => {
-  useMissionBoardStore.setState({ boards: {} });
+  useMissionBoardStore.setState({ boards: {}, factualRegisters: {} });
   useDashboardStore.setState({ openTabs: [], activeTabId: null });
   fileHistory = vi.fn(async () => ({ workspaceId: 'ws-1', path: '', versions: [] }));
   diff = vi.fn(async () => ({
@@ -87,9 +100,10 @@ beforeEach(() => {
   }));
   boardList = vi.fn(async () => [activeCard()]);
   getReviewProjection = vi.fn(async () => ({ workspaceId: 'ws-1', planId: 'plan-1' }));
+  factualRegister = vi.fn(async () => EMPTY_REGISTER);
   (window as unknown as { api: unknown }).api = {
     checkpoints: { fileHistory, diff },
-    plans: { boardList, getReviewProjection },
+    plans: { boardList, getReviewProjection, factualRegister },
   };
 });
 
@@ -108,6 +122,106 @@ describe('MissionBoard', () => {
     expect(card.getAttribute('data-live-active')).toBe('true');
     expect(card.getAttribute('data-state')).toBe('executing');
     expect(card.getAttribute('data-state')).not.toBe('done');
+  });
+
+  it('REACHABILITY:wp6-three-signals renders distinct in-flight, asserted, and landed rows without collapsing candidates', async () => {
+    const register: PlanFactualRegister = {
+      packages: [{
+        packageId: 'WP-P6C',
+        asserted: [{
+          packageId: 'WP-P6C', dispatchAttemptId: 'dispatch-1', scanStatus: 'truncated',
+          candidates: [{
+            commitOid: '1111111111111111111111111111111111111111', subject: 'candidate one',
+            verifiedTrailer: null, scopeOmittedTrailer: null, changedPathsMatchFrozen: true,
+          }, {
+            commitOid: '2222222222222222222222222222222222222222', subject: 'candidate two',
+            verifiedTrailer: null, scopeOmittedTrailer: null, changedPathsMatchFrozen: true,
+          }],
+        }, {
+          packageId: 'WP-P6C', dispatchAttemptId: 'dispatch-2', scanStatus: 'unavailable',
+          candidates: [], refusal: 'branch-unresolvable',
+        }],
+        landed: {
+          state: 'done', finalizationId: 'finalization-7', finalizedAt: 7, finalizedBy: 'supervisor',
+          declarationCommitOids: ['3333333333333333333333333333333333333333'], gateAttemptIds: ['gate-7'],
+        },
+        findings: [],
+      }],
+      arcFindings: [],
+    };
+    await renderBoard(undefined, vi.fn(async () => register));
+
+    const signals = container!.querySelector('[data-testid="package-signals-WP-P6C"]')!;
+    const rows = [...signals.querySelectorAll('[data-signal]')];
+    expect(rows.map((row) => row.getAttribute('data-signal')))
+      .toEqual(['in-flight', 'asserted', 'landed']);
+    expect(rows[0].textContent).toContain('src/renderer/components/plan/MissionBoard.tsx');
+    expect(rows[1].textContent).toContain('Commit present, awaiting gate');
+    expect(rows[1].textContent).toContain('1111111111111111111111111111111111111111');
+    expect(rows[1].textContent).toContain('2222222222222222222222222222222222222222');
+    expect(rows[1].textContent).toContain('truncated');
+    expect(rows[1].textContent).toContain('unavailable: branch-unresolvable');
+    expect(rows[2].textContent).toContain('Finalization finalization-7');
+    expect(rows[2].textContent).toContain('333333333333');
+  });
+
+  const factualFindingFixtures: Array<[FactualFinding, string]> = [
+    [{ kind: 'commit-without-declaration', commitOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, 'has no completion declaration'],
+    [{ kind: 'accepted-not-landed', commitOid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', gateAttemptId: 'gate-2', unmet: [{ kind: 'reachability-witness-missing' }] }, 'reachability-witness-missing'],
+    [{ kind: 'declaration-without-witness' }, 'without a witnessed package turn'],
+    [{ kind: 'declaration-commit-mismatch', declared: 'cccccccccccccccccccccccccccccccccccccccc', asserted: 'dddddddddddddddddddddddddddddddddddddddd' }, 'asserted evidence shows'],
+    [{ kind: 'done-without-finalization-citation' }, 'done without a projectable finalization citation'],
+    [{ kind: 'arc-contradicts-ledger', wpId: 'WP-P6C', arcClaim: 'done', ledgerState: 'executing' }, 'ledger state is executing'],
+    [{ kind: 'arc-row-duplicate', wpId: 'WP-P6C' }, 'duplicate rows'],
+    [{ kind: 'evidence-unavailable', scope: 'asserted', detail: 'scan capped' }, 'Asserted evidence unavailable: scan capped'],
+  ];
+
+  it.each(factualFindingFixtures)('renders factual disagreement $kind as a visible row', async (finding, expected) => {
+    const register: PlanFactualRegister = {
+      packages: [{ packageId: 'WP-P6C', asserted: [], landed: null, findings: [finding] }],
+      arcFindings: [],
+    };
+    await renderBoard(undefined, vi.fn(async () => register));
+    const row = container!.querySelector(`[data-testid="factual-finding-${finding.kind}"]`)!;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain(expected);
+  });
+
+  it('keeps a done badge when the async register reports no finalization citation', async () => {
+    const doneCard = { ...activeCard(), state: 'done' as const, liveActivity: [] };
+    const register: PlanFactualRegister = {
+      packages: [{
+        packageId: 'WP-P6C', asserted: [], landed: null,
+        findings: [{ kind: 'done-without-finalization-citation' }],
+      }],
+      arcFindings: [],
+    };
+    await renderBoard(vi.fn(async () => [doneCard]), vi.fn(async () => register));
+    const card = container!.querySelector('[data-testid="work-package-card-WP-P6C"]')!;
+    expect(card.getAttribute('data-state')).toBe('done');
+    expect(card.querySelector('.work-package-card__state')?.textContent).toContain('done');
+    expect(container!.querySelector('[data-testid="factual-finding-done-without-finalization-citation"]')).not.toBeNull();
+  });
+
+  it('loads the factual register separately and leaves board cards visible when that load fails', async () => {
+    const failure = vi.fn(async () => { throw new Error('git projection failed'); });
+    await renderBoard(boardList, failure);
+    expect(boardList).toHaveBeenCalledWith('plan-1');
+    expect(failure).toHaveBeenCalledWith('plan-1');
+    expect(container!.querySelector('[data-testid="work-package-card-WP-P6C"]')).not.toBeNull();
+    expect(container!.textContent).toContain('Factual register unavailable: git projection failed');
+  });
+
+  it('renders both plan-level ARC findings as visible disagreement rows', async () => {
+    const register: PlanFactualRegister = {
+      packages: [],
+      arcFindings: [{ kind: 'arc-status-not-declared' }, { kind: 'arc-status-unparseable' }],
+    };
+    await renderBoard(undefined, vi.fn(async () => register));
+    expect(container!.querySelector('[data-finding="arc-status-not-declared"]')?.textContent)
+      .toContain('package status is not declared');
+    expect(container!.querySelector('[data-finding="arc-status-unparseable"]')?.textContent)
+      .toContain('package status roster is unparseable');
   });
 
   it('summarizes landed, remaining, and archived package states with the shared rollup semantics', async () => {

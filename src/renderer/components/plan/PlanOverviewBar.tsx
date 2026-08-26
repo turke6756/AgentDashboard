@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useDashboardStore } from '../../stores/dashboard-store';
+import { usePlanFactualRegister, type PlanFactualRegisterRead } from '../../stores/mission-board-store';
+import { planArcFindingText } from './MissionBoard';
 
 interface PlanOverviewBarProps {
   body: string | null;
@@ -23,6 +26,15 @@ export default function PlanOverviewBar({
 }: PlanOverviewBarProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const hasOverview = Boolean(body && body.trim().length > 0);
+  const activePlanId = useDashboardStore((state) => {
+    const activeTab = state.openTabs.find((tab) => tab.id === state.activeTabId);
+    return activeTab?.kind === 'plan' ? activeTab.planId : null;
+  });
+  const readRegister: PlanFactualRegisterRead = React.useCallback((planId) => {
+    const factualRegister = window.api.plans.factualRegister;
+    return factualRegister ? factualRegister(planId) : Promise.resolve(null);
+  }, []);
+  const factual = usePlanFactualRegister(activePlanId, Boolean(activePlanId), readRegister);
 
   return (
     <div data-testid="plan-overview-bar">
@@ -52,6 +64,22 @@ export default function PlanOverviewBar({
         )}
       </div>
       <div id="plan-overview-bar-content" hidden={!expanded} className="px-6 pb-3 pt-1">
+        {(factual.register?.arcFindings ?? []).map((finding) => (
+          <div
+            className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
+            data-testid={`overview-factual-finding-${finding.kind}`}
+            data-finding={finding.kind}
+            role="status"
+            key={finding.kind}
+          >
+            {planArcFindingText(finding)}
+          </div>
+        ))}
+        {factual.error && (
+          <div className="mb-2 text-[11px] text-amber-300" role="status">
+            Factual register unavailable: {factual.error}
+          </div>
+        )}
         {hasOverview ? (
           <div className="prose-custom min-w-0 max-w-3xl text-[13px] text-gray-300" data-testid="plan-tab-overview-body">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{body!}</ReactMarkdown>

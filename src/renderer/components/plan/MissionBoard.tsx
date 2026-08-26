@@ -5,10 +5,19 @@ import type {
   MissionBoardDurableTurn,
   MissionBoardLiveActivity,
   MissionBoardPackageTimeline,
+  FactualFinding,
+  PackageFactualRegister,
+  PlanArcFinding,
   PlanCandidatePreviewResponse,
+  PlanFactualRegister,
 } from '../../../shared/types';
 import { derivePackageRollup, type PackageStateCounts } from '../../../shared/package-rollup';
-import { useMissionBoardPolling, type MissionBoardList } from '../../stores/mission-board-store';
+import {
+  useMissionBoardPolling,
+  usePlanFactualRegister,
+  type MissionBoardList,
+  type PlanFactualRegisterRead,
+} from '../../stores/mission-board-store';
 import AttributionPanel from '../checkpoints/AttributionPanel';
 import FileHistoryView from '../checkpoints/FileHistoryView';
 import RestoreDialog from '../checkpoints/RestoreDialog';
@@ -27,6 +36,10 @@ const listMissionBoardCards: MissionBoardList = (planId) =>
 const listMissionBoardTimeline = (planId: string) => {
   const boardTimeline = (window.api.plans as Partial<BoardPlansApi>).boardTimeline;
   return boardTimeline ? boardTimeline(planId) : Promise.resolve([]);
+};
+const readPlanFactualRegister: PlanFactualRegisterRead = (planId) => {
+  const factualRegister = (window.api.plans as Partial<BoardPlansApi>).factualRegister;
+  return factualRegister ? factualRegister(planId) : Promise.resolve(null);
 };
 
 interface FileHistorySelection extends WorkPackageFileSelection {
@@ -48,6 +61,7 @@ export interface MissionBoardProps {
   paneVisible: boolean;
   listCards?: MissionBoardList;
   listTimeline?: (planId: string) => Promise<MissionBoardPackageTimeline[] | null>;
+  readFactualRegister?: PlanFactualRegisterRead;
 }
 
 interface CommitSelection {
@@ -81,13 +95,109 @@ function restoreSummary(turn: MissionBoardDurableTurn): CheckpointTurnSummary {
   };
 }
 
+function shortOid(oid: string): string {
+  return oid.slice(0, 12);
+}
+
+function factualFindingText(finding: FactualFinding): string {
+  switch (finding.kind) {
+    case 'commit-without-declaration':
+      return `Commit ${shortOid(finding.commitOid)} has no completion declaration.`;
+    case 'accepted-not-landed':
+      return `Commit ${shortOid(finding.commitOid)} was accepted by gate ${finding.gateAttemptId}, but is not landed: ${finding.unmet.map((item) => item.kind).join(', ') || 'completion is pending'}.`;
+    case 'declaration-without-witness':
+      return 'Completion was declared without a witnessed package turn.';
+    case 'declaration-commit-mismatch':
+      return `Declaration cites ${shortOid(finding.declared)}, but asserted evidence shows ${shortOid(finding.asserted)}.`;
+    case 'done-without-finalization-citation':
+      return 'Integrity: package is done without a projectable finalization citation.';
+    case 'arc-contradicts-ledger':
+      return `ARC claims ${finding.wpId} is ${finding.arcClaim}; ledger state is ${finding.ledgerState}.`;
+    case 'arc-row-duplicate':
+      return `ARC contains duplicate rows for ${finding.wpId}.`;
+    case 'evidence-unavailable':
+      return `${finding.scope === 'arc' ? 'ARC' : 'Asserted'} evidence unavailable: ${finding.detail}.`;
+  }
+}
+
+export function planArcFindingText(finding: PlanArcFinding): string {
+  return finding.kind === 'arc-status-not-declared'
+    ? 'ARC disagreement: package status is not declared.'
+    : 'ARC disagreement: package status roster is unparseable.';
+}
+
+function witnessedPlannedPaths(card: MissionBoardCard): string[] {
+  const planned = new Set(card.plannedPaths.map((entry) => entry.path));
+  return [...new Set(card.liveActivity
+    .filter((activity) => activity.isActive)
+    .flatMap((activity) => activity.touched.map((touch) => touch.path))
+    .filter((path) => planned.has(path)))];
+}
+
+function PackageFactualSignals({
+  card,
+  factual,
+}: {
+  card: MissionBoardCard;
+  factual: PackageFactualRegister | null;
+}): React.ReactElement {
+  const inFlightPaths = witnessedPlannedPaths(card);
+  const asserted = factual?.asserted ?? [];
+  const candidates = asserted.flatMap((attempt) => attempt.candidates);
+  const scanMarkers = asserted.filter((attempt) => attempt.scanStatus !== 'complete');
+  const landed = factual?.landed ?? null;
+
+  return (
+    <div className="work-package-card__signals" data-testid={`package-signals-${card.packageId}`}>
+      <div className="work-package-card__signal work-package-card__signal--in-flight" data-signal="in-flight">
+        <strong>In flight</strong>
+        <span>{inFlightPaths.length > 0 ? inFlightPaths.join(', ') : 'No witnessed planned paths'}</span>
+      </div>
+      <div className="work-package-card__signal work-package-card__signal--asserted" data-signal="asserted">
+        <strong>Asserted</strong>
+        <span>{candidates.length > 0 ? 'Commit present, awaiting gate' : 'No commit present'}</span>
+        {candidates.map((candidate) => <code key={candidate.commitOid}>{candidate.commitOid}</code>)}
+        {scanMarkers.map((attempt) => (
+          <em key={attempt.dispatchAttemptId}>
+            {attempt.scanStatus}{attempt.refusal ? `: ${attempt.refusal}` : ''}
+          </em>
+        ))}
+      </div>
+      <div className="work-package-card__signal work-package-card__signal--landed" data-signal="landed">
+        <strong>Landed</strong>
+        {landed ? (
+          <span>
+            Finalization {landed.finalizationId} · declaration commits{' '}
+            {landed.declarationCommitOids.length > 0
+              ? landed.declarationCommitOids.map(shortOid).join(', ')
+              : 'none'}
+          </span>
+        ) : <span>No finalization citation</span>}
+      </div>
+      {(factual?.findings ?? []).map((finding, index) => (
+        <div
+          className="work-package-card__finding"
+          data-testid={`factual-finding-${finding.kind}`}
+          data-finding={finding.kind}
+          role="status"
+          key={`${finding.kind}:${index}`}
+        >
+          {factualFindingText(finding)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function MissionBoard({
   planId,
   paneVisible,
   listCards = listMissionBoardCards,
   listTimeline = listMissionBoardTimeline,
+  readFactualRegister = readPlanFactualRegister,
 }: MissionBoardProps): React.ReactElement {
   const { cards, error, loading } = useMissionBoardPolling(planId, paneVisible, listCards);
+  const factual = usePlanFactualRegister(planId, paneVisible, readFactualRegister);
   const [fileHistory, setFileHistory] = useState<FileHistorySelection | null>(null);
   const [turnDiff, setTurnDiff] = useState<TurnDiffSelection | null>(null);
   const [restore, setRestore] = useState<RestoreSelection | null>(null);
@@ -123,6 +233,10 @@ export default function MissionBoard({
   const timelineByPackage = useMemo(
     () => new Map(timeline.map((entry) => [entry.packageId, entry.events])),
     [timeline],
+  );
+  const factualByPackage = useMemo(
+    () => new Map((factual.register?.packages ?? []).map((entry) => [entry.packageId, entry])),
+    [factual.register],
   );
 
   const markDone = useCallback(async (card: MissionBoardCard) => {
@@ -204,23 +318,35 @@ export default function MissionBoard({
 
       {error && <div className="mission-board__error" role="alert">Board unavailable: {error}</div>}
       {actionError && <div className="mission-board__error" role="alert">{actionError}</div>}
+      {factual.error && (
+        <div className="mission-board__factual-warning" role="status">
+          Factual register unavailable: {factual.error}
+        </div>
+      )}
+      {(factual.register?.arcFindings ?? []).map((finding) => (
+        <div className="mission-board__arc-finding" data-finding={finding.kind} role="status" key={finding.kind}>
+          {planArcFindingText(finding)}
+        </div>
+      ))}
       {!loading && !error && cards.length === 0 && (
         <div className="mission-board__empty">No work packages yet.</div>
       )}
 
       <div className="mission-board__grid">
         {cards.map((card) => (
-          <WorkPackageCard
-            key={card.packageId}
-            card={card}
-            onOpenFile={(selection) => openFile(card, selection)}
-            onOpenTurnDiff={(activity) => openTurnDiff(card, activity)}
-            onRestoreTurn={(turn) => setRestore({ workspaceId: turn.workspaceId || card.workspaceId, turn })}
-            timeline={timelineByPackage.get(card.packageId) ?? []}
-            onMarkDone={() => { void markDone(card); }}
-            onCommitPackage={() => { void prepareCommit(card); }}
-            actionPending={actionPending?.packageId === card.packageId ? actionPending.action : null}
-          />
+          <div className="mission-board__card-frame" key={card.packageId}>
+            <WorkPackageCard
+              card={card}
+              onOpenFile={(selection) => openFile(card, selection)}
+              onOpenTurnDiff={(activity) => openTurnDiff(card, activity)}
+              onRestoreTurn={(turn) => setRestore({ workspaceId: turn.workspaceId || card.workspaceId, turn })}
+              timeline={timelineByPackage.get(card.packageId) ?? []}
+              onMarkDone={() => { void markDone(card); }}
+              onCommitPackage={() => { void prepareCommit(card); }}
+              actionPending={actionPending?.packageId === card.packageId ? actionPending.action : null}
+            />
+            <PackageFactualSignals card={card} factual={factualByPackage.get(card.packageId) ?? null} />
+          </div>
         ))}
       </div>
 

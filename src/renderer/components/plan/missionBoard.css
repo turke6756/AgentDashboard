@@ -35,6 +35,19 @@
   margin-top: 10px;
 }
 
+.mission-board__card-frame {
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 2%);
+}
+
+.mission-board__card-frame > .work-package-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .work-package-card {
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 8px;
@@ -42,6 +55,41 @@
   padding: 10px;
   transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
+
+.work-package-card__signals {
+  display: grid;
+  gap: 5px;
+  padding: 0 10px 10px;
+}
+
+.work-package-card__signal {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 4px 8px;
+  border-left: 3px solid;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 10px;
+}
+
+.work-package-card__signal strong { text-transform: uppercase; }
+.work-package-card__signal code,
+.work-package-card__signal em { grid-column: 2; overflow-wrap: anywhere; }
+.work-package-card__signal--in-flight { border-color: rgb(96 165 250); background: rgb(59 130 246 / 9%); color: rgb(191 219 254); }
+.work-package-card__signal--asserted { border-color: rgb(250 204 21); background: rgb(234 179 8 / 8%); color: rgb(254 240 138); }
+.work-package-card__signal--landed { border-color: rgb(74 222 128); background: rgb(34 197 94 / 8%); color: rgb(187 247 208); }
+.work-package-card__finding,
+.mission-board__arc-finding,
+.mission-board__factual-warning {
+  border: 1px solid rgb(251 191 36 / 30%);
+  border-radius: 4px;
+  background: rgb(245 158 11 / 9%);
+  padding: 6px 8px;
+  color: rgb(253 230 138);
+  font-size: 10px;
+}
+.mission-board__arc-finding,
+.mission-board__factual-warning { margin-top: 7px; }
 
 .work-package-card--active {
   border-color: rgb(59 130 246 / 70%);
