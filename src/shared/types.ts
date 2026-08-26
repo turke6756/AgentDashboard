@@ -519,6 +519,22 @@ export interface PlanLedgerProjection {
 export type MissionBoardPackageState =
   | 'ready' | 'executing' | 'blocked' | 'done' | 'archived';
 
+export interface AssertedDispatchEvidence {
+  packageId: string;
+  dispatchAttemptId: string;
+  scanStatus: 'complete' | 'truncated' | 'unavailable';
+  candidates: AssertedCommitCandidate[];
+  refusal?: 'dispatch-evidence-missing' | 'branch-unresolvable' | 'dispatch-tip-not-ancestor';
+}
+
+export interface AssertedCommitCandidate {
+  commitOid: string;
+  subject: string;
+  verifiedTrailer: string | null;
+  scopeOmittedTrailer: string | null;
+  changedPathsMatchFrozen: boolean | null;
+}
+
 export interface MissionBoardTouch {
   path: string;
   op: string;
