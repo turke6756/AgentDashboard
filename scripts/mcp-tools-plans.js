@@ -98,6 +98,23 @@ const FOCUS_DEFS = [
   },
 ];
 
+const GATE_LANDED_DEF = {
+  name: 'gate_landed_work_package',
+  description:
+    'Verify and accept the exactly matching landed commit for one immutable dispatch attempt. ' +
+    'The server derives repository, branch, paths, package revision, and witness from the attempt; ' +
+    'the validated calling supervisor must be the plan responsible supervisor. Supervisor-only.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: PLAN_ID_DESCRIPTION },
+      dispatch_attempt_id: { type: 'string', minLength: 1, description: 'Immutable plan dispatch attempt id.' },
+      commit_oid: { type: 'string', pattern: '^[0-9a-fA-F]{40}$', description: 'Exact full Git commit OID to verify.' },
+    },
+    required: ['plan_id', 'dispatch_attempt_id', 'commit_oid'],
+  },
+};
+
 // record_planning_event — planning-surface DEMAND PROBE (WP-P0PRE). A lightweight
 // telemetry ping (NOT a plan write): it records that an agent authored a proposal
 // or requested a promotion, so the revamp can measure voluntary demand. Advertised
@@ -127,7 +144,7 @@ const recordPlanningEventDef = {
 };
 
 function getPlansToolDefinitions() {
-  return [...READ_DEFS, ...FOCUS_DEFS, recordPlanningEventDef];
+  return [...READ_DEFS, ...FOCUS_DEFS, GATE_LANDED_DEF, recordPlanningEventDef];
 }
 
 /** WP-A4 (D-1): the read-only subset advertised to the worker `plans-read`
@@ -198,6 +215,15 @@ async function handlePlansToolCall(name, args, apiRequest) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
+    case 'gate_landed_work_package': {
+      const result = await apiRequest('POST', '/api/plans/gate-landed', {
+        plan_id: args.plan_id,
+        dispatch_attempt_id: args.dispatch_attempt_id,
+        commit_oid: args.commit_oid,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     default:
       return null;
   }
@@ -205,7 +231,7 @@ async function handlePlansToolCall(name, args, apiRequest) {
 
 /** Write tools advertised only in the supervisor `plans` toolset — never reachable
  *  from the read-only `plans-read` worker lane. */
-const PLANS_WRITE_ONLY = new Set(['focus_plan', 'unfocus_plan']);
+const PLANS_WRITE_ONLY = new Set(['focus_plan', 'unfocus_plan', 'gate_landed_work_package']);
 
 /** WP-A4 (D-1): dispatcher for the read-only `plans-read` toolset. Supervisor-only
  *  focus controls are never advertised to this toolset; this belt-and-suspenders

@@ -112,6 +112,8 @@ import { listPromotedPlanFolders } from './plans/plan-ipc';
 import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
+import { gateLandedWorkPackage } from './plans/gate-landed-service';
+import type { GateLandedWorkPackageArgs } from '../shared/types';
 import { isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
   resolveRequestedPlanBinding,
@@ -4097,6 +4099,22 @@ export class ApiServer {
       if (!deletion.plan) throw Object.assign(new Error('Plan not found'), { statusCode: 404 });
       if (deletion.changed) this.notifyPlanBadgesInvalidated(deletion.plan.workspaceId);
       return { ok: true, planId: deletion.plan.id, deletedAt: deletion.plan.deletedAt };
+    }
+
+    // Landed-loop WP-4: the body identifies the claim only. Authorization comes
+    // exclusively from resolveIdentity's validated X-Supervisor-Id capability.
+    if (method === 'POST' && path === '/api/plans/gate-landed') {
+      const b = JSON.parse(await readBody(req)) as Partial<GateLandedWorkPackageArgs>;
+      if (typeof b.plan_id !== 'string' || typeof b.dispatch_attempt_id !== 'string'
+          || typeof b.commit_oid !== 'string') {
+        throw Object.assign(new Error('plan_id, dispatch_attempt_id, and commit_oid are required'),
+          { statusCode: 400 });
+      }
+      return gateLandedWorkPackage({
+        plan_id: b.plan_id,
+        dispatch_attempt_id: b.dispatch_attempt_id,
+        commit_oid: b.commit_oid,
+      }, identity.supervisorId ?? '');
     }
 
     // ── Supervisor-focus routes (B2 P1-03) — explicit supervisor_id; NO ACL (R1/R4) ──

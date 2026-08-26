@@ -6403,6 +6403,36 @@ export interface ProposalReadResult {
   sizeBytes: number;
 }
 
+// Landed-loop WP-4: supervisor declaration transport. All authority beyond these
+// three opaque claims is derived server-side from the immutable dispatch attempt.
+export interface GateLandedWorkPackageArgs {
+  plan_id: string;
+  dispatch_attempt_id: string;
+  commit_oid: string;
+}
+
+export type GateLandedRefusal =
+  | 'not-responsible-supervisor'
+  | 'dispatch-attempt-not-found'
+  | 'attempt-plan-mismatch'
+  | 'attempt-unconfirmed'
+  | 'stale-attempt-revision'
+  | 'dispatch-evidence-unavailable'
+  | 'branch-unresolvable'
+  | 'dispatch-tip-not-ancestor'
+  | 'no-matching-commit'
+  | 'multiple-matching-commits'
+  | 'commit-oid-not-the-match'
+  | 'changed-paths-diverge'
+  | 'commit-witness-unavailable';
+
+export type GateLandedResult =
+  | { outcome: 'landed'; packageId: string; commitOid: string;
+      gateAttemptId: string; finalizationId: string }
+  | { outcome: 'accepted-not-landed'; packageId: string; commitOid: string;
+      gateAttemptId: string; unmet: import('../main/plans/package-ledger').CompletionReadinessFinding[] }
+  | { outcome: 'refused'; reason: GateLandedRefusal };
+
 declare global {
   interface Window {
     api: IpcApi;

@@ -690,6 +690,8 @@ const TESTS = [
   // Landed-loop WP-3: shared completion readiness + accepted-commit enrichment.
   'dist/main/main/plans/package-ledger.test.js',
   'dist/main/main/plans/landed-finalize-enrichment.test.js',
+  // Landed-loop WP-4: supervisor MCP -> HTTP -> service -> ledger declaration gate.
+  'dist/main/main/plans/gate-landed-service.test.js',
   // Planning-surface Stage P2 (gate P2Z) — folder-per-plan ingest + proposals.
   // WP-P2A: proposals table schema/accessors.
   'dist/main/main/database.proposals.test.js',

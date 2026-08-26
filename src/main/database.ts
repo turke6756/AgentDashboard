@@ -9137,6 +9137,51 @@ export function getPlanDispatchAttempt(id: string): PlanDispatchAttempt | null {
   return row ? rowToPlanDispatchAttempt(row) : null;
 }
 
+/** Find the turn that can witness a landed declaration. The dispatch's prompt
+ * turn alone is insufficient: the turn must either already be associated with
+ * the exact commit or witness every frozen path. This is an unbounded ledger
+ * read, not the activity board's newest-N projection. */
+export function findGateLandedWitnessTurn(input: {
+  planId: string;
+  packageId: string;
+  intentId: string;
+  targetAgentId: string;
+  targetSessionId: string;
+  repositoryKey: string;
+  commitOid: string;
+  frozenPaths: readonly string[];
+}): TurnRecord | null {
+  const rows = queryAll(
+    `SELECT t.*,
+            EXISTS (
+              SELECT 1 FROM commit_turn_links ctl
+               WHERE ctl.repository_key = ? AND ctl.commit_oid = ? AND ctl.turn_id = t.id
+            ) AS commit_linked
+       FROM turn_records t
+      WHERE t.plan_id = ? AND t.plan_item_id = ? AND t.intent_id = ?
+        AND t.agent_id = ? AND t.session_id = ?
+      ORDER BY t.turn_seq DESC`,
+    [input.repositoryKey, input.commitOid, input.planId, input.packageId,
+      input.intentId, input.targetAgentId, input.targetSessionId],
+  ) as Array<Record<string, unknown> & { commit_linked: number }>;
+  const frozen = new Set(input.frozenPaths);
+  for (const row of rows) {
+    if (Number(row.commit_linked) === 1) return rowToTurnRecord(row);
+    let touched: unknown = null;
+    try { touched = typeof row.touched === 'string' ? JSON.parse(row.touched) : null; } catch { touched = null; }
+    if (!Array.isArray(touched)) continue;
+    const witnessed = new Set(touched.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const path = (entry as { path?: unknown }).path;
+      return typeof path === 'string' ? [path] : [];
+    }));
+    if (frozen.size > 0 && [...frozen].every((path) => witnessed.has(path))) {
+      return rowToTurnRecord(row);
+    }
+  }
+  return null;
+}
+
 export function listOpenPlanDispatchAttempts(): PlanDispatchAttempt[] {
   return queryAll(
     `SELECT * FROM plan_dispatch_attempts
@@ -9378,6 +9423,21 @@ export function listPlanPackageGateAttempts(
       ORDER BY gate_key, attempt_no, created_at, id`,
     [packageId, packageRevision],
   ).map(rowToPlanPackageGateAttempt);
+}
+
+/** Allocate the next append-only gate attempt number. Callers invoke this from
+ * the same SQLite transaction that inserts the gate row; the UNIQUE constraint
+ * remains the race arbiter. */
+export function nextPlanPackageGateAttemptNo(
+  packageId: string, packageRevision: number, gateKey: string,
+): number {
+  const row = queryOne(
+    `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS next_attempt
+       FROM plan_package_gate_attempts
+      WHERE package_id = ? AND package_revision = ? AND gate_key = ?`,
+    [packageId, packageRevision, gateKey],
+  );
+  return Number(row?.next_attempt ?? 1);
 }
 
 /** DB-only current gate projection. Absence remains an empty result, never pass. */

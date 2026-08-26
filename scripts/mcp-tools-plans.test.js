@@ -17,10 +17,11 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Tool surface ────────────────────────────────────────────────────────────
 
-test('the plans toolset exposes progress read, focus verbs, and the demand probe', () => {
+test('the plans toolset exposes progress read, focus verbs, landed gate, and the demand probe', () => {
   const names = getPlansToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
     'focus_plan',
+    'gate_landed_work_package',
     'list_plans',
     'read_plan_progress',
     'record_planning_event',
@@ -28,10 +29,11 @@ test('the plans toolset exposes progress read, focus verbs, and the demand probe
   ]);
 });
 
-test('focus_plan / unfocus_plan are supervisor-only — absent from the plans-read subset', () => {
+test('write tools are supervisor-only — absent from the plans-read subset', () => {
   const readNames = getPlansReadToolDefinitions().map((t) => t.name);
   assert.ok(!readNames.includes('focus_plan'), 'plans-read must NOT advertise focus_plan');
   assert.ok(!readNames.includes('unfocus_plan'), 'plans-read must NOT advertise unfocus_plan');
+  assert.ok(!readNames.includes('gate_landed_work_package'), 'plans-read must NOT advertise gate_landed_work_package');
 });
 
 test('F-F: NO migrate_plan_markdown tool, and nothing advertises markdown-migration input', () => {
@@ -223,6 +225,33 @@ test('mcp-dashboard.js registers plans as a lazy toolset', () => {
   assert.match(dashboardSrc, /handlePlansToolCall/);
   assert.match(dashboardSrc, /getPlansReadToolDefinitions/);
   assert.match(dashboardSrc, /handlePlansReadToolCall/);
+});
+
+test('gate_landed_work_package POSTs only the three claims to the authenticated route', async () => {
+  const oid = 'a'.repeat(40);
+  const api = fakeApi({
+    'POST /api/plans/gate-landed': { outcome: 'accepted-not-landed', packageId: 'WP-4', commitOid: oid },
+  });
+  const r = await handlePlansToolCall('gate_landed_work_package', {
+    plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: oid,
+    repository_key: 'caller-must-not-control-this',
+  }, api);
+  assert.deepStrictEqual(api.calls, [{
+    method: 'POST', path: '/api/plans/gate-landed', body: {
+      plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: oid,
+    },
+  }]);
+  assert.match(r.content[0].text, /accepted-not-landed/);
+});
+
+test('plans-read refuses gate_landed_work_package without an HTTP call', async () => {
+  const api = fakeApi({});
+  const r = await handlePlansReadToolCall('gate_landed_work_package', {
+    plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: 'a'.repeat(40),
+  }, api);
+  assert.ok(r.isError);
+  assert.match(r.content[0].text, /supervisor-only/);
+  assert.strictEqual(api.calls.length, 0);
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────
