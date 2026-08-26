@@ -54,10 +54,9 @@ export type LandedCommitVerification =
 const ALLOWED_TRAILERS = new Set(['Plan', 'WP', 'Verified', 'Scope-omitted']);
 const TRAILER_LINE = /^([^:\s][^:]*):[ \t](.*)$/;
 
-function finalParagraph(message: string): string[] {
+function messageParagraphs(message: string): string[][] {
   const normalized = message.replace(/\r\n/g, '\n').replace(/\n+$/, '');
-  const paragraphs = normalized.split(/\n\n+/);
-  return (paragraphs.at(-1) ?? '').split('\n');
+  return normalized.split(/\n\n+/).map((paragraph) => paragraph.split('\n'));
 }
 
 async function parseMatchingCommit(
@@ -67,8 +66,14 @@ async function parseMatchingCommit(
 ): Promise<MatchingCommit | null> {
   const commit = await git.readCommit(input.repositoryKey, oid);
   if (commit.parentOids.length !== 1) return null;
-  const physical = finalParagraph(commit.message);
+  const paragraphs = messageParagraphs(commit.message);
+  const physical = paragraphs.at(-1) ?? [];
   if (physical.length < 3) return null;
+  // The canonical block is the one and only trailer paragraph. A separated
+  // earlier paragraph containing any trailer-shaped line (including an unknown
+  // key) is ambiguous evidence and invalidates the whole claim.
+  if (paragraphs.slice(0, -1).some((paragraph) =>
+    paragraph.some((line) => TRAILER_LINE.test(line)))) return null;
   const fullCounts = new Map<string, number>();
   for (const line of commit.message.replace(/\r\n/g, '\n').split('\n')) {
     const match = /^([^:\s][^:]*):(?:[ \t]|$)/.exec(line);

@@ -1185,6 +1185,17 @@ export interface LaunchAgentInput {
   planSection?: string;
 }
 
+export type LaunchAgentDispatchFailure =
+  | { ok: false; failure: 'package-not-ready' | 'package-already-assigned' }
+  | {
+      ok: false;
+      failure: 'assignment-failed' | 'dispatch-attempt-insert-failed';
+      createdAgentId: string;
+      delivered: false;
+    };
+
+export type LaunchAgentResult = Agent | LaunchAgentDispatchFailure;
+
 /** A declarable persona lane — every value of AgentRoleLane except 'legacy'
  *  (a declared lane can never be the no-lane default). #18 / D7. */
 export type PersonaLane = Exclude<AgentRoleLane, 'legacy'>; // 'supervisor' | 'worker' | 'researcher'

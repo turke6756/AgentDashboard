@@ -87,6 +87,59 @@ function request(port: number, method: string, route: string, token: string, bod
     return realSet(agentId, value);
   }) as typeof pending.set;
 
+  const seedLaunchPackage = (id: string, assigneeAgentId: string | null = null) => {
+    db.upsertPlanWorkPackage({ ...db.getPlanWorkPackage(packageId)!, id, assigneeAgentId,
+      title: id, createdAt: 2, updatedAt: 2 });
+    db.setPlanWorkPackagePaths(id, ws.id, [{ path: 'owned.txt', intentKind: 'edit' }], 2);
+  };
+  const launchInput = (id: string) => ({
+    workspaceId: ws.id, planId: plan.id, planItemId: id, title: id,
+    provider: 'claude' as const, isWorker: true, initialUserPrompt: `prompt ${id}`,
+  });
+
+  const preassignedAgent = db.createAgent({ workspaceId: ws.id, title: 'assigned elsewhere',
+    roleDescription: '', workingDirectory: root, command: 'x', tmuxSessionName: null,
+    autoRestartEnabled: false, logPath: 'assigned.log', isWorker: true });
+  seedLaunchPackage('wp-preassigned', preassignedAgent.id);
+  const agentsBeforeRefusal = Number((db.getDb().prepare('SELECT COUNT(*) AS n FROM agents').get() as { n: number }).n);
+  const promptsBeforeRefusal = pending.size;
+  assert.deepEqual(await supervisor.launchAgent(launchInput('wp-preassigned')),
+    { ok: false, failure: 'package-already-assigned' },
+    'REACHABILITY:wpf1-package-steal assigned package must refuse');
+  assert.equal(Number((db.getDb().prepare('SELECT COUNT(*) AS n FROM agents').get() as { n: number }).n), agentsBeforeRefusal,
+    'assigned package refuses before agent creation');
+  assert.equal(db.getDb().prepare('SELECT id FROM plan_dispatch_attempts WHERE package_id = ?').all('wp-preassigned').length, 0);
+  assert.equal(pending.size, promptsBeforeRefusal, 'assigned package delivers no prompt');
+  assert.equal(db.getPlanWorkPackage('wp-preassigned')?.assigneeAgentId, preassignedAgent.id,
+    'assigned package keeps its original assignee');
+
+  const realAssignment = priv.launchPackageAssignment;
+  seedLaunchPackage('wp-assignment-failure');
+  priv.launchPackageAssignment = () => { throw new Error('injected assignment failure'); };
+  const assignmentFailure = await supervisor.launchAgent(launchInput('wp-assignment-failure'));
+  assert.equal('ok' in assignmentFailure && assignmentFailure.ok === false
+    ? assignmentFailure.failure : null, 'assignment-failed');
+  assert.equal('ok' in assignmentFailure && assignmentFailure.ok === false
+    && 'delivered' in assignmentFailure ? assignmentFailure.delivered : null, false);
+  assert.equal(pending.size, promptsBeforeRefusal, 'assignment failure delivers no prompt');
+  assert.equal(db.getDb().prepare('SELECT id FROM plan_dispatch_attempts WHERE package_id = ?').all('wp-assignment-failure').length, 0);
+  priv.launchPackageAssignment = realAssignment;
+
+  const realDispatch = priv.launchPackageDispatch;
+  seedLaunchPackage('wp-insert-failure');
+  priv.launchPackageDispatch = async () => { throw new Error('injected insert failure'); };
+  const insertFailure = await supervisor.launchAgent(launchInput('wp-insert-failure'));
+  assert.equal('ok' in insertFailure && insertFailure.ok === false ? insertFailure.failure : null,
+    'dispatch-attempt-insert-failed');
+  assert.equal('ok' in insertFailure && insertFailure.ok === false
+    && 'delivered' in insertFailure ? insertFailure.delivered : null, false);
+  assert.equal(pending.size, promptsBeforeRefusal, 'attempt insertion failure delivers no prompt');
+  assert.equal(db.getDb().prepare('SELECT id FROM plan_dispatch_attempts WHERE package_id = ?').all('wp-insert-failure').length, 0);
+  assert.equal(db.getPlanWorkPackage('wp-insert-failure')?.assigneeAgentId,
+    'ok' in insertFailure && insertFailure.ok === false && 'createdAgentId' in insertFailure
+      ? insertFailure.createdAgentId : null);
+  priv.launchPackageDispatch = realDispatch;
+
   const server = new ApiServer(supervisor, 0, undefined, '127.0.0.1'); const port = await server.start();
   try {
     await orchestration.handleOrchestrationToolCall('launch_agent', {
@@ -125,6 +178,28 @@ function request(port: number, method: string, route: string, token: string, bod
     planId: plan.id, executionRunId: runId, targetAgentId: legacyAgent.id,
     requestedPlanItemId: legacyPackage, createdAt: 5 });
   assert.equal(preMigration.captureStatus, 'unavailable', 'null envelope reads unavailable');
+
+  const schema = String((db.getDb().prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='plan_dispatch_attempts'",
+  ).get() as { sql: string }).sql);
+  assert.match(schema, /CHECK\s*\([^)]*capture_status/is,
+    'fresh schema carries the captured-authority invariant');
+  assert.throws(() => db.getDb().prepare(
+    'UPDATE plan_dispatch_attempts SET frozen_paths_json = ? WHERE id = ?',
+  ).run(JSON.stringify(['bad\npath']), String(attempt.id)), /captured dispatch authority|CHECK constraint/i,
+  'raw writes cannot store invalid captured authority');
+
+  // Simulate a malformed pre-trigger historical row to prove every reader uses
+  // the same authority decoder and quarantines it as unavailable.
+  db.getDb().exec(`
+    DROP TRIGGER plan_dispatch_attempts_captured_update_guard;
+    PRAGMA ignore_check_constraints = ON;
+  `);
+  db.getDb().prepare('UPDATE plan_dispatch_attempts SET frozen_paths_json = ? WHERE id = ?')
+    .run(JSON.stringify(['bad\npath']), String(attempt.id));
+  const malformedHistorical = db.getPlanDispatchAttempt(String(attempt.id));
+  assert.equal(malformedHistorical?.captureStatus, 'unavailable');
+  assert.equal(malformedHistorical?.frozenPaths, null);
 
   console.log('1 passed, 0 failed');
   fs.rmSync(nonRepo, { recursive: true, force: true });

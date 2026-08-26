@@ -320,6 +320,28 @@ export interface FinalizePlanItemDoneDeps {
     ...args: Parameters<typeof finalizePackage>
   ) => ReturnType<typeof finalizePackage>;
   complete?: (command: PlanPackageCommand, witness: PlanPackageWitness) => TransitionResult;
+  resolveCandidateTreeOid?: (
+    repoRoot: string,
+    boundaryOid: string,
+    gitExe?: string,
+    deadlineAt?: number,
+  ) => Promise<string>;
+}
+
+const FULL_GIT_OID = /^[0-9a-f]{40}$/;
+
+async function resolveBoundaryTreeOid(
+  repoRoot: string,
+  boundaryOid: string,
+  gitExe?: string,
+  deadlineAt?: number,
+): Promise<string> {
+  const result = await runGit(repoRoot, ['rev-parse', '--verify', `${boundaryOid}^{tree}`], {
+    gitExe, deadlineAt, timeoutMs: 30_000, maxBytes: 1024 * 1024,
+  });
+  const oid = result.stdout.trim().toLowerCase();
+  if (!FULL_GIT_OID.test(oid)) throw new Error('finalization candidate tree is not a full Git OID');
+  return oid;
 }
 
 function codeCompletionDeclaration(packageId: string, packageRevision: number): CompletionDeclaration {
@@ -363,6 +385,22 @@ export async function finalizePlanItemDone(
     );
   }
 
+  const suppliedCandidateTreeOid = request.candidateTreeOid;
+  const candidateTreeOid = suppliedCandidateTreeOid === undefined
+    ? undefined
+    : deps.finalize !== undefined && deps.resolveCandidateTreeOid === undefined
+      ? suppliedCandidateTreeOid
+    : await (deps.resolveCandidateTreeOid ?? resolveBoundaryTreeOid)(
+        request.repoRoot, request.boundaryOid, request.gitExe, request.deadlineAt,
+      );
+  if (candidateTreeOid !== undefined && suppliedCandidateTreeOid !== undefined
+      && candidateTreeOid.toLowerCase() !== suppliedCandidateTreeOid.toLowerCase()) {
+    throw new PlanFinalizeError(
+      'Reachability evidence is for a different candidate tree than the finalization boundary.',
+      'plan-finalize-boundary-unavailable',
+    );
+  }
+
   const finalizeRequest: FinalizePackageRequest = {
     packageId: pkg.id,
     packageRevision: pkg.revision,
@@ -392,6 +430,10 @@ export async function finalizePlanItemDone(
   }
   return finalize(finalizeRequest, {
     onReady: (finalization) => {
+      if (finalization.checkpointOid !== undefined && finalization.checkpointOid !== null
+          && finalization.checkpointOid.toLowerCase() !== request.boundaryOid.toLowerCase()) {
+        throw new Error('ready finalization boundary changed before completion');
+      }
       complete({
         type: 'complete', idempotencyKey: `finalization-complete:${finalization.id}`,
         workspaceId: pkg.workspaceId, planId: pkg.planId,
@@ -400,7 +442,7 @@ export async function finalizePlanItemDone(
         declaration: completionDeclaration(pkg.id, pkg.revision),
       }, {
         kind: 'completion', actor: request.finalizedBy, observedAt: finalization.finalizedAt,
-        candidateTreeOid: request.candidateTreeOid,
+        candidateTreeOid,
         verificationTargetVersion: request.verificationTargetVersion,
         mutationBlobOidByObligationId: request.mutationBlobOidByObligationId,
       });
@@ -519,33 +561,19 @@ export function providePlanPreviewRoutes(routes: PlanCandidatePreviewRoutes | nu
     : null;
 }
 
-function isFullFinalizePlanItemDoneRequest(raw: unknown): raw is FinalizePlanItemDoneRequest {
-  if (!raw || typeof raw !== 'object') return false;
-  const r = raw as Record<string, unknown>;
-  return typeof r.planItemId === 'string'
-    && typeof r.repositoryKey === 'string'
-    && typeof r.boundaryOid === 'string'
-    && Array.isArray(r.members)
-    && (typeof r.checkpointTurnId === 'string' || r.checkpointTurnId === null)
-    && typeof r.finalizedBy === 'string'
-    && typeof r.contractVersion === 'number'
-    && typeof r.repoRoot === 'string'
-    && (typeof r.pinnedHeadOid === 'string' || r.pinnedHeadOid === null);
-}
-
-/** Identity-only renderer requests are enriched below the trust boundary. Already-full
- *  main-side callers retain the WP-3D pass-through contract unchanged. */
+/** Renderer requests carry identity only. Full finalization requests are a
+ * main-process contract and are never accepted across this IPC boundary. */
 export async function runFinalizePlanItemDoneRequest(
   raw: unknown,
   getRoutes: () => PlanFinalizeRoutes | null = () => planFinalizeRoutes,
   finalize: (request: FinalizePlanItemDoneRequest) => Promise<FinalizePackageResult> = finalizePlanItemDone,
 ): Promise<FinalizePackageResult> {
-  if (!raw || typeof raw !== 'object'
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw as Record<string, unknown>).length !== 1
       || typeof (raw as Record<string, unknown>).planItemId !== 'string'
       || (raw as Record<string, unknown>).planItemId === '') {
     throw new PlanFinalizeError('missing plan item id', 'plan-finalize-item-not-found');
   }
-  if (isFullFinalizePlanItemDoneRequest(raw)) return finalize(raw);
 
   const routes = getRoutes();
   if (!routes) {

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
+  createGitOracle,
   verifyLandedCommit,
   type GitCommitView,
   type LandedCommitGitOracle,
@@ -67,10 +72,20 @@ test('verifies the sole canonical first-parent match and parses audit trailers',
 });
 
 test('injected oracle distinguishes the branch ref from a same-named filename', async () => {
-  const git = new FakeGit();
-  const result = await verifyLandedCommit({ ...input(), branchRef: 'a.ts' }, git);
-  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
-  assert.deepEqual(git.calls, [{ method: 'resolveCommit', args: ['a.ts^{commit}'] }]);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landed-verifier-ref-'));
+  try {
+    execFileSync('git', ['init', '-b', 'master'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['config', 'user.email', 'test@lares.local'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['config', 'user.name', 'Lares Test'], { cwd: root, windowsHide: true });
+    fs.writeFileSync(path.join(root, 'a.ts'), 'same-named file\n');
+    execFileSync('git', ['add', 'a.ts'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: root, windowsHide: true });
+    const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
+    const result = await verifyLandedCommit({ ...input(), branchRef: 'a.ts', dispatchTipOid: base }, createGitOracle(root));
+    assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('returns branch and ancestry refusals without consulting later oracle stages', async () => {
@@ -116,4 +131,33 @@ test('rejects duplicate, folded, alternate-case, unknown and merge-commit traile
   }
   const merge = new FakeGit(); merge.commits.get(ONE)!.parentOids = [BASE, OTHER];
   assert.deepEqual(await verifyLandedCommit(input(), merge), { outcome: 'refused', reason: 'no-matching-commit' });
+});
+
+test('rejects a second separated trailer-looking paragraph', async () => {
+  const git = new FakeGit();
+  git.commits.get(ONE)!.message = `subject\n\nOther: first-block\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
+  assert.deepEqual(await verifyLandedCommit(input(), git),
+    { outcome: 'refused', reason: 'no-matching-commit' });
+});
+
+test('REACHABILITY:wpf1-plan-prefix-forgery Plan and WP identities require exact byte-for-byte equality', async () => {
+  const lookalike = 'plan_16910c6\u0434';
+  const cases = [
+    ['different plan', 'plan_deadbeef', 'WP-2'],
+    ['plan prefix', 'plan_16910c64-forged', 'WP-2'],
+    ['plan suffix', 'forged-plan_16910c64', 'WP-2'],
+    ['plan whitespace', ' plan_16910c64', 'WP-2'],
+    ['plan lookalike', lookalike, 'WP-2'],
+    ['different wp', 'plan_16910c64', 'WP-X'],
+    ['wp prefix', 'plan_16910c64', 'WP-2-forged'],
+    ['wp suffix', 'plan_16910c64', 'forged-WP-2'],
+    ['wp whitespace', 'plan_16910c64', ' WP-2'],
+    ['wp lookalike', 'plan_16910c64', 'W\u0420-2'],
+  ] as const;
+  for (const [label, plan, wp] of cases) {
+    const git = new FakeGit();
+    git.commits.get(ONE)!.message = message(plan, wp);
+    assert.deepEqual(await verifyLandedCommit(input(), git),
+      { outcome: 'refused', reason: 'no-matching-commit' }, label);
+  }
 });

@@ -2851,8 +2851,53 @@ function initContextOptimizerSchema(): void {
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN branch_ref TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN dispatch_tip_oid TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN frozen_paths_json TEXT`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN capture_status TEXT NOT NULL DEFAULT 'unavailable'`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN capture_status TEXT NOT NULL DEFAULT 'unavailable'
+    CHECK (capture_status IN ('captured','unavailable') AND (
+      capture_status <> 'captured' OR (
+        repository_key IS NOT NULL AND repository_key <> ''
+        AND instr(repository_key, char(10)) = 0 AND instr(repository_key, char(0)) = 0
+        AND branch_ref GLOB 'refs/heads/*'
+        AND instr(branch_ref, char(10)) = 0 AND instr(branch_ref, char(0)) = 0
+        AND length(dispatch_tip_oid) = 40 AND dispatch_tip_oid NOT GLOB '*[^0-9a-f]*'
+        AND json_valid(frozen_paths_json) AND json_array_length(frozen_paths_json) > 0
+      )
+    ))`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plan_dispatch_attempts ADD COLUMN capture_failure TEXT`); } catch { /* exists */ }
+
+  // Existing databases cannot acquire the fresh-table CHECK above through
+  // ALTER TABLE. Equivalent triggers keep all future raw/internal writes from
+  // blessing malformed scalar authority as captured; the shared decoder below
+  // still quarantines any historical malformed row as unavailable.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS plan_dispatch_attempts_captured_insert_guard
+    BEFORE INSERT ON plan_dispatch_attempts
+    WHEN NEW.capture_status = 'captured' AND (
+      NEW.repository_key IS NULL OR NEW.repository_key = ''
+      OR instr(NEW.repository_key, char(10)) <> 0 OR instr(NEW.repository_key, char(0)) <> 0
+      OR NEW.branch_ref IS NULL OR NEW.branch_ref NOT GLOB 'refs/heads/*'
+      OR instr(NEW.branch_ref, char(10)) <> 0 OR instr(NEW.branch_ref, char(0)) <> 0
+      OR NEW.dispatch_tip_oid IS NULL OR length(NEW.dispatch_tip_oid) <> 40
+      OR NEW.dispatch_tip_oid GLOB '*[^0-9a-f]*'
+      OR NOT json_valid(NEW.frozen_paths_json) OR json_array_length(NEW.frozen_paths_json) = 0
+      OR EXISTS (SELECT 1 FROM json_each(NEW.frozen_paths_json)
+        WHERE type <> 'text' OR value = '' OR instr(value, char(10)) <> 0 OR instr(value, char(0)) <> 0)
+    ) BEGIN SELECT RAISE(ABORT, 'invalid captured dispatch authority'); END;
+
+    CREATE TRIGGER IF NOT EXISTS plan_dispatch_attempts_captured_update_guard
+    BEFORE UPDATE OF capture_status, repository_key, branch_ref, dispatch_tip_oid, frozen_paths_json
+    ON plan_dispatch_attempts
+    WHEN NEW.capture_status = 'captured' AND (
+      NEW.repository_key IS NULL OR NEW.repository_key = ''
+      OR instr(NEW.repository_key, char(10)) <> 0 OR instr(NEW.repository_key, char(0)) <> 0
+      OR NEW.branch_ref IS NULL OR NEW.branch_ref NOT GLOB 'refs/heads/*'
+      OR instr(NEW.branch_ref, char(10)) <> 0 OR instr(NEW.branch_ref, char(0)) <> 0
+      OR NEW.dispatch_tip_oid IS NULL OR length(NEW.dispatch_tip_oid) <> 40
+      OR NEW.dispatch_tip_oid GLOB '*[^0-9a-f]*'
+      OR NOT json_valid(NEW.frozen_paths_json) OR json_array_length(NEW.frozen_paths_json) = 0
+      OR EXISTS (SELECT 1 FROM json_each(NEW.frozen_paths_json)
+        WHERE type <> 'text' OR value = '' OR instr(value, char(10)) <> 0 OR instr(value, char(0)) <> 0)
+    ) BEGIN SELECT RAISE(ABORT, 'invalid captured dispatch authority'); END;
+  `);
 
   db.exec(`
     UPDATE plan_dispatch_attempts
@@ -8993,17 +9038,36 @@ export interface PlanDispatchAttempt {
   reconciledAt: number | null;
 }
 
-function rowToPlanDispatchAttempt(row: any): PlanDispatchAttempt {
+function decodeCapturedDispatchAuthority(row: any): {
+  repositoryKey: string;
+  branchRef: string;
+  dispatchTipOid: string;
+  frozenPaths: string[];
+} | null {
   let frozenPaths: string[] | null = null;
   try {
     const parsed = row.frozen_paths_json == null ? null : JSON.parse(row.frozen_paths_json);
     if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) frozenPaths = parsed;
   } catch { /* malformed historical rows remain unavailable */ }
+  const safeAuthorityString = (value: unknown): value is string =>
+    typeof value === 'string' && value.length > 0 && !/[\n\0]/.test(value);
   const captured = row.capture_status === 'captured'
-    && typeof row.repository_key === 'string' && row.repository_key.length > 0
-    && typeof row.branch_ref === 'string' && row.branch_ref.startsWith('refs/heads/')
+    && safeAuthorityString(row.repository_key)
+    && safeAuthorityString(row.branch_ref) && row.branch_ref.startsWith('refs/heads/')
     && typeof row.dispatch_tip_oid === 'string' && /^[0-9a-f]{40}$/.test(row.dispatch_tip_oid)
-    && frozenPaths !== null && frozenPaths.length > 0;
+    && frozenPaths !== null && frozenPaths.length > 0
+    && frozenPaths.every(safeAuthorityString);
+  if (!captured || frozenPaths === null) return null;
+  return {
+    repositoryKey: row.repository_key,
+    branchRef: row.branch_ref,
+    dispatchTipOid: row.dispatch_tip_oid,
+    frozenPaths,
+  };
+}
+
+function rowToPlanDispatchAttempt(row: any): PlanDispatchAttempt {
+  const authority = decodeCapturedDispatchAuthority(row);
   return {
     id: row.id,
     packageId: row.package_id,
@@ -9014,12 +9078,12 @@ function rowToPlanDispatchAttempt(row: any): PlanDispatchAttempt {
     packageRevision: row.package_revision ?? null,
     orchestrationId: row.orchestration_id ?? null,
     targetSessionId: row.target_session_id ?? null,
-    repositoryKey: captured ? row.repository_key : null,
-    branchRef: captured ? row.branch_ref : null,
-    dispatchTipOid: captured ? row.dispatch_tip_oid : null,
-    frozenPaths: captured ? frozenPaths : null,
-    captureStatus: captured ? 'captured' : 'unavailable',
-    captureFailure: captured ? null : (row.capture_failure ?? 'dispatch envelope unavailable'),
+    repositoryKey: authority?.repositoryKey ?? null,
+    branchRef: authority?.branchRef ?? null,
+    dispatchTipOid: authority?.dispatchTipOid ?? null,
+    frozenPaths: authority?.frozenPaths ?? null,
+    captureStatus: authority ? 'captured' : 'unavailable',
+    captureFailure: authority ? null : (row.capture_failure ?? 'dispatch envelope unavailable'),
     requestedPlanItemId: row.requested_plan_item_id,
     confirmedTurnId: row.confirmed_turn_id ?? null,
     state: row.state,

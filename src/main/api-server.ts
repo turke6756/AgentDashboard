@@ -2441,7 +2441,10 @@ export class ApiServer {
         const { planId } = resolvePlanRef(input.workspaceId as string, input.planId);
         input.planId = planId;
       }
-      const agent = await this.supervisor.launchAgent(input);
+      const agent = typeof input?.planItemId === 'string'
+        ? await this.supervisor.launchAgent({ ...input, planItemId: input.planItemId })
+        : await this.supervisor.launchAgent(input);
+      if ('ok' in agent && agent.ok === false) return agent;
       // Planning-surface P1: a plan-bound dispatch auto-subscribes the dispatching
       // supervisor to that plan (best-effort; no-op for non-supervisor callers).
       if (input && input.planId) this.autoFocusPlan(identity, input.planId as string);

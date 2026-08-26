@@ -257,20 +257,25 @@ test('unresolvable identity-only done returns a typed refusal and writes nothing
   assert.equal(store.rows.size, 0);
 });
 
-test('already-full done request passes through unchanged without consulting enrichment', async () => {
+test('renderer finalization boundary rejects a full request and accepts only planItemId', async () => {
   const full = doneRequest();
   let routeReads = 0;
-  let seen: FinalizePlanItemDoneRequest | null = null;
-  await runFinalizePlanItemDoneRequest(
-    full,
-    () => { routeReads++; return null; },
-    async (request) => {
-      seen = request;
-      return { finalization: {} as PackageFinalization, outcome: 'created', memberManifestJson: '[]' };
-    },
+  let finalizeCalls = 0;
+  await assert.rejects(
+    runFinalizePlanItemDoneRequest(
+      full,
+      () => { routeReads++; return null; },
+      async () => {
+        finalizeCalls++;
+        return { finalization: {} as PackageFinalization, outcome: 'created', memberManifestJson: '[]' };
+      },
+    ),
+    (error: unknown) => error instanceof PlanFinalizeError
+      && error.code === 'plan-finalize-item-not-found',
+    'REACHABILITY:wpf1-witness-forgery renderer must not supply witness authority',
   );
   assert.equal(routeReads, 0);
-  assert.equal(seen, full);
+  assert.equal(finalizeCalls, 0);
 });
 
 // ── runner ──────────────────────────────────────────────────────────────────────

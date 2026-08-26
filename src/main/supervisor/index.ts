@@ -4,7 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, BulkStopItemResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, ForceContinuationResult, HistoryNotice, LaunchAgentInput, LaunchableAgentProvider, QueryResult, RetentionExecutionResult, SendOutcome, StopEligibilityMode, StopResult, Team, TerminalDeadSnapshot, TerminalLogRange, TerminalLogTail, UsageLimitsReading, hasSupervisorPrivilege, type ResolvedIntentStamp } from '../../shared/types';
+import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, BulkStopItemResult, ContextStats, ContinuationPhaseSignal, ContinuationPhaseState, ForceContinuationResult, HistoryNotice, LaunchAgentInput, LaunchAgentResult, LaunchableAgentProvider, QueryResult, RetentionExecutionResult, SendOutcome, StopEligibilityMode, StopResult, Team, TerminalDeadSnapshot, TerminalLogRange, TerminalLogTail, UsageLimitsReading, hasSupervisorPrivilege, type ResolvedIntentStamp } from '../../shared/types';
 import { assembleGuardSnapshot, evaluateStopEligibility, type AgentBrowserState, type GuardDeps } from '../lifecycle/guards';
 import {
   TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL, RESEARCHER_CLAUDE_MODEL, RESEARCHER_CODEX_MODEL,
@@ -2406,6 +2406,10 @@ function makeUnsupportedNativeSurface(reason: string): NativeJobSurface {
 }
 
 export class AgentSupervisor extends EventEmitter {
+  /** Injectable only for registered launch ordering/failure tests. Production
+   * instances retain the canonical package writers. */
+  private launchPackageAssignment = assignPlanWorkPackage;
+  private launchPackageDispatch = dispatchPlanPackage;
   private windowsRunners = new Map<string, WindowsRunner>();
   private wslRunners = new Map<string, WslRunner>();
   // WP-3a — last terminal epoch seen per agent, updated SYNCHRONOUSLY on every
@@ -3348,7 +3352,12 @@ export class AgentSupervisor extends EventEmitter {
     }
   }
 
-  async launchAgent(input: LaunchAgentInput, internal?: InternalLaunchContext): Promise<Agent> {
+  async launchAgent(
+    input: LaunchAgentInput & { planItemId: string },
+    internal?: InternalLaunchContext,
+  ): Promise<LaunchAgentResult>;
+  async launchAgent(input: LaunchAgentInput, internal?: InternalLaunchContext): Promise<Agent>;
+  async launchAgent(input: LaunchAgentInput, internal?: InternalLaunchContext): Promise<LaunchAgentResult> {
     if (input.provider === 'gemini') {
       throw Object.assign(
         new Error('Gemini provider discontinued; use Antigravity (agy). Historical Gemini agents remain readable.'),
@@ -3411,10 +3420,10 @@ export class AgentSupervisor extends EventEmitter {
       if (!pkg || !resolvedInput.planId || pkg.planId !== resolvedInput.planId
           || pkg.workspaceId !== resolvedInput.workspaceId || pkg.state !== 'ready'
           || !activeRun || !activity || activity.executionRunId !== activeRun.id) {
-        return { ok: false, failure: 'package-not-ready' } as never;
+        return { ok: false, failure: 'package-not-ready' };
       }
       if (pkg.assigneeAgentId !== null) {
-        return { ok: false, failure: 'package-already-assigned' } as never;
+        return { ok: false, failure: 'package-already-assigned' };
       }
       packageLaunch = {
         packageId: pkg.id, planId: pkg.planId, executionRunId: activeRun.id,
@@ -3793,14 +3802,14 @@ export class AgentSupervisor extends EventEmitter {
     let packageDispatch: DispatchContext | undefined;
     if (packageLaunch) {
       try {
-        assignPlanWorkPackage(packageLaunch.packageId, agent.id, Date.now());
+        this.launchPackageAssignment(packageLaunch.packageId, agent.id, Date.now());
       } catch {
         return {
           ok: false, failure: 'assignment-failed', createdAgentId: agent.id, delivered: false,
-        } as never;
+        };
       }
       try {
-        const recorded = await dispatchPlanPackage({
+        const recorded = await this.launchPackageDispatch({
           attemptId: `dispatch_${uuidv4()}`,
           lifecycleEventId: `dispatch-confirm_${uuidv4()}`,
           packageId: packageLaunch.packageId,
@@ -3827,13 +3836,13 @@ export class AgentSupervisor extends EventEmitter {
           return {
             ok: false, failure: 'dispatch-attempt-insert-failed',
             createdAgentId: agent.id, delivered: false,
-          } as never;
+          };
         }
       } catch {
         return {
           ok: false, failure: 'dispatch-attempt-insert-failed',
           createdAgentId: agent.id, delivered: false,
-        } as never;
+        };
       }
     }
 

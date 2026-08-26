@@ -361,6 +361,14 @@ test('REACHABILITY:wp3-readiness-parity keeps every code guard in evaluator/requ
     );
     // Each fixture supplies all other evidence; only the named guard can produce a finding.
     assert.deepEqual(findings.map((finding) => finding.kind), [entry.kind], entry.id);
+    const prospective = service.evaluateCompletionReadiness(
+      packageId, 1, entry.declaration, entry.witness, { boundary: 'prospective' },
+    );
+    assert.deepEqual(
+      prospective,
+      findings.filter((finding) => finding.kind !== 'finalization-boundary-unavailable'),
+      `prospective parity: ${entry.id}`,
+    );
     const command = { ...identity('complete', packageId, `complete-${entry.id}`), declaration: entry.declaration };
     assert.throws(() => service.requireCompletion(command, entry.witness), entry.id);
   }
@@ -385,7 +393,7 @@ test('REACHABILITY:wp3-readiness-parity keeps every code guard in evaluator/requ
   ), /package evidence unavailable/);
 });
 
-test('prospective completion readiness omits only the not-yet-created finalization boundary', () => {
+test('REACHABILITY:wpf1-prospective-deployment-bypass prospective mode omits only the finalization boundary', () => {
   seedReadinessFixture('prospective-boundary', { boundary: false });
   const declaration = readinessDeclaration();
   assert.deepEqual(service.evaluateCompletionReadiness(
