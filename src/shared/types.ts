@@ -535,6 +535,47 @@ export interface AssertedCommitCandidate {
   changedPathsMatchFrozen: boolean | null;
 }
 
+// Landed-loop WP-5: asynchronous factual register. This projection is
+// deliberately separate from the synchronous mission-board poll.
+export const PLAN_FACTUAL_REGISTER_CHANNEL = 'plan:factualRegister' as const;
+
+export type PlanArcFinding =
+  | { kind: 'arc-status-not-declared' }
+  | { kind: 'arc-status-unparseable' };
+
+export type FactualFinding =
+  | { kind: 'commit-without-declaration'; commitOid: string }
+  | { kind: 'accepted-not-landed'; commitOid: string; gateAttemptId: string;
+      unmet: import('../main/plans/package-ledger').CompletionReadinessFinding[] }
+  | { kind: 'declaration-without-witness' }
+  | { kind: 'declaration-commit-mismatch'; declared: string; asserted: string }
+  | { kind: 'done-without-finalization-citation' }
+  | { kind: 'arc-contradicts-ledger'; wpId: string; arcClaim: string;
+      ledgerState: MissionBoardPackageState }
+  | { kind: 'arc-row-duplicate'; wpId: string }
+  | { kind: 'evidence-unavailable'; scope: 'asserted' | 'arc'; detail: string };
+
+export interface LandedFact {
+  state: 'done';
+  finalizationId: string;
+  finalizedAt: number;
+  finalizedBy: string;
+  declarationCommitOids: string[];
+  gateAttemptIds: string[];
+}
+
+export interface PackageFactualRegister {
+  packageId: string;
+  asserted: AssertedDispatchEvidence[];
+  landed: LandedFact | null;
+  findings: FactualFinding[];
+}
+
+export interface PlanFactualRegister {
+  packages: PackageFactualRegister[];
+  arcFindings: PlanArcFinding[];
+}
+
 export interface MissionBoardTouch {
   path: string;
   op: string;
@@ -4060,6 +4101,8 @@ export interface IpcApi {
     list: (workspaceId?: string) => Promise<PlanListItem[]>;
     /** Full package execution projection read exclusively from SQLite. */
     ledgerProjection: (planId: string) => Promise<PlanLedgerProjection | null>;
+    /** Async Git/ledger/ARC factual register; never part of board polling. */
+    factualRegister: (planId: string) => Promise<PlanFactualRegister | null>;
     /** One row per valid folder in `<workspaceStateDir()>/plans/`. */
     listPromotedFolders: (
       workspaceId: string,

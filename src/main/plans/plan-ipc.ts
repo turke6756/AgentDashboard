@@ -25,6 +25,7 @@ import type {
   ObservedOverviewSourceToken,
   DeleteProposalRequest,
   PlanLedgerProjection,
+  PlanFactualRegister,
 } from '../../shared/types';
 import {
   hasSupervisorPrivilege,
@@ -32,6 +33,7 @@ import {
   PLAN_TAB_KEYS,
   PLAN_REVIEW_PROJECTION_CHANNEL,
   PLAN_LEDGER_PROJECTION_CHANNEL,
+  PLAN_FACTUAL_REGISTER_CHANNEL,
 } from '../../shared/types';
 import {
   getPlans,
@@ -123,6 +125,7 @@ import {
   type TransitionResult,
 } from './package-ledger';
 import { renderPlanFromLedger } from './plan-ledger-projection';
+import { projectPlanFactualRegister } from './factual-register';
 
 const MAX_PROMOTED_PLAN_JSON_BYTES = 256_000;
 const ARCHIVED_PLAN_STATUSES = new Set(['archived', 'superseded', 'cancelled', 'canceled']);
@@ -1359,6 +1362,18 @@ export function registerPlanLedgerProjectionIpc(
     runPlanLedgerProjection(rawPlanId, render));
 }
 
+/** The factual register owns Git and ARC I/O, so it is an independent async
+ * request rather than work added to the synchronous mission-board poll. */
+export function registerPlanFactualRegisterIpc(
+  ipc: PlanIpcLike,
+  project: (planId: string) => Promise<PlanFactualRegister> = projectPlanFactualRegister,
+): void {
+  ipc.handle(PLAN_FACTUAL_REGISTER_CHANNEL, async (_event, rawPlanId: unknown) => {
+    if (typeof rawPlanId !== 'string' || rawPlanId === '') return null;
+    return project(rawPlanId);
+  });
+}
+
 // ── WP-P4D-reply — plan-comment answer (companion reply) ──────────────────────
 //
 // Thin registrar over the `plan-comments.ts` answer service, sibling to
@@ -1653,6 +1668,7 @@ export function registerPlanIpc(delivery: PlanDispatchDelivery): void {
   // WP-P6B-query: read-only package cards with structured state and transient
   // open-turn activity kept in separate DTO fields. No polling or state writes.
   registerMissionBoardIpc(ipcMain);
+  registerPlanFactualRegisterIpc(ipcMain);
 
   // WP-P7C: conservative file -> contributing turns/plans query.
   registerBlameToIntentIpc(ipcMain);
