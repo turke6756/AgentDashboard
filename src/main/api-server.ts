@@ -25,6 +25,7 @@ import {
   getSupervisorFocus, upsertSupervisorFocus, deleteSupervisorFocus,
   bumpSupervisorFocusAttended, getSupervisorFocusedPlans,
   listPlanWorkPackagesOrdered,
+  getPlanResponsibleSupervisorId,
 } from './database';
 import { readFileContents } from './file-reader';
 import {
@@ -113,6 +114,7 @@ import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
 import { gateLandedWorkPackage } from './plans/gate-landed-service';
+import { implementPlan, SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE } from './plans/plan-implement';
 import type { GateLandedWorkPackageArgs } from '../shared/types';
 import { isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
@@ -257,6 +259,7 @@ const API_ERROR_CODES = new Set<string>([
   // Context-brick Inc 2 (≡ P1-10a) — resolveIdentity's X-Supervisor-Id
   // validation attaches these to its 403s.
   'unknown-supervisor', 'supervisor-workspace-mismatch', 'not-a-supervisor',
+  'not-responsible-supervisor',
   // Context-brick Inc 4 (4.4) — continuation attempt/brick/relaunch gates.
   'continuation-open-attempt-exists', 'continuation-no-open-attempt',
   'continuation-note-too-large', 'continuation-attempt-not-committed',
@@ -4151,6 +4154,33 @@ export class ApiServer {
         dispatch_attempt_id: b.dispatch_attempt_id,
         commit_oid: b.commit_oid,
       }, identity.supervisorId ?? '');
+    }
+
+    // Agent-callable Implement trigger. Identity comes exclusively from the
+    // validated supervisor header; the request body carries no actor claim.
+    const planImplement = path.match(/^\/api\/plans\/([^/]+)\/implement$/);
+    if (method === 'POST' && planImplement) {
+      if (!identity.supervisorId || !identity.workspaceId) {
+        throw Object.assign(
+          new Error('supervisor identity required to implement a plan (send X-Supervisor-Id header)'),
+          { statusCode: 403, code: 'not-a-supervisor' },
+        );
+      }
+      const { planId } = resolvePlanRef(
+        identity.workspaceId,
+        decodeURIComponent(planImplement[1]),
+      );
+      if (getPlanResponsibleSupervisorId(planId) !== identity.supervisorId) {
+        throw Object.assign(
+          new Error('the calling supervisor is not responsible for this plan'),
+          { statusCode: 403, code: 'not-responsible-supervisor' },
+        );
+      }
+      return implementPlan({
+        planId,
+        appUserId: identity.supervisorId,
+        trigger: { source: SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE, agentId: identity.supervisorId },
+      });
     }
 
     // ── Supervisor-focus routes (B2 P1-03) — explicit supervisor_id; NO ACL (R1/R4) ──

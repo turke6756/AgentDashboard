@@ -672,6 +672,7 @@ const TESTS = [
   'dist/main/main/orchestration/groupthink-plan-rail.test.js',
   'dist/main/main/plans-data-layer.test.js',
   'dist/main/main/api-server-plans.test.js',
+  'dist/main/main/api-server-plan-implement.test.js',
   'dist/main/main/api-server-focus.test.js',
   'dist/main/main/plans-watcher.test.js',
   // Stage P8 (WP-P8F): legacy-provenance DROP migration replaces the retired

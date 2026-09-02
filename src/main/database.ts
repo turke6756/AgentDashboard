@@ -6920,6 +6920,18 @@ export function planHasValidResponsibleSupervisor(planId: string): boolean {
   return row !== null;
 }
 
+/** Return the server-side responsibility pointer used to authorize supervisor-only
+ * plan mutations. Null covers unknown, deleted, and currently unassigned plans. */
+export function getPlanResponsibleSupervisorId(planId: string): string | null {
+  const row = queryOne(
+    `SELECT responsible_supervisor_id
+       FROM plans
+      WHERE id = ? AND deleted_at IS NULL`,
+    [planId],
+  ) as { responsible_supervisor_id: string | null } | null;
+  return row?.responsible_supervisor_id ?? null;
+}
+
 // ── Planning-surface WP-P5C — plan_execution_runs primitives ───────────────────
 //
 // DB-layer primitives for the WP-P5C Implement service (src/main/plans/

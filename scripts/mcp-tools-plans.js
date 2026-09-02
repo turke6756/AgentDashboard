@@ -115,6 +115,21 @@ const GATE_LANDED_DEF = {
   },
 };
 
+const IMPLEMENT_PLAN_DEF = {
+  name: 'implement_plan',
+  description:
+    'Supervisor-only: flip a ready structured plan to executing and pin its baseline. ' +
+    'Before calling, the supervisor must confirm with the human unless the human already ' +
+    'authorized autonomous implementation.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: PLAN_ID_DESCRIPTION },
+    },
+    required: ['plan_id'],
+  },
+};
+
 // record_planning_event — planning-surface DEMAND PROBE (WP-P0PRE). A lightweight
 // telemetry ping (NOT a plan write): it records that an agent authored a proposal
 // or requested a promotion, so the revamp can measure voluntary demand. Advertised
@@ -144,7 +159,7 @@ const recordPlanningEventDef = {
 };
 
 function getPlansToolDefinitions() {
-  return [...READ_DEFS, ...FOCUS_DEFS, GATE_LANDED_DEF, recordPlanningEventDef];
+  return [...READ_DEFS, ...FOCUS_DEFS, GATE_LANDED_DEF, IMPLEMENT_PLAN_DEF, recordPlanningEventDef];
 }
 
 /** WP-A4 (D-1): the read-only subset advertised to the worker `plans-read`
@@ -224,6 +239,14 @@ async function handlePlansToolCall(name, args, apiRequest) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
+    case 'implement_plan': {
+      const result = await apiRequest(
+        'POST',
+        `/api/plans/${encodeURIComponent(args.plan_id)}/implement`,
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     default:
       return null;
   }
@@ -231,7 +254,9 @@ async function handlePlansToolCall(name, args, apiRequest) {
 
 /** Write tools advertised only in the supervisor `plans` toolset — never reachable
  *  from the read-only `plans-read` worker lane. */
-const PLANS_WRITE_ONLY = new Set(['focus_plan', 'unfocus_plan', 'gate_landed_work_package']);
+const PLANS_WRITE_ONLY = new Set([
+  'focus_plan', 'unfocus_plan', 'gate_landed_work_package', 'implement_plan',
+]);
 
 /** WP-A4 (D-1): dispatcher for the read-only `plans-read` toolset. Supervisor-only
  *  focus controls are never advertised to this toolset; this belt-and-suspenders

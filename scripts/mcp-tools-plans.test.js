@@ -17,11 +17,12 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 // ── Tool surface ────────────────────────────────────────────────────────────
 
-test('the plans toolset exposes progress read, focus verbs, landed gate, and the demand probe', () => {
+test('the plans toolset exposes progress read, supervisor writes, and the demand probe', () => {
   const names = getPlansToolDefinitions().map((t) => t.name);
   assert.deepStrictEqual(names.sort(), [
     'focus_plan',
     'gate_landed_work_package',
+    'implement_plan',
     'list_plans',
     'read_plan_progress',
     'record_planning_event',
@@ -34,6 +35,7 @@ test('write tools are supervisor-only — absent from the plans-read subset', ()
   assert.ok(!readNames.includes('focus_plan'), 'plans-read must NOT advertise focus_plan');
   assert.ok(!readNames.includes('unfocus_plan'), 'plans-read must NOT advertise unfocus_plan');
   assert.ok(!readNames.includes('gate_landed_work_package'), 'plans-read must NOT advertise gate_landed_work_package');
+  assert.ok(!readNames.includes('implement_plan'), 'plans-read must NOT advertise implement_plan');
 });
 
 test('F-F: NO migrate_plan_markdown tool, and nothing advertises markdown-migration input', () => {
@@ -249,6 +251,28 @@ test('plans-read refuses gate_landed_work_package without an HTTP call', async (
   const r = await handlePlansReadToolCall('gate_landed_work_package', {
     plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: 'a'.repeat(40),
   }, api);
+  assert.ok(r.isError);
+  assert.match(r.content[0].text, /supervisor-only/);
+  assert.strictEqual(api.calls.length, 0);
+});
+
+test('implement_plan POSTs the plan id only in the authenticated route path', async () => {
+  const api = fakeApi({
+    'POST /api/plans/plan_16910c64/implement': { ok: true, failures: [] },
+  });
+  const r = await handlePlansToolCall('implement_plan', {
+    plan_id: 'plan_16910c64',
+    agent_id: 'caller-must-not-control-this',
+  }, api);
+  assert.deepStrictEqual(api.calls, [{
+    method: 'POST', path: '/api/plans/plan_16910c64/implement', body: undefined,
+  }]);
+  assert.match(r.content[0].text, /"ok": true/);
+});
+
+test('plans-read refuses implement_plan without an HTTP call', async () => {
+  const api = fakeApi({});
+  const r = await handlePlansReadToolCall('implement_plan', { plan_id: 'plan_16910c64' }, api);
   assert.ok(r.isError);
   assert.match(r.content[0].text, /supervisor-only/);
   assert.strictEqual(api.calls.length, 0);

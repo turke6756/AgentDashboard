@@ -963,9 +963,20 @@ Launch every plan-bound worker through \`launch_agent\` with both the plan rail'
 immutable dispatch envelope before prompt delivery. After the worker lands, a
 package is accepted only through \`gate_landed_work_package\`, using the recorded
 dispatch attempt and the sole matching commit OID.`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V29.replace(
+export const SUPERVISOR_AGENT_MD_V30 = SUPERVISOR_AGENT_MD_V29.replace(
   SUPERVISOR_AGENT_MD_V29_COMMIT_POLICY_NEW,
   SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW,
+);
+
+const SUPERVISOR_AGENT_MD_V31_COMMIT_POLICY_NEW = `${SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW}
+
+The human normally promotes a plan by hand. Before calling \`implement_plan\`, check
+in with the human verbally and wait for a go-ahead. If the human has explicitly
+authorized you to promote and implement without checking in, follow the same flow
+the human would and call the tool only when the structured plan is ready.`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V30.replace(
+  SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW,
+  SUPERVISOR_AGENT_MD_V31_COMMIT_POLICY_NEW,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory

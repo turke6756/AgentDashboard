@@ -257,6 +257,32 @@ test('Implement activates the run through the provisioned activity binding', asy
   assert.equal(res.run?.baselineRef, activity.activityHeadRef);
 });
 
+test('supervisor trigger stamps the authenticated agent identity and source', async () => {
+  let inserted: any = null;
+  const activity = {
+    executionRunId: 'run-fixed', planId: 'plan-1', logicalWorkspaceId: 'ws-1',
+    objectDatabaseKey: 'objects', activityRepositoryKey: 'activity-key', primaryRepositoryKey: 'primary-key',
+    path: 'C:/app/planning-worktrees/ws/run', baselineOid: 'b'.repeat(40),
+    activityHeadRef: 'refs/lares/activities/cnVuLWZpeGVk/head', promotedHeadOid: null,
+    state: 'active' as const, failureCode: null, createdAt: 4242, updatedAt: 4242,
+  };
+  const res = await svc.implementPlan({
+    planId: 'plan-1',
+    appUserId: 'ignored-os-user',
+    trigger: { source: 'supervisor-agent', agentId: 'sup-owner' },
+  }, svcDeps({
+    appUserDataPath: 'C:/app',
+    insertRun: (input: any) => { inserted = input; return { ...input, lifecycleState: 'active' }; },
+    provisionActivity: async (_input: unknown, deps: { activate: (row: typeof activity) => void }) => {
+      deps.activate(activity);
+      return { ok: true, activity };
+    },
+  }));
+  assert.equal(res.ok, true);
+  assert.equal(inserted.triggerSource, 'supervisor-agent');
+  assert.equal(inserted.appUserId, 'sup-owner');
+});
+
 test('an agent caller (no proven appUserId) is refused before any git/db touch', async () => {
   const log: SpyLog = [];
   const res = await svc.implementPlan({ planId: 'plan-1', appUserId: null }, svcDeps({}, log));

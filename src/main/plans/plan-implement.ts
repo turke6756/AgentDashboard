@@ -3,9 +3,9 @@
 // Implement is an EXPLICIT HUMAN TRIGGER PULL (ruling: hardened/ready plans sit
 // indefinitely — there is NO auto-dispatch). A `ready` plan (ruling 31: the visible
 // ready-badge is what gates and justifies this) is turned into an EXECUTING plan with
-// a durably-pinned baseline. The service is renderer-only / human-gesture initiated —
-// there is deliberately no api-server route, so an agent cannot pull it, and the
-// service additionally refuses any call lacking a real, app-observed `appUserId`.
+// a durably-pinned baseline. The renderer IPC path records the app-observed OS user;
+// the supervisor HTTP path records the authenticated responsible supervisor agent.
+// Neither path accepts actor identity from a renderer or HTTP request body.
 //
 // Eligibility (all re-checked here, not trusted from the ready flip):
 //   1. the plan exists and is `format='structured'`;
@@ -13,7 +13,7 @@
 //   3. at least one `ready` work package;
 //   4. an overview for every populated tab;
 //   5. a valid responsible supervisor;
-//   6. a proven `appUserId` (never a claimed human identity the app cannot prove).
+//   6. a proven main-side trigger identity.
 //
 // Baseline durability + failure ordering (the load-bearing invariant):
 //   • a `head` baseline creates the durable ref `refs/lares/plans/<planId>/<runId>` at
@@ -72,6 +72,7 @@ import {
 } from '../git-checkpoints/planning-worktree-service';
 
 export const IMPLEMENT_TRIGGER_SOURCE = 'renderer-user-action';
+export const SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE = 'supervisor-agent';
 
 export type ImplementFailure =
   | 'plan-not-found'
@@ -110,9 +111,11 @@ export interface PlanRepoContext {
 
 export interface ImplementPlanInput {
   planId: string;
-  /** A REAL, app-observed user identity (main-side; NEVER a renderer-supplied claim).
-   *  Absent/empty ⇒ the trigger is refused (`no-app-user`). */
+  /** App-observed OS user for the renderer path. A supervisor trigger overrides it
+   *  with its authenticated agent id; no identity is accepted from an HTTP body. */
   appUserId: string | null;
+  /** Authenticated main-side supervisor identity for the agent-callable route. */
+  trigger?: { source: typeof SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE; agentId: string };
 }
 
 export interface ImplementPlanDeps {
@@ -342,6 +345,8 @@ export async function implementPlan(
   const now = deps.now ?? Date.now;
   const hasExecutionRuns = deps.hasExecutionRuns ?? planHasExecutionRuns;
   const appendLifecycleEvent = deps.appendLifecycleEvent ?? casAppendLifecycleEvent;
+  const triggerSource = input.trigger?.source ?? IMPLEMENT_TRIGGER_SOURCE;
+  const triggerActorId = input.trigger?.agentId ?? input.appUserId;
 
   const failures: ImplementFailure[] = [];
   let tabsMissingOverview: PlanTabKey[] = [];
@@ -360,7 +365,7 @@ export async function implementPlan(
   if (readiness.runState !== 'ready' && !failures.includes('plan-not-found')) {
     failures.push('plan-not-ready');
   }
-  if (!input.appUserId || input.appUserId.trim() === '') failures.push('no-app-user');
+  if (!triggerActorId || triggerActorId.trim() === '') failures.push('no-app-user');
 
   if (failures.length > 0) return fail();
 
@@ -421,8 +426,8 @@ export async function implementPlan(
           baselineKind: 'head',
           baselineHeadOid: probe.headOid,
           baselineRef: activity.activityHeadRef,
-          triggerSource: IMPLEMENT_TRIGGER_SOURCE,
-          appUserId: input.appUserId,
+          triggerSource,
+          appUserId: triggerActorId,
           triggeredAt: now(),
           planningActivityExecutionRunId: runId,
         });
@@ -451,7 +456,7 @@ export async function implementPlan(
         planFolderRelPath: folderRelPath,
         runId,
         isReimplementation,
-        agentId: input.appUserId!,
+        agentId: triggerActorId!,
         at: now(),
         append: appendLifecycleEvent,
       });
@@ -466,8 +471,8 @@ export async function implementPlan(
 
 // ── IPC wiring: renderer-only, human-gesture Implement channel ─────────────────
 //
-// Registered from registerPlanIpc. There is deliberately NO api-server route (an agent
-// cannot reach ipcMain), and `appUserId` is derived MAIN-SIDE from the OS user the app
+// Registered from registerPlanIpc. The authenticated HTTP route is supervisor-only;
+// this IPC path still derives `appUserId` MAIN-SIDE from the OS user the app
 // runs as — never taken from the renderer payload — so the persisted trigger fields
 // stay truthful.
 
