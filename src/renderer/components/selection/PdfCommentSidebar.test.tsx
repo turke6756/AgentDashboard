@@ -100,6 +100,7 @@ describe('PdfCommentSidebar', () => {
     Object.values(commentsApi).forEach((f) => 'mockClear' in f && f.mockClear());
     navigated.length = 0;
     (window as unknown as { api: unknown }).api = { comments: commentsApi };
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -109,6 +110,7 @@ describe('PdfCommentSidebar', () => {
     act(() => root.unmount());
     host.remove();
     document.getElementById('selection-toast-container')?.remove();
+    vi.restoreAllMocks();
   });
 
   async function mount() {
@@ -160,6 +162,54 @@ describe('PdfCommentSidebar', () => {
     await act(async () => pin('p1')!.click());
     await act(async () => button('Delete')!.click());
     expect(commentsApi.delete).toHaveBeenCalledWith('p1');
+  });
+
+  it('surfaces an orphaned comment even when it has no navigable geometry', async () => {
+    rows = [makeRow({ id: 'lost', status: 'orphaned', body: 'lost note' })];
+    const noGeometry: PdfSidebarRuntime = {
+      locationFor: () => null,
+      navigateToComment: vi.fn(),
+    };
+    await act(async () => {
+      root.render(
+        <PdfCommentSidebar workspaceId="ws-1" filePath="C:\\ws\\paper.pdf" runtime={noGeometry} />,
+      );
+    });
+    await act(async () => {});
+
+    expect(pin('lost')).toBeNull();
+    expect(host.querySelector('[data-testid="pdf-orphaned-comments"]')?.textContent).toContain('lost note');
+    await act(async () => button('Delete')!.click());
+    expect(commentsApi.delete).toHaveBeenCalledWith('lost');
+  });
+
+  it('clears only orphaned rows after confirmation', async () => {
+    rows = [
+      makeRow({ id: 'lost-1', status: 'orphaned' }),
+      makeRow({ id: 'active', status: 'draft' }),
+      makeRow({ id: 'lost-2', status: 'orphaned' }),
+    ];
+    await mount();
+    await act(async () => button('Clear orphaned comments')!.click());
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete 2 orphaned comments from this PDF?');
+    expect(commentsApi.delete).toHaveBeenCalledTimes(2);
+    expect(commentsApi.delete).toHaveBeenCalledWith('lost-1');
+    expect(commentsApi.delete).toHaveBeenCalledWith('lost-2');
+    expect(commentsApi.delete).not.toHaveBeenCalledWith('active');
+  });
+
+  it('clears every row on the file only after confirmation', async () => {
+    rows = [
+      makeRow({ id: 'lost', status: 'orphaned' }),
+      makeRow({ id: 'active', status: 'draft' }),
+    ];
+    await mount();
+    await act(async () => button('Clear all comments on this file')!.click());
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete all 2 comments and highlights from this PDF?');
+    expect(commentsApi.delete).toHaveBeenCalledWith('lost');
+    expect(commentsApi.delete).toHaveBeenCalledWith('active');
   });
 
   // An open card used to be escapable ONLY via the ✕ glyph in its header, so it

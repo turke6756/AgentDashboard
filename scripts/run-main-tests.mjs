@@ -486,6 +486,7 @@ const TESTS = [
   'dist/main/main/browser/a11y-snapshot.test.js',
   'dist/main/main/browser/action-audit.test.js',
   'dist/main/main/selection-comments-db.test.js',
+  'dist/main/main/api-server-comments-delete.test.js',
   'dist/main/main/selection-comments-send.test.js',
   'dist/main/main/detached-windows.test.js',
   'dist/main/main/detached-view-windows.test.js',

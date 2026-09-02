@@ -9,7 +9,7 @@ import type { AgentSupervisor } from './supervisor';
 import {
   getAgent, getAllAgents, getAgentsByWorkspace, getAgentsByOwner, getWorkspace, getWorkspaces, getSupervisorAgent,
   getWorkspaceAgentSummary, recordCrossWorkspaceAudit,
-  getFileActivities, findSelectionCommentsByPath,
+  getFileActivities, findSelectionCommentsByPath, getSelectionComment, deleteSelectionComment,
   createTeam, getTeam, listTeams, updateTeamStatus, saveTeamManifest, getTeamManifest,
   addTeamMember, removeTeamMember, getTeamMembers,
   createChannel, removeChannel, getChannel, listChannels,
@@ -2026,6 +2026,39 @@ export class ApiServer {
         filePath: c.filePath,
       }));
       return { filePath, matchedByFilename, count: items.length, comments: items };
+    }
+
+    // DELETE /api/comments/:id — agent-facing mutation counterpart to the
+    // renderer's comments:delete IPC. The server-level bearer gate above applies
+    // before this route, like every other API mutation.
+    const commentDeleteMatch = path.match(/^\/api\/comments\/([^/]+)$/);
+    if (method === 'DELETE' && commentDeleteMatch) {
+      const id = decodeURIComponent(commentDeleteMatch[1]);
+      if (!getSelectionComment(id)) {
+        throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+      }
+      deleteSelectionComment(id);
+      return { deleted: true, id };
+    }
+
+    // DELETE /api/comments?file_path=...&status=orphaned|all — bulk cleanup for
+    // file-scoped agent workflows. Use the same forgiving path lookup as GET so
+    // Windows/WSL slash and case differences behave consistently.
+    if (method === 'DELETE' && path === '/api/comments') {
+      const filePath = url.searchParams.get('file_path');
+      if (!filePath) {
+        throw Object.assign(new Error('Missing "file_path" query parameter'), { statusCode: 400 });
+      }
+      const status = url.searchParams.get('status');
+      if (status !== 'orphaned' && status !== 'all') {
+        throw Object.assign(new Error('"status" must be "orphaned" or "all"'), { statusCode: 400 });
+      }
+      const { comments, matchedByFilename } = findSelectionCommentsByPath(filePath, true);
+      const targets = status === 'all'
+        ? comments
+        : comments.filter((comment) => comment.status === 'orphaned');
+      for (const comment of targets) deleteSelectionComment(comment.id);
+      return { deleted: true, filePath, status, matchedByFilename, count: targets.length };
     }
 
     // POST /api/agents/:id/input — queue a message for delivery and return.

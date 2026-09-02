@@ -126,6 +126,11 @@ export default function PdfCommentSidebar({
     [cards, runtime],
   );
 
+  const orphaned = useMemo(
+    () => cards.filter((c) => c.status === 'orphaned'),
+    [cards],
+  );
+
   const expanded = expandedId ? cards.find((c) => c.id === expandedId) ?? null : null;
 
   const open = (comment: SelectionComment) => {
@@ -171,6 +176,29 @@ export default function PdfCommentSidebar({
     if (draftIds.length > 0) void sendPersistedComments(draftIds, target, filePath);
   };
 
+  const deleteMany = async (targets: readonly SelectionComment[]) => {
+    if (targets.some((c) => c.id === expandedId)) setExpandedId(null);
+    await Promise.all(targets.map((c) => deleteComment(c.id, filePath)));
+  };
+
+  const clearOrphaned = () => {
+    if (
+      orphaned.length > 0
+      && window.confirm(`Delete ${orphaned.length} orphaned comment${orphaned.length === 1 ? '' : 's'} from this PDF?`)
+    ) {
+      void deleteMany(orphaned);
+    }
+  };
+
+  const clearAll = () => {
+    if (
+      comments.length > 0
+      && window.confirm(`Delete all ${comments.length} comments and highlights from this PDF?`)
+    ) {
+      void deleteMany(comments);
+    }
+  };
+
   const pageLabelFor = (comment: SelectionComment): string => {
     const loc = runtime.locationFor(comment);
     const page = loc ? loc.pageIndex : comment.pdfAnchor?.pages[0]?.pageIndex ?? 0;
@@ -180,6 +208,46 @@ export default function PdfCommentSidebar({
 
   return (
     <div data-testid="pdf-comment-sidebar" className="pointer-events-none absolute inset-0">
+      {orphaned.length > 0 && (
+        <section
+          data-testid="pdf-orphaned-comments"
+          aria-label={`Orphaned comments (${orphaned.length})`}
+          className="pointer-events-auto sticky top-2 z-20 ml-auto mr-[26px] w-[300px] max-h-72 overflow-auto rounded border border-gray-600 bg-surface-1/95 p-2 font-sans text-xs text-text-primary shadow-lg"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-border-subtle pb-1.5">
+            <strong>Orphaned ({orphaned.length})</strong>
+            <button type="button" onClick={clearOrphaned} className="text-red-400 hover:text-red-300">
+              Clear orphaned comments
+            </button>
+          </div>
+          <div className="divide-y divide-border-subtle">
+            {orphaned.map((comment) => (
+              <div key={comment.id} className="flex items-start gap-2 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-text-secondary" title={comment.quotedText}>
+                    {comment.quotedText || 'Anchor lost'}
+                  </div>
+                  <div className="mt-0.5 whitespace-pre-wrap break-words">{comment.body}</div>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Delete orphaned comment: ${comment.body || comment.quotedText}`}
+                  onClick={() => void deleteMany([comment])}
+                  className="shrink-0 text-red-400 hover:text-red-300"
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-border-subtle pt-1.5 text-right">
+            <button type="button" onClick={clearAll} className="text-text-secondary hover:text-red-300">
+              Clear all comments on this file
+            </button>
+          </div>
+        </section>
+      )}
+
       {cards.map((c) => {
         const loc = runtime.locationFor(c);
         if (!loc) return null;
@@ -217,7 +285,7 @@ export default function PdfCommentSidebar({
           onSendAll={(target) => sendAll(target)}
           onResolve={() => void resolveComment(expanded.id, filePath)}
           onDelete={() => void deleteComment(expanded.id, filePath)}
-          onUpdate={(body) => void window.api.comments.update(expanded.id, { body }).then(() => onExpandedChange(null))}
+          onUpdate={(body) => void window.api.comments.update(expanded.id, { body }).then(() => setExpandedId(null))}
         />
       )}
     </div>
