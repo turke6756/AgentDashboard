@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { devDiscoveryFilePath } from './dev-instance';
 import { removeDevInstanceDiscovery, writeDevInstanceDiscovery } from './dev-instance-discovery';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-wp7-discovery-'));
+const root = 'C:\\fake-app-data';
 const file = path.join(root, 'dev-instance.json');
 const discovery = {
   port: 24679,
@@ -16,24 +14,56 @@ const discovery = {
   startedAt: '2026-09-03T12:00:00.000Z',
 };
 
-try {
-  assert.equal(
-    devDiscoveryFilePath('C:\\Users\\example\\AppData\\Roaming'),
-    path.join('C:\\Users\\example\\AppData\\Roaming', 'lares-app-dev', 'dev-instance.json'),
-  );
+let stored: string | undefined;
+let chmodMode: number | undefined;
+let writeCount = 0;
+const missingFile = (): NodeJS.ErrnoException => Object.assign(new Error('missing'), { code: 'ENOENT' });
+const fileSystem = {
+  readFileSync(_file: string, encoding: 'utf8'): string {
+    assert.equal(encoding, 'utf8');
+    if (stored === undefined) throw missingFile();
+    return stored;
+  },
+  writeFileSync(_file: string, data: string, options: { encoding: 'utf8'; mode: number }): void {
+    assert.deepEqual(options, { encoding: 'utf8', mode: 0o600 });
+    stored = data;
+    writeCount += 1;
+  },
+  chmodSync(_file: string, mode: number): void {
+    chmodMode = mode;
+  },
+  unlinkSync(): void {
+    if (stored === undefined) throw missingFile();
+    stored = undefined;
+  },
+};
 
-  writeDevInstanceDiscovery(file, discovery);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), discovery);
-  if (process.platform !== 'win32') {
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  }
+assert.equal(
+  devDiscoveryFilePath('C:\\Users\\example\\AppData\\Roaming'),
+  path.join('C:\\Users\\example\\AppData\\Roaming', 'lares-app-dev', 'dev-instance.json'),
+);
 
-  removeDevInstanceDiscovery(file);
-  assert.equal(fs.existsSync(file), false);
-  removeDevInstanceDiscovery(file);
+writeDevInstanceDiscovery(file, discovery, fileSystem);
+assert.deepEqual(JSON.parse(stored!), discovery);
+assert.equal(chmodMode, 0o600);
 
-  console.log('dev-instance-discovery: write/remove pair passed');
-  console.log('REACHABILITY:wp7-dev-target-routing discovery producer writes the consumed contract');
-} finally {
-  fs.rmSync(root, { recursive: true, force: true });
-}
+removeDevInstanceDiscovery(file, process.pid + 1, fileSystem);
+assert.notEqual(stored, undefined, 'a different pid must not remove the discovery record');
+removeDevInstanceDiscovery(file, process.pid, fileSystem);
+assert.equal(stored, undefined, 'the owning pid removes its discovery record');
+removeDevInstanceDiscovery(file, process.pid, fileSystem);
+
+const livePid = process.pid + 10_000;
+stored = JSON.stringify({ ...discovery, pid: livePid, token: 'live-token' });
+const beforeRefusedWrite = stored;
+let checkedPid: number | undefined;
+writeDevInstanceDiscovery(file, discovery, fileSystem, (pid) => {
+  checkedPid = pid;
+  return true;
+});
+assert.equal(checkedPid, livePid);
+assert.equal(stored, beforeRefusedWrite, 'a live foreign pid record must not be overwritten');
+assert.equal(writeCount, 1, 'the refused overwrite must be a no-op');
+
+console.log('dev-instance-discovery: pid-guarded write/remove tests passed');
+console.log('REACHABILITY:wp7-dev-target-routing discovery producer writes the consumed contract');

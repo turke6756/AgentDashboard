@@ -386,6 +386,7 @@ let attributionService: AttributionService | null = null;
 // B2 D5: per-workspace `plans/` watcher (sole `plans/` fs subscription owner, F-C).
 let plansWatcher: PlansWatcher | null = null;
 let stopPackageDispatchReconcileSafetyNet: (() => void) | null = null;
+let instanceLockRefused = false;
 
 // Single-instance lock — prevent duplicate windows. Skipped in analytics-
 // snapshot mode (WP1): the headless CLI must neither steal the lock from a
@@ -393,6 +394,7 @@ let stopPackageDispatchReconcileSafetyNet: (() => void) | null = null;
 if (analyticsSnapshotArgv === null) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
+    instanceLockRefused = true;
     console.log('Another instance is already running — exiting.');
     app.quit();
   }
@@ -784,7 +786,7 @@ function handleShellRenderProcessGone(): void {
 app.whenReady().then(async () => {
   // WP1: the analytics-snapshot branch above owns this launch end-to-end —
   // no window, no supervisor, no servers.
-  if (analyticsSnapshotArgv !== null) return;
+  if (analyticsSnapshotArgv !== null || instanceLockRefused) return;
   // Strip any frame-blocking headers from Jupyter responses. Don't add CORS
   // headers here — `Access-Control-Allow-Origin: *` combined with
   // `Access-Control-Allow-Credentials: true` is an invalid pair that Chromium
@@ -1618,7 +1620,7 @@ app.on('before-quit', (e) => {
 });
 
 app.on('will-quit', () => {
-  if (activeDevDiscoveryFile) removeDevInstanceDiscovery(activeDevDiscoveryFile);
+  if (activeDevDiscoveryFile) removeDevInstanceDiscovery(activeDevDiscoveryFile, process.pid);
   disposeKernelClient();
   void shutdownJupyterServer();
 });
