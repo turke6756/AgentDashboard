@@ -124,8 +124,9 @@ this; it stays gated on `prop_296c04e9`.
 ## Workspace operating rules
 
 - **Worker mix (Edward's directive):** prefer Codex workers to conserve Claude
-  credits; use grok for adversarial review, each reviewer launched in a fresh,
-  previously-unused working directory; reserve Claude workers for the hardest
+  credits; use grok for adversarial review, each grok reviewer launched from the
+  grok worker lane `.lares/workers/grok` with its own session id (never from an
+  ad-hoc directory); reserve Claude workers for the hardest
   concurrency problems.
 - **Register main-process tests:** a new main-process test file MUST be added to
   `scripts/run-main-tests.mjs`. A green suite that is not registered there is a

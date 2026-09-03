@@ -3899,9 +3899,10 @@ export class AgentSupervisor extends EventEmitter {
       this.monitor.recordHookCanary(agent.id);
     }
 
-    // Assign a session ID for resume/fork/query support (Claude only)
+    // Assign a session ID for providers whose fresh-launch CLI accepts one.
+    // Grok is Windows-only here; the WSL launch path remains refused below.
     let sessionId: string | undefined;
-    if (provider === 'claude') {
+    if (provider === 'claude' || (provider === 'grok' && pathType === 'windows')) {
       sessionId = uuidv4();
       updateAgentResumeSessionId(agent.id, sessionId);
       this.sessionLogReader.invalidatePath(agent.id);
@@ -5654,8 +5655,9 @@ export class AgentSupervisor extends EventEmitter {
         }
       }
 
-      // Add session ID on fresh launch (Claude only)
-      if (!resume && sessionId && isClaude) {
+      // Bind fresh Claude and Grok launches to the session id already minted by
+      // launchAgent. Grok's explicit id prevents same-cwd agents cross-reading.
+      if (!resume && sessionId && (isClaude || agent.provider === 'grok')) {
         args.push('--session-id', sessionId);
         console.log(`[Windows] Fresh launch ${agent.title} (${agent.id}) with session-id: ${sessionId}`);
       }

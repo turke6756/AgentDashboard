@@ -70,13 +70,12 @@ interface GrokActiveSession {
  * `summary.json` (grok's updates.jsonl has no session-meta line of its own),
  * carrying `model = current_model_id` and `cwd = info.cwd`.
  *
- * Discovery: grok mints its own UUIDv7 session ids and the dashboard does not
- * bind them (grok is not session-addressable), so the tail is resolved from the
- * working directory. `~/.grok/active_sessions.json` maps live session ids to
- * their cwd; when it names a live session for the agent's cwd we prefer it,
- * otherwise we take the newest `updates.jsonl` under the cwd's encoded group
- * dir (respecting the agent start floor). This mirrors the gemini reader's
- * cwd-match-newest strategy and carries the same shared-cwd caveat.
+ * Discovery: new dashboard launches bind a caller-minted Grok session id, so
+ * their tail resolves only from the exact encoded-cwd/session-id path. While
+ * that file is being created, polling waits rather than falling back to another
+ * session in the shared cwd. Legacy agents without a bound id retain the old
+ * heuristic: prefer `active_sessions.json` for the cwd, otherwise take the
+ * newest `updates.jsonl` under its encoded group (subject to the start floor).
  */
 export class GrokSessionReader implements ChatLogReader {
   readonly provider: AgentProvider = 'grok';
@@ -171,10 +170,9 @@ export class GrokSessionReader implements ChatLogReader {
    *  session's `updates.jsonl` on disk (readers never unlink).
    *
    *  Requires a session id: the caller (agent-chat-history.ts) only invokes
-   *  this when the agent carries a `resumeSessionId`. Since the dashboard does
-   *  not bind grok session ids today, terminal grok agents usually degrade to
-   *  `source: 'unavailable'` — acceptable per scope; this path is here so that
-   *  history works for any grok agent that DOES carry a bound id.
+   *  this when the agent carries a `resumeSessionId`. New dashboard launches
+   *  bind that id, so history resolves through the same deterministic path.
+   *  Legacy unbound agents may still require activity-window recovery.
    *
    *  Side-effect free with respect to the live tail: parses under an ephemeral
    *  scope id and clears the scope's per-agent rows in `finally`, never touches
@@ -585,16 +583,18 @@ export class GrokSessionReader implements ChatLogReader {
       this.resolvedPaths.delete(session.agentId);
     }
 
-    // Exact session id (when the agent record carries one).
+    // Exact session id (when the agent record carries one). Missing means the
+    // provider has not created this agent's file yet, never "try a sibling".
     if (session.sessionId) {
       const byId = this.findUpdatesById(session);
       if (byId) {
         this.resolvedPaths.set(session.agentId, byId);
         return byId;
       }
+      return null;
     }
 
-    // cwd discovery — the common grok path (session ids aren't bound).
+    // Legacy cwd discovery for records created before Grok ids were bound.
     const byCwd = this.findUpdatesByCwd(session);
     if (byCwd) {
       this.resolvedPaths.set(session.agentId, byCwd);
@@ -618,20 +618,14 @@ export class GrokSessionReader implements ChatLogReader {
     return dirs;
   }
 
-  /** Locate `<grok>/sessions/<group>/<sessionId>/updates.jsonl`. Tries the
-   *  encoded-cwd group first, then scans all groups for the id (covers the
-   *  slug+hash group naming and cwd drift). */
+  /** Locate the deterministic bound-session path:
+   *  `<grok>/sessions/<encoded-cwd>/<sessionId>/updates.jsonl`. */
   private findUpdatesById(session: ChatLogReaderSession): string | null {
     const sid = session.sessionId;
     for (const grokDir of this.candidateGrokDirs(session)) {
-      const sessionsDir = path.join(grokDir, 'sessions');
-      const group = path.join(sessionsDir, encodeURIComponent(session.workingDirectory));
+      const group = path.join(grokDir, 'sessions', encodeURIComponent(session.workingDirectory));
       const direct = path.join(group, sid, 'updates.jsonl');
       if (fs.existsSync(direct)) return direct;
-      for (const groupName of safeReaddir(sessionsDir)) {
-        const p = path.join(sessionsDir, groupName, sid, 'updates.jsonl');
-        if (fs.existsSync(p)) return p;
-      }
     }
     return null;
   }

@@ -94,13 +94,14 @@ function countByType(events: SessionEvent[]): Record<string, number> {
  *  `<root>/sessions/<encoded-cwd>/<sid>/` tree so discovery goes through the
  *  reader's real base-dir walk. Returns the temp `.grok` root. */
 function writeSessionTree(opts: {
+  root?: string;
   cwd: string;
   sessionId: string;
   lines: string[];
   activeSessions?: unknown;
   mtimeMs?: number;
 }): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-'));
+  const root = opts.root ?? fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-'));
   const groupDir = path.join(root, 'sessions', encodeURIComponent(opts.cwd), opts.sessionId);
   fs.mkdirSync(groupDir, { recursive: true });
   const updates = path.join(groupDir, 'updates.jsonl');
@@ -117,6 +118,22 @@ function writeSessionTree(opts: {
     fs.utimesSync(updates, t, t);
   }
   return root;
+}
+
+function userLine(sessionId: string, text: string, timestamp: number): string {
+  return JSON.stringify({
+    timestamp,
+    method: 'session/update',
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text },
+        _meta: { modelId: 'grok-4.5' },
+      },
+      _meta: { eventId: `${sessionId}-user`, agentTimestampMs: timestamp * 1000 },
+    },
+  });
 }
 
 function makeDiscoveryReader(root: string): GrokSessionReader {
@@ -341,6 +358,64 @@ test('cwd discovery tails the session with no bound session id', () => {
     );
     assert.ok(events.some((e) => e.type === 'user-text' && e.text === 'list the files'));
     assert.ok(events.some((e) => e.type === 'assistant-text'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('same-cwd agents with distinct bound session ids read only their own files', () => {
+  const firstSid = '11111111-1111-4111-8111-111111111111';
+  const secondSid = '22222222-2222-4222-8222-222222222222';
+  const root = writeSessionTree({
+    cwd: FIXTURE_CWD,
+    sessionId: firstSid,
+    lines: [userLine(firstSid, 'from first session', 1785772800)],
+  });
+  writeSessionTree({
+    root,
+    cwd: FIXTURE_CWD,
+    sessionId: secondSid,
+    lines: [userLine(secondSid, 'from second session', 1785772801)],
+  });
+  try {
+    const reader = makeDiscoveryReader(root);
+    const first = reader.pollSession(makeSession({ agentId: 'first', sessionId: firstSid }));
+    const second = reader.pollSession(makeSession({ agentId: 'second', sessionId: secondSid }));
+    assert.ok(first.some((e) => e.type === 'user-text' && e.text === 'from first session'));
+    assert.ok(!first.some((e) => e.type === 'user-text' && e.text === 'from second session'));
+    assert.ok(second.some((e) => e.type === 'user-text' && e.text === 'from second session'));
+    assert.ok(!second.some((e) => e.type === 'user-text' && e.text === 'from first session'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('bound session id waits for its own file instead of selecting a newer sibling', () => {
+  const boundSid = '33333333-3333-4333-8333-333333333333';
+  const siblingSid = '44444444-4444-4444-8444-444444444444';
+  const root = writeSessionTree({
+    cwd: FIXTURE_CWD,
+    sessionId: siblingSid,
+    lines: [userLine(siblingSid, 'from newer sibling', 1785772900)],
+  });
+  try {
+    const reader = makeDiscoveryReader(root);
+    const beforeOwnFile = reader.pollSession(
+      makeSession({ agentId: 'bound', sessionId: boundSid }),
+    );
+    assert.deepEqual(beforeOwnFile, [], 'missing bound file must not fall back to a sibling');
+
+    writeSessionTree({
+      root,
+      cwd: FIXTURE_CWD,
+      sessionId: boundSid,
+      lines: [userLine(boundSid, 'from bound session', 1785772800)],
+    });
+    const afterOwnFile = reader.pollSession(
+      makeSession({ agentId: 'bound', sessionId: boundSid }),
+    );
+    assert.ok(afterOwnFile.some((e) => e.type === 'user-text' && e.text === 'from bound session'));
+    assert.ok(!afterOwnFile.some((e) => e.type === 'user-text' && e.text === 'from newer sibling'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
