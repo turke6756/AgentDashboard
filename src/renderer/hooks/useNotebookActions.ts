@@ -3,7 +3,7 @@ import type { ISharedCell, ISharedNotebook } from '@jupyter/ydoc';
 import { toJupyterServerPath } from '../lib/jupyterCollab';
 import { useCellStatusStore } from '../stores/cellStatus';
 
-const API_ROOT = 'http://127.0.0.1:24678/api/notebooks/kernel';
+const API_PATH = '/api/notebooks/kernel';
 const KERNEL_POLL_MS = 2000;
 
 type KernelExecutionState = 'idle' | 'busy' | 'starting' | 'dead' | string | null;
@@ -82,7 +82,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
 
     const refreshKernelState = async () => {
       try {
-        const url = new URL(`${API_ROOT}/state`);
+        const url = new URL(await apiUrl('/state'));
         url.searchParams.set('notebookPath', notebookPath);
         const nextState = await fetchJson<KernelState>(url.toString(), { method: 'GET' });
         if (!cancelled && mountedRef.current) {
@@ -114,7 +114,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
     clearNotebookRunState(notebookPath);
     setCellStatus(notebookPath, cellId, 'running');
     try {
-      const result = await fetchJson<ExecuteCellResult>(`${API_ROOT}/execute-cell`, {
+      const result = await fetchJson<ExecuteCellResult>(await apiUrl('/execute-cell'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath, cellId }),
@@ -156,7 +156,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
       for (let index = 0; index < codeCells.length; index += 1) {
         const cell = codeCells[index];
         setCellStatus(notebookPath, cell.id, 'running');
-        const result = await fetchJson<ExecuteCellResult>(`${API_ROOT}/execute-cell`, {
+        const result = await fetchJson<ExecuteCellResult>(await apiUrl('/execute-cell'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ notebookPath, cellId: cell.id }),
@@ -188,7 +188,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
     setActionError(null);
     setPendingAction('interrupt');
     try {
-      await fetchJson(`${API_ROOT}/interrupt`, {
+      await fetchJson(await apiUrl('/interrupt'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath }),
@@ -208,7 +208,7 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
     setActionError(null);
     setPendingAction('restart');
     try {
-      await fetchJson(`${API_ROOT}/restart`, {
+      await fetchJson(await apiUrl('/restart'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notebookPath }),
@@ -337,24 +337,29 @@ export function useNotebookActions(path: string, ynotebook: ISharedNotebook | nu
   };
 }
 
-// WP0.2 (M1): the dashboard API is bearer-token gated. Fetch the token once
-// over IPC and memoize the promise module-wide — every request through
+// WP0.2 (M1): the dashboard API is bearer-token gated. Fetch its bound port
+// and token over IPC and memoize the promise module-wide — every request through
 // fetchJson() below attaches it. On failure the promise is reset so a later
 // call can retry instead of caching a rejection forever.
-let apiTokenPromise: Promise<string> | null = null;
-function getApiToken(): Promise<string> {
-  if (!apiTokenPromise) {
-    apiTokenPromise = window.api.system.getApiToken().catch((err) => {
-      apiTokenPromise = null;
+let apiConnectionPromise: ReturnType<typeof window.api.system.getApiConnection> | null = null;
+function getApiConnection(): ReturnType<typeof window.api.system.getApiConnection> {
+  if (!apiConnectionPromise) {
+    apiConnectionPromise = window.api.system.getApiConnection().catch((err) => {
+      apiConnectionPromise = null;
       throw err;
     });
   }
-  return apiTokenPromise;
+  return apiConnectionPromise;
+}
+
+async function apiUrl(suffix: string): Promise<string> {
+  const { port } = await getApiConnection();
+  return `http://127.0.0.1:${port}${API_PATH}${suffix}`;
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  headers.set('Authorization', `Bearer ${await getApiToken()}`);
+  headers.set('Authorization', `Bearer ${(await getApiConnection()).token}`);
   const response = await fetch(input, { ...init, headers });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -372,7 +377,7 @@ async function refreshKernelStateOnce(
   setKernelState: Dispatch<SetStateAction<KernelState | null>>,
   mountedRef: MutableRefObject<boolean>
 ) {
-  const url = new URL(`${API_ROOT}/state`);
+  const url = new URL(await apiUrl('/state'));
   url.searchParams.set('notebookPath', notebookPath);
   const nextState = await fetchJson<KernelState>(url.toString(), { method: 'GET' });
   if (mountedRef.current) {

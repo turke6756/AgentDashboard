@@ -418,6 +418,7 @@ const api: IpcApi = {
       ipcRenderer.invoke('system:open-file-in-workspace', filePath, workspaceDir, pathType),
     setTheme: (theme) => ipcRenderer.invoke('system:set-theme', theme),
     getApiToken: () => ipcRenderer.invoke('system:get-api-token'),
+    getApiConnection: () => ipcRenderer.invoke('system:get-api-connection'),
   },
   teams: {
     create: (input) => ipcRenderer.invoke('team:create', input),

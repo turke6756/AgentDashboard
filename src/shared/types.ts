@@ -3587,6 +3587,11 @@ export type ResolveOpenableWorkspacePathResult =
   | { ok: true; canonicalPath: string }
   | { ok: false; reason: 'missing' | 'outside-workspace' | 'unreadable' };
 
+export interface ApiConnection {
+  port: number;
+  token: string;
+}
+
 export interface IpcApi {
   workspaces: {
     list: () => Promise<Workspace[]>;
@@ -3791,6 +3796,7 @@ export interface IpcApi {
     setTheme: (theme: 'dark' | 'light') => Promise<void>;
     /** WP0.2 (M1): per-launch bearer token for the dashboard HTTP API. */
     getApiToken: () => Promise<string>;
+    getApiConnection: () => Promise<ApiConnection>;
   };
   teams: {
     create: (input: CreateTeamInput) => Promise<Team>;

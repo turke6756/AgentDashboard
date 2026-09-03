@@ -102,7 +102,8 @@ import { usageForAgent } from './watchdog/attribution';
 import { composeSystemMemoryView } from './watchdog/system-memory-view';
 import { migrateWorkspaceStateDir, checkWorkspaceSecurityOnOpen, workspaceStateDir } from './workspace-state-dir';
 import { parseAnalyticsSnapshotArgv, flushStdio } from './analytics-export/analytics-snapshot-argv';
-import { devAppUserModelId, devJupyterBasePort, isDevInstance } from './dev-instance';
+import { devApiPort, devAppUserModelId, devJupyterBasePort, isDevInstance } from './dev-instance';
+import { createApiConnectionGate, startApiAndPublishPort } from './api-connection';
 import {
   listDetachedProcesses,
   detachedDirFor,
@@ -1103,7 +1104,8 @@ app.whenReady().then(async () => {
         if (view === 'browser') browserManager?.reparentHome();
       },
     };
-    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps);
+    const apiConnectionGate = createApiConnectionGate();
+    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate);
     registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE
@@ -1138,15 +1140,14 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('orchestration:list-active', () => orchestration?.activeSupervisorIds() ?? []);
     apiServer = new ApiServer(
-      supervisor, undefined, orchestration, undefined, undefined, notifyPlanBadgesInvalidated,
+      supervisor, devApiPort(), orchestration, undefined, undefined, notifyPlanBadgesInvalidated,
     );
     // Class IV (plans/class-iv-worker-hook-scaffold.md): tell the supervisor the
     // port the API server actually bound to (handles EADDRINUSE auto-increment)
     // so supervised workers' Stop hooks POST to the right place. start()
     // resolves the bound port only once 'listening' fires (WP0.1), so this
     // can never observe a stale pre-retry port.
-    const apiPort = await apiServer.start();
-    supervisor.setApiServerPort(apiPort);
+    const { port: apiPort } = await startApiAndPublishPort(apiServer, supervisor, apiConnectionGate);
     const promotionDeliverer: PromotionDeliverer = supervisor;
     const resolvePlansHomeRoot = (workspaceId: string): string => {
       const ws = getWorkspace(workspaceId);

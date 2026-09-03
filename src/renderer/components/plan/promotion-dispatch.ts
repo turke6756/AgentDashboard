@@ -35,8 +35,8 @@ export interface PromotionDispatchResult {
 }
 
 export async function reviveSupervisorViaApi(agentId: string, instruction: string): Promise<unknown> {
-  const token = await window.api.system.getApiToken();
-  const response = await fetch(`http://127.0.0.1:24678/api/agents/${encodeURIComponent(agentId)}/revive`, {
+  const { port, token } = await window.api.system.getApiConnection();
+  const response = await fetch(`http://127.0.0.1:${port}/api/agents/${encodeURIComponent(agentId)}/revive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ message: instruction }),

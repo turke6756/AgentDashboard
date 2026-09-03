@@ -81,7 +81,10 @@ beforeEach(() => {
       sendInput: vi.fn(async () => undefined),
       launch: vi.fn(),
     },
-    system: { getApiToken: vi.fn(async () => 'token') },
+    system: {
+      getApiToken: vi.fn(async () => 'token'),
+      getApiConnection: vi.fn(async () => ({ port: 24682, token: 'token' })),
+    },
     plans: {
       promotionPreflight: vi.fn(async () => ({
         status: 'allowed',
@@ -206,7 +209,7 @@ describe('PromoteToPlanPanel supervisor picker', () => {
     await flush();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:24678/api/agents/terminal/revive',
+      'http://127.0.0.1:24682/api/agents/terminal/revive',
       expect.objectContaining({ body: expect.stringContaining('Proposal artifact_id: prop_0e1425af') }),
     );
     expect(host.querySelector('[data-testid="promote-confirmation"]')?.textContent).toContain('(revived)');

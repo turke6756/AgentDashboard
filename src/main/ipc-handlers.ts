@@ -34,6 +34,7 @@ import {
 } from './plans/plan-comments';
 import { registerPlanCommentIpc, registerPlanCommentReplyIpc } from './plans/plan-ipc';
 import { getApiToken } from './security/api-auth';
+import type { ApiConnectionGate } from './api-connection';
 import { openInVSCode, openFileInVSCode, openFileInWorkspace } from './vscode-launcher';
 import { detectRuntimePrerequisites, toHealthCheck } from './runtime-prerequisites';
 import { detectPathType, ensureWindowsPath, toAgentPath } from './path-utils';
@@ -315,6 +316,7 @@ export function registerIpcHandlers(
   supervisor: AgentSupervisor,
   mainWindow: BrowserWindow,
   detachedWindowDeps: DetachedWindowDeps,
+  apiConnectionGate?: ApiConnectionGate,
 ): void {
   registerResearchInboxIpc(ipcMain, getWorkspace);
   ipcMain.handle('prove_reachability', (_event, request: ReachabilityProofRequest) =>
@@ -1287,6 +1289,10 @@ export function registerIpcHandlers(
   // (useNotebookActions.ts) need the per-launch bearer token. IPC is the
   // distribution channel — the token never appears in any URL or page markup.
   ipcMain.handle('system:get-api-token', () => getApiToken());
+  ipcMain.handle('system:get-api-connection', () => {
+    if (!apiConnectionGate) throw new Error('API connection is not configured');
+    return apiConnectionGate.ready;
+  });
 
   // Keep native window chrome (title bar / menu bar) in sync with the
   // renderer theme toggle, and persist so the next launch matches pre-paint.
