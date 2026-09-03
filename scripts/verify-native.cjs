@@ -18,6 +18,17 @@ const { app } = require('electron');
 
 const repoRoot = path.join(__dirname, '..');
 const strict = process.argv.includes('--strict');
+const packageArgIndex = process.argv.indexOf('--package');
+const packageRoot = packageArgIndex >= 0 ? path.resolve(process.argv[packageArgIndex + 1] || '') : null;
+if (packageArgIndex >= 0 && !process.argv[packageArgIndex + 1]) {
+  throw new Error('--package requires a win-unpacked directory');
+}
+const resourcesRoot = packageRoot ? path.join(packageRoot, 'resources') : null;
+const appRoot = resourcesRoot ? path.join(resourcesRoot, 'app.asar') : repoRoot;
+
+function modulePath(name) {
+  return path.join(appRoot, 'node_modules', name);
+}
 
 const failures = [];
 const warnings = [];
@@ -61,6 +72,7 @@ function finish() {
 async function main() {
   // -- 1. Runtime identity -------------------------------------------------
   log('== verify:native ==');
+  log(`  target=${packageRoot || repoRoot}${packageRoot ? ' (packaged resources)' : ' (source tree)'}`);
   log(`  electron=${process.versions.electron}  modules(ABI)=${process.versions.modules}  ` +
       `node=${process.versions.node}  arch=${process.arch}  platform=${process.platform}`);
   if (process.arch !== 'x64') {
@@ -70,7 +82,7 @@ async function main() {
   // -- 2. better-sqlite3 round trip ---------------------------------------
   log('\n[2] better-sqlite3');
   try {
-    const Database = require('better-sqlite3');
+    const Database = require(packageRoot ? modulePath('better-sqlite3') : 'better-sqlite3');
     const db = new Database(':memory:');
     db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     db.prepare('INSERT INTO t (v) VALUES (?)').run('lares-sqlite-ok');
@@ -97,7 +109,7 @@ async function main() {
     };
     let pty;
     try {
-      pty = require('node-pty');
+      pty = require(packageRoot ? modulePath('node-pty') : 'node-pty');
     } catch (err) {
       return done(() => fail('node-pty require', `${err && err.message}`));
     }
@@ -137,7 +149,9 @@ async function main() {
 
   // -- 4. lares-native functional surface ---------------------------------
   log('\n[4] lares-native');
-  const laresNativeIndex = path.join(repoRoot, 'native', 'lares-native', 'index.js');
+  const laresNativeIndex = packageRoot
+    ? path.join(resourcesRoot, 'native', 'lares-native', 'index.js')
+    : path.join(repoRoot, 'native', 'lares-native', 'index.js');
   try {
     // index.js is documented to never throw at require time (it returns a no-op
     // surface when the binary is missing), so a successful require proves
@@ -164,7 +178,9 @@ async function main() {
   } catch (err) {
     degrade('lares-native', `DEGRADED — ${err && err.message}`);
   }
-  const laresNativeBinary = path.join(repoRoot, 'native', 'lares-native', 'build', 'Release', 'lares_native.node');
+  const laresNativeBinary = packageRoot
+    ? path.join(resourcesRoot, 'native', 'lares-native', 'build', 'Release', 'lares_native.node')
+    : path.join(repoRoot, 'native', 'lares-native', 'build', 'Release', 'lares_native.node');
   if (!fs.existsSync(laresNativeBinary)) {
     degrade('lares-native binary', `${laresNativeBinary} missing — extraResources will ship nothing (plan §4.3)`);
   }
@@ -178,8 +194,12 @@ async function main() {
   // dist/main/main/ by scripts/copy-static-main.mjs. The resources/scripts
   // location is the pre-§5.1 layout and is kept here only so this gate reports
   // the F5 failure clearly if anyone moves it back.
-  const inBundleHelper = path.join(repoRoot, 'dist', 'main', 'main', 'pty-host.js');
-  const inResourcesHelper = path.join(repoRoot, 'scripts', 'pty-host.js');
+  const inBundleHelper = packageRoot
+    ? path.join(appRoot, 'dist', 'main', 'main', 'pty-host.js')
+    : path.join(repoRoot, 'dist', 'main', 'main', 'pty-host.js');
+  const inResourcesHelper = packageRoot
+    ? path.join(resourcesRoot, 'scripts', 'pty-host.js')
+    : path.join(repoRoot, 'scripts', 'pty-host.js');
   const helperSrc = fs.existsSync(inBundleHelper) ? inBundleHelper
     : fs.existsSync(inResourcesHelper) ? inResourcesHelper
       : null;
@@ -195,7 +215,7 @@ async function main() {
       fail('pty-host resolution (dev tree)', `require.resolve('node-pty') from ${helperDir}: ${err && err.message}`);
     }
     if (resolvedDev) {
-      pass('pty-host resolution (dev tree)', `${helperDir} -> ${path.relative(repoRoot, resolvedDev)}`);
+      pass(`pty-host resolution (${packageRoot ? 'package' : 'dev tree'})`, `${helperDir} -> ${path.relative(packageRoot || repoRoot, resolvedDev)}`);
     }
 
     // Packaged layout: anything under dist/ lands inside app.asar and therefore

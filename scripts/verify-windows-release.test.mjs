@@ -26,7 +26,7 @@ test('canonical package entry is exact', () => {
 
 test('release gates are strict and ordered', () => {
   const needles = [
-    'npm run verify:native -- --strict',
+    'npm run verify:native -- --strict --package <win-unpacked>',
     'verify-windows-package.ps1\') -Strict',
     "ensureWorkerScaffold(workspace, 'codex', 'windows')",
     'verify-bundled-node.ps1\') -Strict -Workspace $workspace',
@@ -39,6 +39,17 @@ test('release gates are strict and ordered', () => {
     const next = release.indexOf(needle);
     assert.ok(next > at, `missing or out of order: ${needle}`);
     at = next;
+  }
+});
+
+test('release gate propagates native exits, thrown errors, and missing exit codes', () => {
+  for (const mode of ['NativeExit', 'ThrownError', 'NullExit']) {
+    const result = spawnSync('powershell', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'verify-windows-release.ps1'),
+      '-TestGateFailure', mode,
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 1, `${mode}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /FAIL/, `${mode}: ${result.stdout}`);
   }
 });
 
@@ -74,10 +85,11 @@ test('bundled-Git rejects an explicit missing payload even when a candidate exis
   }
 });
 
-test('package strict mode hard-fails asar skips and launch skips', () => {
+test('package strict mode hard-fails asar skips, launch skips, and lares-native degradation', () => {
   assert.match(packaged, /\[switch\]\$Strict/);
   assert.match(packaged, /if \(\$Strict\) \{ Fail 'asar list'/);
   assert.match(packaged, /ReleaseSkip 'launch smoke'/);
+  assert.match(packaged, /if \(\$Strict\) \{ Fail 'lares-native' 'the packaged app logged/);
   assert.match(packaged, /packaged MinGit git\.exe/);
   assert.doesNotMatch(packaged, /unsigned 0\.2\.0 release/);
 });
@@ -93,6 +105,24 @@ test('native strict mode promotes each lares-native degradation', () => {
   const section = native.slice(native.indexOf('[4] lares-native'), native.indexOf('[5] packaged PTY-helper'));
   assert.equal((section.match(/degrade\(/g) || []).length, 6);
   assert.equal((section.match(/warn\(/g) || []).length, 0);
+});
+
+test('native package mode resolves rebuilt modules from packaged resources', () => {
+  assert.match(native, /process\.argv\.indexOf\('--package'\)/);
+  assert.match(native, /path\.join\(resourcesRoot, 'app\.asar'\)/);
+  assert.match(native, /path\.join\(resourcesRoot, 'native', 'lares-native', 'index\.js'\)/);
+  assert.match(release, /--strict --package \$unpacked/);
+});
+
+test('scaffold driver stubs electron and requires the generated status hook', () => {
+  assert.match(release, /\[switch\]\$ScaffoldOnly/);
+  assert.match(release, /\[string\]\$UnpackedRoot/);
+  assert.match(release, /Module\._resolveFilename = function resolveFilename/);
+  assert.match(release, /if \(request === 'electron'\) return electronStubId/);
+  assert.match(release, /SCAFFOLD_STATUS_HOOK=/);
+  assert.match(release, /scaffold status hook missing/);
+  assert.match(release, /Start-Process -FilePath \$exe -ArgumentList \$driverArgs -Wait -PassThru/);
+  assert.match(release, /\$global:LASTEXITCODE = \$driverProcess\.ExitCode/);
 });
 
 console.log(`\nverify-windows-release: ${passed} passing`);

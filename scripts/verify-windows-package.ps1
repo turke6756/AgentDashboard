@@ -254,7 +254,8 @@ if ($otherInstances.Count -gt 0) {
       Pass 'no module-load errors' 'no ABI / missing-module text in stdout+stderr'
     }
     if ($joined -match 'lares-native not loadable') {
-      Warn 'lares-native' 'the packaged app logged "lares-native not loadable" - watchdog runs degraded (plan §4.3 go/no-go)'
+      if ($Strict) { Fail 'lares-native' 'the packaged app logged "lares-native not loadable" - watchdog runs degraded (plan §4.3 go/no-go)' }
+      else { Warn 'lares-native' 'the packaged app logged "lares-native not loadable" - watchdog runs degraded (plan §4.3 go/no-go)' }
     }
   } finally {
     if ($proc -and -not $proc.HasExited) {
