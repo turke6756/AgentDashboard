@@ -12,8 +12,10 @@ import path from 'node:path'
 
 const TESTS = [
   'scripts/dev-instance.test.mjs',
+  'scripts/mcp-dashboard-dev-target.test.js',
   'dist/main/main/dev-instance.test.js',
   'dist/main/main/dev-instance-bootstrap.test.js',
+  'dist/main/main/dev-instance-discovery.test.js',
   'dist/main/main/provider-global-isolation.test.js',
   'dist/main/main/api-connection.test.js',
   'dist/main/main/proposal-ingest.test.js',

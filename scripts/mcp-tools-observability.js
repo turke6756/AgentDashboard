@@ -29,6 +29,7 @@ function getObservabilityCoreToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           workspace_id: { type: 'string', description: 'Optional: filter by workspace ID. A foreign id is supervisor-only.' },
         },
       },
@@ -41,7 +42,9 @@ function getObservabilityCoreToolDefinitions() {
         '{workspace_id}); a worker/researcher sees only its own. Takes NO arguments.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
+        },
       },
     },
     {
@@ -50,6 +53,7 @@ function getObservabilityCoreToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           agent_id: { type: 'string', description: 'The agent ID.' },
           lines: { type: 'number', description: 'Lines to read (default 50, max 500).' },
         },
@@ -62,6 +66,7 @@ function getObservabilityCoreToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           agent_id: { type: 'string', description: 'The agent ID.' },
           limit: { type: 'number', description: 'Max messages to return (newest first, default 50).' },
           role: { type: 'string', enum: ['assistant', 'user'], description: 'Optional: filter by role.' },

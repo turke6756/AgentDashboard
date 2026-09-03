@@ -11,6 +11,7 @@ function getOrchestrationToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           workspace_id: { type: 'string', description: 'Optional: the workspace ID. Defaults to your own workspace (auto-scoped from your identity).' },
           title: { type: 'string', description: 'Title for the agent.' },
           role_description: { type: 'string', description: 'Optional role description.' },
@@ -40,6 +41,7 @@ function getOrchestrationToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           agent_id: { type: 'string', description: 'The agent ID to stop.' },
         },
         required: ['agent_id'],
@@ -127,6 +129,7 @@ function getOrchestrationToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           agent_id: { type: 'string', description: 'The agent ID.' },
           key: {
             type: 'string',
@@ -216,6 +219,9 @@ function getOrchestrationToolDefinitions() {
 async function handleOrchestrationToolCall(name, args, apiRequest) {
   switch (name) {
     case 'launch_agent': {
+      if (apiRequest.targetInstance === 'dev' && !args.workspace_id) {
+        throw new Error('launch_agent with instance=dev requires an explicit workspace_id');
+      }
       const input = {
         title: args.title,
         roleDescription: args.role_description || '',
@@ -264,7 +270,7 @@ async function handleOrchestrationToolCall(name, args, apiRequest) {
       // dashboard re-validates it (§4.1: exists + same workspace + non-terminal)
       // before persisting, degrading to null (today's structural-supervisor
       // routing) when absent or invalid.
-      if (process.env.AGENT_DASHBOARD_SELF_ID) {
+      if (apiRequest.targetInstance !== 'dev' && process.env.AGENT_DASHBOARD_SELF_ID) {
         input.owner_agent_id = process.env.AGENT_DASHBOARD_SELF_ID;
       }
       const agent = await apiRequest('POST', '/api/agents', input);

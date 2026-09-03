@@ -102,8 +102,9 @@ import { usageForAgent } from './watchdog/attribution';
 import { composeSystemMemoryView } from './watchdog/system-memory-view';
 import { migrateWorkspaceStateDir, checkWorkspaceSecurityOnOpen, workspaceStateDir } from './workspace-state-dir';
 import { parseAnalyticsSnapshotArgv, flushStdio } from './analytics-export/analytics-snapshot-argv';
-import { devApiPort, devAppUserModelId, devJupyterBasePort, isDevInstance } from './dev-instance';
+import { devApiPort, devAppUserModelId, devDiscoveryFilePath, devJupyterBasePort, isDevInstance } from './dev-instance';
 import { createApiConnectionGate, startApiAndPublishPort } from './api-connection';
+import { removeDevInstanceDiscovery, writeDevInstanceDiscovery } from './dev-instance-discovery';
 import {
   listDetachedProcesses,
   detachedDirFor,
@@ -356,6 +357,7 @@ let devServerUrl: string | null = null;
 let supervisor: AgentSupervisor | null = null;
 let wsServer: WsServer | null = null;
 let apiServer: ApiServer | null = null;
+let activeDevDiscoveryFile: string | null = null;
 let proposalsWatcher: ProposalsWatcher | null = null;
 let badgeInvalidationCoordinator: BadgeInvalidationCoordinator<ReturnType<typeof setTimeout>> | null = null;
 let orchestration: OrchestrationService | null = null;
@@ -905,7 +907,8 @@ app.whenReady().then(async () => {
       validateWsl: validateAndRepairWslClaudeJson,
     });
 
-    supervisor = new AgentSupervisor();
+    const devDiscoveryFile = devDiscoveryFilePath(app.getPath('appData'));
+    supervisor = new AgentSupervisor({ devDiscoveryFile });
     supervisor.on('agentDeleted', (event: {
       workspaceId?: string | null; badgeChanged?: boolean;
     }) => {
@@ -1147,7 +1150,18 @@ app.whenReady().then(async () => {
     // so supervised workers' Stop hooks POST to the right place. start()
     // resolves the bound port only once 'listening' fires (WP0.1), so this
     // can never observe a stale pre-retry port.
-    const { port: apiPort } = await startApiAndPublishPort(apiServer, supervisor, apiConnectionGate);
+    const { port: apiPort, token: apiToken } = await startApiAndPublishPort(apiServer, supervisor, apiConnectionGate);
+    if (isDevInstance()) {
+      writeDevInstanceDiscovery(devDiscoveryFile, {
+        port: apiPort,
+        host: '127.0.0.1',
+        token: apiToken,
+        pid: process.pid,
+        userData: app.getPath('userData'),
+        startedAt: new Date().toISOString(),
+      });
+      activeDevDiscoveryFile = devDiscoveryFile;
+    }
     const promotionDeliverer: PromotionDeliverer = supervisor;
     const resolvePlansHomeRoot = (workspaceId: string): string => {
       const ws = getWorkspace(workspaceId);
@@ -1604,6 +1618,7 @@ app.on('before-quit', (e) => {
 });
 
 app.on('will-quit', () => {
+  if (activeDevDiscoveryFile) removeDevInstanceDiscovery(activeDevDiscoveryFile);
   disposeKernelClient();
   void shutdownJupyterServer();
 });

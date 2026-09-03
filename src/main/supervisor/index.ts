@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
-import { devRegistryFileName, isDevInstance } from '../dev-instance';
+import { devDiscoveryFilePath, devRegistryFileName, isDevInstance } from '../dev-instance';
 import { resolveCodexHookArtifactNames } from '../provider-repairs';
 export { resolveCodexHookArtifactNames } from '../provider-repairs';
 import crypto from 'crypto';
@@ -2673,10 +2673,13 @@ export class AgentSupervisor extends EventEmitter {
   private launchAdmissionCheck: (() => AdmissionDecision) | null = null;
 
   private readonly readEnvironment: EnvironmentReader;
+  private readonly devDiscoveryFile: string;
 
-  constructor(deps: { readEnv?: EnvironmentReader } = {}) {
+  constructor(deps: { readEnv?: EnvironmentReader; devDiscoveryFile?: string } = {}) {
     super();
     this.readEnvironment = deps.readEnv ?? ((name) => process.env[name]);
+    const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
+    this.devDiscoveryFile = deps.devDiscoveryFile ?? devDiscoveryFilePath(appData);
     // Layer B (codex session-id race fix) — global launch gate. Hard cap =
     // discovery timeout + 10 s so a launch whose discovery never settles (dead
     // codex, FS wedge) force-releases instead of wedging the queue. Escape hatch
@@ -2686,7 +2689,6 @@ export class AgentSupervisor extends EventEmitter {
       enabled: process.env.DASH_CODEX_LAUNCH_GATE !== 'off',
       log: (m) => console.log(m),
     });
-    const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
     this.logsDir = path.join(appData, 'AgentDashboard', 'logs');
     if (!fs.existsSync(this.logsDir)) fs.mkdirSync(this.logsDir, { recursive: true });
 
@@ -5368,6 +5370,7 @@ export class AgentSupervisor extends EventEmitter {
               AGENT_DASHBOARD_API_PORT: String(this.apiServerPort),
               AGENT_DASHBOARD_API_HOST: windowsHostIp,
               AGENT_DASHBOARD_API_TOKEN: capabilityToken,
+              AGENT_DASHBOARD_DEV_DISCOVERY: this.devDiscoveryFile,
             },
           },
         },
@@ -5388,6 +5391,7 @@ export class AgentSupervisor extends EventEmitter {
             TEAM_ID: teamId,
             AGENT_DASHBOARD_API_PORT: String(this.apiServerPort),
             AGENT_DASHBOARD_API_TOKEN: capabilityToken,
+            AGENT_DASHBOARD_DEV_DISCOVERY: this.devDiscoveryFile,
           },
         },
       },
@@ -5905,6 +5909,7 @@ export class AgentSupervisor extends EventEmitter {
       // non-legacy, so `capabilityToken` was minted at entry (`needsToken`) and is
       // defined here.
       extraEnv.AGENT_DASHBOARD_API_TOKEN = capabilityToken!;
+      extraEnv.AGENT_DASHBOARD_DEV_DISCOVERY = this.devDiscoveryFile;
       extraEnv.AGENT_DASHBOARD_API_PORT = String(this.apiServerPort);
       extraEnv.AGENT_DASHBOARD_API_HOST = '127.0.0.1';
       extraEnv.AGENT_DASHBOARD_SELF_ID = agent.id;
@@ -6499,6 +6504,7 @@ export class AgentSupervisor extends EventEmitter {
       // token as the MCP sidecar(s), never `getApiToken()`. Non-legacy gate ⇒
       // `capabilityToken` was minted at entry and is defined here.
       wslEnvPrefix.push(`AGENT_DASHBOARD_API_TOKEN=${shQuote(capabilityToken!)}`);
+      wslEnvPrefix.push(`AGENT_DASHBOARD_DEV_DISCOVERY=${shQuote(this.devDiscoveryFile)}`);
       wslEnvPrefix.push(`AGENT_DASHBOARD_API_PORT=${this.apiServerPort}`);
       wslEnvPrefix.push(`AGENT_DASHBOARD_API_HOST=${this.resolveWslGatewayIp()}`);
       wslEnvPrefix.push(`AGENT_DASHBOARD_SELF_ID=${agent.id}`);

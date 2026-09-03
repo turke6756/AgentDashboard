@@ -25,6 +25,7 @@ function getCommsToolDefinitions() {
       inputSchema: {
         type: 'object',
         properties: {
+          instance: { type: 'string', enum: ['self', 'dev'], description: 'Dashboard instance to target (default: self).' },
           agent_id: { type: 'string', description: 'The agent ID.' },
           message: { type: 'string', description: 'Message to send as user input.' },
           confirm: {
@@ -50,7 +51,7 @@ async function handleCommsToolCall(name, args, apiRequest) {
       if (!confirm) {
         await apiRequest('POST', `/api/agents/${args.agent_id}/input`, {
           text: args.message,
-          ...(AGENT_ID ? { sender_agent_id: AGENT_ID } : {}),
+          ...(apiRequest.targetInstance !== 'dev' && AGENT_ID ? { sender_agent_id: AGENT_ID } : {}),
         });
         return {
           content: [{
@@ -63,7 +64,7 @@ async function handleCommsToolCall(name, args, apiRequest) {
         const r = await apiRequest('POST', `/api/agents/${args.agent_id}/input`, {
           text: args.message,
           confirm: true,
-          ...(AGENT_ID ? { sender_agent_id: AGENT_ID } : {}),
+          ...(apiRequest.targetInstance !== 'dev' && AGENT_ID ? { sender_agent_id: AGENT_ID } : {}),
         });
         if (r.confirmed) {
           const subscribed = r.transientSubscription && r.transientSubscription.registered === true;

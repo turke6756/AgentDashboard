@@ -65,10 +65,10 @@ function requireApiToken() {
   return token;
 }
 
-function createApiRequest(apiToken) {
+function createApiRequest(apiToken, apiBase = API_BASE, callerHeaders = CALLER_HEADERS) {
   return function apiRequest(method, path, body) {
     return new Promise((resolve, reject) => {
-      const url = new URL(path, API_BASE);
+      const url = new URL(path, apiBase);
       const opts = {
         hostname: url.hostname,
         port: url.port,
@@ -79,7 +79,7 @@ function createApiRequest(apiToken) {
           'Authorization': `Bearer ${apiToken}`,
           // Inc 1 (B2): forward asserted identity on every call. One spread
           // covers all ~37 call sites across the mcp-tools-*.js modules.
-          ...CALLER_HEADERS,
+          ...callerHeaders,
         },
       };
 
@@ -101,7 +101,7 @@ function createApiRequest(apiToken) {
       });
 
       req.on('error', (err) => {
-        reject(new Error(`Dashboard API unreachable (${API_BASE}): ${err.message}`));
+        reject(new Error(`Dashboard API unreachable (${apiBase}): ${err.message}`));
       });
 
       if (body) req.write(JSON.stringify(body));
@@ -109,6 +109,71 @@ function createApiRequest(apiToken) {
     });
   };
 }
+
+function defaultIsPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error && error.code === 'EPERM';
+  }
+}
+
+function createInstanceRouter({
+  selfRequest,
+  discoveryPath,
+  fs: fileSystem = fs,
+  isPidAlive = defaultIsPidAlive,
+}) {
+  const unavailable = () => new Error(
+    `Dev instance discovery unavailable at ${discoveryPath}; run npm run dev:instance first`,
+  );
+
+  return {
+    selfRequest,
+    requestFor(args) {
+      const instance = args.instance === undefined ? 'self' : args.instance;
+      delete args.instance;
+      if (instance === 'self') return selfRequest;
+      if (instance !== 'dev') throw new Error(`Unsupported instance '${instance}'; expected self or dev`);
+
+      let discovery;
+      try {
+        discovery = JSON.parse(fileSystem.readFileSync(discoveryPath, 'utf8'));
+      } catch {
+        throw unavailable();
+      }
+      if (!discovery
+        || !Number.isInteger(discovery.port) || discovery.port < 1 || discovery.port > 65535
+        || typeof discovery.host !== 'string' || !discovery.host
+        || typeof discovery.token !== 'string' || !discovery.token
+        || !Number.isInteger(discovery.pid) || discovery.pid < 1
+        || !isPidAlive(discovery.pid)) {
+        throw unavailable();
+      }
+
+      const request = createApiRequest(
+        discovery.token,
+        `http://${discovery.host}:${discovery.port}`,
+        {},
+      );
+      request.targetInstance = 'dev';
+      request.instancePrefix = `[dev instance :${discovery.port}]`;
+      return request;
+    },
+  };
+}
+
+const INSTANCE_TARGETED_TOOLS = new Set([
+  'launch_agent',
+  'send_message_to_agent',
+  'send_keys_to_agent',
+  'read_agent_chat',
+  'read_agent_log',
+  'list_agents',
+  'list_workspaces',
+  'stop_agent',
+]);
 
 const TOOLSET_REGISTRY = {
   orchestration: () => {
@@ -261,10 +326,30 @@ function getToolDefinitions() {
   return getGrantedModules().flatMap((mod) => mod.getToolDefinitions());
 }
 
-async function handleToolCall(name, args, apiRequest) {
-  for (const mod of getGrantedModules()) {
-    const result = await mod.handleToolCall(name, args, apiRequest);
-    if (result !== null) return result;
+async function handleToolCall(name, args, requestSource) {
+  const router = typeof requestSource === 'function'
+    ? { selfRequest: requestSource, requestFor: (routedArgs) => { delete routedArgs.instance; return requestSource; } }
+    : requestSource;
+  const apiRequest = INSTANCE_TARGETED_TOOLS.has(name)
+    ? router.requestFor(args)
+    : router.selfRequest;
+  try {
+    for (const mod of getGrantedModules()) {
+      const result = await mod.handleToolCall(name, args, apiRequest);
+      if (result !== null) {
+        if (apiRequest.instancePrefix && result && Array.isArray(result.content)) {
+          result.content = result.content.map((item) => item.type === 'text'
+            ? { ...item, text: `${apiRequest.instancePrefix} ${item.text}` }
+            : item);
+        }
+        return result;
+      }
+    }
+  } catch (error) {
+    if (apiRequest.instancePrefix) {
+      throw new Error(`${apiRequest.instancePrefix} ${error.message}`);
+    }
+    throw error;
   }
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
 }
@@ -282,7 +367,10 @@ function sendError(id, code, message) {
 }
 
 function startMcpServer() {
-  const apiRequest = createApiRequest(requireApiToken());
+  const router = createInstanceRouter({
+    selfRequest: createApiRequest(requireApiToken()),
+    discoveryPath: process.env.AGENT_DASHBOARD_DEV_DISCOVERY,
+  });
   const rl = readline.createInterface({
     input: process.stdin,
     terminal: false,
@@ -290,13 +378,13 @@ function startMcpServer() {
 
   rl.on('line', (line) => {
     if (!line.trim()) return;
-    handleMessage(line, apiRequest);
+    handleMessage(line, router);
   });
 
   console.error(`[mcp-dashboard] Started, API target: ${API_BASE}, toolsets: ${getGrantedToolsetNames().join(',') || '(none)'}`);
 }
 
-async function handleMessage(raw, apiRequest) {
+async function handleMessage(raw, router) {
   let msg;
   try {
     msg = JSON.parse(raw);
@@ -327,7 +415,7 @@ async function handleMessage(raw, apiRequest) {
 
       case 'tools/call':
         try {
-          const result = await handleToolCall(params.name, params.arguments || {}, apiRequest);
+          const result = await handleToolCall(params.name, params.arguments || {}, router);
           sendResult(id, result);
         } catch (err) {
           sendResult(id, {
@@ -364,5 +452,6 @@ module.exports = {
   getGrantedToolsetNames,
   getGrantedModules,
   createApiRequest,
+  createInstanceRouter,
   CALLER_HEADERS,
 };

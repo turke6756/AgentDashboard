@@ -21,6 +21,10 @@ export function devProfileDirName(): string {
   return isDevInstance() ? DEV_PROFILE_DIR : 'lares-app';
 }
 
+export function devDiscoveryFilePath(appData: string): string {
+  return path.join(appData, DEV_PROFILE_DIR, 'dev-instance.json');
+}
+
 export function devDbDirName(): string {
   return isDevInstance() ? DEV_DB_DIR : STABLE_DB_DIR;
 }
