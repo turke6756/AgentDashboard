@@ -176,14 +176,21 @@ function findPrior(key: string): Marker | null {
   return markers[0] ?? null;
 }
 
-function assertIdentity(command: PackageIdentity): PlanWorkPackage {
+function assertIdentity(command: PlanPackageCommand): PlanWorkPackage {
   const pkg = getPlanWorkPackage(command.packageId);
   if (!pkg) throw new Error(`package-ledger: no package ${command.packageId}`);
   if (pkg.projectionStatus === 'legacy-unmigrated') {
     throw new Error(`package-ledger: package ${command.packageId} is quarantined`);
   }
+  // A dispatch confirmation is the point where the package adopts the private
+  // execution intent carried by both the attempt and its witnessed turn. This
+  // deliberately permits an unbound legacy package and a later re-dispatch to
+  // rotate away from the prior attempt's intent; every other command remains
+  // pinned to the package's currently bound execution intent.
+  const dispatchCanBindIntent = command.type === 'dispatch-confirmed';
   if (pkg.workspaceId !== command.workspaceId || pkg.planId !== command.planId
-      || pkg.intentId !== command.intentId || pkg.revision !== command.packageRevision) {
+      || (!dispatchCanBindIntent && pkg.intentId !== command.intentId)
+      || pkg.revision !== command.packageRevision) {
     throw new Error('package-ledger: package identity/revision mismatch');
   }
   const db = getDb();
@@ -193,11 +200,20 @@ function assertIdentity(command: PackageIdentity): PlanWorkPackage {
   if (!plan || plan.workspace_id !== command.workspaceId || plan.artifact_id !== command.planArtifactId) {
     throw new Error('package-ledger: plan artifact identity mismatch');
   }
-  const intent = db.prepare(
+  const planningIntent = db.prepare(
     `SELECT 1 AS ok FROM plan_intents
       WHERE plan_id = ? AND workspace_id = ? AND plan_artifact_id = ? AND intent_id = ?`,
   ).get(command.planId, command.workspaceId, command.planArtifactId, command.intentId);
-  if (!intent) throw new Error('package-ledger: intent identity mismatch');
+  const executionIntent = db.prepare(
+    `SELECT dispatch_attempt_id FROM save_intents
+      WHERE id = ? AND workspace_id = ? AND plan_id = ? AND plan_item_id = ? AND kind = 'task'`,
+  ).get(command.intentId, command.workspaceId, command.planId, command.packageId) as
+    { dispatch_attempt_id: string | null } | undefined;
+  if (!planningIntent && !executionIntent) throw new Error('package-ledger: intent identity mismatch');
+  if (command.type === 'dispatch-confirmed'
+      && executionIntent?.dispatch_attempt_id !== command.dispatchAttemptId) {
+    throw new Error('package-ledger: dispatch intent does not belong to the attempt');
+  }
   return pkg;
 }
 
@@ -409,6 +425,9 @@ export function transitionPlanPackage(
           || turn.agentId !== attempt.target_agent_id) {
         throw new Error('package-ledger: dispatch confirmation is not witnessed by a matching turn');
       }
+      getDb().prepare(
+        'UPDATE plan_work_packages SET intent_id = ?, updated_at = ? WHERE id = ?',
+      ).run(command.intentId, observed.observedAt, command.packageId);
       getDb().prepare(
         `UPDATE plan_dispatch_attempts SET state = 'delivered', confirmed_turn_id = ?,
            confirmed_at = ?, target_session_id = COALESCE(target_session_id, ?) WHERE id = ?`,

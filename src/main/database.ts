@@ -9270,7 +9270,7 @@ export function findGateLandedWitnessTurn(input: {
 export function listOpenPlanDispatchAttempts(): PlanDispatchAttempt[] {
   return queryAll(
     `SELECT * FROM plan_dispatch_attempts
-      WHERE state IN ('pending','delivered') ORDER BY created_at, id`,
+      WHERE state IN ('pending','delivered') ORDER BY created_at DESC, id DESC`,
   ).map(rowToPlanDispatchAttempt);
 }
 
@@ -9343,6 +9343,22 @@ export function confirmPlanDispatchAttempt(input: {
     }
     const pkg = getPlanWorkPackage(attempt.packageId);
     if (!pkg || pkg.state !== 'ready') {
+      // Turn insertion can reconcile the attempt while dispatchPlanPackage is
+      // still awaiting the delivery result. Treat that same-turn confirmation
+      // as idempotent instead of turning successful convergence into a send
+      // failure when the delivery callback returns.
+      if (pkg?.state === 'executing'
+          && (attempt.state === 'delivered' || attempt.state === 'reconciled')
+          && attempt.confirmedTurnId === input.confirmedTurnId) {
+        if (input.reconciledAt !== undefined && input.reconciledAt !== null
+            && attempt.state !== 'reconciled') {
+          run(
+            `UPDATE plan_dispatch_attempts SET state = 'reconciled', reconciled_at = ? WHERE id = ?`,
+            [input.reconciledAt, input.attemptId],
+          );
+        }
+        return getPlanDispatchAttempt(input.attemptId)!;
+      }
       throw new Error(`confirmPlanDispatchAttempt: package ${attempt.packageId} is not ready`);
     }
     const plan = queryOne('SELECT artifact_id FROM plans WHERE id = ?', [attempt.planId]) as
@@ -9373,7 +9389,9 @@ export interface PlanDispatchReconcileResult {
   diagnostics: string[];
 }
 
-/** Startup/periodic reconciliation. Prefer the persisted confirmed turn id. When
+/** Startup/periodic reconciliation. Newest attempts run first so a re-dispatch
+ * supersedes an older still-open attempt for the same ready package. Prefer the
+ * persisted confirmed turn id. When
  * absent, accept exactly one matching stamped turn in the execution-run window;
  * multiple candidates are ambiguous and remain pending with a diagnostic. */
 export function reconcilePlanDispatchAttempts(

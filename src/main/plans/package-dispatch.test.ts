@@ -133,6 +133,20 @@ function openStampedTurn(
   });
 }
 
+function insertStampedTurnWithoutReconcile(
+  s: ReturnType<typeof seed>, id: string, startedAt: number, intentId: string,
+): void {
+  const next = dbm.getDb().prepare(
+    'SELECT COALESCE(MAX(turn_seq), 0) + 1 AS next FROM turn_records WHERE workspace_id = ?',
+  ).get(s.workspaceId) as { next: number };
+  dbm.getDb().prepare(
+    `INSERT INTO turn_records
+       (id, workspace_id, turn_seq, agent_id, plan_id, plan_item_id,
+        plan_stamp_source, intent_id, intent_stamp_source, started_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, 'explicit', ?, 'task-dispatch', ?, 'open')`,
+  ).run(id, s.workspaceId, next.next, s.agentId, s.planId, s.packageId, intentId, startedAt);
+}
+
 function activeActivity(s: ReturnType<typeof seed>): import('../database').PlanningActivityWorktree {
   return {
     executionRunId: s.runId, planId: s.planId, logicalWorkspaceId: s.workspaceId,
@@ -171,7 +185,7 @@ test('planning activity row persists before run activation and flips active atom
   assert.equal(dbm.getPlan(s.planId)?.runState, 'executing');
 });
 
-test('confirmation fails closed when the private dispatch intent differs from the package planning intent', async () => {
+test('dispatch confirmation binds the private intent and tolerates turn-insert reconciliation winning the race', async () => {
   const s = seed();
   let sawPendingBeforeSend = false;
   const result = await svc.dispatchPlanPackage({
@@ -207,12 +221,12 @@ test('confirmation fails closed when the private dispatch intent differs from th
     },
   });
   assert.equal(sawPendingBeforeSend, true);
-  assert.equal(result.ok, false);
-  assert.equal(result.failure, 'confirmation-persist-failed');
-  assert.equal(result.attempt?.state, 'pending');
-  assert.equal(result.attempt?.confirmedTurnId, null);
-  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'ready');
-  assert.deepEqual(dbm.listPlanWpLifecycleEvents(s.packageId), []);
+  assert.equal(result.ok, true);
+  assert.equal(result.attempt?.state, 'reconciled');
+  assert.equal(result.attempt?.confirmedTurnId, `turn-${serial}`);
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.intentId, result.attempt?.intentId);
+  assert.equal(dbm.listPlanWpLifecycleEvents(s.packageId).length, 1);
   assert.equal(dbm.getTurnRecord(`turn-${serial}`)?.status, 'open',
     'terminal accepted is not required for executing');
 });
@@ -258,7 +272,7 @@ test('intent get-or-create is keyed by dispatch attempt while separate briefs mi
   assert.equal(first?.briefDigest?.length, 64);
 });
 
-test('production registrar preserves an unconfirmed private-intent delivery as pending', async () => {
+test('production registrar reconciles an accepted private-intent turn at insertion', async () => {
   const s = seed();
   let handler: ((event: unknown, request: unknown) => Promise<import('./plan-lifecycle').PlanPackageDispatchResponse>) | undefined;
   let deliveredIntent: string | null = null;
@@ -298,8 +312,8 @@ test('production registrar preserves an unconfirmed private-intent delivery as p
   });
   assert.equal(response.ok, true);
   assert.equal(dbm.getSaveIntentByDispatchAttempt(`route-attempt-${serial}`)?.id, deliveredIntent);
-  assert.equal(dbm.getPlanDispatchAttempt(`route-attempt-${serial}`)?.state, 'pending');
-  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'ready');
+  assert.equal(dbm.getPlanDispatchAttempt(`route-attempt-${serial}`)?.state, 'reconciled');
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
 });
 
 test('failed send marks the attempt failed and leaves the package ready', async () => {
@@ -378,28 +392,88 @@ test('default dispatch ignores a stale activity and captures the primary branch 
   assert.equal(result.attempt?.captureStatus, 'captured');
 });
 
-test('confirmed-id reconciliation moves only to executing and marks reconciled', () => {
+test('legacy NULL-intent pending attempt reconciles through the real ledger', () => {
   const s = seed();
+  const privateIntent = `svi_legacy_${serial}`;
   dbm.insertPlanDispatchAttempt({
     id: `attempt-${serial}`, packageId: s.packageId, planId: s.planId,
     executionRunId: s.runId, targetAgentId: s.agentId,
     requestedPlanItemId: s.packageId, createdAt: 2400,
-    intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
+    intent: { id: privateIntent, workspaceId: s.workspaceId, title: 'fixture',
       briefDigest: 'fixture-digest', createdById: null },
   });
-  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'blocked' WHERE id = ?`).run(s.packageId);
-  openStampedTurn(s, `turn-${serial}`, 2450);
-  // Simulate confirmation persisted before a crash prevented the package txn.
-  dbm.getDb().prepare(
-    `UPDATE plan_dispatch_attempts
-        SET state = 'delivered', confirmed_turn_id = ?, confirmed_at = ? WHERE id = ?`,
-  ).run(`turn-${serial}`, 2450, `attempt-${serial}`);
-  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'ready' WHERE id = ?`).run(s.packageId);
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET intent_id = NULL WHERE id = ?`).run(s.packageId);
+  insertStampedTurnWithoutReconcile(s, `turn-${serial}`, 2450, privateIntent);
+  assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`)?.state, 'pending');
   const result = svc.reconcilePackageDispatches(2500);
   assert.deepEqual(result.reconciledAttemptIds, [`attempt-${serial}`]);
+  assert.deepEqual(result.diagnostics, []);
   assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`)?.state, 'reconciled');
   assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.intentId, privateIntent);
   assert.notEqual(dbm.getPlanWorkPackage(s.packageId)?.state, 'done');
+});
+
+test('re-dispatch rotates one package to the second attempt intent', async () => {
+  const s = seed();
+  const dispatchAndReconcile = async (suffix: string, createdAt: number) => {
+    let deliveredIntent: string | null = null;
+    const result = await svc.dispatchPlanPackage({
+      attemptId: `attempt-${suffix}-${serial}`, lifecycleEventId: `event-${suffix}-${serial}`,
+      packageId: s.packageId, planId: s.planId, planItemId: s.packageId,
+      targetAgentId: s.agentId, ownerAgentId: null, promptText: `brief ${suffix}`, createdAt,
+    }, {
+      getActiveActivity: () => activeActivity(s), readEnv: () => '1',
+      deliver: async () => {
+        deliveredIntent = dbm.getPlanDispatchAttempt(`attempt-${suffix}-${serial}`)?.intentId ?? null;
+        assert.ok(deliveredIntent);
+        insertStampedTurnWithoutReconcile(
+          s, `turn-${suffix}-${serial}`, createdAt + 1, deliveredIntent,
+        );
+        return { disposition: 'delivered-unconfirmed' };
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.attempt?.state, 'pending');
+    const reconciled = dbm.reconcilePlanDispatchAttempts(createdAt + 2);
+    assert.deepEqual(reconciled.reconciledAttemptIds, [`attempt-${suffix}-${serial}`]);
+    assert.deepEqual(reconciled.diagnostics, []);
+    return deliveredIntent as unknown as string;
+  };
+
+  const firstIntent = await dispatchAndReconcile('first', 2520);
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.intentId, firstIntent);
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'ready' WHERE id = ?`).run(s.packageId);
+  const secondIntent = await dispatchAndReconcile('second', 2540);
+  assert.notEqual(secondIntent, firstIntent);
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.intentId, secondIntent);
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
+});
+
+test('newest witnessed attempt wins when two pending dispatches target one ready package', () => {
+  const s = seed();
+  const insertAttemptAndTurn = (suffix: string, createdAt: number) => {
+    const intentId = `svi_${suffix}_${serial}`;
+    dbm.insertPlanDispatchAttempt({
+      id: `attempt-${suffix}-${serial}`, packageId: s.packageId, planId: s.planId,
+      executionRunId: s.runId, targetAgentId: s.agentId,
+      requestedPlanItemId: s.packageId, createdAt,
+      intent: { id: intentId, workspaceId: s.workspaceId, title: suffix,
+        briefDigest: `${suffix}-digest`, createdById: null },
+    });
+    insertStampedTurnWithoutReconcile(s, `turn-${suffix}-${serial}`, createdAt + 1, intentId);
+    return intentId;
+  };
+  insertAttemptAndTurn('older', 2560);
+  const newerIntent = insertAttemptAndTurn('newer', 2580);
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET intent_id = NULL WHERE id = ?`).run(s.packageId);
+
+  const reconciled = dbm.reconcilePlanDispatchAttempts(2600);
+  assert.deepEqual(reconciled.reconciledAttemptIds, [`attempt-newer-${serial}`]);
+  assert.equal(dbm.getPlanDispatchAttempt(`attempt-newer-${serial}`)?.state, 'reconciled');
+  assert.equal(dbm.getPlanDispatchAttempt(`attempt-older-${serial}`)?.state, 'pending');
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.intentId, newerIntent);
+  assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
 });
 
 test('turn insertion confirms a pending attempt without a boot-time reconcile', () => {
