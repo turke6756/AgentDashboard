@@ -62,6 +62,8 @@ function request(port: number, method: string, route: string, token: string, bod
   db.insertPlanExecutionRunActivating({ id: runId, planId: plan.id, repositoryKey: 'repo-envelope',
     baselineKind: 'head', baselineHeadOid: tip, baselineRef: 'refs/heads/main',
     triggerSource: 'renderer-user-action', triggeredAt: 2, planningActivityExecutionRunId: runId });
+  db.getDb().prepare('UPDATE planning_activity_worktrees SET path = ? WHERE execution_run_id = ?')
+    .run(path.join(root, 'stale-activity'), runId);
 
   const { AgentSupervisor } = require('../supervisor') as typeof import('../supervisor');
   const { ApiServer } = require('../api-server') as typeof import('../api-server');
@@ -73,7 +75,7 @@ function request(port: number, method: string, route: string, token: string, bod
   assert.ok(orchestration.getOrchestrationToolDefinitions().find((tool) => tool.name === 'launch_agent')?.inputSchema.properties.plan_item_id,
     'launch_agent must advertise plan_item_id');
 
-  const supervisor = new AgentSupervisor(); const priv = supervisor as unknown as Record<string, unknown>;
+  const supervisor = new AgentSupervisor({ readEnv: () => undefined }); const priv = supervisor as unknown as Record<string, unknown>;
   for (const name of ['writeAgentRegistry', 'ensureProviderDirTrust', 'ensureWorkerScaffold', 'ensureWorkspaceScripts',
     'ensureResearchStoreScaffold', 'retireStaleRootMcpConfig', 'ensureCodexHookProfile']) priv[name] = () => {};
   priv.loadAgentMd = () => null; priv.launchWindowsAgent = async () => {};
@@ -154,8 +156,27 @@ function request(port: number, method: string, route: string, token: string, bod
   assert.equal(attempt.branch_ref, 'refs/heads/main'); assert.equal(attempt.dispatch_tip_oid, tip);
   assert.deepEqual(JSON.parse(String(attempt.frozen_paths_json)), ['owned.txt']);
   assert.equal(db.getPlanWorkPackage(packageId)?.assigneeAgentId, attempt.target_agent_id);
+  assert.equal(db.getAgent(String(attempt.target_agent_id))?.workingDirectory, root,
+    'default launch stays in the primary workspace even when a stale activity row exists');
   assert.equal(deliveryObservedBeforeAttempt, false,
     'REACHABILITY:wp1-dispatch-envelope attempt must exist before prompt delivery');
+
+  db.getDb().prepare('UPDATE planning_activity_worktrees SET path = ? WHERE execution_run_id = ?')
+    .run(root, runId);
+  seedLaunchPackage('wp-opt-in');
+  const optInSupervisor = new AgentSupervisor({ readEnv: () => '1' });
+  const optInPriv = optInSupervisor as unknown as Record<string, unknown>;
+  for (const name of ['writeAgentRegistry', 'ensureProviderDirTrust', 'ensureWorkerScaffold', 'ensureWorkspaceScripts',
+    'ensureResearchStoreScaffold', 'retireStaleRootMcpConfig', 'ensureCodexHookProfile']) optInPriv[name] = () => {};
+  optInPriv.loadAgentMd = () => null; optInPriv.launchWindowsAgent = async () => {};
+  const optInLaunch = await optInSupervisor.launchAgent(launchInput('wp-opt-in'));
+  assert.ok(!('ok' in optInLaunch) || optInLaunch.ok !== false, 'opt-in activity launch succeeds');
+  const optInAttempt = db.getDb().prepare(
+    'SELECT * FROM plan_dispatch_attempts WHERE package_id = ?',
+  ).get('wp-opt-in') as Record<string, unknown>;
+  assert.equal(optInAttempt.capture_status, 'captured');
+  assert.equal(db.getAgent(String(optInAttempt.target_agent_id))?.workingDirectory, root,
+    'opt-in launch uses the activity path');
 
   const legacyPackage = 'wp-unavailable';
   db.upsertPlanWorkPackage({ ...db.getPlanWorkPackage(packageId)!, id: legacyPackage, assigneeAgentId: null,

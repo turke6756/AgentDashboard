@@ -116,8 +116,8 @@ function seed(activeRun = true): {
       `INSERT INTO plan_execution_runs
          (id, plan_id, repository_key, baseline_kind, baseline_head_oid, baseline_ref,
           trigger_source, app_user_id, triggered_at, lifecycle_state)
-       VALUES (?, ?, NULL, 'unborn', NULL, NULL, 'renderer-user-action', NULL, ?, 'active')`,
-    ).run(runId, plan.id, 1000);
+       VALUES (?, ?, ?, 'unborn', NULL, NULL, 'renderer-user-action', NULL, ?, 'active')`,
+    ).run(runId, plan.id, `primary-${runId}`, 1000);
   }
   return { workspaceId: ws.id, planId: plan.id, packageId, agentId: agent.id, runId, intentId };
 }
@@ -180,7 +180,7 @@ test('confirmation fails closed when the private dispatch intent differs from th
     targetAgentId: s.agentId, ownerAgentId: null, promptText: 'Implement package',
     createdAt: 2000,
   }, {
-    getActiveActivity: () => activeActivity(s),
+    getActiveActivity: () => activeActivity(s), readEnv: () => '1',
     deliver: async ({ dispatch }) => {
       const row = dbm.getPlanDispatchAttempt(`attempt-${serial}`);
       sawPendingBeforeSend = row?.state === 'pending'
@@ -244,11 +244,11 @@ test('intent get-or-create is keyed by dispatch attempt while separate briefs mi
     seen.push(ctx.intentStamp.intentId);
     return { disposition: 'delivered-unconfirmed' as const };
   };
-  await svc.dispatchPlanPackage(input, { getActiveActivity: () => activeActivity(s), deliver });
-  await svc.dispatchPlanPackage(input, { getActiveActivity: () => activeActivity(s), deliver });
+  await svc.dispatchPlanPackage(input, { getActiveActivity: () => activeActivity(s), readEnv: () => '1', deliver });
+  await svc.dispatchPlanPackage(input, { getActiveActivity: () => activeActivity(s), readEnv: () => '1', deliver });
   await svc.dispatchPlanPackage({
     ...input, attemptId: `attempt-second-${serial}`, promptText: 'A second brief',
-  }, { getActiveActivity: () => activeActivity(s), deliver });
+  }, { getActiveActivity: () => activeActivity(s), readEnv: () => '1', deliver });
 
   assert.equal(seen[0], seen[1], 'one dispatch retry reuses one intent');
   assert.notEqual(seen[0], seen[2], 'two briefs under one item mint two intents');
@@ -268,7 +268,7 @@ test('production registrar preserves an unconfirmed private-intent delivery as p
       handler = listener as typeof handler;
     },
   }, {
-    getActiveActivity: () => activeActivity(s),
+    getActiveActivity: () => activeActivity(s), readEnv: () => '1',
     now: () => 3200,
     newId: () => `route-${serial}`,
     deliver: async ({ dispatch }) => {
@@ -309,7 +309,7 @@ test('failed send marks the attempt failed and leaves the package ready', async 
     packageId: s.packageId, planId: s.planId, planItemId: s.packageId,
     targetAgentId: s.agentId, ownerAgentId: null, promptText: 'go', createdAt: 2200,
   }, {
-    getActiveActivity: () => activeActivity(s),
+    getActiveActivity: () => activeActivity(s), readEnv: () => '1',
     deliver: async () => ({ disposition: 'failed', reason: 'runner gone' }),
   });
   assert.equal(result.failure, 'send-failed');
@@ -340,12 +340,42 @@ test('wrong-cwd planning dispatch is refused before attempt insertion or deliver
     packageId: s.packageId, planId: s.planId, planItemId: s.packageId,
     targetAgentId: s.agentId, ownerAgentId: null, promptText: 'go', createdAt: 2350,
   }, {
-    getActiveActivity: () => activity,
+    getActiveActivity: () => activity, readEnv: () => '1',
     deliver: async () => { delivered = true; return { disposition: 'delivered-unconfirmed' }; },
   });
   assert.equal(result.failure, 'target-agent-worktree-mismatch');
   assert.equal(delivered, false);
   assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`), null);
+});
+
+test('default dispatch ignores a stale activity and captures the primary branch tip', async () => {
+  const s = seed();
+  dbm.setPlanWorkPackagePaths(s.packageId, s.workspaceId, [{ path: 'owned.txt' }], 1);
+  const tip = 'c'.repeat(40);
+  const gitCwds: string[] = [];
+  let activityReads = 0;
+  const result = await svc.dispatchPlanPackage({
+    attemptId: `attempt-primary-${serial}`, lifecycleEventId: `event-primary-${serial}`,
+    packageId: s.packageId, planId: s.planId, planItemId: s.packageId,
+    targetAgentId: s.agentId, ownerAgentId: null, promptText: 'go', createdAt: 2380,
+  }, {
+    readEnv: () => undefined,
+    getActiveActivity: () => { activityReads += 1; return { ...activeActivity(s), path: 'C:/stale' }; },
+    runGit: async (cwd, args) => {
+      gitCwds.push(cwd);
+      return args[0] === 'symbolic-ref'
+        ? { code: 0, stdout: 'refs/heads/master\n', stderr: '' }
+        : { code: 0, stdout: `${tip}\n`, stderr: '' };
+    },
+    deliver: async () => ({ disposition: 'delivered-unconfirmed' }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(activityReads, 0, 'off mode never consults a stale activity row');
+  assert.deepEqual(gitCwds, [`C:/w${serial}`, `C:/w${serial}`]);
+  assert.equal(result.attempt?.repositoryKey, `primary-${s.runId}`);
+  assert.equal(result.attempt?.branchRef, 'refs/heads/master');
+  assert.equal(result.attempt?.dispatchTipOid, tip);
+  assert.equal(result.attempt?.captureStatus, 'captured');
 });
 
 test('confirmed-id reconciliation moves only to executing and marks reconciled', () => {

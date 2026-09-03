@@ -226,6 +226,10 @@ import {
   getPlanWorkPackage,
 } from '../database';
 import { dispatchPlanPackage, reconcilePackageDispatches } from '../plans/plan-lifecycle';
+import {
+  planningWorktreesEnabled,
+  type EnvironmentReader,
+} from '../plans/planning-worktree-flag';
 import { detectPathType, windowsToWslPath, uncToWslPath, wslToWindowsPath } from '../path-utils';
 import { getScriptPath, getLaresNativeDir } from './paths';
 import {
@@ -2655,8 +2659,11 @@ export class AgentSupervisor extends EventEmitter {
   // continuation respawns don't go through launchAgent and are never gated.
   private launchAdmissionCheck: (() => AdmissionDecision) | null = null;
 
-  constructor() {
+  private readonly readEnvironment: EnvironmentReader;
+
+  constructor(deps: { readEnv?: EnvironmentReader } = {}) {
     super();
+    this.readEnvironment = deps.readEnv ?? ((name) => process.env[name]);
     // Layer B (codex session-id race fix) — global launch gate. Hard cap =
     // discovery timeout + 10 s so a launch whose discovery never settles (dead
     // codex, FS wedge) force-releases instead of wedging the queue. Escape hatch
@@ -3406,8 +3413,8 @@ export class AgentSupervisor extends EventEmitter {
     }
 
     // WP-1 dispatch envelope: all package/run/activity refusals happen before
-    // createAgent. The activity worktree is server-authoritative and replaces a
-    // caller-supplied cwd for this launch.
+    // createAgent. Primary-tree dispatch is the default. LARES_PLANNING_WORKTREES=1
+    // opts into an activity row whose server-authoritative cwd replaces the caller cwd.
     let packageLaunch: {
       packageId: string;
       planId: string;
@@ -3417,10 +3424,13 @@ export class AgentSupervisor extends EventEmitter {
     if (resolvedInput.planItemId !== undefined) {
       const pkg = getPlanWorkPackage(resolvedInput.planItemId);
       const activeRun = resolvedInput.planId ? getActivePlanExecutionRun(resolvedInput.planId) : null;
-      const activity = resolvedInput.planId ? getActivePlanningActivityWorktree(resolvedInput.planId) : null;
+      const usePlanningWorktrees = planningWorktreesEnabled(this.readEnvironment);
+      const activity = usePlanningWorktrees && resolvedInput.planId
+        ? getActivePlanningActivityWorktree(resolvedInput.planId) : null;
       if (!pkg || !resolvedInput.planId || pkg.planId !== resolvedInput.planId
           || pkg.workspaceId !== resolvedInput.workspaceId || pkg.state !== 'ready'
-          || !activeRun || !activity || activity.executionRunId !== activeRun.id) {
+          || !activeRun || (usePlanningWorktrees
+            && (!activity || activity.executionRunId !== activeRun.id))) {
         return { ok: false, failure: 'package-not-ready' };
       }
       if (pkg.assigneeAgentId !== null) {
@@ -3428,9 +3438,9 @@ export class AgentSupervisor extends EventEmitter {
       }
       packageLaunch = {
         packageId: pkg.id, planId: pkg.planId, executionRunId: activeRun.id,
-        activityPath: activity.path,
+        activityPath: activity?.path ?? workspace.path,
       };
-      resolvedInput.workingDirectory = activity.path;
+      if (activity) resolvedInput.workingDirectory = activity.path;
     }
 
     const requestedProvider = resolvedInput.provider || 'claude';
@@ -3821,6 +3831,7 @@ export class AgentSupervisor extends EventEmitter {
           promptText: resolvedInput.initialUserPrompt ?? '',
           createdAt: Date.now(),
         }, {
+          readEnv: this.readEnvironment,
           deliver: async ({ promptText, dispatch }) => {
             packageDispatch = dispatch;
             if (promptText) {

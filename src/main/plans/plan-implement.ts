@@ -15,17 +15,13 @@
 //   5. a valid responsible supervisor;
 //   6. a proven main-side trigger identity.
 //
-// Baseline durability + failure ordering (the load-bearing invariant):
-//   • a `head` baseline creates the durable ref `refs/lares/plans/<planId>/<runId>` at
-//     the probed HEAD OID BEFORE the run row commits — an OID in SQLite alone would not
-//     protect an unreachable commit from Git GC;
-//   • ref creation FAILS ⇒ NO run row is inserted (never an executing run without a
-//     baseline);
+// Baseline + failure ordering (the load-bearing invariant):
+//   • by default, a `head` baseline records the primary tree's current symbolic branch
+//     ref and exact HEAD OID; LARES_PLANNING_WORKTREES=1 retains the isolated activity
+//     worktree/ref behavior;
 //   • the run-row insert + `run_state ready→executing` flip happen in ONE txn
-//     (insertPlanExecutionRunActivating); a txn failure AFTER ref creation leaves an
-//     ORPHAN ref, GC'd by startup reconcilePlanBaselineOrphans (never a half state);
-//   • an UNBORN HEAD stores `baseline_kind='unborn'` with no OID and no ref (an
-//     explicit marker, not a bare nullable OID);
+//     (insertPlanExecutionRunActivating);
+//   • an UNBORN HEAD is refused because execution requires an initial commit;
 //   • a non-repository or bare repository is refused.
 //
 // This service NEVER writes `done` (SC-WP-3C-owned) and NEVER dispatches a worker
@@ -58,7 +54,12 @@ import {
   type PlanBaselineProbe,
   type RefWriteResult,
 } from '../git-checkpoints/plan-baseline-refs';
-import { resolveInternalGit } from '../git/git-runtime';
+import { probeWorkspaceGit, resolveInternalGit, type RunGit } from '../git/git-runtime';
+import { runGit } from '../git-checkpoints/git-command';
+import {
+  defaultRepositoryIdentityDeps,
+  deriveRepositoryIdentity,
+} from '../commit-candidates/repository-identity';
 import { buildPlanDocuments } from './plan-documents';
 import { reconcilePlanFolderProjections } from './plan-folder-reconciler';
 import { workspaceStateDir } from '../workspace-state-dir';
@@ -70,6 +71,10 @@ import {
   provisionPlanningActivity,
   type ProvisionPlanningActivityResult,
 } from '../git-checkpoints/planning-worktree-service';
+import {
+  planningWorktreesEnabled,
+  type EnvironmentReader,
+} from './planning-worktree-flag';
 
 export const IMPLEMENT_TRIGGER_SOURCE = 'renderer-user-action';
 export const SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE = 'supervisor-agent';
@@ -139,6 +144,8 @@ export interface ImplementPlanDeps {
   refreshAndGetReadiness?: typeof refreshAndGetPlanReadiness;
   appUserDataPath?: string;
   provisionActivity?: typeof provisionPlanningActivity;
+  readEnv?: EnvironmentReader;
+  resolvePrimaryBaselineRef?: (ctx: PlanRepoContext, headOid: string) => Promise<string>;
   hasExecutionRuns?: (planId: string) => boolean;
   appendLifecycleEvent?: typeof casAppendLifecycleEvent;
 }
@@ -322,15 +329,42 @@ async function defaultResolveRepoContext(plan: Plan): Promise<PlanRepoContext | 
   const ws = getWorkspace(plan.workspaceId);
   if (!ws || !ws.path) return null;
   const internal = await resolveInternalGit();
-  return { repoRoot: ws.path, gitExe: internal?.execPath, repositoryKey: null };
+  const capability = await probeWorkspaceGit(ws.path);
+  let repositoryKey: string | null = null;
+  if (capability.commonDirQueueKey) {
+    const boundRunGit: RunGit = async (args) => {
+      const result = await runGit(ws.path, args, {
+        gitExe: internal?.execPath, allowNonzero: true, timeoutMs: 10_000, maxBytes: 1 << 20,
+      });
+      return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    };
+    const identity = await deriveRepositoryIdentity(
+      ws.path, capability, defaultRepositoryIdentityDeps(boundRunGit),
+    );
+    if (identity.ok) repositoryKey = identity.repositoryKey;
+  }
+  return { repoRoot: ws.path, gitExe: internal?.execPath, repositoryKey };
+}
+
+async function defaultResolvePrimaryBaselineRef(
+  ctx: PlanRepoContext,
+  headOid: string,
+): Promise<string> {
+  const symbolic = await runGit(ctx.repoRoot, ['symbolic-ref', '--quiet', 'HEAD'], {
+    gitExe: ctx.gitExe, allowNonzero: true, timeoutMs: 10_000, maxBytes: 64 * 1024,
+  });
+  const ref = symbolic.code === 0 ? symbolic.stdout.trim() : '';
+  // Detached HEAD has no branch to follow. Store the exact OID in baseline_ref so
+  // the row remains self-describing while baseline_head_oid stays authoritative.
+  return ref.startsWith('refs/heads/') && !/[\n\0]/.test(ref) ? ref : headOid;
 }
 
 /**
  * Attempt the human Implement trigger on a plan. Returns a structured result (never
  * throws on an unmet condition or a git refusal) so the surface can render exactly why
  * a trigger was refused. On success the plan is `executing` with a durable
- * `plan_execution_runs` row (and, for a head baseline, a durable ref pinned BEFORE the
- * row).
+ * `plan_execution_runs` row. The default records the primary branch + HEAD OID;
+ * the opt-in activity mode provisions its worktree/ref before activation.
  */
 export async function implementPlan(
   input: ImplementPlanInput,
@@ -388,7 +422,7 @@ export async function implementPlan(
     return fail();
   }
 
-  // ── pin the baseline: create ref BEFORE the run row (head only) ───────────────
+  // ── record primary baseline or provision opt-in activity (head only) ─────────
   const runId = newRunId();
   {
     if (probe.kind === 'unborn') {
@@ -396,51 +430,68 @@ export async function implementPlan(
       return fail();
     }
     let activatedRun: PlanExecutionRun | null = null;
-    const provisionResult: ProvisionPlanningActivityResult = await (
-      deps.provisionActivity ?? provisionPlanningActivity
-    )({
-      executionRunId: runId,
-      planId: plan.id,
-      logicalWorkspaceId: plan.workspaceId,
-      primaryRepoRoot: ctx.repoRoot,
-      appUserDataPath: deps.appUserDataPath ?? app.getPath('userData'),
-      createdAt: now(),
-      gitExe: ctx.gitExe,
-    }, {
-      recheckEligibility: async () => {
-        const fresh = await getReadiness(input.planId, {
-          getPlan,
-          listPackages: deps.listPackages,
-          getPopulatedTabs: deps.getPopulatedTabs,
-          hasOverview: deps.hasOverview,
-          hasValidResponsibleSupervisor: deps.hasValidResponsibleSupervisor,
-        });
-        return fresh.canImplement;
-      },
-      probeHead: async () => probe.headOid,
-      activate: (activity) => {
-        activatedRun = insertRun({
-          id: runId,
-          planId: plan.id,
-          repositoryKey: activity.primaryRepositoryKey,
-          baselineKind: 'head',
-          baselineHeadOid: probe.headOid,
-          baselineRef: activity.activityHeadRef,
-          triggerSource,
-          appUserId: triggerActorId,
-          triggeredAt: now(),
-          planningActivityExecutionRunId: runId,
-        });
-      },
-    });
-    if (!provisionResult.ok) {
-      failures.push(provisionResult.reason === 'worktree-requires-initial-commit'
-        ? 'worktree-requires-initial-commit' : 'worktree-provision-failed');
-      return fail();
-    }
-    if (!activatedRun) {
-      failures.push('worktree-provision-failed');
-      return fail();
+    if (!planningWorktreesEnabled(deps.readEnv)) {
+      const baselineRef = await (deps.resolvePrimaryBaselineRef ?? defaultResolvePrimaryBaselineRef)(
+        ctx, probe.headOid,
+      );
+      activatedRun = insertRun({
+        id: runId,
+        planId: plan.id,
+        repositoryKey: ctx.repositoryKey,
+        baselineKind: 'head',
+        baselineHeadOid: probe.headOid,
+        baselineRef,
+        triggerSource,
+        appUserId: triggerActorId,
+        triggeredAt: now(),
+      });
+    } else {
+      const provisionResult: ProvisionPlanningActivityResult = await (
+        deps.provisionActivity ?? provisionPlanningActivity
+      )({
+        executionRunId: runId,
+        planId: plan.id,
+        logicalWorkspaceId: plan.workspaceId,
+        primaryRepoRoot: ctx.repoRoot,
+        appUserDataPath: deps.appUserDataPath ?? app.getPath('userData'),
+        createdAt: now(),
+        gitExe: ctx.gitExe,
+      }, {
+        recheckEligibility: async () => {
+          const fresh = await getReadiness(input.planId, {
+            getPlan,
+            listPackages: deps.listPackages,
+            getPopulatedTabs: deps.getPopulatedTabs,
+            hasOverview: deps.hasOverview,
+            hasValidResponsibleSupervisor: deps.hasValidResponsibleSupervisor,
+          });
+          return fresh.canImplement;
+        },
+        probeHead: async () => probe.headOid,
+        activate: (activity) => {
+          activatedRun = insertRun({
+            id: runId,
+            planId: plan.id,
+            repositoryKey: activity.primaryRepositoryKey,
+            baselineKind: 'head',
+            baselineHeadOid: probe.headOid,
+            baselineRef: activity.activityHeadRef,
+            triggerSource,
+            appUserId: triggerActorId,
+            triggeredAt: now(),
+            planningActivityExecutionRunId: runId,
+          });
+        },
+      });
+      if (!provisionResult.ok) {
+        failures.push(provisionResult.reason === 'worktree-requires-initial-commit'
+          ? 'worktree-requires-initial-commit' : 'worktree-provision-failed');
+        return fail();
+      }
+      if (!activatedRun) {
+        failures.push('worktree-provision-failed');
+        return fail();
+      }
     }
     // Structured production rows always carry their plan.md path. Some narrow unit
     // fixtures intentionally model only the eligibility fields and omit it.

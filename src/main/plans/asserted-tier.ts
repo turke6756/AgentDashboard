@@ -1,5 +1,6 @@
 import { getDb } from '../database';
 import type { AssertedCommitCandidate, AssertedDispatchEvidence } from '../../shared/types';
+import { planningWorktreesEnabled } from './planning-worktree-flag';
 import {
   changedPathsMatchFrozen,
   createGitOracle,
@@ -28,10 +29,11 @@ export interface AssertedTierDeps {
 
 function listAttempts(planId: string): AssertedAttemptSource[] {
   const rows = getDb().prepare(
-    `SELECT d.*, p.artifact_id, a.path AS repository_root
+    `SELECT d.*, p.artifact_id, a.path AS activity_root, ws.path AS workspace_root
        FROM plan_dispatch_attempts d
        JOIN plan_work_packages wp ON wp.id = d.package_id
        JOIN plans p ON p.id = d.plan_id
+       JOIN workspaces ws ON ws.id = wp.workspace_id
        LEFT JOIN planning_activity_worktrees a ON a.execution_run_id = d.execution_run_id
       WHERE d.plan_id = ? AND d.state IN ('delivered','reconciled')
         AND d.package_revision = wp.revision
@@ -53,7 +55,9 @@ function listAttempts(planId: string): AssertedAttemptSource[] {
       frozenPaths,
       captureStatus: row.capture_status === 'captured' ? 'captured' : 'unavailable',
       planArtifactId: row.artifact_id ?? null,
-      repositoryRoot: row.repository_root ?? null,
+      repositoryRoot: planningWorktreesEnabled()
+        ? row.activity_root ?? row.workspace_root ?? null
+        : row.workspace_root ?? null,
     };
   });
 }

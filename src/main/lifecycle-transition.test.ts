@@ -116,6 +116,10 @@ type DbModule = {
   updateAgentStatus(id: string, status: Exclude<AgentStatus, 'receiving'>): void;
   createAgent(data: Record<string, unknown>): Agent;
   getAgent(id: string): Agent | null;
+  createWorkspace(data: Record<string, unknown>): { id: string };
+  createOrRevivePlan(data: Record<string, unknown>): { id: string };
+  upsertPlanWorkPackage(data: Record<string, unknown>): void;
+  getPlanWorkPackage(id: string): { assigneeAgentId: string | null } | null;
 };
 let dbm: DbModule;
 /** The handle the database module itself opened (captured before any test
@@ -327,6 +331,32 @@ test('a natural exit (reasonless done) leaves the stop metadata NULL', () => {
   const row = rawRow(a.id);
   assert.equal(row.stopped_at ?? null, null, 'a crash/natural exit is not a "stop"');
   assert.equal(row.last_stop_reason ?? null, null);
+});
+
+test('terminal agent transitions release only non-landed package assignments', () => {
+  const workspace = dbm.createWorkspace({ title: 'Package release', path: 'C:/release', pathType: 'windows' });
+  const plan = dbm.createOrRevivePlan({
+    workspaceId: workspace.id, path: 'release/plan.md', format: 'structured', runState: 'executing',
+  });
+  const stopped = makeAgentRow({ workspaceId: workspace.id });
+  const crashed = makeAgentRow({ workspaceId: workspace.id });
+  for (const [id, state, assignee] of [
+    ['release-stopped', 'executing', stopped.id],
+    ['release-crashed', 'ready', crashed.id],
+    ['keep-landed', 'done', stopped.id],
+  ] as const) {
+    dbm.upsertPlanWorkPackage({
+      id, workspaceId: workspace.id, planId: plan.id, title: id,
+      acceptanceCondition: null, state, assigneeAgentId: assignee,
+      revision: 1, createdAt: 1, updatedAt: 1,
+    });
+  }
+
+  dbm.applyStatusTransition(stopped.id, 'done', { stopReason: 'manual-card' });
+  dbm.applyStatusTransition(crashed.id, 'crashed');
+  assert.equal(dbm.getPlanWorkPackage('release-stopped')?.assigneeAgentId, null);
+  assert.equal(dbm.getPlanWorkPackage('release-crashed')?.assigneeAgentId, null);
+  assert.equal(dbm.getPlanWorkPackage('keep-landed')?.assigneeAgentId, stopped.id);
 });
 
 test('updateAgentStatus is a shim over the transition writer (bookkeeping still maintained)', () => {

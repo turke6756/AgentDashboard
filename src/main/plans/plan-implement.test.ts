@@ -14,9 +14,11 @@
 //     the agent-caller refusal (no proven appUserId).
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { planningWorktreesEnabled } from './planning-worktree-flag';
 
 interface TestCase { name: string; run(): Promise<void> | void; }
 const tests: TestCase[] = [];
@@ -106,6 +108,13 @@ function mkPlan(runState: string): string {
   return plan.id;
 }
 
+test('planning worktrees require the exact opt-in value', () => {
+  assert.equal(planningWorktreesEnabled(() => undefined), false);
+  assert.equal(planningWorktreesEnabled(() => '0'), false);
+  assert.equal(planningWorktreesEnabled(() => 'true'), false);
+  assert.equal(planningWorktreesEnabled(() => '1'), true);
+});
+
 // ── DB primitive: activate txn + guard + reads ────────────────────────────────
 
 test('insertPlanExecutionRunActivating inserts the run and flips ready→executing', () => {
@@ -167,6 +176,8 @@ function svcDeps(over: Record<string, unknown> = {}, log: SpyLog = []): any {
     insertRun: (input: any) => { log.push('row'); return { ...input, lifecycleState: 'active' }; },
     newRunId: () => 'run-fixed',
     now: () => 4242,
+    readEnv: () => undefined,
+    resolvePrimaryBaselineRef: async () => 'refs/heads/master',
   };
   Object.assign(deps, over);
   if (!Object.hasOwn(over, 'refreshAndGetReadiness')) {
@@ -244,6 +255,7 @@ test('Implement activates the run through the provisioned activity binding', asy
     state: 'active' as const, failureCode: null, createdAt: 4242, updatedAt: 4242,
   };
   const res = await svc.implementPlan({ planId: 'plan-1', appUserId: 'e' }, svcDeps({
+    readEnv: () => '1',
     appUserDataPath: 'C:/app',
     provisionActivity: async (_input: unknown, deps: { activate: (row: typeof activity) => void }) => {
       log.push('provision');
@@ -255,6 +267,57 @@ test('Implement activates the run through the provisioned activity binding', asy
   assert.deepEqual(log, ['provision', 'row']);
   assert.equal(res.run?.repositoryKey, 'primary-key');
   assert.equal(res.run?.baselineRef, activity.activityHeadRef);
+});
+
+test('Implement defaults to the primary tree without provisioning an activity row', async () => {
+  let provisioned = false;
+  let inserted: any = null;
+  const res = await svc.implementPlan({ planId: 'plan-1', appUserId: 'e' }, svcDeps({
+    provisionActivity: async () => {
+      provisioned = true;
+      return { ok: false, reason: 'worktree-provision-failed' };
+    },
+    resolvePrimaryBaselineRef: async () => 'refs/heads/master',
+    insertRun: (input: any) => { inserted = input; return { ...input, lifecycleState: 'active' }; },
+  }));
+  assert.equal(res.ok, true);
+  assert.equal(provisioned, false);
+  assert.equal(inserted.baselineKind, 'head');
+  assert.equal(inserted.baselineHeadOid, 'b'.repeat(40));
+  assert.equal(inserted.baselineRef, 'refs/heads/master');
+  assert.equal(inserted.planningActivityExecutionRunId, undefined);
+});
+
+test('primary-tree Implement records the symbolic branch and detached HEAD fallback', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'implement-primary-ref-'));
+  try {
+    execFileSync('git', ['init', '-b', 'master'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['config', 'user.email', 'test@lares.local'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['config', 'user.name', 'Lares Test'], { cwd: root, windowsHide: true });
+    fs.writeFileSync(path.join(root, 'baseline.txt'), 'baseline\n');
+    execFileSync('git', ['add', 'baseline.txt'], { cwd: root, windowsHide: true });
+    execFileSync('git', ['commit', '-m', 'baseline'], { cwd: root, windowsHide: true });
+    const oid = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root, encoding: 'utf8', windowsHide: true,
+    }).trim();
+    const refs: string[] = [];
+    const common = {
+      resolveRepoContext: async () => ({ repoRoot: root, gitExe: 'git', repositoryKey: 'primary-key' }),
+      probeBaseline: async () => ({ ok: true as const, kind: 'head' as const, headOid: oid }),
+      resolvePrimaryBaselineRef: undefined,
+      insertRun: (input: any) => { refs.push(input.baselineRef); return { ...input, lifecycleState: 'active' }; },
+    };
+    assert.equal((await svc.implementPlan(
+      { planId: 'plan-1', appUserId: 'e' }, svcDeps(common),
+    )).ok, true);
+    execFileSync('git', ['update-ref', '--no-deref', 'HEAD', oid], { cwd: root, windowsHide: true });
+    assert.equal((await svc.implementPlan(
+      { planId: 'plan-1', appUserId: 'e' }, svcDeps(common),
+    )).ok, true);
+    assert.deepEqual(refs, ['refs/heads/master', oid]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('supervisor trigger stamps the authenticated agent identity and source', async () => {

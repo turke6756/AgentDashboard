@@ -41,6 +41,8 @@ test('write tools are supervisor-only — absent from the plans-read subset', ()
 test('implement_plan advertises hardening-to-ready promotion when readiness holds', () => {
   const def = getPlansToolDefinitions().find((tool) => tool.name === 'implement_plan');
   assert.match(def.description, /promote a hardening structured plan to ready when readiness holds/);
+  assert.match(def.description, /defaults to the primary workspace tree/);
+  assert.match(def.description, /LARES_PLANNING_WORKTREES=1/);
 });
 
 test('F-F: NO migrate_plan_markdown tool, and nothing advertises markdown-migration input', () => {

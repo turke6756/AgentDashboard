@@ -119,7 +119,8 @@ const IMPLEMENT_PLAN_DEF = {
   name: 'implement_plan',
   description:
     'Supervisor-only: promote a hardening structured plan to ready when readiness holds, ' +
-    'then flip it to executing and pin its baseline. ' +
+    'then flip it to executing and pin its baseline. Execution defaults to the primary ' +
+    'workspace tree; planning worktrees are opt-in via LARES_PLANNING_WORKTREES=1. ' +
     'Before calling, the supervisor must confirm with the human unless the human already ' +
     'authorized autonomous implementation.',
   inputSchema: {

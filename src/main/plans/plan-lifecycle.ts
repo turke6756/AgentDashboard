@@ -63,6 +63,10 @@ import {
   type ImplementResult,
   type PlanReadiness,
 } from './plan-implement';
+import {
+  planningWorktreesEnabled,
+  type EnvironmentReader,
+} from './planning-worktree-flag';
 
 export const PLAN_RUN_STATE_HARDENING = 'hardening';
 export const PLAN_RUN_STATE_READY = 'ready';
@@ -96,6 +100,7 @@ export interface PackageDispatchDeps {
   confirmAttempt?: typeof confirmPlanDispatchAttempt;
   listPackagePaths?: typeof listPlanWorkPackagePaths;
   runGit?: (cwd: string, args: string[]) => Promise<GitRunResult>;
+  readEnv?: EnvironmentReader;
   deliver: (input: {
     targetAgentId: string;
     promptText: string;
@@ -112,9 +117,14 @@ type DispatchEnvelopeInput = {
   captureFailure: string | null;
 };
 
+type DispatchExecutionRoot = {
+  path: string;
+  activityRepositoryKey: string | null;
+};
+
 async function captureDispatchEnvelope(
   packageId: string,
-  activity: NonNullable<ReturnType<typeof getActivePlanningActivityWorktree>>,
+  activity: DispatchExecutionRoot,
   deps: PackageDispatchDeps,
 ): Promise<DispatchEnvelopeInput> {
   const unavailable = (reason: string): DispatchEnvelopeInput => ({
@@ -205,6 +215,7 @@ export interface PlanPackageDispatchRouteDeps {
   newId?: () => string;
   now?: () => number;
   getActiveActivity?: typeof getActivePlanningActivityWorktree;
+  readEnv?: EnvironmentReader;
   deliver: PackageDispatchDeps['deliver'];
 }
 
@@ -280,11 +291,14 @@ export async function dispatchPlanPackage(
   const insertAttempt = deps.insertAttempt ?? insertPlanDispatchAttempt;
   const markFailed = deps.markFailed ?? markPlanDispatchAttemptFailed;
   const confirmAttempt = deps.confirmAttempt ?? confirmPlanDispatchAttempt;
-  const activity = (deps.getActiveActivity ?? getActivePlanningActivityWorktree)(input.planId);
-  if (!activity || activity.executionRunId !== activeRun.id) {
+  const usePlanningWorktrees = planningWorktreesEnabled(deps.readEnv);
+  const activity = usePlanningWorktrees
+    ? (deps.getActiveActivity ?? getActivePlanningActivityWorktree)(input.planId)
+    : null;
+  if (usePlanningWorktrees && (!activity || activity.executionRunId !== activeRun.id)) {
     return { ok: false, attempt: null, disposition: null, failure: 'planning-activity-unavailable' };
   }
-  if (activity) {
+  if (usePlanningWorktrees && activity) {
     const normalize = (value: string) => {
       const resolvedPath = path.resolve(value);
       return process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
@@ -293,7 +307,12 @@ export async function dispatchPlanPackage(
       return { ok: false, attempt: null, disposition: null, failure: 'target-agent-worktree-mismatch' };
     }
   }
-  const envelope = await captureDispatchEnvelope(input.packageId, activity, deps);
+  const primaryPath = agent.workingDirectory ?? getWorkspace(pkg.workspaceId)?.path ?? '';
+  const executionRoot: DispatchExecutionRoot = activity ?? {
+    path: primaryPath,
+    activityRepositoryKey: activeRun.repositoryKey,
+  };
+  const envelope = await captureDispatchEnvelope(input.packageId, executionRoot, deps);
   let attempt = insertAttempt({
     id: input.attemptId,
     packageId: input.packageId,
@@ -311,7 +330,7 @@ export async function dispatchPlanPackage(
       createdById: input.ownerAgentId,
     },
   });
-  const activityDispatch = activity
+  const activityDispatch = usePlanningWorktrees && activity
     ? withPlanningActivityBinding(resolved.dispatch, {
         executionRunId: activity.executionRunId,
         path: activity.path,
@@ -418,6 +437,7 @@ export function registerPlanPackageDispatchIpc(
       createdAt: now(),
     }, {
       getActiveActivity: deps.getActiveActivity,
+      readEnv: deps.readEnv,
       deliver: deps.deliver,
     });
 

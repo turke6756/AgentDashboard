@@ -4693,6 +4693,14 @@ export function applyStatusTransition(
       reason, reason, status,   // last_stop_reason
       status, now, id,          // status / updated_at / WHERE
     );
+    if (status === 'done' || status === 'crashed') {
+      db.prepare(
+        `UPDATE plan_work_packages
+            SET assignee_agent_id = NULL,
+                updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+          WHERE assignee_agent_id = ? AND state <> 'done'`,
+      ).run(id);
+    }
     return { prior: row.status, current: status as AgentStatus };
   })();
 }
