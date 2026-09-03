@@ -959,10 +959,10 @@ export class ApiServer {
    *
    *   1. **Global bearer rejected.** No `capability` ⇒ admission came via the shared
    *      global bearer (or, impossibly, an unbound token). Recovery exposes local
-   *      history + workspace bytes and is supervisor-tier — the bearer never reaches it.
-   *   2. **Supervisor privilege required.** A minted worker/researcher credential is a
-   *      valid bearer for other ops but is refused here (defense the toolset-hiding in
-   *      WP-G2.3 only backs up).
+   *      history + workspace bytes, so the bearer never reaches it.
+   *   2. **Lane privilege required.** Supervisors retain the full surface. Workers may
+   *      reach only list and diff when the dispatcher explicitly marks a read route;
+   *      researchers remain refused everywhere.
    *   3. **Self-assertion only.** Any X-Supervisor-Id header must EQUAL `claim.agentId`
    *      — you may assert yourself, never another agent (this is what defeats the
    *      forged "real worker token + real supervisor's id" attack).
@@ -976,6 +976,7 @@ export class ApiServer {
     req: http.IncomingMessage,
     capability: CapabilityClaim | undefined,
     url: URL,
+    allowWorkerRead = false,
   ): { workspaceId: string; agentId: string } {
     if (!capability) {
       throw Object.assign(
@@ -983,7 +984,8 @@ export class ApiServer {
         { statusCode: 403, code: 'checkpoint-requires-capability' },
       );
     }
-    if (capability.privilegeLane !== 'supervisor') {
+    if (capability.privilegeLane !== 'supervisor'
+      && !(allowWorkerRead && capability.privilegeLane === 'worker')) {
       throw Object.assign(
         new Error(`checkpoint routes require supervisor privilege; this credential is '${capability.privilegeLane}'`),
         { statusCode: 403, code: 'checkpoint-requires-supervisor' },
@@ -1036,7 +1038,7 @@ export class ApiServer {
   }
 
   /**
-   * Dispatch the `/api/checkpoints*` recovery routes. Authorization (capability gate,
+   * Dispatch the `/api/checkpoints*` routes. Authorization (capability/lane gate,
    * self-assertion, workspace scope) runs FIRST on every route; only then is the
    * request shape parsed and forwarded to the injected engine surface.
    */
@@ -1046,8 +1048,10 @@ export class ApiServer {
     req: http.IncomingMessage,
     capability: CapabilityClaim | undefined,
   ): Promise<any> {
-    const { workspaceId, agentId } = this.authorizeCheckpoint(req, capability, url);
     const path = url.pathname;
+    const allowWorkerRead = method === 'GET'
+      && (path === '/api/checkpoints' || /^\/api\/checkpoints\/[^/]+\/diff$/.test(path));
+    const { workspaceId, agentId } = this.authorizeCheckpoint(req, capability, url, allowWorkerRead);
 
     // GET /api/checkpoints — workspace-scoped turn/checkpoint list. WP4 adds the
     // `agentId`/`since`/`sinceTime`/`limit`/`file` filters (parsed + validated here,

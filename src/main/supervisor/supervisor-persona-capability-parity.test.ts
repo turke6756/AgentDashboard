@@ -58,6 +58,7 @@ const TOOLSET_SCRIPT_MAP: Record<string, { script: string; fn: string }> = {
   'browser-present': { script: 'mcp-browser-present-tools.js', fn: 'getBrowserPresentToolDefinitions' },
   'plans-read': { script: 'mcp-tools-plans.js', fn: 'getPlansReadToolDefinitions' },
   plans: { script: 'mcp-tools-plans.js', fn: 'getPlansToolDefinitions' },
+  'checkpoints-read': { script: 'mcp-tools-checkpoints.js', fn: 'getCheckpointsReadToolDefinitions' },
   // WP-G2.3 (Git-Native): supervisor-lane-only checkpoint recovery toolset —
   // mirrors ipc-deps.ts TOOLSET_SCRIPT_MAP so the granted-verb surface resolves.
   checkpoints: { script: 'mcp-tools-checkpoints.js', fn: 'getCheckpointsToolDefinitions' },

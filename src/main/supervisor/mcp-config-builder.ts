@@ -67,7 +67,8 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // recovery tools are supervisor-tier + human, NEVER workers/researchers.
       // Toolset-hiding here is defense-in-depth; the authorization boundary is
       // the minted capability token the /api/checkpoints* routes require
-      // (WP-G2.0/2.1). Do NOT add `checkpoints` to the worker or researcher grant.
+      // (WP-G2.0/2.1). Do NOT add the full `checkpoints` toolset to the worker or
+      // researcher grant.
       // Memory & Lessons v2 (WP-D): `memory` — the recall_memory on-demand
       // detail-fetch toolset — is granted to BOTH lanes (worker below). Active and
       // archived bodies are fetchable whenever relevant, and every recall becomes
@@ -99,7 +100,7 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // identical before and after.
       // WP-D: the worker lane also gets `memory` (recall_memory) — both lanes
       // fetch active or archived capsule detail whenever it becomes relevant.
-      return 'comms,observability-core,browser-present,plans-read,memory';
+      return 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read';
     case 'researcher':
       // Researchers can be plan-bound too. Keep the full browser surface and
       // add only the read-only plan ladder; no plan-write/full `plans` grant.

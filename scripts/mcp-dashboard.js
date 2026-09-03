@@ -196,10 +196,14 @@ const TOOLSET_REGISTRY = {
       handleToolCall: mod.handleBrowserPresentToolCall,
     };
   },
-  // WP-G2.3 (Git-Native): capability-bound checkpoint recovery, granted ONLY to
-  // the supervisor lane (mcp-config-builder.toolsetsForLane). The real boundary
-  // is the minted capability token the `/api/checkpoints*` routes require; this
-  // grant-hiding is defense-in-depth. Never granted to workers (shape §8.3).
+  // Worker-only read subset; the full recovery tier remains supervisor-only.
+  'checkpoints-read': () => {
+    const mod = require('./mcp-tools-checkpoints');
+    return {
+      getToolDefinitions: mod.getCheckpointsReadToolDefinitions,
+      handleToolCall: mod.handleCheckpointsReadToolCall,
+    };
+  },
   checkpoints: () => {
     const mod = require('./mcp-tools-checkpoints');
     return {

@@ -12,7 +12,11 @@
 //   node scripts/mcp-tools-checkpoints.test.js
 
 const assert = require('node:assert/strict');
-const { handleCheckpointsToolCall } = require('./mcp-tools-checkpoints');
+const {
+  getCheckpointsReadToolDefinitions,
+  handleCheckpointsToolCall,
+  handleCheckpointsReadToolCall,
+} = require('./mcp-tools-checkpoints');
 
 const CAP = 100_000; // must match LIST_CHECKPOINTS_OUTPUT_CAP_BYTES in the module
 
@@ -40,6 +44,22 @@ function turn(seq, pathCount, pathLen) {
 
 const payloadOf = (result) => JSON.parse(result.content[0].text);
 const wrapperBytes = (result) => Buffer.byteLength(JSON.stringify(result), 'utf8');
+
+test('checkpoints-read advertises exactly list_checkpoints and diff_turn', () => {
+  assert.deepEqual(
+    getCheckpointsReadToolDefinitions().map(({ name }) => name).sort(),
+    ['diff_turn', 'list_checkpoints'],
+  );
+});
+
+test('checkpoints-read handler rejects every mutating checkpoint verb', async () => {
+  for (const name of ['restore_paths', 'revert_turn', 'prune_checkpoints']) {
+    await assert.rejects(
+      handleCheckpointsReadToolCall(name, {}, fakeApi({})),
+      new RegExp(`checkpoints-read does not permit tool: ${name}`),
+    );
+  }
+});
 
 // ── query building ────────────────────────────────────────────────────────────
 

@@ -645,6 +645,7 @@ const TESTS = [
   'dist/main/main/api-server-overhead-route.test.js',
   'dist/main/main/api-server-body-cap.test.js',
   'dist/main/main/api-server-checkpoints.test.js',
+  'dist/main/main/checkpoints-read-lane.test.js',
   'dist/main/main/api-server.test.js',
   'dist/main/main/agent-dto-routes.test.js',
   'dist/main/main/api-server-optimizer-routes.test.js',

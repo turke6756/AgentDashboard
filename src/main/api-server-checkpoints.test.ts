@@ -3,11 +3,10 @@
 // recovery surface, exercised over a REAL ApiServer (same harness shape as
 // api-auth.test.ts).
 //
-// The load-bearing property: recovery is supervisor-tier and exposes local history
-// + workspace bytes, so EVERY checkpoint route (read AND mutation) requires a minted
-// per-agent capability token with SUPERVISOR privilege; the shared global bearer is
-// rejected; an X-Supervisor-Id may only equal the caller's OWN claim.agentId; scope
-// is the claim's workspace; and `force` is refused on every HTTP route.
+// The load-bearing property: checkpoint access always requires a minted capability;
+// workers may list/diff only, researchers are denied throughout, and recovery
+// mutations remain supervisor-tier. Identity/workspace scope and `force` refusal
+// apply unchanged.
 //
 // Build via the main tsconfig and run with:
 //   npm run build:main
@@ -194,7 +193,7 @@ test('forged X-Supervisor-Id with a WORKER credential is rejected on a READ rout
       'X-Supervisor-Id': 'real-supervisor-9',
     });
     assert.equal(res.status, 403);
-    assert.equal(parse(res).code, 'checkpoint-requires-supervisor');
+    assert.equal(parse(res).code, 'checkpoint-identity-mismatch');
   }));
 
 test('forged X-Supervisor-Id with a WORKER credential is rejected on a MUTATION route (restore)', () =>
@@ -278,13 +277,13 @@ test('list is scoped to the claim workspace (provider called with claim.workspac
     }
   }));
 
-// ── 5. A minted WORKER credential (no forged header) is still refused everywhere ──
+// ── 5. A minted WORKER credential can read list/diff only ────────────────────────
 
-test('a minted worker credential without any forged header is refused (supervisor-tier)', () =>
+test('a minted worker credential without any forged header can list checkpoints', () =>
   withServer(async (port) => {
     const res = await request(port, 'GET', '/api/checkpoints', { Authorization: bearerFor('worker', 'worker-1') });
-    assert.equal(res.status, 403);
-    assert.equal(parse(res).code, 'checkpoint-requires-supervisor');
+    assert.equal(res.status, 200);
+    assert.equal(parse(res).turns.length, 1);
   }));
 
 // ── 6. Happy-path read/mutation with a supervisor capability ─────────────────────

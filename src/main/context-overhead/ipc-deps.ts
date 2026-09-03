@@ -177,6 +177,7 @@ const TOOLSET_SCRIPT_MAP: Record<string, { script: string; fn: string }> = {
   'browser-present': { script: 'mcp-browser-present-tools.js', fn: 'getBrowserPresentToolDefinitions' },
   'plans-read': { script: 'mcp-tools-plans.js', fn: 'getPlansReadToolDefinitions' },
   plans: { script: 'mcp-tools-plans.js', fn: 'getPlansToolDefinitions' },
+  'checkpoints-read': { script: 'mcp-tools-checkpoints.js', fn: 'getCheckpointsReadToolDefinitions' },
   // WP-G2.3 (Git-Native): the supervisor-lane-only checkpoint recovery toolset.
   // Mapped here so context-overhead sizing + the MCP tool→toolset reverse map
   // resolve its verbs instead of silently dropping the supervisor's new grant.

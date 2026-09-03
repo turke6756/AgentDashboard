@@ -48,6 +48,7 @@ export const DASHBOARD_TOOLSETS: readonly string[] = [
   'browser-present',
   'plans-read',
   'plans',
+  'checkpoints-read',
   // WP-G2.3 (Git-Native): supervisor-lane-only checkpoint recovery toolset. Its
   // verbs (list_checkpoints/diff_turn/restore_paths/revert_turn/prune_checkpoints)
   // are unique, so a logged `mcp__agent-dashboard__<verb>` resolves to

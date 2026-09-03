@@ -16,6 +16,7 @@ const toolsetModulePaths = [
   './mcp-tools-notebooks',
   './mcp-browser-tools',
   './mcp-tools-plans',
+  './mcp-tools-checkpoints',
   './mcp-tools-memory',
   './mcp-tools-migration',
 ];
@@ -173,7 +174,7 @@ test('every retired analytics tool is unreachable under EVERY grant that could h
     'observability-analytics',          // the retired name itself
     'observability,observability-core,observability-analytics',
     'orchestration,comms,observability-core,plans,browser-present',      // supervisor
-    'comms,observability-core,browser-present,plans-read',               // worker
+    'comms,observability-core,browser-present,plans-read,memory,checkpoints-read', // worker
   ];
   for (const grant of grants) {
     const proxy = loadProxy(grant);
@@ -206,8 +207,8 @@ test('SUPERVISOR grant keeps its operational surface after the analytics retirem
   }
 });
 
-test('WORKER grant is unchanged by the retirement and keeps operational observability', async () => {
-  const proxy = loadProxy('comms,observability-core,browser-present,plans-read');
+test('WORKER grant keeps operational observability and the exact current read surfaces', async () => {
+  const proxy = loadProxy('comms,observability-core,browser-present,plans-read,memory,checkpoints-read');
   const names = namesOf(proxy.getToolDefinitions());
   assert.ok(names.includes('list_agents'), 'worker keeps operational observability (list_agents)');
   assert.ok(names.includes('read_agent_chat'), 'worker keeps operational observability (read_agent_chat)');
@@ -274,6 +275,14 @@ test('migration toolset exposes archive_memory plus the three guarded bundle ops
   const proxy = loadProxy('migration');
   const names = namesOf(proxy.getToolDefinitions());
   assert.deepStrictEqual(names.sort(), ['archive_memory', 'publish_lessons_batch', 'replace_memory_bundle', 'restore_memory_bundle']);
+});
+
+test('checkpoints-read exposes only list and diff, with no recovery mutations', async () => {
+  const proxy = loadProxy('checkpoints-read');
+  assert.deepStrictEqual(namesOf(proxy.getToolDefinitions()), ['diff_turn', 'list_checkpoints']);
+  for (const name of ['restore_paths', 'revert_turn', 'prune_checkpoints']) {
+    assert.ok(!namesOf(proxy.getToolDefinitions()).includes(name));
+  }
 });
 
 test('migration ops POST to their /api/migration/* routes', async () => {

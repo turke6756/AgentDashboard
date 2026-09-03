@@ -88,7 +88,7 @@ test('toolsetsForLane: worker gets comms,observability-core,browser-present + pl
   // GT-A WP-A4: `plans-read` appended.
   // WP-F (P5): `observability` → `observability-core`; the analytics half is dropped.
   // WP-D (Memory & Lessons v2): `memory` appended (recall_memory; both lanes).
-  assert.equal(toolsetsForLane('worker'), 'comms,observability-core,browser-present,plans-read,memory');
+  assert.equal(toolsetsForLane('worker'), 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read');
 });
 
 test('observability-core is supervisor+worker; the retired observability-analytics is granted to NO lane', () => {
@@ -178,12 +178,8 @@ test('WP-6 provider agy: unavailable plans-read mount is an explicit limitation'
 });
 
 // ── WP-G2.3: the `checkpoints` recovery toolset is supervisor-lane ONLY ──────
-// Shape §8.3: checkpoint recovery tools are supervisor-tier + human, NEVER
-// workers/researchers. Toolset-hiding is defense-in-depth; the real boundary is
-// the minted capability token the /api/checkpoints* routes require (WP-G2.0/2.1)
-// — the server-side rejection of a non-supervisor caller is proven in
-// api-server-checkpoints.test.ts ("a minted worker credential … is refused
-// (supervisor-tier)"). Here we own the config/grant side.
+// Shape §8.3: checkpoint mutation tools remain supervisor-tier. Workers receive
+// only the separate checkpoints-read subset; researchers receive neither tier.
 
 test('toolsetsForLane: the supervisor grant contains the `checkpoints` toolset (WP-G2.3)', () => {
   assert.ok(toolsetsForLane('supervisor').split(',').includes('checkpoints'),
@@ -330,6 +326,14 @@ test('shouldDirectSpawn: a non-legacy codex lane direct-spawns to preserve dotte
     'grok remains outside WP-3 direct-spawn behavior');
   assert.equal(shouldDirectSpawn({ lane: 'worker', provider: 'agy', hasPromptArg: false }), false,
     'agy remains outside WP-3 direct-spawn behavior');
+});
+
+test('toolsetsForLane: `checkpoints-read` is granted to workers only', () => {
+  assert.ok(toolsetsForLane('worker').split(',').includes('checkpoints-read'));
+  for (const lane of ['supervisor', 'researcher', 'legacy'] as const) {
+    assert.ok(!toolsetsForLane(lane).split(',').includes('checkpoints-read'),
+      `${lane} must NOT be granted checkpoints-read`);
+  }
 });
 
 // ── buildDashboardMcpConfigArg (windows) ─────────────────────────────

@@ -1,13 +1,15 @@
-// WP-G2.3 — Git-Native checkpoint recovery MCP toolset (SUPERVISOR-ONLY;
-// defense-in-depth). Thin HTTP callers over the WP-G2.1 `/api/checkpoints*`
+// WP-G2.3 — Git-Native checkpoint recovery MCP toolset. The full mutation
+// surface is supervisor-only; workers receive only the read subset below.
+// Thin HTTP callers over the WP-G2.1 `/api/checkpoints*`
 // routes. Every call carries the agent's minted capability token (the one the
 // dashboard injected into this sidecar's env as AGENT_DASHBOARD_API_TOKEN) and
 // the caller's asserted identity (X-Supervisor-Id, spread from CALLER_HEADERS in
 // apiRequest). The REAL authorization boundary is that capability token: the
-// route rejects the shared global bearer, requires supervisor privilege, and
+// route rejects the shared global bearer, requires supervisor privilege for
+// mutations, and
 // pins any X-Supervisor-Id to `claim.agentId`. This toolset is granted only to
-// the supervisor lane (mcp-config-builder.ts) — that grant-hiding is purely
-// belt-and-suspenders on top of the token.
+// the supervisor lane (mcp-config-builder.ts); the read subset is granted to
+// workers. Grant-hiding is belt-and-suspenders on top of the token.
 //
 // Shape §8.3: recovery tools are supervisor-tier + human only, NEVER workers.
 //
@@ -118,6 +120,12 @@ function getCheckpointsToolDefinitions() {
       },
     },
   ];
+}
+
+function getCheckpointsReadToolDefinitions() {
+  return getCheckpointsToolDefinitions().filter(
+    ({ name }) => name === 'list_checkpoints' || name === 'diff_turn',
+  );
 }
 
 function asText(payload) {
@@ -244,4 +252,17 @@ async function handleCheckpointsToolCall(name, args, apiRequest) {
   }
 }
 
-module.exports = { getCheckpointsToolDefinitions, handleCheckpointsToolCall };
+async function handleCheckpointsReadToolCall(name, args, apiRequest) {
+  if (name === 'restore_paths' || name === 'revert_turn' || name === 'prune_checkpoints') {
+    throw new Error(`checkpoints-read does not permit tool: ${name}`);
+  }
+  if (name !== 'list_checkpoints' && name !== 'diff_turn') return null;
+  return handleCheckpointsToolCall(name, args, apiRequest);
+}
+
+module.exports = {
+  getCheckpointsToolDefinitions,
+  getCheckpointsReadToolDefinitions,
+  handleCheckpointsToolCall,
+  handleCheckpointsReadToolCall,
+};
