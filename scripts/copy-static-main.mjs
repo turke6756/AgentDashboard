@@ -19,15 +19,25 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** [source relative to repo root, destination relative to repo root] */
+let outputRoot = 'dist'
+const outIndex = process.argv.indexOf('--out')
+if (outIndex !== -1) {
+  const requestedOutput = process.argv[outIndex + 1]
+  if (!requestedOutput || requestedOutput.startsWith('--')) {
+    throw new Error('copy-static-main: --out requires a directory')
+  }
+  outputRoot = requestedOutput
+}
+
+/** [source relative to repo root, destination relative to the output root] */
 const FILES = [
-  ['src/main/pty-host.js', 'dist/main/main/pty-host.js'],
+  ['src/main/pty-host.js', 'main/main/pty-host.js'],
 ]
 
 for (const [from, to] of FILES) {
   const src = join(repoRoot, from)
-  const dest = join(repoRoot, to)
+  const dest = join(repoRoot, outputRoot, to)
   mkdirSync(dirname(dest), { recursive: true })
   copyFileSync(src, dest)
-  console.log(`copy-static-main: ${from} -> ${to}`)
+  console.log(`copy-static-main: ${from} -> ${join(outputRoot, to)}`)
 }

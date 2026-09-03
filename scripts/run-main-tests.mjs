@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const TESTS = [
+  'scripts/dev-instance.test.mjs',
   'dist/main/main/dev-instance.test.js',
   'dist/main/main/dev-instance-bootstrap.test.js',
   'dist/main/main/proposal-ingest.test.js',
