@@ -6,9 +6,10 @@
  * Two layers:
  *  1) --self-test — the script's built-in fixture suite: builds a temp tree with
  *     known-bad files (a .vbs, wscript/-WindowStyle Hidden/-EncodedCommand/
- *     powershell.exe-spawn lines, unlisted Tier-2 flags, hidden dot-dir hits,
- *     excluded node_modules/docs-internal/__fixtures__ decoys) and asserts each
- *     is flagged / skipped / allowlisted correctly.
+ *     powershell.exe-spawn lines, unlisted Tier-2 flags, a test-file Tier-2
+ *     exemption that retains Tier-1 scanning, hidden dot-dir hits, and excluded
+ *     node_modules/docs-internal/__fixtures__ decoys) and asserts each is
+ *     flagged / skipped / allowlisted correctly.
  *  2) Real-tree lint — asserts the current repo passes clean, so a pattern
  *     regression or an un-allowlisted spawn flag fails the main test run.
  *

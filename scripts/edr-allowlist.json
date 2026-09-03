@@ -80,6 +80,60 @@
       "owner": "git-native/git-runtime"
     },
     {
+      "file": "src/main/commit-candidates/candidate-validation.ts",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides each repository-local candidate-validation command run in an isolated checkout; execution is bounded by the configured timeout (capped at 60 minutes) and 4 MiB output limit.",
+      "owner": "commit-candidates/candidate-validation"
+    },
+    {
+      "file": "src/main/commit-candidates/dirty-inventory.ts",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides the direct resolved-Git child that streams dirty-inventory records; it has no shell, stops after the requested records, and is killed at its timeout/deadline.",
+      "owner": "commit-candidates/dirty-inventory"
+    },
+    {
+      "file": "src/main/plans/reachability-prover.ts",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides direct `git -C <repo>` reachability-proof commands; argv is discrete, output is capped, stdin is captured, and every child is killed at the proof timeout.",
+      "owner": "plans/reachability-prover"
+    },
+    {
+      "file": "src/main/sandbox/outbox-launcher.ts",
+      "lineContext": "'powershell.exe'",
+      "purpose": "TEMPORARY until P2.1 native restricted-token launcher: absolute Windows PowerShell runs the generated `.lares-outbox-launch-<SID>.ps1` via `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`; its setup probe is bounded to 30 seconds before the same reviewed bootstrap launches the requested child under the restricted token.",
+      "owner": "edr-hardening/P2.1"
+    },
+    {
+      "file": "src/main/sandbox/outbox-launcher.ts",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides the restricted-token bootstrap setup probe described above; the absolute executable and fixed bootstrap argv are direct, stdio is captured, and timeout is 30 seconds.",
+      "owner": "sandbox/outbox-launcher"
+    },
+    {
+      "file": "src/main/sandbox/outbox-launcher.test.ts",
+      "lineContext": "'powershell.exe'",
+      "purpose": "Tier-1 fixtures for the restricted-token launcher: two Windows-only ACL helpers resolve the same absolute System32 Windows PowerShell executable used by production, one to count explicit SID grants and one to add/remove a test SID Modify rule.",
+      "owner": "edr-hardening/P2.1"
+    },
+    {
+      "file": "scripts/lares-watchdog.mjs",
+      "lineContext": "'powershell.exe'",
+      "purpose": "TEMPORARY until P2.1 native memory sampler: non-interactive PowerShell runs `(Get-Process -Id <pid> -ErrorAction Stop).WorkingSet64` to read one watched process's RSS, with captured output and a 4-second timeout.",
+      "owner": "edr-hardening/P2.1"
+    },
+    {
+      "file": "scripts/lares-watchdog.mjs",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides the bounded 4-second PowerShell WorkingSet64 sampler child described above; output is captured and parsed as one number.",
+      "owner": "scripts/lares-watchdog"
+    },
+    {
+      "file": "scripts/progressive-ingestion-harness.mjs",
+      "lineContext": "windowsHide: true",
+      "purpose": "PERMANENT Tier-2: hides the direct Codex CLI child used by the progressive-ingestion harness; it runs one ephemeral JSON fixture turn in a trusted harness cwd with a 5-minute timeout and 20 MiB output cap.",
+      "owner": "scripts/progressive-ingestion-harness"
+    },
+    {
       "file": "src/main/git-checkpoints/git-command.ts",
       "lineContext": "windowsHide: true",
       "purpose": "PERMANENT Tier-2 (Git-Native WP-G1.1): bounded checkpoint/restore git exec + `cat-file blob` stream — absolute exe, discrete argv, no shell, per-op timeout/deadline hard-kill, byte-capped output.",
@@ -132,12 +186,6 @@
       "lineContext": "this.discardSweepTimer.unref()",
       "purpose": "Timer-handle unref on the discard-sweep interval (not a child process).",
       "owner": "browser"
-    },
-    {
-      "file": "src/main/supervisor/dashboard-status-script.test.ts",
-      "lineContext": ".unref()",
-      "purpose": "Test-harness stdin-error timer unref (timer, not a child process).",
-      "owner": "supervisor/tests"
     },
     {
       "file": "scripts/wsl-boundary-check.js",

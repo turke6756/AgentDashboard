@@ -41,8 +41,9 @@
 //     code, or user-facing prose describing the banned pattern — plus the
 //     temporary P2.1-pending hidden-PowerShell call sites.
 //   Tier 2 (allowlist-with-purpose): windowsHide:true, detached:true, .unref(),
-//     shell:true. Every occurrence must match an entry in
-//     scripts/edr-allowlist.json {file, lineContext, purpose, owner}.
+//     shell:true. Shippable occurrences must match an entry in
+//     scripts/edr-allowlist.json {file, lineContext, purpose, owner}; *.test.ts,
+//     *.test.js, and *.test.mjs files are not shipped and skip Tier 2 only.
 //   Tier 3 (warn only): -ExecutionPolicy Bypass in package.json verify scripts
 //     (cleanup tracked as P3.4).
 //
@@ -89,6 +90,7 @@ const BINARY_EXTS = new Set([
 ]);
 
 const BANNED_EXTENSIONS = new Set(['.vbs', '.wsf', '.hta']);
+const TIER2_EXEMPT_TEST_FILE = /\.test\.(?:ts|js|mjs)$/i;
 
 const TIER1_PATTERNS = [
   {
@@ -224,6 +226,7 @@ function scan(rootDir, allowlistEntries, { scanRoots = SCAN_ROOTS, extraFiles = 
 
   for (const rel of files) {
     const ext = path.extname(rel).toLowerCase();
+    const skipTier2 = TIER2_EXEMPT_TEST_FILE.test(rel);
     if (BANNED_EXTENSIONS.has(ext)) {
       record(violations, rel, 0, 1, 'banned-extension',
         `file extension ${ext}`, 'WSH/HTA script files must not exist in the repo at all.');
@@ -244,6 +247,7 @@ function scan(rootDir, allowlistEntries, { scanRoots = SCAN_ROOTS, extraFiles = 
         { tier: 1, patterns: TIER1_PATTERNS },
         { tier: 2, patterns: TIER2_PATTERNS },
       ]) {
+        if (tier === 2 && skipTier2) continue;
         for (const p of patterns) {
           if (!p.re.test(lineText)) continue;
           const entry = allowlistMatch(allowlistEntries, rel, lineText);
@@ -337,6 +341,7 @@ function selfTest() {
     // Tier-2 fixture — unlisted must fail; listed must pass.
     write('src/f.ts', 'spawn(exe, argv, { windowsHide: true });');
     write('src/g.ts', 'spawn(exe, argv, { shell: true, detached: true });');
+    write('src/test-scope.test.ts', "spawn('powershell.exe', argv, { windowsHide: true });");
     // Hidden + "gitignored-shaped" locations must still be scanned (own walk).
     write('src/.hidden/h.ts', 'child.unref();\nspawn(x, { windowsHide: true });');
     // Excluded locations must NOT be scanned.
@@ -358,6 +363,8 @@ function selfTest() {
     check('powershell.exe spawn literal flagged', got('src/d.ts', 'powershell-spawn-literal'));
     check('powershell -Command prose flagged', got('docs/e.md', 'powershell-dash-command'));
     check('unlisted windowsHide flagged', got('src/f.ts', 'windows-hide'));
+    check('test-file windowsHide skipped', !got('src/test-scope.test.ts', 'windows-hide'));
+    check('test-file Tier-1 remains flagged', got('src/test-scope.test.ts', 'powershell-spawn-literal'));
     check('shell:true flagged', got('src/g.ts', 'shell-true'));
     check('detached:true flagged', got('src/g.ts', 'detached'));
     check('hidden dot-dir IS scanned (unref)', got('src/.hidden/h.ts', 'unref'));
