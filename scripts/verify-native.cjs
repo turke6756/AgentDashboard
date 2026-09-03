@@ -17,6 +17,7 @@ const fs = require('fs');
 const { app } = require('electron');
 
 const repoRoot = path.join(__dirname, '..');
+const strict = process.argv.includes('--strict');
 
 const failures = [];
 const warnings = [];
@@ -35,6 +36,10 @@ function fail(name, detail) {
 function warn(name, detail) {
   warnings.push(`${name}: ${detail}`);
   log(`  WARN  ${name} — ${detail}`);
+}
+function degrade(name, detail) {
+  if (strict) fail(name, detail);
+  else warn(name, detail);
 }
 
 function finish() {
@@ -130,7 +135,7 @@ async function main() {
     });
   });
 
-  // -- 4. lares-native functional surface (PASS/DEGRADED, never a hard fail) --
+  // -- 4. lares-native functional surface ---------------------------------
   log('\n[4] lares-native');
   const laresNativeIndex = path.join(repoRoot, 'native', 'lares-native', 'index.js');
   try {
@@ -139,7 +144,7 @@ async function main() {
     // nothing. Exercise the surface instead.
     const native = require(laresNativeIndex);
     if (!native || native.supported !== true) {
-      warn('lares-native', `DEGRADED — supported=false, loadError=${native && native.loadError}`);
+      degrade('lares-native', `DEGRADED — supported=false, loadError=${native && native.loadError}`);
     } else {
       const platformOk = native.platformSupported();
       const commit = native.getCommitStatus();
@@ -147,21 +152,21 @@ async function main() {
       const commitOk = commit && typeof commit === 'object' &&
         Object.values(commit).some((v) => typeof v === 'number' && v > 0);
       if (!platformOk) {
-        warn('lares-native', 'DEGRADED — platformSupported() returned false');
+        degrade('lares-native', 'DEGRADED — platformSupported() returned false');
       } else if (!commitOk) {
-        warn('lares-native', `DEGRADED — getCommitStatus() returned ${JSON.stringify(commit)}`);
+        degrade('lares-native', `DEGRADED — getCommitStatus() returned ${JSON.stringify(commit)}`);
       } else if (name !== 'Local\\Lares.agent.agent-1.42') {
-        warn('lares-native', `jobName() returned unexpected ${JSON.stringify(name)}`);
+        degrade('lares-native', `jobName() returned unexpected ${JSON.stringify(name)}`);
       } else {
         pass('lares-native', `functional — getCommitStatus() -> ${JSON.stringify(commit)}`);
       }
     }
   } catch (err) {
-    warn('lares-native', `DEGRADED — ${err && err.message}`);
+    degrade('lares-native', `DEGRADED — ${err && err.message}`);
   }
   const laresNativeBinary = path.join(repoRoot, 'native', 'lares-native', 'build', 'Release', 'lares_native.node');
   if (!fs.existsSync(laresNativeBinary)) {
-    warn('lares-native binary', `${laresNativeBinary} missing — extraResources will ship nothing (plan §4.3)`);
+    degrade('lares-native binary', `${laresNativeBinary} missing — extraResources will ship nothing (plan §4.3)`);
   }
 
   // -- 5. Packaged PTY-helper module resolution (F5) -----------------------

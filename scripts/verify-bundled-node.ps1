@@ -46,7 +46,8 @@ param(
   # `.lares\scripts\dashboard-status.mjs`). When provided, [5] additionally
   # exercises the REAL status hook + status line through the shim. Skipped when
   # absent — the shim contract (5a-5d) is proven regardless.
-  [string]$Workspace = ''
+  [string]$Workspace = '',
+  [switch]$Strict
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,8 +73,12 @@ function Warn([string]$name, [string]$detail) {
 }
 function Skip([string]$name, [string]$detail) {
   # A skip is louder than a warning on purpose: it means the gate did not run.
-  $script:Warnings += "${name}: SKIPPED - $detail"
-  Write-Host ("  SKIP  {0} - {1}" -f $name, $detail) -ForegroundColor Magenta
+  if ($Strict) {
+    Fail $name "SKIPPED - $detail"
+  } else {
+    $script:Warnings += "${name}: SKIPPED - $detail"
+    Write-Host ("  SKIP  {0} - {1}" -f $name, $detail) -ForegroundColor Magenta
+  }
 }
 
 function New-TempDir([string]$tag) {
@@ -600,7 +605,11 @@ if (-not $nodeIsHidden) {
       if (($r2.Stdout).Trim().Length -gt 0) {
         Pass 'V12 status line -> stdout' 'dashboard-statusline.mjs printed a line through the shim'
       } else {
-        Warn 'V12 status line -> stdout' "no status line printed. stderr: $((($r2.Stderr) -replace '\s+',' ').Trim())"
+        if ($Strict) {
+          Fail 'V12 status line -> stdout' "no status line printed. stderr: $((($r2.Stderr) -replace '\s+',' ').Trim())"
+        } else {
+          Warn 'V12 status line -> stdout' "no status line printed. stderr: $((($r2.Stderr) -replace '\s+',' ').Trim())"
+        }
       }
     }
   }

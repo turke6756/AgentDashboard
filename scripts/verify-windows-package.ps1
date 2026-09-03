@@ -15,7 +15,8 @@
 
 [CmdletBinding()]
 param(
-  [string]$Root = ''
+  [string]$Root = '',
+  [switch]$Strict
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,10 @@ function Fail([string]$name, [string]$detail) {
 function Warn([string]$name, [string]$detail) {
   $script:Warnings += "${name}: $detail"
   Write-Host ("  WARN  {0} - {1}" -f $name, $detail) -ForegroundColor Yellow
+}
+function ReleaseSkip([string]$name, [string]$detail) {
+  if ($Strict) { Fail $name "SKIPPED - $detail" }
+  else { Warn $name "SKIPPED - $detail" }
 }
 
 function Assert-NonEmptyFile([string]$name, [string]$path) {
@@ -117,6 +122,26 @@ if (-not (Test-Path -LiteralPath $unpackedRoot)) {
     Where-Object { $_.Extension -in '.wasm', '.node' })
   if ($pdfBin.Count -gt 0) { Pass 'pdfium binary' ($pdfBin[0].FullName) }
   else { Fail 'pdfium binary' "no .wasm/.node found under $pdfDir" }
+
+  $mingit = Join-Path $resources 'mingit'
+  $mingitGit = Join-Path $mingit 'cmd\git.exe'
+  $mingitManifest = Join-Path $mingit 'mingit-manifest.json'
+  $mingitGitconfig = Join-Path $mingit 'etc\gitconfig'
+  $gitItem = Assert-NonEmptyFile 'packaged MinGit git.exe' $mingitGit
+  $null = Assert-NonEmptyFile 'packaged MinGit manifest' $mingitManifest
+  $null = Assert-NonEmptyFile 'packaged MinGit gitconfig' $mingitGitconfig
+  if ($gitItem) {
+    try {
+      $gitVersion = & $mingitGit --version 2>&1
+      if ($LASTEXITCODE -eq 0 -and ($gitVersion -join '') -match '^git version ') {
+        Pass 'packaged MinGit runs' (($gitVersion | Select-Object -First 1).Trim())
+      } else {
+        Fail 'packaged MinGit runs' "git --version exited $LASTEXITCODE with: $($gitVersion -join ' ')"
+      }
+    } catch {
+      Fail 'packaged MinGit runs' $_.Exception.Message
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -130,7 +155,8 @@ if (-not (Test-Path -LiteralPath $asar)) {
   try {
     $listing = & npx --no-install asar list $asar 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $listing) {
-      Warn 'asar list' "could not enumerate $asar (npx asar unavailable) - hygiene check skipped"
+      if ($Strict) { Fail 'asar list' "could not enumerate $asar (npx asar unavailable) - hygiene check skipped" }
+      else { Warn 'asar list' "could not enumerate $asar (npx asar unavailable) - hygiene check skipped" }
     } else {
       $tooling = $listing | Select-String -Pattern 'node_modules[\\/](typescript|vite|vitest|electron-builder)[\\/]'
       if ($tooling) {
@@ -140,7 +166,8 @@ if (-not (Test-Path -LiteralPath $asar)) {
       }
     }
   } catch {
-    Warn 'asar list' "asar enumeration failed: $($_.Exception.Message)"
+    if ($Strict) { Fail 'asar list' "asar enumeration failed: $($_.Exception.Message)" }
+    else { Warn 'asar list' "asar enumeration failed: $($_.Exception.Message)" }
   }
 }
 
@@ -163,7 +190,7 @@ if (-not (Test-Path -LiteralPath $exe)) {
 
   $sig = Get-AuthenticodeSignature -LiteralPath $exe
   if ($sig.Status -eq 'NotSigned') {
-    Pass 'signature' 'NotSigned (matches the documented unsigned 0.2.0 release)'
+    Pass 'signature' "NotSigned (matches the documented unsigned $version release)"
   } else {
     Fail 'signature' "expected NotSigned (the docs claim unsigned), got $($sig.Status)"
   }
@@ -185,7 +212,7 @@ Write-Host "`n[5] isolated launch smoke"
 # misleading fail. On CI / a clean VM nothing else is running and it always runs.
 $otherInstances = @(Get-Process -Name 'Lares', 'electron' -ErrorAction SilentlyContinue)
 if ($otherInstances.Count -gt 0) {
-  Warn 'launch smoke' ('SKIPPED - {0} Lares/electron process(es) already running hold Electron''s single-instance lock. Close all Lares instances (including a dev "npm run start") and re-run to exercise this gate.' -f $otherInstances.Count)
+  ReleaseSkip 'launch smoke' ('{0} Lares/electron process(es) already running hold Electron''s single-instance lock. Close all Lares instances (including a dev "npm run start") and re-run to exercise this gate.' -f $otherInstances.Count)
 } elseif (Test-Path -LiteralPath $exe) {
   $tempProfile = Join-Path ([System.IO.Path]::GetTempPath()) ("lares-verify-" + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tempProfile -Force | Out-Null

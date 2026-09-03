@@ -29,6 +29,7 @@
     "pack": "npm run package:prepare && electron-builder --dir --win --x64 --config.npmRebuild=false --publish never && npm run verify:packaged-scripts && npm run verify:bundled-git",
     "dist": "npm run dist:win",
     "dist:win": "npm run package:prepare && electron-builder --win nsis --x64 --config.npmRebuild=false --publish never && npm run verify:packaged-scripts && npm run verify:bundled-git",
+    "dist:win:release": "npm run dist:win && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-release.ps1",
     "verify:payloads": "node scripts/verify-package-payloads.mjs",
     "verify:packaged-scripts": "node scripts/verify-packaged-scripts.mjs",
     "verify:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-package.ps1",
