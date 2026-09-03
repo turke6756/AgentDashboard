@@ -241,6 +241,7 @@ import {
 } from '../plans/planning-worktree-flag';
 import { detectPathType, windowsToWslPath, uncToWslPath, wslToWindowsPath } from '../path-utils';
 import { getScriptPath, getLaresNativeDir } from './paths';
+import { resolveLaneCwd } from './launch-lane-cwd';
 import {
   toolsetsForLane,
   buildDashboardMcpConfigArg,
@@ -3657,29 +3658,18 @@ export class AgentSupervisor extends EventEmitter {
       : p.replace(/\/+$/, '');
     const sep = pathType === 'windows' ? path.sep : '/';
     const normRoot = normalizeLaunchPath(workDir);
-    const normExplicitCwd = explicitAgentCwd ? normalizeLaunchPath(explicitAgentCwd) : null;
-    const shouldDeriveLane = packageLaunch === null
-      && (!explicitAgentCwd || normExplicitCwd === normRoot);
-
-    let agentCwd = explicitAgentCwd || workDir;
-    if (shouldDeriveLane && resolvedInput.persona) {
-      agentCwd = pathType === 'windows'
-        ? path.join(workDir, stateDirName, 'agents', resolvedInput.persona)
-        : `${workDir}/${stateDirName}/agents/${resolvedInput.persona}`;
-    } else if (shouldDeriveLane && resolvedInput.isSupervisor) {
-      agentCwd = pathType === 'windows'
-        ? path.join(workDir, stateDirName, 'supervisor')
-        : `${workDir}/${stateDirName}/supervisor`;
-    } else if (shouldDeriveLane && isResearcher) {
-      // Researcher role-lane (browser-parity-and-capability-isolation §0): its
-      // own .lares/researcher/<provider>/ cwd so it picks up the provider-native
-      // scaffold. Not the worker template, not the workspace root.
-      agentCwd = resolveResearcherWorkingDirectory(workDir, stateDirName, provider, pathType);
-    } else if (shouldDeriveLane && isWorkerLane) {
-      agentCwd = pathType === 'windows'
-        ? path.join(workDir, stateDirName, 'workers', provider)
-        : `${workDir}/${stateDirName}/workers/${provider}`;
-    }
+    const agentCwd = resolveLaneCwd({
+      workspaceRoot: workDir,
+      activityRoot: packageLaunch?.activityPath,
+      explicitCwd: explicitAgentCwd,
+      stateDirName,
+      pathType,
+      provider,
+      persona: resolvedInput.persona,
+      isSupervisor: resolvedInput.isSupervisor,
+      isResearcher,
+      isWorkerLane,
+    });
 
     // Path-injection guard for explicit `working_directory` from MCP
     // `launch_agent` (the only caller-controlled input that flows into
@@ -3690,8 +3680,10 @@ export class AgentSupervisor extends EventEmitter {
     // unrelated absolute path.
     {
       const normCwd = normalizeLaunchPath(agentCwd);
-      const isAuthoritativeActivityCwd = packageLaunch !== null
-        && normCwd === normalizeLaunchPath(packageLaunch.activityPath);
+      const normActivityPath = packageLaunch !== null
+        ? normalizeLaunchPath(packageLaunch.activityPath) : null;
+      const isAuthoritativeActivityCwd = normActivityPath !== null
+        && (normCwd === normActivityPath || normCwd.startsWith(normActivityPath + sep));
       if (!isAuthoritativeActivityCwd && normCwd !== normRoot && !normCwd.startsWith(normRoot + sep)) {
         throw new Error(
           `agentCwd '${agentCwd}' resolves outside workspace root '${workDir}'`,
@@ -3701,7 +3693,7 @@ export class AgentSupervisor extends EventEmitter {
       // A caller may revive/fork/resurrect an agent directly into its canonical
       // lane. Reject every other explicit path containing a Lares state-dir
       // segment so a typo cannot become a nested scaffold or an incidental cwd.
-      if (explicitAgentCwd && !isAuthoritativeActivityCwd) {
+      if (explicitAgentCwd) {
         const comparableCwd = pathType === 'windows' ? normCwd.toLowerCase() : normCwd;
         const stateSegments = comparableCwd.split(/[\\/]+/);
         const laresName = pathType === 'windows' ? LARES_DIR_NAME.toLowerCase() : LARES_DIR_NAME;
@@ -3710,8 +3702,8 @@ export class AgentSupervisor extends EventEmitter {
         if (containsStateDir) {
           const normStateRoot = normalizeLaunchPath(
             pathType === 'windows'
-              ? path.join(workDir, stateDirName)
-              : `${workDir}/${stateDirName}`,
+              ? path.join(packageLaunch?.activityPath ?? workDir, stateDirName)
+              : `${packageLaunch?.activityPath ?? workDir}/${stateDirName}`,
           );
           const relativeLane = normCwd.startsWith(normStateRoot + sep)
             ? normCwd.slice(normStateRoot.length + sep.length).split(/[\\/]+/)

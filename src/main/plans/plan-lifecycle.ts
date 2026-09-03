@@ -304,7 +304,13 @@ export async function dispatchPlanPackage(
       const resolvedPath = path.resolve(value);
       return process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
     };
-    if (!agent.workingDirectory || normalize(agent.workingDirectory) !== normalize(activity.path)) {
+    const normalizedActivityPath = normalize(activity.path).replace(/[\\/]+$/, '');
+    const normalizedAgentCwd = agent.workingDirectory
+      ? normalize(agent.workingDirectory).replace(/[\\/]+$/, '') : '';
+    const isInActivity = normalizedAgentCwd === normalizedActivityPath
+      || normalizedAgentCwd.startsWith(`${normalizedActivityPath}/`)
+      || normalizedAgentCwd.startsWith(`${normalizedActivityPath}\\`);
+    if (!isInActivity) {
       return { ok: false, attempt: null, disposition: null, failure: 'target-agent-worktree-mismatch' };
     }
   }

@@ -156,8 +156,11 @@ function request(port: number, method: string, route: string, token: string, bod
   assert.equal(attempt.branch_ref, 'refs/heads/main'); assert.equal(attempt.dispatch_tip_oid, tip);
   assert.deepEqual(JSON.parse(String(attempt.frozen_paths_json)), ['owned.txt']);
   assert.equal(db.getPlanWorkPackage(packageId)?.assigneeAgentId, attempt.target_agent_id);
-  assert.equal(db.getAgent(String(attempt.target_agent_id))?.workingDirectory, root,
-    'default launch stays in the primary workspace even when a stale activity row exists');
+  assert.equal(
+    db.getAgent(String(attempt.target_agent_id))?.workingDirectory,
+    path.join(root, '.lares', 'workers', 'claude'),
+    'default launch uses the primary workspace worker lane even when a stale activity row exists',
+  );
   assert.equal(deliveryObservedBeforeAttempt, false,
     'REACHABILITY:wp1-dispatch-envelope attempt must exist before prompt delivery');
 
@@ -170,13 +173,17 @@ function request(port: number, method: string, route: string, token: string, bod
     'ensureResearchStoreScaffold', 'retireStaleRootMcpConfig', 'ensureCodexHookProfile']) optInPriv[name] = () => {};
   optInPriv.loadAgentMd = () => null; optInPriv.launchWindowsAgent = async () => {};
   const optInLaunch = await optInSupervisor.launchAgent(launchInput('wp-opt-in'));
-  assert.ok(!('ok' in optInLaunch) || optInLaunch.ok !== false, 'opt-in activity launch succeeds');
+  assert.ok(!('ok' in optInLaunch) || optInLaunch.ok !== false,
+    `opt-in activity launch succeeds: ${JSON.stringify(optInLaunch)}`);
   const optInAttempt = db.getDb().prepare(
     'SELECT * FROM plan_dispatch_attempts WHERE package_id = ?',
   ).get('wp-opt-in') as Record<string, unknown>;
   assert.equal(optInAttempt.capture_status, 'captured');
-  assert.equal(db.getAgent(String(optInAttempt.target_agent_id))?.workingDirectory, root,
-    'opt-in launch uses the activity path');
+  assert.equal(
+    db.getAgent(String(optInAttempt.target_agent_id))?.workingDirectory,
+    path.join(root, '.lares', 'workers', 'claude'),
+    'opt-in launch uses the activity-rooted worker lane',
+  );
 
   const legacyPackage = 'wp-unavailable';
   db.upsertPlanWorkPackage({ ...db.getPlanWorkPackage(packageId)!, id: legacyPackage, assigneeAgentId: null,

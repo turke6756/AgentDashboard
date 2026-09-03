@@ -362,6 +362,22 @@ test('wrong-cwd planning dispatch is refused before attempt insertion or deliver
   assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`), null);
 });
 
+test('activity-rooted worker lane is accepted for planning dispatch', async () => {
+  const s = seed();
+  const activity = activeActivity(s);
+  dbm.getDb().prepare('UPDATE agents SET working_directory = ? WHERE id = ?')
+    .run(`${activity.path}/.lares/workers/claude`, s.agentId);
+  const result = await svc.dispatchPlanPackage({
+    attemptId: `attempt-${serial}`, lifecycleEventId: `event-${serial}`,
+    packageId: s.packageId, planId: s.planId, planItemId: s.packageId,
+    targetAgentId: s.agentId, ownerAgentId: null, promptText: 'go', createdAt: 2360,
+  }, {
+    getActiveActivity: () => activity, readEnv: () => '1',
+    deliver: async () => ({ disposition: 'delivered-unconfirmed' }),
+  });
+  assert.equal(result.ok, true);
+});
+
 test('default dispatch ignores a stale activity and captures the primary branch tip', async () => {
   const s = seed();
   dbm.setPlanWorkPackagePaths(s.packageId, s.workspaceId, [{ path: 'owned.txt' }], 1);
