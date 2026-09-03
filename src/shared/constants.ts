@@ -974,9 +974,61 @@ The human normally promotes a plan by hand. Before calling \`implement_plan\`, c
 in with the human verbally and wait for a go-ahead. If the human has explicitly
 authorized you to promote and implement without checking in, follow the same flow
 the human would and call the tool only when the structured plan is ready.`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V30.replace(
+export const SUPERVISOR_AGENT_MD_V31 = SUPERVISOR_AGENT_MD_V30.replace(
   SUPERVISOR_AGENT_MD_V30_COMMIT_POLICY_NEW,
   SUPERVISOR_AGENT_MD_V31_COMMIT_POLICY_NEW,
+);
+
+const SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR = '<!-- /section:turn-history -->';
+const SUPERVISOR_AGENT_MD_V32_RECORD_READING_SECTION = `**Gate a worker's turn against its brief.** Before you dispatch, call
+\`list_checkpoints({limit:1})\` and retain the returned maximum \`turnSeq\`. If the
+pre-dispatch call returns no row, retain the dispatch timestamp; after the
+idle event, use
+\`list_checkpoints({agent_id:"<worker-agent-id>", sinceTime:<dispatchTimestamp>, limit:20})\`
+instead (there is no valid \`since\` cursor to invent). Otherwise, after the
+worker's turn ends and the idle event arrives, call
+\`list_checkpoints({agent_id:"<worker-agent-id>", since:<savedTurnSeq>, limit:20})\`;
+\`since\` is an exclusive \`turnSeq\` lower bound, so this scopes to turns produced
+after dispatch. Read \`turnSeq\` explicitly (rows come back ascending;
+truncation may drop the oldest) and compare the witnessed paths to what you
+briefed. Paths outside the brief are a scope question to resolve before
+acceptance. \`read_agent_files_touched\` is session-scoped, not turn-scoped, even
+when filtered or bounded; treat it, plus \`git diff\`, only as fallback evidence
+when checkpoint capture is incomplete, and record the verdict as "attribution
+gap" or "inconclusive," never a clean pass on fallback activity. When capture
+health is incomplete, an empty witnessed set means "we did not look," not that
+the worker did nothing, and never that it lied.
+
+**Hand-rolled span rollback (supported today; no write gate needed).** When a
+human says "plan X's afternoon broke the chat pane," you may dispatch a worker
+to reverse it by hand: an ordinary checkpointed, gateable, itself-undoable
+worker turn, not the deferred automated-undo capability (that stays gated on
+\`prop_296c04e9\`). Brief the worker to:
+
+1. Resolve the span with \`list_checkpoints\`, correlating candidates using the
+   human's window, \`agent_id\`, \`file\`, \`taskLabel\`, timing, and known dispatch
+   context (the worker tool exposes no plan filter). Read \`turnSeq\` explicitly
+   (ascending; truncation may drop oldest rows).
+2. \`diff_turn\` each selected implicated turn, one at a time, stopping when the
+   requested span is understood; do not bulk-diff the candidate set.
+3. Edit the files back by hand (or apply the reversed hunks), selective by
+   sentence ("only the chat pane, keep the migration").
+4. Commit \`[worker] revert: <specific span/outcome>\` with strict pathspecs
+   naming only the reversed files; where the rollback is itself a plan WP, use
+   the \`land-work-package\` commit/trailer contract.
+
+Gate the result like any turn: diff plus tests. State its limits so nobody
+oversells it: it is a hand edit, it costs context proportional to the span, and
+it does not serialize against other agents committing. Therefore, before
+dispatch, establish that every target path is quiescent; while the rollback is
+in flight, do not dispatch another writer to any target path, and if an
+existing or newly observed turn touches one, stop and re-scope rather than
+applying stale reversed hunks. You are the serialization. If this proves too
+slow or error-prone in practice, that evidence is what would justify the
+deferred marked-point/panic-restore half of \`prop_296c04e9\`.`;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V31.replace(
+  SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR,
+  `${SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR}\n\n${SUPERVISOR_AGENT_MD_V32_RECORD_READING_SECTION}`,
 );
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
@@ -1695,9 +1747,73 @@ to create its one commit. Its temporary-index transaction and canonical
 \`Plan:\`, \`WP:\`, \`Verified:\`, and optional \`Scope-omitted:\` trailers are
 the commit contract; do not substitute an ordinary shared-index commit.
 `;
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V15.replace(
+export const WORKER_CLAUDE_MD_V16 = WORKER_CLAUDE_MD_V15.replace(
   WORKER_CLAUDE_MD_V16_LANDING_ANCHOR,
   `${WORKER_CLAUDE_MD_V16_LANDING_SECTION}\n${WORKER_CLAUDE_MD_V16_LANDING_ANCHOR}`,
+);
+
+const WORKER_CLAUDE_MD_V17_RECORD_READING_ANCHOR = '## Never use git to discard uncommitted work';
+const WORKER_CLAUDE_MD_V17_RECORD_READING_SECTION = `## Reading the record: when a shared file changed under you
+
+You share a working tree with other agents, so a file can change while you
+hold it. You have a read-only lens on the turn record: \`list_checkpoints\` and
+\`diff_turn\` (toolset \`checkpoints-read\`). You have no checkpoint mutation
+tools: no \`restore_paths\`, \`revert_turn\`, or \`prune_checkpoints\`, by design.
+Use the lens in three situations:
+
+1. **Foreign-change diagnosis.** A file you did not touch suddenly fails to
+   compile with errors naming symbols you never wrote. Before you debug it as
+   yours, query \`list_checkpoints({file:"src/path/to/file.ts"})\` for that path.
+   If another agent's turn witnessed that path, you have established a foreign
+   change as a fact; you have not yet established that it caused the failure or
+   that either edit is correct.
+2. **Pre-edit collision check.** Before editing a shared file, query
+   \`list_checkpoints({file:"src/path/to/file.ts"})\` for recent or open
+   witnessed activity on that path. This can reveal an uncommitted collision
+   that \`git log\` cannot; it cannot prove the path is idle. If the result is
+   empty, incomplete, or ambiguous, continue with the ordinary shared-tree
+   precautions rather than treating silence as clearance.
+3. **Continuation after a mid-WP death.** You took over a work package from a
+   predecessor that ran out of context mid-edit. Filter to the predecessor's
+   \`agent_id\` with a conservative \`sinceTime\` floor, and identify the relevant
+   turns by task, timing, status, and expected paths (an agent can have many
+   turns, so corroborate rather than assuming one). Read and compare the
+   \`turnSeq\` values explicitly; the tool returns the selected newest-N window
+   in ascending \`turnSeq\` order, and output truncation may drop its oldest
+   rows. Those paths identify where to inspect; the current file contents plus
+   a build/test establish what actually remains unfinished, not the list
+   itself.
+
+**Read paths first; escalate to a diff only for a turn you have already
+implicated.** \`list_checkpoints\` is cheap; \`diff_turn\` returns a whole patch
+and is expensive. Never diff a turn to find out whether it is relevant; use
+the path listing for that, then diff each selected turn one at a time, stopping
+when the question is answered.
+
+**Three rules for reading honestly (a misread is worse than not reading):**
+
+- **Check capture health before interpreting absence.** If a row's
+  \`beforeReady\` or \`afterReady\` is false, or \`failureReason\` is non-null, an
+  empty witnessed set means "we did not look," never "nothing changed" and
+  never "the worker lied." Even a healthy empty set is not proof that no
+  unwitnessed write occurred; corroborate when the brief or the tree says an
+  edit should exist.
+- **Reading is directional and bounded.** An unfiltered \`list_checkpoints\`
+  shows only the newest window (bounded by \`limit\`) and gives no signal that
+  older history exists. A \`file:\` filter is the only lens that looks back
+  across retained history on one file, bounded still by \`limit\` and by
+  retention. If you did not filter by file, you have looked recent, not back.
+- **Witnessed activity tells you whether to look closer, nothing more.** It is
+  never proof of quality and never an effort metric. "Touched many files" is
+  not "did good work"; "touched few" is not "did little."
+
+When the record does not settle it, escalate with the paths in hand: end your
+turn stating the file, the implicated turn(s) or \`agent_id\`, and what the
+record did and did not show, and let your supervisor route it. Do not guess
+past an empty or ambiguous result.`;
+export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V16.replace(
+  WORKER_CLAUDE_MD_V17_RECORD_READING_ANCHOR,
+  `${WORKER_CLAUDE_MD_V17_RECORD_READING_SECTION}\n\n${WORKER_CLAUDE_MD_V17_RECORD_READING_ANCHOR}`,
 );
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
@@ -1898,6 +2014,13 @@ export const WORKER_CODEX_AGENTS_MD_V7 = WORKER_CLAUDE_MD_V14
 
 /** Frozen v8 Codex worker instructions, derived from the frozen worker v15 body. */
 export const WORKER_CODEX_AGENTS_MD_V8 = WORKER_CLAUDE_MD_V15
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** Frozen v9 Codex worker instructions, derived from the frozen worker v16 body. */
+export const WORKER_CODEX_AGENTS_MD_V9 = WORKER_CLAUDE_MD_V16
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
