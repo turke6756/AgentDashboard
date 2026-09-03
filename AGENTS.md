@@ -31,6 +31,8 @@ code change — a plain relaunch runs the previous `dist/`.
 |---|---|
 | `npm run restart` | Canonical restart — build (main + renderer) + launch. |
 | `npm run build` | Compile both without launching. |
+| `npm run build:dev` | Compile into `dist-dev/` without touching a running stable `dist/`. |
+| `npm run dev:instance` | Launch the isolated `dist-dev/` copy beside stable Lares. |
 | `npm run start` | Launch the existing `dist/` (only if current). |
 | `npm run dev` | Vite HMR for the renderer; main-process edits still need a relaunch. |
 
