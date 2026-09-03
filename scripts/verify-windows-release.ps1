@@ -50,7 +50,7 @@ function Invoke-Gate([string]$name, [string]$display, [scriptblock]$action) {
 
 if ($TestGateFailure) {
   switch ($TestGateFailure) {
-    'NativeExit' { Invoke-Gate 'self-test native failure' 'powershell exit 7' { & powershell -NoProfile -Command 'exit 7' } }
+    'NativeExit' { Invoke-Gate 'self-test native failure' 'cmd exit 7' { & $env:ComSpec /c 'exit 7' } }
     'ThrownError' { Invoke-Gate 'self-test thrown failure' 'throw sentinel' { throw 'gate-throw-sentinel' } }
     'NullExit' { Invoke-Gate 'self-test null exit' 'no native exit code' { $global:LASTEXITCODE = $null } }
   }
