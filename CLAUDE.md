@@ -102,6 +102,41 @@ by index.
 If you are not Claude Code, see [AGENTS.md](AGENTS.md) for the neutral-core version
 of this orientation.
 
+## Reading the turn record
+
+The turn record (every agent turn, the paths it witnessed touching, and its
+before/after diff) is a working input, not just a human display. Workers have
+the read-only `checkpoints-read` lens (`list_checkpoints` and `diff_turn`);
+supervisors retain the full recovery tier. Reach for it in these situations
+rather than guessing:
+
+- **Review what an agent did (gate support).** Capture a pre-dispatch `turnSeq`
+  cursor, then compare the worker's witnessed paths since that cursor against
+  what it was briefed to touch before accepting its turn.
+- **Pre-edit collision check.** `list_checkpoints({file:"src/path/to/file.ts"})`
+  can reveal an uncommitted collision `git log` cannot, but an empty result is
+  not a lock; keep the ordinary shared-tree precautions.
+- **Continuation orientation after a mid-WP death.** Recover a dead
+  predecessor's touched paths by `agent_id` with a time floor, corroborated by
+  task and expected paths; the paths say where to inspect, not what remains (a
+  build/test settles that).
+- **Hand-rolled span rollback.** "Take me back to 9am, only the chat pane": a
+  worker correlates the implicated turns, diffs the selected ones, edits the
+  files back by hand, and commits `[worker] revert: <span>` with strict
+  pathspecs. An ordinary gateable turn, selective by sentence. It does not
+  serialize against other agents: confirm target paths are quiescent before
+  dispatch, do not dispatch other writers to them while it runs, and re-scope
+  if a new turn touches one.
+
+Read honestly: check capture health (`beforeReady`/`afterReady`/
+`failureReason`) before reading absence as silence, and even a healthy empty
+set is not proof no unwitnessed write occurred; reading is directional and
+bounded (an unfiltered listing is only the newest `limit` window; a `file:`
+filter is the only lens across retained history on one file); witnessed
+activity is never a quality or effort metric. Paths first; escalate to a diff
+only for a turn already implicated. Automated undo-by-description is not part of
+this; it stays gated on `prop_296c04e9`.
+
 ## Workspace operating rules
 
 - **Worker mix (Edward's directive):** prefer Codex workers to conserve Claude
