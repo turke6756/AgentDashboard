@@ -102,7 +102,7 @@ import { usageForAgent } from './watchdog/attribution';
 import { composeSystemMemoryView } from './watchdog/system-memory-view';
 import { migrateWorkspaceStateDir, checkWorkspaceSecurityOnOpen, workspaceStateDir } from './workspace-state-dir';
 import { parseAnalyticsSnapshotArgv, flushStdio } from './analytics-export/analytics-snapshot-argv';
-import { devAppUserModelId, isDevInstance } from './dev-instance';
+import { devAppUserModelId, devJupyterBasePort, isDevInstance } from './dev-instance';
 import {
   listDetachedProcesses,
   detachedDirFor,
@@ -793,7 +793,8 @@ app.whenReady().then(async () => {
       const url = new URL(details.url);
       const isLoopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
       const port = Number(url.port);
-      isJupyter = isLoopback && Number.isInteger(port) && port >= JUPYTER_BASE_PORT && port <= JUPYTER_BASE_PORT + JUPYTER_PORT_RETRIES;
+      const jupyterBasePort = devJupyterBasePort(JUPYTER_BASE_PORT);
+      isJupyter = isLoopback && Number.isInteger(port) && port >= jupyterBasePort && port <= jupyterBasePort + JUPYTER_PORT_RETRIES;
     } catch {
       isJupyter = false;
     }
@@ -1115,7 +1116,7 @@ app.whenReady().then(async () => {
       startWatcher: startClaudeJsonRuntimeWatcher,
     });
     wsServer = new WsServer(supervisor);
-    wsServer.start();
+    const wsPort = await wsServer.start();
     // Construct the orchestration service in index.ts and inject it into
     // ApiServer (keeps AgentSupervisor free of orchestration concerns). The
     // deliver fn is the supervisor's in-process port of the script's
@@ -1207,7 +1208,12 @@ app.whenReady().then(async () => {
     // manager + browser-decisions). Constructed AFTER the awaited start() so
     // the M2 loopback filter blocks the ACTUAL bound API port, surviving the
     // EADDRINUSE auto-increment — never a hardcoded 24678.
-    browserManager = new BrowserManager(() => mainWindow, apiPort);
+    browserManager = new BrowserManager(
+      () => mainWindow,
+      apiPort,
+      wsPort,
+      devJupyterBasePort(JUPYTER_BASE_PORT),
+    );
     registerBrowserIpc(browserManager);
     registerPlanIpc(supervisor);
     // WP2-B ⇄ WP2-A seam: inject the Phase-2 browser-tool facade into the

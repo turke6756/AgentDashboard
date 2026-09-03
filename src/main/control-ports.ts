@@ -13,6 +13,9 @@
 /** Dashboard WebSocket server (src/main/ws-server.ts, loopback-bound). */
 export const WS_PORT = 4545;
 
+/** How many sequential ports the WebSocket server may try after WS_PORT. */
+export const WS_PORT_RETRIES = 20;
+
 /** First port the embedded Jupyter server tries (src/main/jupyter-server.ts). */
 export const JUPYTER_BASE_PORT = 18888;
 

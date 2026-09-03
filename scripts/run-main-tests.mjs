@@ -31,6 +31,7 @@ const TESTS = [
   'dist/main/main/file-writer.test.js',
   'dist/main/main/jupyter-kernel-client.test.js',
   'dist/main/main/jupyter-server-exit.test.js',
+  'dist/main/main/ws-server-ports.test.js',
   'dist/main/main/usage-limits-watcher.test.js',
   'dist/main/main/node-runtime.test.js',
   'dist/main/main/supervisor/codex-shell-parser.test.js',
@@ -861,7 +862,11 @@ for (const file of testsToRun) {
   const nativeElectronTest =
     file.endsWith('/agy-session-reader.test.js') ||
     file.endsWith('/database.recovery-operation-insert.test.js')
-  const r = spawnSync(nativeElectronTest ? electronRuntime : process.execPath, [file], {
+  const compiledRoot = process.env.MAIN_TEST_COMPILED_ROOT
+  const runnableFile = compiledRoot && file.startsWith('dist/main/')
+    ? path.resolve(compiledRoot, file.slice('dist/main/'.length))
+    : file
+  const r = spawnSync(nativeElectronTest ? electronRuntime : process.execPath, [runnableFile], {
     stdio: 'inherit',
     env: nativeElectronTest ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
   })

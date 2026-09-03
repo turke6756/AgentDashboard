@@ -1,6 +1,8 @@
 import { ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import { wslSpawn, wslExec } from './wsl-bridge';
+import { JUPYTER_BASE_PORT, JUPYTER_PORT_RETRIES } from './control-ports';
+import { devJupyterBasePort } from './dev-instance';
 
 export interface JupyterServerInfo {
   baseUrl: string;
@@ -30,7 +32,7 @@ export function registerJupyterServerExitDisposal(dispose: () => void): () => vo
 const URL_REGEX = /https?:\/\/(?:127\.0\.0\.1|localhost):([1-9]\d*)\/(?:\?token=([a-f0-9]+))?/i;
 
 // Chromium blocks many low ports (ERR_UNSAFE_PORT). 18888 is well clear of the blocklist.
-const BASE_PORT = 18888;
+const BASE_PORT = devJupyterBasePort(JUPYTER_BASE_PORT);
 
 function buildCommand(token: string): string {
   // CSP override lets the Electron renderer (different origin) embed /lab in an iframe.
@@ -38,7 +40,7 @@ function buildCommand(token: string): string {
   const args = [
     '--no-browser',
     `--ServerApp.port=${BASE_PORT}`,
-    '--ServerApp.port_retries=50',
+    `--ServerApp.port_retries=${JUPYTER_PORT_RETRIES}`,
     // IdentityProvider.token is the new canonical path in Jupyter 2.x;
     // ServerApp.token is deprecated and — critically — no longer consulted
     // by the WebSocket auth handler, which caused 403s on kernel channel

@@ -287,6 +287,9 @@ export interface NavigationPolicyContext {
   /** ACTUAL bound API port from ApiServer.start() — survives the EADDRINUSE
    *  auto-increment. Never a hardcoded 24678. */
   apiPort: number;
+  wsPort?: number;
+  jupyterBase?: number;
+  jupyterRetries?: number;
 }
 
 /** Link-local block: the whole 169.254.0.0/16 (cloud metadata lives at
@@ -333,9 +336,9 @@ export function checkNavigation(url: string, ctx: NavigationPolicyContext): Poli
   if (
     decideLoopbackBlock(url, {
       apiPort: ctx.apiPort,
-      wsPort: WS_PORT,
-      jupyterBase: JUPYTER_BASE_PORT,
-      jupyterRetries: JUPYTER_PORT_RETRIES,
+      wsPort: ctx.wsPort ?? WS_PORT,
+      jupyterBase: ctx.jupyterBase ?? JUPYTER_BASE_PORT,
+      jupyterRetries: ctx.jupyterRetries ?? JUPYTER_PORT_RETRIES,
     })
   ) {
     return {

@@ -915,13 +915,15 @@ export class BrowserManager {
   constructor(
     private getMainWindow: () => BrowserWindow | null,
     apiPort: number,
+    wsPort = WS_PORT,
+    jupyterBase = JUPYTER_BASE_PORT,
   ) {
     // M2 ports: apiPort is the ACTUAL bound port from the awaited
     // ApiServer.start() (WP0.1) — survives EADDRINUSE auto-increment.
     this.controlPorts = {
       apiPort,
-      wsPort: WS_PORT,
-      jupyterBase: JUPYTER_BASE_PORT,
+      wsPort,
+      jupyterBase,
       jupyterRetries: JUPYTER_PORT_RETRIES,
     };
 
@@ -1621,14 +1623,14 @@ export class BrowserManager {
     const adapter = resolveSigninAdapter(origin);
     if (adapter) {
       const setupUrl = `${origin}${adapter.setupTargetPath}`;
-      const setupNav = checkNavigation(setupUrl, { apiPort: this.controlPorts.apiPort });
+      const setupNav = checkNavigation(setupUrl, this.controlPorts);
       if (setupNav.allow && matchesRule(setupUrl, rule)) fallback = setupUrl;
     }
     let url = fallback;
     if (targetUrl) {
       // Only open the original target when it is BOTH navigable (M11 floor) and
       // still on the rule's origin — never let a triggering url widen the open.
-      const nav = checkNavigation(targetUrl, { apiPort: this.controlPorts.apiPort });
+      const nav = checkNavigation(targetUrl, this.controlPorts);
       if (nav.allow && matchesRule(targetUrl, rule)) url = targetUrl;
     }
     // Slice-4: open the quarantined sign-in tab in the RULE's workspace, so the
@@ -1759,7 +1761,7 @@ export class BrowserManager {
     const ssrfOk =
       !isSigninAgentPopup ||
       url === 'about:blank' ||
-      checkNavigation(url, { apiPort: this.controlPorts.apiPort }).allow;
+      checkNavigation(url, this.controlPorts).allow;
     return schemeOk && ssrfOk && (tab.partition === 'user' || isSigninAgentPopup);
   }
 
@@ -3211,7 +3213,7 @@ export class BrowserManager {
     const openCtx = { workspaceId, agentId: opts.agentId, agentTitle: opts.agentTitle };
 
     // M11 applies to EVERY navigation, forHuman handoffs included.
-    const nav = checkNavigation(url, { apiPort: this.controlPorts.apiPort });
+    const nav = checkNavigation(url, this.controlPorts);
     if (!nav.allow) {
       this.auditRecord(partitionFull, url, verb, args, `denied:${nav.code}`, openCtx);
       throw new PolicyError(nav.code, nav.reason);

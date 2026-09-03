@@ -1,9 +1,10 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { AgentSupervisor } from './supervisor';
+import type { AgentSupervisor } from './supervisor';
 import { getWorkspaces, getAgentsByWorkspace } from './database';
 import { detectPathType, windowsToWslPath, uncToWslPath } from './path-utils';
 import { Agent, AgentStatus } from '../shared/types';
-import { WS_PORT } from './control-ports';
+import { WS_PORT, WS_PORT_RETRIES } from './control-ports';
+import { devWsPort } from './dev-instance';
 
 const PING_INTERVAL_MS = 30_000;
 /** Match the HTTP API's bounded local-control payload ceiling. */
@@ -82,56 +83,73 @@ export class WsServer {
     this.onAgentDeleted = (data) => this.handleAgentDeleted(data);
   }
 
-  start(): void {
-    this.wss = new WebSocketServer({
-      port: WS_PORT,
-      host: '127.0.0.1',
-      maxPayload: WS_MAX_PAYLOAD_BYTES,
-    });
+  start(port = devWsPort(WS_PORT)): Promise<number> {
+    const listen = (candidatePort: number, increments: number): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const wss = new WebSocketServer({
+          port: candidatePort,
+          host: '127.0.0.1',
+          maxPayload: WS_MAX_PAYLOAD_BYTES,
+        });
 
-    this.wss.on('listening', () => {
-      console.log(`[ws-server] Listening on ws://127.0.0.1:${WS_PORT}`);
-    });
+        wss.once('listening', () => {
+          this.wss = wss;
+          const address = wss.address();
+          const boundPort = typeof address === 'object' && address !== null
+            ? address.port
+            : candidatePort;
+          console.log(`[ws-server] Listening on ws://127.0.0.1:${boundPort}`);
+          resolve(boundPort);
+        });
 
-    this.wss.on('error', (err) => {
-      console.error('[ws-server] Server error:', err.message);
-    });
+        wss.once('error', (err: NodeJS.ErrnoException) => {
+          wss.close();
+          if (err.code === 'EADDRINUSE' && increments < WS_PORT_RETRIES) {
+            void listen(candidatePort + 1, increments + 1).then(resolve, reject);
+            return;
+          }
+          reject(err);
+        });
 
-    this.wss.on('connection', (ws) => {
-      console.log('[ws-server] Client connected');
+        wss.on('connection', (ws) => {
+          console.log('[ws-server] Client connected');
 
-      ws.on('message', (raw) => {
-        try {
-          const msg: ClientMessage = JSON.parse(raw.toString());
-          this.handleMessage(ws, msg);
-        } catch (err) {
-          console.error('[ws-server] Bad message:', err);
+          ws.on('message', (raw) => {
+            try {
+              const msg: ClientMessage = JSON.parse(raw.toString());
+              this.handleMessage(ws, msg);
+            } catch (err) {
+              console.error('[ws-server] Bad message:', err);
+            }
+          });
+
+          ws.on('close', () => {
+            console.log('[ws-server] Client disconnected');
+            this.clients.delete(ws);
+          });
+
+          ws.on('error', (err) => {
+            console.error('[ws-server] Client error:', err.message);
+            this.clients.delete(ws);
+          });
+        });
+      });
+
+    return listen(port, 0).then((boundPort) => {
+      // Ping/pong keepalive
+      this.pingTimer = setInterval(() => {
+        for (const [ws] of this.clients) {
+          if (ws.readyState === WebSocket.OPEN) {
+            this.send(ws, { type: 'ping' });
+          }
         }
-      });
+      }, PING_INTERVAL_MS);
 
-      ws.on('close', () => {
-        console.log('[ws-server] Client disconnected');
-        this.clients.delete(ws);
-      });
-
-      ws.on('error', (err) => {
-        console.error('[ws-server] Client error:', err.message);
-        this.clients.delete(ws);
-      });
+      // Subscribe to supervisor events only after the listener is live.
+      this.supervisor.on('statusChanged', this.onStatusChanged);
+      this.supervisor.on('agentDeleted', this.onAgentDeleted);
+      return boundPort;
     });
-
-    // Ping/pong keepalive
-    this.pingTimer = setInterval(() => {
-      for (const [ws] of this.clients) {
-        if (ws.readyState === WebSocket.OPEN) {
-          this.send(ws, { type: 'ping' });
-        }
-      }
-    }, PING_INTERVAL_MS);
-
-    // Subscribe to supervisor events
-    this.supervisor.on('statusChanged', this.onStatusChanged);
-    this.supervisor.on('agentDeleted', this.onAgentDeleted);
   }
 
   stop(): void {
