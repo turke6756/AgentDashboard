@@ -38,6 +38,11 @@ test('write tools are supervisor-only — absent from the plans-read subset', ()
   assert.ok(!readNames.includes('implement_plan'), 'plans-read must NOT advertise implement_plan');
 });
 
+test('implement_plan advertises hardening-to-ready promotion when readiness holds', () => {
+  const def = getPlansToolDefinitions().find((tool) => tool.name === 'implement_plan');
+  assert.match(def.description, /promote a hardening structured plan to ready when readiness holds/);
+});
+
 test('F-F: NO migrate_plan_markdown tool, and nothing advertises markdown-migration input', () => {
   // Markdown→six-zones migration is deferred out of v1 (amendments F-F). The tool
   // must neither exist nor advertise a seed_markdown / migrate input anywhere in

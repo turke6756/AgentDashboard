@@ -12,6 +12,8 @@ function test(name: string, run: TestCase['run']): void { tests.push({ name, run
 const db = require('./database') as Record<string, any>;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const implement = require('./plans/plan-implement') as Record<string, any>;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const lifecycle = require('./plans/plan-lifecycle') as Record<string, any>;
 
 const PLAN_ID = '11111111-2222-4333-8444-555555555555';
 const WORKSPACE = { id: 'ws-1', title: 'Workspace', path: 'C:/workspace', pathType: 'windows' };
@@ -22,6 +24,10 @@ const PLAN = {
 };
 
 let implementInput: any = null;
+let markReadyInput: any = null;
+let planRunState = 'ready';
+let markReadyResult: any = null;
+let callOrder: string[] = [];
 
 function agent(id: string, supervisor: boolean): any {
   return { id, workspaceId: WORKSPACE.id, isSupervisor: supervisor, privilegeLane: null };
@@ -29,6 +35,10 @@ function agent(id: string, supervisor: boolean): any {
 
 function installStubs(): void {
   implementInput = null;
+  markReadyInput = null;
+  planRunState = 'ready';
+  markReadyResult = null;
+  callOrder = [];
   db.getWorkspace = (id: string) => id === WORKSPACE.id ? WORKSPACE : null;
   db.getSupervisorAgent = () => agent('sup-owner', true);
   db.getAgent = (id: string) => {
@@ -36,10 +46,18 @@ function installStubs(): void {
     if (id === 'sup-owner' || id === 'sup-other') return agent(id, true);
     return null;
   };
-  db.getPlan = (id: string) => id === PLAN_ID ? PLAN : null;
+  db.getPlan = (id: string) => id === PLAN_ID ? { ...PLAN, runState: planRunState } : null;
   db.getPlanResponsibleSupervisorId = (id: string) => id === PLAN_ID ? 'sup-owner' : null;
+  lifecycle.markPlanReady = async (input: any) => {
+    markReadyInput = input;
+    callOrder.push('mark-ready');
+    if (!markReadyResult) throw new Error('unexpected markPlanReady call');
+    if (markReadyResult.ok) planRunState = 'ready';
+    return markReadyResult;
+  };
   implement.implementPlan = async (input: any) => {
     implementInput = input;
+    callOrder.push('implement');
     return {
       ok: true,
       run: {
@@ -117,6 +135,50 @@ test('REACHABILITY:plan-implement-http stamps the authenticated responsible supe
     });
     assert.equal(response.body.run.triggerSource, 'supervisor-agent');
     assert.equal(response.body.run.appUserId, 'sup-owner');
+  }));
+
+test('REACHABILITY:plan-implement-http marks a ready hardening plan then executes as the supervisor agent', () =>
+  withServer(async (port) => {
+    planRunState = 'hardening';
+    markReadyResult = { ok: true, runState: 'ready', failures: [], tabsMissingOverview: [] };
+
+    const response = await request(port, 'sup-owner');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.ok, true);
+    assert.deepEqual(markReadyInput, { planId: PLAN_ID, actor: 'sup-owner' });
+    assert.deepEqual(callOrder, ['mark-ready', 'implement']);
+    assert.deepEqual(implementInput, {
+      planId: PLAN_ID,
+      appUserId: 'sup-owner',
+      trigger: { source: 'supervisor-agent', agentId: 'sup-owner' },
+    });
+    assert.equal(response.body.run.triggerSource, 'supervisor-agent');
+    assert.equal(response.body.run.appUserId, 'sup-owner');
+  }));
+
+test('hardening readiness failure returns its diagnostics without creating a run', () =>
+  withServer(async (port) => {
+    planRunState = 'hardening';
+    markReadyResult = {
+      ok: false,
+      runState: 'hardening',
+      failures: ['no-ready-package'],
+      tabsMissingOverview: ['discussion'],
+    };
+
+    const response = await request(port, 'sup-owner');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, {
+      ok: false,
+      run: null,
+      failures: ['no-ready-package'],
+      tabsMissingOverview: ['discussion'],
+    });
+    assert.deepEqual(markReadyInput, { planId: PLAN_ID, actor: 'sup-owner' });
+    assert.deepEqual(callOrder, ['mark-ready']);
+    assert.equal(implementInput, null);
   }));
 
 (async () => {

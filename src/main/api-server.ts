@@ -115,6 +115,7 @@ import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
 import { gateLandedWorkPackage } from './plans/gate-landed-service';
 import { implementPlan, SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE } from './plans/plan-implement';
+import { markPlanReady } from './plans/plan-lifecycle';
 import type { GateLandedWorkPackageArgs } from '../shared/types';
 import { isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
@@ -4175,6 +4176,17 @@ export class ApiServer {
           new Error('the calling supervisor is not responsible for this plan'),
           { statusCode: 403, code: 'not-responsible-supervisor' },
         );
+      }
+      if (getPlan(planId)?.runState === 'hardening') {
+        const ready = await markPlanReady({ planId, actor: identity.supervisorId });
+        if (!ready.ok) {
+          return {
+            ok: false,
+            run: null,
+            failures: ready.failures,
+            tabsMissingOverview: ready.tabsMissingOverview,
+          };
+        }
       }
       return implementPlan({
         planId,

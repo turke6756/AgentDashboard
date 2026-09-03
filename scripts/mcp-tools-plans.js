@@ -118,7 +118,8 @@ const GATE_LANDED_DEF = {
 const IMPLEMENT_PLAN_DEF = {
   name: 'implement_plan',
   description:
-    'Supervisor-only: flip a ready structured plan to executing and pin its baseline. ' +
+    'Supervisor-only: promote a hardening structured plan to ready when readiness holds, ' +
+    'then flip it to executing and pin its baseline. ' +
     'Before calling, the supervisor must confirm with the human unless the human already ' +
     'authorized autonomous implementation.',
   inputSchema: {
