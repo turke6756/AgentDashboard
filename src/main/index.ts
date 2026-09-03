@@ -28,6 +28,7 @@ import {
   listPlanningActivityWorktrees,
 } from './database';
 import { validateAndRepairClaudeJson, validateAndRepairWslClaudeJson, startClaudeJsonRuntimeWatcher, stopClaudeJsonRuntimeWatcher } from './claude-config-repair';
+import { runStartupProviderRepairs, startProviderRepairWatcherIfOwner } from './provider-repairs';
 import { checkManagedWebContents } from './security/webcontents-guard';
 import { AgentSupervisor } from './supervisor';
 import { startContinuationWatcher } from './supervisor/continuation-watcher-wiring';
@@ -101,7 +102,7 @@ import { usageForAgent } from './watchdog/attribution';
 import { composeSystemMemoryView } from './watchdog/system-memory-view';
 import { migrateWorkspaceStateDir, checkWorkspaceSecurityOnOpen, workspaceStateDir } from './workspace-state-dir';
 import { parseAnalyticsSnapshotArgv, flushStdio } from './analytics-export/analytics-snapshot-argv';
-import { devAppUserModelId } from './dev-instance';
+import { devAppUserModelId, isDevInstance } from './dev-instance';
 import {
   listDetachedProcesses,
   detachedDirFor,
@@ -896,8 +897,11 @@ app.whenReady().then(async () => {
     // the supervisor exists, i.e. before anything can spawn claude.exe — the
     // backstop for hard kills that bypass the shutdown drain. See
     // plans/claude-json-corruption-mitigation-v2.md Task 3.
-    validateAndRepairClaudeJson();
-    validateAndRepairWslClaudeJson();
+    runStartupProviderRepairs({
+      isDev: isDevInstance(),
+      validateWindows: validateAndRepairClaudeJson,
+      validateWsl: validateAndRepairWslClaudeJson,
+    });
 
     supervisor = new AgentSupervisor();
     supervisor.on('agentDeleted', (event: {
@@ -1106,7 +1110,10 @@ app.whenReady().then(async () => {
     // herd that manufactures the corruption this heals. Non-blocking +
     // reentrant; reuses the same pure repair + read-stability gate as the
     // startup backstop. See plans/claude-json-corruption-v3-runtime-repair-IMPL.md.
-    startClaudeJsonRuntimeWatcher();
+    startProviderRepairWatcherIfOwner({
+      isDev: isDevInstance(),
+      startWatcher: startClaudeJsonRuntimeWatcher,
+    });
     wsServer = new WsServer(supervisor);
     wsServer.start();
     // Construct the orchestration service in index.ts and inject it into

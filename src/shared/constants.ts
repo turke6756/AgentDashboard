@@ -3805,6 +3805,10 @@ try {
  *  .codex/config.toml is never loaded by Codex, so its matching block is inert. */
 export const CODEX_WORKER_PROFILE_NAME = 'dashboard-worker';
 
+export function codexWorkerProfileName(isDev = false): string {
+  return isDev ? `${CODEX_WORKER_PROFILE_NAME}-dev` : CODEX_WORKER_PROFILE_NAME;
+}
+
 export const CODEX_WORKER_PROFILE_TOML = `# AgentDashboard supervised-codex hook profile.
 # Layered onto the user's base config via \`codex --profile ${CODEX_WORKER_PROFILE_NAME}\`.
 # The hook script reads AGENT_ID/DASHBOARD_PORT/DASHBOARD_HOST from env (injected

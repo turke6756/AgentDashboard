@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
-import { devRegistryFileName } from '../dev-instance';
+import { devRegistryFileName, isDevInstance } from '../dev-instance';
+import { resolveCodexHookArtifactNames } from '../provider-repairs';
+export { resolveCodexHookArtifactNames } from '../provider-repairs';
 import crypto from 'crypto';
 import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
@@ -33,7 +35,7 @@ import {
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
   DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
   DASHBOARD_STATUSLINE_SCRIPT_MJS,
-  CODEX_WORKER_PROFILE_NAME, CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS,
+  CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS,
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
   TMUX_OPTION_MAX_AGE_MS, TMUX_OPTION_LAUNCH_SKEW_MS, STATUS_POLL_INTERVAL_MS,
   RESEARCH_STORE_README_MD, RESEARCH_STORE_README_MD_V2, RESEARCH_WRITE_GUARD_MJS, RESEARCHER_CLAUDE_SETTINGS_JSON,
@@ -1906,9 +1908,10 @@ export function shouldUseWorkerCwdCodexHooks(opts: {
  *  hookless. */
 export function instrumentCodexWorkerCommand(
   command: string,
-  opts: { injectProfile?: boolean } = {},
+  opts: { injectProfile?: boolean; isDev?: boolean } = {},
 ): { command: string; instrumented: boolean } {
   const injectProfile = opts.injectProfile !== false; // default true (WSL workers + WSL personas)
+  const profileName = resolveCodexHookArtifactNames(injectProfile && opts.isDev === true).profileName;
   // Locate the codex launcher token (`codex` or `ccodex`) as a whole word,
   // tolerating a path prefix (`/usr/bin/ccodex`) but not a substring match
   // inside an unrelated token.
@@ -1920,7 +1923,7 @@ export function instrumentCodexWorkerCommand(
   // pinned to another layered config we can't safely reason about — degrade in
   // either mode.
   const profileMatch = command.match(/--profile(?:\s+|=)(\S+)/);
-  const hasOurProfile = profileMatch?.[1] === CODEX_WORKER_PROFILE_NAME;
+  const hasOurProfile = profileMatch?.[1] === profileName;
   if (profileMatch && !hasOurProfile) return { command, instrumented: false };
 
   const hasBypass = /--dangerously-bypass-hook-trust(?=\s|$)/.test(command);
@@ -1939,7 +1942,7 @@ export function instrumentCodexWorkerCommand(
     let out = command;
     if (hasOurProfile) {
       out = out.replace(
-        new RegExp(`\\s*--profile(?:\\s+|=)${CODEX_WORKER_PROFILE_NAME}(?=\\s|$)`),
+        new RegExp(`\\s*--profile(?:\\s+|=)${profileName}(?=\\s|$)`),
         '',
       );
     }
@@ -1950,7 +1953,7 @@ export function instrumentCodexWorkerCommand(
   // WSL workers + codex personas — inject BOTH flags (whichever is missing).
   if (hasOurProfile && hasBypass) return { command, instrumented: true };
   const additions: string[] = [];
-  if (!hasOurProfile) additions.push(`--profile ${CODEX_WORKER_PROFILE_NAME}`);
+  if (!hasOurProfile) additions.push(`--profile ${profileName}`);
   if (!hasBypass) additions.push('--dangerously-bypass-hook-trust');
   return { command: insertAfterToken(command, additions.join(' ')), instrumented: true };
 }
@@ -3614,14 +3617,17 @@ export class AgentSupervisor extends EventEmitter {
     });
     let codexHookDegraded = false;
     if (wantsCodexHooks) {
-      const instrumented = instrumentCodexWorkerCommand(command, { injectProfile: !useWorkerCwdCodexHooks });
+      const instrumented = instrumentCodexWorkerCommand(command, {
+        injectProfile: !useWorkerCwdCodexHooks,
+        isDev: isDevInstance(),
+      });
       if (instrumented.instrumented) {
         command = instrumented.command;
       } else {
         codexHookDegraded = true;
         const flags = useWorkerCwdCodexHooks
           ? '--dangerously-bypass-hook-trust (Path A: worker-cwd trusted-project hooks, no --profile)'
-          : `--profile ${CODEX_WORKER_PROFILE_NAME} --dangerously-bypass-hook-trust`;
+          : `--profile ${resolveCodexHookArtifactNames(isDevInstance()).profileName} --dangerously-bypass-hook-trust`;
         console.warn(
           `[hook-b2] hook-instrumented codex command could not be safely instrumented ` +
           `with ${flags} (command: ${JSON.stringify(command)}). Marking hook_status='degraded' — ` +
@@ -4884,18 +4890,21 @@ export class AgentSupervisor extends EventEmitter {
   private ensureCodexHookProfile(pathType: string): void {
     if (this.codexHookProfileEnsured.has(pathType)) return;
     try {
-      const profileFile = `${CODEX_WORKER_PROFILE_NAME}.config.toml`;
+      // Native-Windows hooks are cwd-local. Only the shared WSL CODEX_HOME
+      // artifacts need a dev namespace.
+      const artifactNames = resolveCodexHookArtifactNames(pathType !== 'windows' && isDevInstance());
+      const profileFile = artifactNames.profileFile;
       if (pathType === 'windows') {
         const codexHome = process.env.CODEX_HOME
           || path.join(process.env.USERPROFILE || process.env.HOME || '', '.codex');
         fs.mkdirSync(codexHome, { recursive: true });
-        const scriptPath = path.join(codexHome, 'dashboard-status.mjs');
+        const scriptPath = path.join(codexHome, artifactNames.statusScript);
         fs.writeFileSync(scriptPath, DASHBOARD_STATUS_SCRIPT_MJS);
         // The git-discard guard rides the SAME profile (its only live delivery
         // path for Codex — the worker-cwd config.toml is never loaded). Written
         // into CODEX_HOME alongside dashboard-status.mjs; carries no trust hash,
         // so a content bump propagates on every launch just like the status script.
-        const guardPath = path.join(codexHome, 'guard-git-discard.mjs');
+        const guardPath = path.join(codexHome, artifactNames.guardScript);
         fs.writeFileSync(guardPath, GUARD_GIT_DISCARD_MJS);
         // Command path uses forward slashes (matches the profile + the hashed
         // command); the config-file key path Codex stores uses native backslashes.
@@ -4927,8 +4936,8 @@ export class AgentSupervisor extends EventEmitter {
         const di = probe.indexOf(DELIM);
         const codexHome = (di >= 0 ? probe.slice(0, di) : probe).trim() || '$HOME/.codex';
         const existing = di >= 0 ? probe.slice(di + DELIM.length) : '';
-        const scriptPosix = `${codexHome}/dashboard-status.mjs`;
-        const guardPosix = `${codexHome}/guard-git-discard.mjs`;
+        const scriptPosix = `${codexHome}/${artifactNames.statusScript}`;
+        const guardPosix = `${codexHome}/${artifactNames.guardScript}`;
         const profilePath = `${codexHome}/${profileFile}`;
         const profileBody = CODEX_WORKER_PROFILE_TOML
           .replace(/__SCRIPT__/g, scriptPosix)
@@ -4993,13 +5002,16 @@ export class AgentSupervisor extends EventEmitter {
         const home = process.env.USERPROFILE || process.env.HOME;
         // Keep the two independent: an I/O failure in trust seeding must not
         // prevent the native deny seed (and vice versa), and neither blocks launch.
-        for (const [label, ensure] of [
+        const agySettingsSeeds: Array<readonly [string, () => ReturnType<typeof ensureAgyTrust>]> = [
           ['trust', () => ensureAgyTrust(home, dirs, pathType)],
+        ];
+        if (!isDevInstance()) {
           // Agy's native write_file grant and reviewed deny regexes are reused
           // for every lane, including researchers. They are guidance layers,
           // not an OS boundary; shell commands can bypass them.
-          ['permissions', () => ensureAgyPermissions(home, [workDir], pathType)],
-        ] as const) {
+          agySettingsSeeds.push(['permissions', () => ensureAgyPermissions(home, [workDir], pathType)]);
+        }
+        for (const [label, ensure] of agySettingsSeeds) {
           try {
             const result = ensure();
             if (result.action === 'invalid') {

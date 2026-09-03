@@ -204,7 +204,9 @@ export function ensureAgyPermissions(
   home: string | undefined,
   dirs: string[] = [],
   pathType = 'windows',
+  isDev = false,
 ): EnsureAgySettingsResult {
+  if (isDev) return ensureAgySettings(home, () => ({ action: 'unchanged' }));
   const grants = dirs
     .map(dir => agyWriteGrant(dir, pathType, home))
     .filter((grant): grant is string => grant !== null);
