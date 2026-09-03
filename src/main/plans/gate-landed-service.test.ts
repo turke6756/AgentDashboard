@@ -70,6 +70,7 @@ function refusalDeps(overrides: Partial<import('./gate-landed-service').GateLand
     verify: async () => ({ outcome: 'verified' as const, commitOid: OID, subject: 'x',
       verifiedTrailer: 'tests', scopeOmittedTrailer: null, parentOid: 'b'.repeat(40) }),
     findWitness: () => WITNESS,
+    reconcile: () => ({ reconciledAttemptIds: [], diagnostics: [] }),
     ...overrides,
   };
 }
@@ -97,6 +98,24 @@ test('every identity, attempt, git, and witness refusal leaves the public ledger
       item.reason === 'commit-witness-unavailable' ? 'REACHABILITY:wp4-gate-landed-witness prompt-only turn must not qualify' : item.reason);
     assert.deepEqual(ledgerCounts(), before, `${item.reason} must write no ledger rows`);
   }
+});
+
+test('gate retries reconciliation before refusing a stale pending attempt', async () => {
+  let attempt: PlanDispatchAttempt = { ...BASE_ATTEMPT, state: 'pending', confirmedTurnId: null };
+  let reconcileCalls = 0;
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: attempt.id, commit_oid: OID,
+  }, 'sup', refusalDeps({
+    getAttempt: () => attempt,
+    reconcile: () => {
+      reconcileCalls += 1;
+      attempt = { ...BASE_ATTEMPT };
+      return { reconciledAttemptIds: [attempt.id], diagnostics: [] };
+    },
+    verify: async () => ({ outcome: 'refused', reason: 'branch-unresolvable' }),
+  }));
+  assert.equal(reconcileCalls, 1);
+  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
 });
 
 function apiRequest(port: number, workspaceId: string, supervisorId: string) {
@@ -149,10 +168,8 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
   const turn = db.allocateAndInsertTurn(ws.id, { id: 'turn-entry', agentId: worker.id, planId: plan.id,
     planItemId: 'WP-4', intentId: 'intent-entry', sessionId: 'session-entry', startedAt: 3, status: 'open' });
   db.updateTurnRecord(turn.id, { touched: [{ path: 'owned.txt', op: 'write' }] });
-  require('./package-ledger').transitionPlanPackage({ type: 'dispatch-confirmed', idempotencyKey: 'dispatch-entry',
-    workspaceId: ws.id, planId: plan.id, planArtifactId: 'plan_16910c64', intentId: 'intent-entry',
-    packageId: 'WP-4', packageRevision: 1, dispatchAttemptId: 'dispatch-entry' },
-  { kind: 'dispatch', actor: supervisor.id, observedAt: 4, confirmedTurnId: turn.id });
+  assert.equal(db.getPlanDispatchAttempt('dispatch-entry')?.confirmedTurnId, turn.id,
+    'the production turn insert edge must confirm the pending dispatch');
   require('./package-ledger').transitionPlanPackage({ type: 'deployment-observed', idempotencyKey: 'deploy-entry',
     workspaceId: ws.id, planId: plan.id, planArtifactId: 'plan_16910c64', intentId: 'intent-entry',
     packageId: 'WP-4', packageRevision: 1 },

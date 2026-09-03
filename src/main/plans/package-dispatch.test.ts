@@ -387,12 +387,14 @@ test('confirmed-id reconciliation moves only to executing and marks reconciled',
     intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
       briefDigest: 'fixture-digest', createdById: null },
   });
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'blocked' WHERE id = ?`).run(s.packageId);
   openStampedTurn(s, `turn-${serial}`, 2450);
   // Simulate confirmation persisted before a crash prevented the package txn.
   dbm.getDb().prepare(
     `UPDATE plan_dispatch_attempts
         SET state = 'delivered', confirmed_turn_id = ?, confirmed_at = ? WHERE id = ?`,
   ).run(`turn-${serial}`, 2450, `attempt-${serial}`);
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'ready' WHERE id = ?`).run(s.packageId);
   const result = svc.reconcilePackageDispatches(2500);
   assert.deepEqual(result.reconciledAttemptIds, [`attempt-${serial}`]);
   assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`)?.state, 'reconciled');
@@ -400,7 +402,7 @@ test('confirmed-id reconciliation moves only to executing and marks reconciled',
   assert.notEqual(dbm.getPlanWorkPackage(s.packageId)?.state, 'done');
 });
 
-test('fallback resolves one matching stamped turn after created_at', () => {
+test('turn insertion confirms a pending attempt without a boot-time reconcile', () => {
   const s = seed();
   dbm.insertPlanDispatchAttempt({
     id: `attempt-${serial}`, packageId: s.packageId, planId: s.planId,
@@ -410,10 +412,35 @@ test('fallback resolves one matching stamped turn after created_at', () => {
       briefDigest: 'fixture-digest', createdById: null },
   });
   openStampedTurn(s, `turn-${serial}`, 2610);
-  const result = svc.reconcilePackageDispatches(2700);
-  assert.deepEqual(result.reconciledAttemptIds, [`attempt-${serial}`]);
+  assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`)?.state, 'reconciled');
   assert.equal(dbm.getPlanDispatchAttempt(`attempt-${serial}`)?.confirmedTurnId, `turn-${serial}`);
   assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'executing');
+});
+
+test('periodic safety net probes cheaply and reconciles only while an attempt is open', () => {
+  let tick: (() => void) | null = null;
+  let interval = 0;
+  let open = false;
+  let reconcileCalls = 0;
+  let cleared = false;
+  const timer = { unref() { /* test timer */ } };
+  const stop = svc.startPackageDispatchReconcileSafetyNet(undefined, {
+    hasOpenAttempts: () => open,
+    reconcile: () => { reconcileCalls += 1; return { reconciledAttemptIds: [], diagnostics: [] }; },
+    setInterval: ((callback: () => void, ms: number) => {
+      tick = callback; interval = ms; return timer;
+    }) as unknown as typeof globalThis.setInterval,
+    clearInterval: ((value: unknown) => { cleared = value === timer; }) as typeof globalThis.clearInterval,
+  });
+  assert.equal(interval, 45_000);
+  assert.ok(tick);
+  (tick as () => void)();
+  assert.equal(reconcileCalls, 0);
+  open = true;
+  (tick as () => void)();
+  assert.equal(reconcileCalls, 1);
+  stop();
+  assert.equal(cleared, true);
 });
 
 test('ambiguous fallback stays pending and surfaces a diagnostic', () => {
@@ -425,8 +452,10 @@ test('ambiguous fallback stays pending and surfaces a diagnostic', () => {
     intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
       briefDigest: 'fixture-digest', createdById: null },
   });
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'blocked' WHERE id = ?`).run(s.packageId);
   openStampedTurn(s, `turn-${serial}-a`, 2810);
   openStampedTurn(s, `turn-${serial}-b`, 2820);
+  dbm.getDb().prepare(`UPDATE plan_work_packages SET state = 'ready' WHERE id = ?`).run(s.packageId);
   const result = svc.reconcilePackageDispatches(2900);
   assert.deepEqual(result.reconciledAttemptIds, []);
   assert.match(result.diagnostics.join('\n'), /2 matching stamped turns.*left pending/);

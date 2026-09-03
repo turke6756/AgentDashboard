@@ -76,6 +76,7 @@ import {
   type TurnStartWitness, type PromotionDeliverer,
 } from './plans/promotion-dispatch';
 import { providePlanPreviewRoutes } from './plans/plan-ipc';
+import { startPackageDispatchReconcileSafetyNet } from './plans/plan-lifecycle';
 import { makePromotionClaimScan } from './plans/promotion-claim-scan';
 import { JUPYTER_BASE_PORT, JUPYTER_PORT_RETRIES } from './control-ports';
 import { buildChromeUA } from './browser/browser-decisions';
@@ -379,6 +380,7 @@ let renderRecovery: RenderRecoveryPolicy | null = null;
 let attributionService: AttributionService | null = null;
 // B2 D5: per-workspace `plans/` watcher (sole `plans/` fs subscription owner, F-C).
 let plansWatcher: PlansWatcher | null = null;
+let stopPackageDispatchReconcileSafetyNet: (() => void) | null = null;
 
 // Single-instance lock — prevent duplicate windows. Skipped in analytics-
 // snapshot mode (WP1): the headless CLI must neither steal the lock from a
@@ -825,6 +827,7 @@ app.whenReady().then(async () => {
     console.log('Initializing database...');
     initDatabase();
     console.log('Database initialized');
+    stopPackageDispatchReconcileSafetyNet = startPackageDispatchReconcileSafetyNet();
     badgeInvalidationCoordinator = createProductionBadgeInvalidationCoordinator();
     const notifyPlanBadgesInvalidated = (workspaceId: string): void => {
       badgeInvalidationCoordinator?.notify(workspaceId);
@@ -1550,6 +1553,8 @@ async function shutdownApp(): Promise<void> {
   // 'crashed' for a drained agent and auto-restart it mid-quit. (The
   // handleAutoRestart shuttingDown guard is the belt; this is the braces.)
   supervisor?.stop();
+  stopPackageDispatchReconcileSafetyNet?.();
+  stopPackageDispatchReconcileSafetyNet = null;
   // §B9 — disarm the sweep BEFORE the drain and await any in-flight run, so a
   // stale-idle kill is never abandoned half-way through shutdown.
   await idleSweep?.stop();

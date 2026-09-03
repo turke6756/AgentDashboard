@@ -7,6 +7,7 @@ import {
   getPlanWorkPackage,
   getWorkspace,
   nextPlanPackageGateAttemptNo,
+  reconcilePlanDispatchAttempts,
   type PlanDispatchAttempt,
   type PlanWorkPackage,
   type TurnRecord,
@@ -51,6 +52,7 @@ export interface GateLandedServiceDeps {
   verify?: typeof verifyLandedCommit;
   transition?: (command: PlanPackageCommand, witness: PlanPackageWitness) => TransitionResult;
   evaluate?: typeof evaluateCompletionReadiness;
+  reconcile?: typeof reconcilePlanDispatchAttempts;
   resolveFinalize?: typeof resolveLandedFinalizeRequest;
   finalize?: typeof finalizePlanItemDone;
   now?: () => number;
@@ -128,6 +130,9 @@ export async function gateLandedWorkPackage(
   if (!plan || plan.responsibleSupervisorId !== supervisorId) {
     return refused('not-responsible-supervisor');
   }
+  // Gate invocation is also a convergence edge: retry a turn that landed after
+  // prompt delivery before classifying the durable attempt as unconfirmed.
+  (deps.reconcile ?? reconcilePlanDispatchAttempts)();
   const attempt = getAttempt(args.dispatch_attempt_id);
   if (!attempt) return refused('dispatch-attempt-not-found');
   if (attempt.planId !== args.plan_id) return refused('attempt-plan-mismatch');

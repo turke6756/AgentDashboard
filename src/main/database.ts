@@ -9509,6 +9509,22 @@ export function listPlanPackageGateAttempts(
   ).map(rowToPlanPackageGateAttempt);
 }
 
+/** Indexed existence probe for lifecycle hooks that must stay cheap when there
+ * is no dispatch work to reconcile. */
+export function hasOpenPlanDispatchAttempts(targetAgentId?: string): boolean {
+  const row = targetAgentId === undefined
+    ? queryOne(
+        `SELECT 1 AS ok FROM plan_dispatch_attempts
+          WHERE state IN ('pending','delivered') LIMIT 1`,
+      )
+    : queryOne(
+        `SELECT 1 AS ok FROM plan_dispatch_attempts
+          WHERE state IN ('pending','delivered') AND target_agent_id = ? LIMIT 1`,
+        [targetAgentId],
+      );
+  return row !== null;
+}
+
 /** Allocate the next append-only gate attempt number. Callers invoke this from
  * the same SQLite transaction that inserts the gate row; the UNIQUE constraint
  * remains the race arbiter. */
@@ -10692,15 +10708,30 @@ export function allocateAndInsertTurn(
     );
   });
 
+  let inserted: TurnRecord;
   try {
-    return insertOnce();
+    inserted = insertOnce();
   } catch (err) {
     if (isUniqueConstraintError(err)) {
       // One racer took our seq; a fresh MAX read on retry resolves it.
-      return insertOnce();
+      inserted = insertOnce();
+    } else {
+      throw err;
     }
-    throw err;
   }
+
+  // A provider may acknowledge prompt delivery before its plan-stamped turn is
+  // persisted. Confirm at the durable insert edge, but avoid the reconciler's
+  // broader reads for ordinary and unstamped turns.
+  if (
+    inserted.agentId !== null
+    && inserted.planId !== null
+    && inserted.planItemId !== null
+    && hasOpenPlanDispatchAttempts(inserted.agentId)
+  ) {
+    reconcilePlanDispatchAttempts();
+  }
+  return inserted;
 }
 
 function buildTurnUpdate(updates: Record<string, unknown>): { sql: string; params: unknown[] } {

@@ -26,6 +26,7 @@ import {
   getOwnerForWorker,
   getActivePlanningActivityWorktree,
   getDb,
+  hasOpenPlanDispatchAttempts,
   getPlan,
   getWorkspace,
   getPlanWorkPackage,
@@ -458,6 +459,35 @@ export function registerPlanPackageDispatchIpc(
  * initialization invokes the same primitive once at boot. */
 export function reconcilePackageDispatches(now?: number): PlanDispatchReconcileResult {
   return reconcilePlanDispatchAttempts(now);
+}
+
+export interface PackageDispatchReconcileSafetyNetDeps {
+  hasOpenAttempts?: typeof hasOpenPlanDispatchAttempts;
+  reconcile?: typeof reconcilePackageDispatches;
+  setInterval?: typeof globalThis.setInterval;
+  clearInterval?: typeof globalThis.clearInterval;
+}
+
+/** Arm the low-frequency convergence net. Each tick performs only the indexed
+ * existence probe when there is no open attempt; reconciliation remains
+ * idempotent and runs only while recovery work exists. */
+export function startPackageDispatchReconcileSafetyNet(
+  intervalMs = 45_000,
+  deps: PackageDispatchReconcileSafetyNetDeps = {},
+): () => void {
+  const schedule = deps.setInterval ?? globalThis.setInterval;
+  const cancel = deps.clearInterval ?? globalThis.clearInterval;
+  const timer = schedule(() => {
+    try {
+      if ((deps.hasOpenAttempts ?? hasOpenPlanDispatchAttempts)()) {
+        (deps.reconcile ?? reconcilePackageDispatches)();
+      }
+    } catch (err) {
+      console.warn('[plan-dispatch] periodic reconciliation failed:', err);
+    }
+  }, intervalMs);
+  timer.unref?.();
+  return () => cancel(timer);
 }
 
 // ── package state transitions ─────────────────────────────────────────────────
