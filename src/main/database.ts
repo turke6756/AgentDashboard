@@ -14,6 +14,7 @@ import { resolveWorkspaceForCwd, WORKSPACE_LINEAGE_VERSION, type WorkspaceRecord
 import { unwrapOsc8, stripTerminalEscapes, canonicalizeToAbsolute, looksPolluted } from './file-activity-normalize';
 import type { CommitOutcome, ResolvedPlanStamp } from '../shared/commit-candidates';
 import type { ResolvedIntentStamp } from '../shared/types';
+import { devDbDirName } from './dev-instance';
 
 let db: Database.Database;
 let dbPath: string;
@@ -22,7 +23,7 @@ let dbPath: string;
  *  read-only analytics path cannot create the AppData directory (plan §2.1). */
 export function getDbPathExisting(): string {
   const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
-  return path.join(appData, 'AgentDashboard', 'dashboard.db');
+  return path.join(appData, devDbDirName(), 'dashboard.db');
 }
 
 function getDbPath(): string {

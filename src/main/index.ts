@@ -101,6 +101,7 @@ import { usageForAgent } from './watchdog/attribution';
 import { composeSystemMemoryView } from './watchdog/system-memory-view';
 import { migrateWorkspaceStateDir, checkWorkspaceSecurityOnOpen, workspaceStateDir } from './workspace-state-dir';
 import { parseAnalyticsSnapshotArgv, flushStdio } from './analytics-export/analytics-snapshot-argv';
+import { devAppUserModelId } from './dev-instance';
 import {
   listDetachedProcesses,
   detachedDirFor,
@@ -277,7 +278,7 @@ const analyticsSnapshotArgv = parseAnalyticsSnapshotArgv(process.argv);
 // stable identity here (rather than inside whenReady) so a development launch
 // cannot briefly or permanently inherit electron.exe's atom icon.
 if (process.platform === 'win32' && analyticsSnapshotArgv === null) {
-  app.setAppUserModelId('com.lares.app');
+  app.setAppUserModelId(devAppUserModelId());
 }
 
 if (analyticsSnapshotArgv !== null) {

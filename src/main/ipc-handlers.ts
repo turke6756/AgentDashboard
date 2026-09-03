@@ -72,6 +72,7 @@ import {
 } from './research/classify-inbox-report';
 import { ensureInstallationLauncher } from './installation-descriptor';
 import { recordDemandProbe, isDemandProbeKind, DEMAND_PROBE_RECORD_CHANNEL } from './telemetry/demand-probe';
+import { isForbiddenDevWorkspaceRoot } from './dev-instance';
 import { registerCheckpointIpc, type HumanCheckpointRoutes } from './git-checkpoints/checkpoint-ipc';
 import {
   registerSaveCardIpc,
@@ -338,6 +339,9 @@ export function registerIpcHandlers(
   // Workspace handlers
   ipcMain.handle('workspace:list', () => getWorkspaces());
   ipcMain.handle('workspace:create', (_e, input) => {
+    if (isForbiddenDevWorkspaceRoot(input.path, app.getAppPath())) {
+      throw new Error('dev instance must not open its own checkout; use a smoke workspace');
+    }
     const ws = createWorkspace(input);
     // One-time `.dashboard/` → `.lares/` state-dir migration: a newly
     // registered workspace may be an existing project folder that still

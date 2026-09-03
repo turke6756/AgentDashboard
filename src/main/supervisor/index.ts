@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs';
+import { devRegistryFileName } from '../dev-instance';
 import crypto from 'crypto';
 import { execFileSync, execFile, spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
@@ -130,6 +131,14 @@ import { beginCaptureAttemptForSubmittedSend, captureHealthManager } from '../ac
 // ../scaffold-writer (D1 extraction); re-export them so import sites are unchanged.
 export { SCAFFOLD_SIDECAR_REL, SCAFFOLD_LOCK_REL, sha256Hex, normalizeManagedKey };
 export type { ScaffoldFile };
+
+export function agentRegistryPath(): string {
+  return path.join(
+    process.env.USERPROFILE || process.env.HOME || '',
+    '.claude',
+    devRegistryFileName(),
+  );
+}
 import { ensurePersonaScaffold, applyPersonaLaneToLaunchInput } from '../persona-scanner';
 import { contextGaugeRoleKeyOf, resolveContextGaugeCap } from '../context-gauge/context-gauge-cap';
 
@@ -3336,7 +3345,7 @@ export class AgentSupervisor extends EventEmitter {
     return getSupervisorAgent(workspaceId);
   }
 
-  /** Write ~/.claude/agent-registry.json so other Claude instances can discover agents */
+  /** Write the agent registry so other agent processes can discover agents. */
   private writeAgentRegistry(): void {
     try {
       const agents = getAllAgents();
@@ -3353,7 +3362,7 @@ export class AgentSupervisor extends EventEmitter {
             roleDescription: a.roleDescription || '',
           })),
       };
-      const registryPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'agent-registry.json');
+      const registryPath = agentRegistryPath();
       fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
     } catch (err) {
       console.error('[registry] Failed to write agent registry:', err);

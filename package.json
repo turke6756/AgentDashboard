@@ -2,7 +2,7 @@
   "name": "lares-app",
   "version": "0.3.1",
   "description": "An agent-native workspace for orchestrating AI agents across terminals, files, browsers, documents, and notebooks.",
-  "main": "dist/main/main/index.js",
+  "main": "dist/main/main/bootstrap.js",
   "scripts": {
     "dev": "npm run build:main && concurrently -k -n vite,electron \"npm run dev:renderer\" \"node -e \\\"setTimeout(()=>process.exit(),3000)\\\" && npm run start\"",
     "dev:renderer": "vite --port 5173",
