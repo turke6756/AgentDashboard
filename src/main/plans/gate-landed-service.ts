@@ -107,6 +107,11 @@ function identity(pkg: PlanWorkPackage, plan: PlanAuthority, key: string) {
   };
 }
 
+export function briefedWorkPackageId(packageId: string, planArtifactId: string): string {
+  const mintedPrefix = `wp:${planArtifactId}:`;
+  return packageId.startsWith(mintedPrefix) ? packageId.slice(mintedPrefix.length) : packageId;
+}
+
 /** Mirror the declaration that finalizePlanItemDone derives at the real boundary.
  * This prospective form only asks the shared evaluator whether finalization may
  * be attempted; the ready-boundary guard remains authoritative inside finalize. */
@@ -183,7 +188,7 @@ export async function gateLandedWorkPackage(
     dispatchTipOid: attempt.dispatchTipOid,
     frozenPaths: attempt.frozenPaths,
     planArtifactId: plan.artifactId,
-    wpId: pkg.id,
+    wpId: briefedWorkPackageId(pkg.id, plan.artifactId),
     commitOid: args.commit_oid,
   }, (deps.gitOracle ?? createGitOracle)(repositoryRoot));
   if (verification.outcome === 'refused') return refused(verification.reason);

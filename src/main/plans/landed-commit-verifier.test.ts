@@ -71,6 +71,19 @@ test('verifies the sole canonical first-parent match and parses audit trailers',
     'gate verification walks the complete range without a cap');
 });
 
+test('matches WP trailer identity using ingest case folding and still rejects a different id', async () => {
+  const lowerTrailer = new FakeGit();
+  lowerTrailer.commits.get(ONE)!.message = message(undefined, 'wp-2');
+  assert.equal((await verifyLandedCommit(input(), lowerTrailer)).outcome, 'verified');
+
+  const upperTrailer = new FakeGit();
+  assert.equal((await verifyLandedCommit({ ...input(), wpId: 'wp-2' }, upperTrailer)).outcome, 'verified');
+
+  const different = new FakeGit();
+  assert.deepEqual(await verifyLandedCommit({ ...input(), wpId: 'WP-3' }, different),
+    { outcome: 'refused', reason: 'no-matching-commit' });
+});
+
 test('injected oracle distinguishes the branch ref from a same-named filename', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landed-verifier-ref-'));
   try {
@@ -140,7 +153,7 @@ test('rejects a second separated trailer-looking paragraph', async () => {
     { outcome: 'refused', reason: 'no-matching-commit' });
 });
 
-test('REACHABILITY:wpf1-plan-prefix-forgery Plan and WP identities require exact byte-for-byte equality', async () => {
+test('REACHABILITY:wpf1-plan-prefix-forgery rejects Plan forgeries and non-case WP identity changes', async () => {
   const lookalike = 'plan_16910c6\u0434';
   const cases = [
     ['different plan', 'plan_deadbeef', 'WP-2'],

@@ -182,6 +182,7 @@ function apiRequest(port: number, workspaceId: string, supervisorId: string) {
 }
 
 test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public ledger', async () => {
+  const packageId = 'wp:plan_16910c64:wp-4';
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-landed-entry-'));
   execFileSync('git', ['init', '-b', 'main'], { cwd: root, windowsHide: true });
   execFileSync('git', ['config', 'user.email', 'test@lares.local'], { cwd: root, windowsHide: true });
@@ -205,25 +206,25 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
   db.getDb().prepare(`INSERT INTO plan_intents
     (id, workspace_id, plan_id, plan_artifact_id, intent_id, kind, source_doc_rel_path, first_seen_at, updated_at, last_scanned_at)
     VALUES ('intent-row-entry', ?, ?, 'plan_16910c64', 'intent-entry', 'research', 'plan.md', 1, 1, 1)`).run(ws.id, plan.id);
-  db.upsertPlanWorkPackage({ id: 'WP-4', workspaceId: ws.id, planId: plan.id, intentId: 'intent-entry',
+  db.upsertPlanWorkPackage({ id: packageId, workspaceId: ws.id, planId: plan.id, intentId: 'intent-entry',
     schemaVersion: 2, contentHash: 'hash-entry', projectionStatus: 'synced', title: 'WP-4', acceptanceCondition: null,
     state: 'ready', assigneeAgentId: worker.id, revision: 1, createdAt: 1, updatedAt: 1 });
   db.getDb().prepare(`INSERT INTO plan_execution_runs
     (id, plan_id, repository_key, baseline_kind, baseline_head_oid, baseline_ref, trigger_source, triggered_at, lifecycle_state)
     VALUES ('run-entry', ?, ?, 'head', ?, 'refs/heads/main', 'renderer-user-action', 1, 'active')`).run(plan.id, root, base);
-  db.insertPlanDispatchAttempt({ id: 'dispatch-entry', packageId: 'WP-4', planId: plan.id,
-    executionRunId: 'run-entry', targetAgentId: worker.id, requestedPlanItemId: 'WP-4', createdAt: 2,
+  db.insertPlanDispatchAttempt({ id: 'dispatch-entry', packageId, planId: plan.id,
+    executionRunId: 'run-entry', targetAgentId: worker.id, requestedPlanItemId: packageId, createdAt: 2,
     targetSessionId: 'session-entry', repositoryKey: root, branchRef: 'refs/heads/main', dispatchTipOid: base,
     frozenPaths: ['owned.txt'], captureStatus: 'captured', intent: { id: 'intent-entry', workspaceId: ws.id,
       title: 'WP-4 dispatch', briefDigest: 'brief-entry', createdById: supervisor.id } });
   const turn = db.allocateAndInsertTurn(ws.id, { id: 'turn-entry', agentId: worker.id, planId: plan.id,
-    planItemId: 'WP-4', intentId: 'intent-entry', sessionId: 'session-entry', startedAt: 3, status: 'open' });
+    planItemId: packageId, intentId: 'intent-entry', sessionId: 'session-entry', startedAt: 3, status: 'open' });
   db.updateTurnRecord(turn.id, { touched: [{ path: 'owned.txt', op: 'write' }] });
   assert.equal(db.getPlanDispatchAttempt('dispatch-entry')?.confirmedTurnId, turn.id,
     'the production turn insert edge must confirm the pending dispatch');
   require('./package-ledger').transitionPlanPackage({ type: 'deployment-observed', idempotencyKey: 'deploy-entry',
     workspaceId: ws.id, planId: plan.id, planArtifactId: 'plan_16910c64', intentId: 'intent-entry',
-    packageId: 'WP-4', packageRevision: 1 },
+    packageId, packageRevision: 1 },
   { kind: 'deployment', actor: supervisor.id, observedAt: 5, environment: 'local', state: 'not_required' });
 
   const { ApiServer } = require('../api-server') as typeof import('../api-server');
@@ -252,7 +253,7 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
   assert.equal((db.getDb().prepare('SELECT COUNT(*) AS n FROM plan_package_gate_commit_links WHERE commit_oid = ?').get(commit) as { n: number }).n, 1);
   assert.equal((db.getDb().prepare(`SELECT COUNT(*) AS n FROM plan_package_gate_attempts WHERE gate_key = 'supervisor-acceptance'`).get() as { n: number }).n, 1,
     'retry after evidence/finalization must reuse the acceptance attempt');
-  assert.equal(db.getPlanWorkPackage('WP-4')?.state, 'done');
+  assert.equal(db.getPlanWorkPackage(packageId)?.state, 'done');
   fs.rmSync(root, { recursive: true, force: true });
 });
 

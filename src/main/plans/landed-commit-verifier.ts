@@ -103,7 +103,7 @@ async function parseMatchingCommit(
       || interpreted.some((value, index) => value.key !== parsedPhysical[index].key
         || value.value !== parsedPhysical[index].value)) return null;
   const one = (key: string): string | null => parsedPhysical.find((entry) => entry.key === key)?.value ?? null;
-  if (one('Plan') !== input.planArtifactId || one('WP') !== input.wpId) return null;
+  if (one('Plan') !== input.planArtifactId || one('WP')?.toLowerCase() !== input.wpId.toLowerCase()) return null;
   return {
     commitOid: oid,
     subject: commit.subject,
