@@ -101,7 +101,6 @@ beforeEach(() => {
     plansOpen: true,
     fileViewerOpen: false,
     browserOpen: false,
-    saveCardOpen: false,
     openTabs: [],
     activeTabId: null,
   });

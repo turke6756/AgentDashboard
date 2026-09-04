@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import PlanSurfaceView from './PlanSurfaceView';
 import PlanDocumentTabs from './PlanDocumentTabs';
-import type { CandidatePreviewSelection } from '../save/CandidatePreview';
+import type { PlanCandidatePreviewSelection } from './PlanCandidatePreview';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import type { PlanDocumentNavigationRequest } from '../../stores/dashboard-store';
 
@@ -18,7 +18,7 @@ export default function PlanSurfaceContainer({
   planId,
   navigationRequest,
 }: PlanSurfaceContainerProps): React.ReactElement {
-  const [candidateSelection, setCandidateSelection] = useState<CandidatePreviewSelection | null>(null);
+  const [candidateSelection, setCandidateSelection] = useState<PlanCandidatePreviewSelection | null>(null);
   const closeTab = useDashboardStore((s) => s.closeTab);
   const selectedWorkspaceId = useDashboardStore((s) => s.selectedWorkspaceId);
   const resolvePlanNavigation = useDashboardStore((s) => s.resolvePlanNavigation);
@@ -83,6 +83,7 @@ export default function PlanSurfaceContainer({
         </div>
         <PlanSurfaceView
           workspaceId={selectedWorkspaceId ?? undefined}
+          planId={planId}
           candidateSelection={candidateSelection}
         />
       </div>

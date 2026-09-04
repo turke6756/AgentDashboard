@@ -31,7 +31,6 @@ beforeEach(() => {
   useDashboardStore.setState({
     browserOpen: false,
     fileViewerOpen: false,
-    saveCardOpen: false,
     plansOpen: false,
     openTabs: [],
     activeTabId: null,
@@ -78,13 +77,12 @@ describe('showDashboard', () => {
 
 describe('Plans center-pane navigation', () => {
   it('opens Plans as the exclusive center pane', () => {
-    useDashboardStore.setState({ fileViewerOpen: true, browserOpen: true, saveCardOpen: true });
+    useDashboardStore.setState({ fileViewerOpen: true, browserOpen: true });
     useDashboardStore.getState().showPlans();
     const state = useDashboardStore.getState();
     expect(state.plansOpen).toBe(true);
     expect(state.fileViewerOpen).toBe(false);
     expect(state.browserOpen).toBe(false);
-    expect(state.saveCardOpen).toBe(false);
   });
 
   it.each([

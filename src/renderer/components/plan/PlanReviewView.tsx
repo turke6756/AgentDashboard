@@ -1,6 +1,6 @@
 import React from 'react';
 import type { PlanReviewProjection } from '../../../shared/types';
-import CandidatePreview, { type CandidatePreviewSelection } from '../save/CandidatePreview';
+import PlanCandidatePreview, { type PlanCandidatePreviewSelection } from './PlanCandidatePreview';
 import './planReviewView.css';
 
 const MIXED_REASON_LABELS = {
@@ -16,7 +16,7 @@ const GAP_REASON_LABELS = {
   'unverified-turn': 'A contributing plan stamp could not be verified',
 } as const;
 
-function previewSelection(projection: PlanReviewProjection): CandidatePreviewSelection {
+function previewSelection(projection: PlanReviewProjection): PlanCandidatePreviewSelection {
   const scObject = projection.scObject;
   return {
     selectedComponentIds: [...scObject.componentIds],
@@ -87,11 +87,11 @@ export default function PlanReviewView({
 
       <section className="plan-review__section" aria-labelledby="plan-review-selection-heading">
         <h3 id="plan-review-selection-heading">Shared selection preview</h3>
-        <CandidatePreview
+        <PlanCandidatePreview
           workspaceId={projection.workspaceId}
+          planId={projection.planId}
           selection={previewSelection(projection)}
           title="Plan-associated work"
-          showCommitAction={false}
         />
       </section>
       </div>

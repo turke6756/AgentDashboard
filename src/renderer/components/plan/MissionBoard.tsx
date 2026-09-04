@@ -21,7 +21,7 @@ import {
 import AttributionPanel from '../checkpoints/AttributionPanel';
 import FileHistoryView from '../checkpoints/FileHistoryView';
 import RestoreDialog from '../checkpoints/RestoreDialog';
-import CandidatePreview, { type CandidatePreviewSelection } from '../save/CandidatePreview';
+import PlanCandidatePreview, { type PlanCandidatePreviewSelection } from './PlanCandidatePreview';
 import WorkPackageCard, { type WorkPackageFileSelection } from './WorkPackageCard';
 import './missionBoard.css';
 
@@ -67,7 +67,8 @@ export interface MissionBoardProps {
 interface CommitSelection {
   packageId: string;
   workspaceId: string;
-  selection: CandidatePreviewSelection;
+  planId: string;
+  selection: PlanCandidatePreviewSelection;
 }
 
 function messageFromError(error: unknown): string {
@@ -274,6 +275,7 @@ export default function MissionBoard({
       setCommitSelection({
         packageId: card.packageId,
         workspaceId: card.workspaceId,
+        planId: card.planId,
         selection: preview.selection,
       });
     } catch (error) {
@@ -352,12 +354,12 @@ export default function MissionBoard({
 
       {commitSelection && (
         <div className="mission-board__commit" data-testid="board-candidate-preview">
-          <CandidatePreview
+          <PlanCandidatePreview
             workspaceId={commitSelection.workspaceId}
+            planId={commitSelection.planId}
             selection={commitSelection.selection}
             title={`Commit ${commitSelection.packageId}`}
             onClose={() => setCommitSelection(null)}
-            showCommitAction={false}
           />
           <p data-testid="board-save-disabled">Review and undo now replace Save.</p>
         </div>

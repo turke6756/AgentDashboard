@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type {
   MissionBoardCard,
   MissionBoardPackageTimeline,
-  SaveCardPreviewResponse,
+  PlanCandidatePreviewResponse,
 } from '../../../shared/types';
 import { useMissionBoardStore } from '../../stores/mission-board-store';
 
@@ -43,7 +43,7 @@ function card(state: MissionBoardCard['state']): MissionBoardCard {
   };
 }
 
-const savePreview: SaveCardPreviewResponse = {
+const planPreview: PlanCandidatePreviewResponse = {
   isCandidate: true,
   candidate: {
     candidateId: 'candidate-1', contractVersion: 1,
@@ -63,48 +63,27 @@ const savePreview: SaveCardPreviewResponse = {
     eligibility: { eligible: true },
     token: null,
   },
-  laresTrailers: ['Lares-Plan: plan-1'], defaultMessageBody: 'Save WP-P6D',
-  unacknowledgedUnattributedEntryIds: [], componentTopologyDigest: 'topo-1',
-  selectionDrift: { added: [], missing: [], reAttributed: [], byteMoved: [] },
-  selectionDriftDisplayPaths: {},
-  pinnedSelection: { selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], frozenMemberCount: 1 },
+  selection: {
+    selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
+  },
 };
 
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 let finalizeItemDone: ReturnType<typeof vi.fn>;
 let previewCandidate: ReturnType<typeof vi.fn>;
-let commit: ReturnType<typeof vi.fn>;
-let sweep: ReturnType<typeof vi.fn>;
 
 async function renderBoard(state: MissionBoardCard['state']) {
   finalizeItemDone = vi.fn(async () => ({ outcome: 'created' }));
   previewCandidate = vi.fn(async () => ({
-    candidate: savePreview.candidate,
+    candidate: planPreview.candidate,
     isCandidate: true,
     selection: {
       selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
     },
   }));
-  commit = vi.fn();
-  sweep = vi.fn(async () => ({ halted: false, haltKind: null, results: [] }));
   (window as unknown as { api: unknown }).api = {
     plans: { finalizeItemDone, previewCandidate },
-    saveCard: {
-      preview: vi.fn(async () => savePreview),
-      sweep,
-      getInventory: vi.fn(async () => ({ bundles: [], quotaWeakening: null })),
-    },
-    commitCoordinator: {
-      mint: vi.fn(async () => ({
-        ...savePreview,
-        candidate: {
-          ...savePreview.candidate,
-          token: { tokenId: 'token-1', candidateId: 'candidate-1', contractVersion: 1, issuedAt: 1, expiresAt: 2 },
-        },
-      })),
-      commit,
-    },
     checkpoints: {},
   };
   container = document.createElement('div');
@@ -149,8 +128,6 @@ describe('WP-P6D board done + commit integration', () => {
     expect(container!.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
     expect(container!.querySelector('[data-testid="board-save-disabled"]')?.textContent)
       .toBe('Review and undo now replace Save.');
-    expect(sweep).not.toHaveBeenCalled();
-    expect(commit).not.toHaveBeenCalled();
   });
   it('routes done only through SC-WP-3D and never infers it from live activity', async () => {
     await renderBoard('executing');
@@ -181,7 +158,5 @@ describe('WP-P6D board done + commit integration', () => {
       selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'],
     });
     expect(container!.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
-    expect(sweep).not.toHaveBeenCalled();
-    expect(commit).not.toHaveBeenCalled();
   });
 });

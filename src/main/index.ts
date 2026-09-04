@@ -25,8 +25,6 @@ import {
   initDatabase, getWorkspaces, getActiveAgents, getAllAgents, reconcileStaleOpenContinuationAttempts,
   getWorkspace,
   setWitnessObserver, getAgent, listTurnRecords,
-  insertPendingCommitAttempt, resolveCommitAttempt,
-  listPlanningActivityWorktrees,
 } from './database';
 import { validateAndRepairClaudeJson, validateAndRepairWslClaudeJson, startClaudeJsonRuntimeWatcher, stopClaudeJsonRuntimeWatcher } from './claude-config-repair';
 import { runStartupProviderRepairs, startProviderRepairWatcherIfOwner } from './provider-repairs';
@@ -38,25 +36,13 @@ import { createCheckpointEngine } from './git-checkpoints/engine-bootstrap';
 import { createCheckpointRecoverySurface } from './git-checkpoints/checkpoint-ipc';
 import { captureHealthManager } from './activity/capture-health';
 import { RETENTION_CYCLE_INTERVAL_MS } from '../shared/constants';
-import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSaveCardPreviewRoutes, setSaveCardMintRoutes, setSaveCardFinalizeRoutes, setCommitCoordinatorRoutes, setSaveSweepService, setSaveCardAttentionProvider, setActivityMergeService } from './ipc-handlers';
-import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
-import { createPreviewRoutes } from './commit-candidates/preview-routes';
+import { registerIpcHandlers, setHumanCheckpointRoutes } from './ipc-handlers';
 import {
   createPlanCandidateRoutes,
   type PlanCandidateRoutesDeps,
 } from './plans/plan-candidate-routes';
 import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
-import { ScratchPolicyStore } from './commit-candidates/scratch-policy-store';
-import { PinnedSnapshotStore } from './commit-candidates/pinned-snapshot-store';
 import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
-import { CommitCoordinator } from './git-checkpoints/commit-coordinator';
-import { ActivityMergeService } from './git-checkpoints/activity-merge-service';
-import { runGit, runGitBytes } from './git-checkpoints/git-command';
-import { broadcastSaveCardAttention } from './commit-candidates/save-card-ipc';
-import { consumeCommitCoordinatorForSweep, type CommitCoordinatorRoutes } from './commit-candidates/commit-coordinator-ipc';
-import { SaveSweepService } from './commit-candidates/save-sweep-service';
-import type { SaveCardQuotaWeakening } from '../shared/commit-candidates';
-import type { SaveCardCheckpointExpiryNotice } from '../shared/types';
 import { installExternalNavHandlers, forceCloseAllDetached, getDetachedEntries, type DetachedWindowDeps } from './detached-windows';
 import { runCloseFlush, type FlushTarget } from './close-flush';
 import { TAB_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState } from '../shared/types';
@@ -953,119 +939,28 @@ app.whenReady().then(async () => {
           apiServer?.setCheckpointRoutes(engine.checkpointRoutes);
           // WP-G2.2: hand the force-capable human surface to the renderer IPC layer.
           setHumanCheckpointRoutes(engine.humanCheckpointRoutes);
-          // SC-WP-2L/2Z: latest retention pin quota-weakening warning per repository,
-          // refreshed by each retention cycle below. Empty until the first cycle runs;
-          // the Save card omits the banner while a repo has no live weakening warning.
-          const quotaWeakeningByRepo = new Map<string, SaveCardQuotaWeakening>();
-          // SC-WP-N2: latest checkpoint-expiry attention notice per workspace,
-          // refreshed by each retention cycle. Read by the lightweight
-          // `savecard:getAttention` channel (no inventory probe) and pushed on
-          // `savecard:attentionChanged`; empty until the first cycle publishes.
-          const attentionByWorkspace = new Map<string, SaveCardCheckpointExpiryNotice>();
-          setSaveCardAttentionProvider((workspaceId) => attentionByWorkspace.get(workspaceId) ?? null);
-          // SC-WP-1J: hand the read-only Save-card inventory surface to the renderer
-          // IPC layer, reusing the engine's already-resolved internal Git. Until this
-          // runs the channel answers "save-card-engine-unavailable" honestly.
-          // WP-G: the ONE canonical per-repository snapshot single-flight registry.
-          // Composed here exactly once and injected into BOTH route constructors —
-          // which run behind two SEPARATE `CommitCandidateService` instances, so
-          // per-service coalescing is provably insufficient. Sharing this instance
-          // is what makes a concurrent save-card + preview compute one snapshot.
+          // The plan candidate routes retain the canonical per-repository snapshot
+          // single-flight registry so concurrent plan reads share one inventory.
           const snapshotRegistry = new CommitCandidateSnapshotRegistry<CandidateInventoryRead>();
-          const pinnedSnapshotStore = new PinnedSnapshotStore();
-          const scratchPolicyStore = new ScratchPolicyStore(
-            path.join(app.getPath('userData'), 'scratch-policies'),
-          );
           const repositoryByWorkspaceId = new Map<string, string>();
-          const resolvePolicyGeneration = (repositoryKey: string) =>
-            scratchPolicyStore.read(repositoryKey).policyGeneration;
           const rememberRepository = (workspaceId: string, repositoryKey: string) => {
             repositoryByWorkspaceId.set(workspaceId, repositoryKey);
           };
           // Automatic turn checkpoints change protection evidence. Only a repo
-          // that has entered a Save route can have a cache entry, so the route-fed
+          // that has entered a plan route can have a cache entry, so the route-fed
           // workspace map is both sufficient and avoids another Git probe here.
           engine.coordinator.onTurnClosed((event) => {
             const workspaceId = getAgent(event.agentId)?.workspaceId;
             const repositoryKey = workspaceId ? repositoryByWorkspaceId.get(workspaceId) : undefined;
             if (repositoryKey) snapshotRegistry.invalidate(repositoryKey);
           });
-          setSaveCardRoutes(createSaveCardRoutes({
-            gitExe: engine.gitExe,
-            readQuotaWeakening: (repositoryKey) => quotaWeakeningByRepo.get(repositoryKey) ?? null,
-            snapshotRegistry,
-            pinnedSnapshotStore,
-            scratchPolicyStore,
-            resolvePolicyGeneration,
-            onRepositoryResolved: rememberRepository,
-            onPolicyWrite: (repositoryKey) => snapshotRegistry.invalidate(repositoryKey),
-          }));
-          // SC-WP-W1: hand the Stage ③ candidate-preview routes (both lenses) to the
-          // renderer IPC layer, reusing the engine's already-resolved internal Git.
-          // ONE shared assembly resolves the read-only `CandidateBuildContext`, so
-          // `savecard:preview` and `plan:previewCandidate` return real
-          // SelectionPreview/CommitCandidate verdicts. Until this runs both channels
-          // answer "preview engine unavailable" honestly. The same production
-          // resolver owns the consume-time live reassembly/re-read/repository seams
-          // and the checkpoint-native fleet-finalization boundary capture.
-          const previewRoutes = createPreviewRoutes({
-            gitExe: engine.gitExe,
-            queue: engine.queue,
-            captureFinalizationBoundary: engine.captureFinalizationBoundary,
-            snapshotRegistry,
-            pinnedSnapshotStore,
-            resolvePolicyGeneration,
-            onRepositoryFinalized: (repositoryKey) => snapshotRegistry.invalidate(repositoryKey),
-            onRepositoryResolved: rememberRepository,
-          });
-          setSaveCardPreviewRoutes(previewRoutes.saveCardPreviewRoutes);
-          setSaveCardMintRoutes(previewRoutes.saveCardMintRoutes);
           wirePlanCandidateRoutes({
             gitExe: engine.gitExe,
             queue: engine.queue,
             captureFinalizationBoundary: engine.captureFinalizationBoundary,
             snapshotRegistry,
-            resolvePolicyGeneration,
             onRepositoryResolved: rememberRepository,
           });
-          setSaveCardFinalizeRoutes(previewRoutes.saveCardFinalizeRoutes);
-          const candidateService = previewRoutes.productionSeams.candidateService;
-          const activityMergeService = new ActivityMergeService({ gitExe: engine.gitExe });
-          setActivityMergeService(activityMergeService);
-          const coordinator = new CommitCoordinator({
-            composeLocks: previewRoutes.productionSeams.composeLocks,
-            queue: engine.queue,
-            tokens: {
-              resolve: candidateService.resolveCandidateToken.bind(candidateService),
-              tryConsume: candidateService.tryMarkTokenConsuming.bind(candidateService),
-              markConsumed: candidateService.markTokenConsumed.bind(candidateService),
-            },
-            attempts: {
-              insertPending: insertPendingCommitAttempt,
-              resolve: resolveCommitAttempt,
-            },
-            runGit,
-            runGitBytes,
-            reassemble: previewRoutes.productionSeams.reassemble,
-            readMemberRepresentation: previewRoutes.productionSeams.readMemberRepresentation,
-            locateRepository: previewRoutes.productionSeams.locateRepository,
-            deriveTrailers: previewRoutes.productionSeams.deriveTrailers,
-            resolvePlanningActivity: (repositoryKey) =>
-              listPlanningActivityWorktrees().find((row) => row.activityRepositoryKey === repositoryKey) ?? null,
-            promotePlanningActivity: (executionRunId) => activityMergeService.promote(executionRunId),
-          });
-          const coordinatorRoutes: CommitCoordinatorRoutes = {
-            coordinator,
-            resolveCandidateToken: candidateService.resolveCandidateToken.bind(candidateService),
-            locateRepository: previewRoutes.productionSeams.locateRepository,
-          };
-          setCommitCoordinatorRoutes(coordinatorRoutes);
-          setSaveSweepService(new SaveSweepService({
-            candidateService,
-            resolveIntent: previewRoutes.productionSeams.resolveSweepIntent,
-            consume: (request) => consumeCommitCoordinatorForSweep(request, coordinatorRoutes),
-            refreshInventory: previewRoutes.productionSeams.refreshSweepInventory,
-          }));
           await engine.runStartupMaintenance();
           // WP-G3.3 — schedule the periodic retention cycle (distill-before-prune +
           // triggered loose-object maintenance + storage report) on the shared engine
@@ -1073,32 +968,6 @@ app.whenReady().then(async () => {
           // is best-effort and never throws. NO hard cap / ceiling ships here (Open #6).
           const retentionTimer = setInterval(() => {
             void engine.runRetention()
-              .then((results) => {
-                // SC-WP-2L/2Z: publish each repo's freshest weakening warning for the
-                // Save card. A pass that clears its warning removes the stale banner.
-                for (const { retention } of results) {
-                  if (!retention.repositoryKey) continue;
-                  if (retention.pinningWarning) {
-                    quotaWeakeningByRepo.set(retention.repositoryKey, retention.pinningWarning);
-                  } else {
-                    quotaWeakeningByRepo.delete(retention.repositoryKey);
-                  }
-                }
-                // SC-WP-N2: publish each workspace's freshest checkpoint-expiry notice
-                // and push it so the Save entry can illuminate. A pass that finds no
-                // edge expiring soon clears the workspace's notice (drops the glow).
-                for (const { workspaceId, retention } of results) {
-                  const notice = retention.checkpointExpiryNotice;
-                  if (notice && notice.edges.length > 0) {
-                    attentionByWorkspace.set(workspaceId, notice);
-                  } else {
-                    attentionByWorkspace.delete(workspaceId);
-                  }
-                  if (mainWindow && !mainWindow.isDestroyed()) {
-                    broadcastSaveCardAttention(mainWindow.webContents, workspaceId, notice ?? null);
-                  }
-                }
-              })
               .catch((err) => console.error('[retention] cycle failed:', err));
           }, RETENTION_CYCLE_INTERVAL_MS);
           if (typeof retentionTimer.unref === 'function') retentionTimer.unref();

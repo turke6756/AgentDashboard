@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './planSurface.css';
-import CandidatePreview, { type CandidatePreviewSelection } from '../save/CandidatePreview';
+import PlanCandidatePreview, { type PlanCandidatePreviewSelection } from './PlanCandidatePreview';
 import type { PlanReviewProjection } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import MissionBoard from './MissionBoard';
@@ -13,19 +13,22 @@ import PlanEvidenceStrip from '../activity/PlanEvidenceStrip';
  * intentionally absent. */
 function PlanSurfaceView({
   workspaceId,
+  planId,
   candidateSelection,
 }: {
   workspaceId?: string;
-  candidateSelection?: CandidatePreviewSelection | null;
+  planId?: string;
+  candidateSelection?: PlanCandidatePreviewSelection | null;
 }): React.ReactElement {
   const [reviewProjection, setReviewProjection] = useState<PlanReviewProjection | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const reviewRequestKeyRef = useRef<string | null>(null);
   const currentReviewKeyRef = useRef<string | null>(null);
-  const activePlanId = useDashboardStore((state) => {
+  const selectedPlanId = useDashboardStore((state) => {
     const activeTab = state.openTabs.find((tab) => tab.id === state.activeTabId);
     return activeTab?.kind === 'plan' ? activeTab.planId : null;
   });
+  const activePlanId = planId ?? selectedPlanId;
 
   const reviewKey = activePlanId && workspaceId ? `${workspaceId}\0${activePlanId}` : null;
   currentReviewKeyRef.current = reviewKey;
@@ -63,13 +66,13 @@ function PlanSurfaceView({
   return (
     <div className="plan-surface" data-testid="plan-surface">
       {workspaceId && activePlanId && <PlanEvidenceStrip workspaceId={workspaceId} planId={activePlanId} />}
-      {workspaceId && candidateSelection && (
+      {workspaceId && activePlanId && candidateSelection && (
         <div className="plan-surface__candidate" data-testid="plan-candidate-preview">
-          <CandidatePreview
+          <PlanCandidatePreview
             workspaceId={workspaceId}
+            planId={activePlanId}
             selection={candidateSelection}
             title="Save this plan's work"
-            showCommitAction={false}
           />
           <p data-testid="plan-save-disabled">Review and undo now replace Save.</p>
         </div>

@@ -5,10 +5,8 @@ import * as path from 'path';
 import { persistTheme } from './theme-persistence';
 import { isWslEnabled, setWslEnabled, WSL_DISABLED_MESSAGE } from './wsl-enabled';
 import { shutdownWsl } from './wsl-bridge';
-import type { ContinuationPhaseSignal, PathType, WslStatus, HealthCheck, RuntimePrerequisiteReport, FsEvent, DetachRequest, DetachResult, ViewDetachRequest, ScanOverheadRequest, ScanOverheadResult, ExtractKnowledgeRequest, ExtractKnowledgeResult, SkillUsageQuery, SkillUsageQueryResult, McpToolUsageQuery, McpToolUsageQueryResult, PriorSessionChat, ContextOptimizerQuery, ContextOptimizerQueryResult, MarkOptimizerActionAppliedRequest, MarkOptimizerActionAppliedResult, SignOptimizerDerivationRequest, SignOptimizerDerivationResult, SaveSweepRequest, SaveCardActivityMergeResolveRequest } from '../shared/types';
+import type { ContinuationPhaseSignal, PathType, WslStatus, HealthCheck, RuntimePrerequisiteReport, FsEvent, DetachRequest, DetachResult, ViewDetachRequest, ScanOverheadRequest, ScanOverheadResult, ExtractKnowledgeRequest, ExtractKnowledgeResult, SkillUsageQuery, SkillUsageQueryResult, McpToolUsageQuery, McpToolUsageQueryResult, PriorSessionChat, ContextOptimizerQuery, ContextOptimizerQueryResult, MarkOptimizerActionAppliedRequest, MarkOptimizerActionAppliedResult, SignOptimizerDerivationRequest, SignOptimizerDerivationResult } from '../shared/types';
 import { TAB_CHANNELS, VIEW_CHANNELS } from '../shared/types';
-import { SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL } from '../shared/types';
-import type { ActivityMergeService } from './git-checkpoints/activity-merge-service';
 import { createDetachedWindow, createDetachedViewWindow, broadcastToDetachedViews, canWrite, handleDetachedCloseReply, type DetachedWindowDeps } from './detached-windows';
 import { handleFlushReply } from './close-flush';
 import type { FlushReplyPayload, SelectionComment } from '../shared/types';
@@ -77,26 +75,7 @@ import { ensureInstallationLauncher } from './installation-descriptor';
 import { recordDemandProbe, isDemandProbeKind, DEMAND_PROBE_RECORD_CHANNEL } from './telemetry/demand-probe';
 import { isForbiddenDevWorkspaceRoot } from './dev-instance';
 import { registerCheckpointIpc, type HumanCheckpointRoutes } from './git-checkpoints/checkpoint-ipc';
-import {
-  registerSaveCardIpc,
-  registerSaveCardIntentIpc,
-  registerSaveCardPreviewIpc,
-  registerSaveCardMintIpc,
-  registerSaveCardAttributionResolutionIpc,
-  registerSaveCardFinalizeIpc,
-  registerSaveCardAttentionIpc,
-  type SaveCardRoutes,
-  type SaveCardPreviewRoutes,
-  type SaveCardMintRoutes,
-  type SaveCardFinalizeRoutes,
-  type SaveCardAttentionProvider,
-} from './commit-candidates/save-card-ipc';
-import {
-  registerCommitCoordinatorIpc,
-  type CommitCoordinatorRoutes,
-} from './commit-candidates/commit-coordinator-ipc';
 import type { RequestedPlanBinding } from '../shared/commit-candidates';
-import type { SaveSweepService } from './commit-candidates/save-sweep-service';
 import {
   ORCHESTRATION_PROVIDER_SETTINGS_CHANNELS,
   onOrchestrationProviderSettingsChanged,
@@ -120,102 +99,6 @@ const PASTED_IMAGE_DIR = path.join(app.getPath('temp'), 'lares-pasted-images');
 let humanCheckpointRoutes: HumanCheckpointRoutes | null = null;
 export function setHumanCheckpointRoutes(routes: HumanCheckpointRoutes | null): void {
   humanCheckpointRoutes = routes;
-}
-
-// SC-WP-1H — the read-only Save-card engine is injected asynchronously using
-// the same lazy-route convention as HumanCheckpointRoutes above.
-let saveCardRoutes: SaveCardRoutes | null = null;
-export function setSaveCardRoutes(routes: SaveCardRoutes | null): void {
-  saveCardRoutes = routes;
-}
-
-// SC-WP-W1 — the Stage ③ Save-lens candidate-preview route, injected on the same
-// async engine-bootstrap seam as `setSaveCardRoutes`. Until it lands the channel
-// answers "save-card preview engine unavailable" honestly (never "No handler").
-let saveCardPreviewRoutes: SaveCardPreviewRoutes | null = null;
-export function setSaveCardPreviewRoutes(routes: SaveCardPreviewRoutes | null): void {
-  saveCardPreviewRoutes = routes;
-}
-
-let saveCardMintRoutes: SaveCardMintRoutes | null = null;
-export function setSaveCardMintRoutes(routes: SaveCardMintRoutes | null): void {
-  saveCardMintRoutes = routes;
-}
-
-// SC-WP-W1 — the DISTINCT fleet-adhoc mark-done finalization route. The channel is
-// registered here so it EXISTS in production (honest "unavailable" until injected),
-// but the production boundary-OID resolver is engine-coupled and handed off (see
-// the SC-WP-W1 patch summary); it stays null for now, so a mark-done rejects
-// honestly rather than hitting an unregistered channel.
-let saveCardFinalizeRoutes: SaveCardFinalizeRoutes | null = null;
-export function setSaveCardFinalizeRoutes(routes: SaveCardFinalizeRoutes | null): void {
-  saveCardFinalizeRoutes = routes;
-}
-
-// SC-WP-W2a — the shared Save/Plan consume route is late-injected beside the
-// preview/finalize routes. The registered handler still owns the feature-flag
-// gate, so a populated production route is unreachable while the seam is false.
-let commitCoordinatorRoutes: CommitCoordinatorRoutes | null = null;
-export function setCommitCoordinatorRoutes(routes: CommitCoordinatorRoutes | null): void {
-  commitCoordinatorRoutes = routes;
-}
-
-// SC-WP-6b — the durable multi-package service shares the asynchronous checkpoint
-// bootstrap used by every neighbouring Save-card route. The channel itself is
-// registered synchronously below, so early calls fail honestly instead of seeing
-// Electron's "No handler registered" error.
-let saveSweepService: SaveSweepService | null = null;
-export function setSaveSweepService(service: SaveSweepService | null): void {
-  saveSweepService = service;
-}
-
-// WP-N1 — temporary fail-closed bridge while the Save UI and its alternate
-// plan-surface callers are retired. Keep the route registered so callers get an
-// explicit refusal; the subtraction phase removes the route and intent engine.
-export const SAVE_COMMITTING_ROUTES_DISABLED = true;
-
-export function registerSaveSweepIpc(
-  ipc: Pick<typeof ipcMain, 'handle'>,
-  getService: () => SaveSweepService | null,
-): void {
-  ipc.handle(SAVE_SWEEP_CHANNEL, (_event, request: SaveSweepRequest) => {
-    if (SAVE_COMMITTING_ROUTES_DISABLED) {
-      throw new Error(
-        'save-disabled-review-and-undo: Save is turned off; review and undo replace Save',
-      );
-    }
-    const service = getService();
-    if (!service) {
-      throw new Error('save sweep unavailable (the engine has not finished bootstrapping)');
-    }
-    return service.sweep(request);
-  });
-}
-
-let activityMergeService: ActivityMergeService | null = null;
-export function setActivityMergeService(service: ActivityMergeService | null): void {
-  activityMergeService = service;
-}
-export function registerActivityMergeIpc(
-  ipc: Pick<typeof ipcMain, 'handle'>,
-  getService: () => ActivityMergeService | null,
-): void {
-  ipc.handle(SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL, async (_event, request: SaveCardActivityMergeResolveRequest) => {
-    const service = getService();
-    if (!service) throw new Error('activity merge unavailable (the engine has not finished bootstrapping)');
-    const result = await service.resolveAndPromote(request);
-    return result.status === 'conflicted'
-      ? { status: result.status, attemptId: result.attemptId }
-      : result;
-  });
-}
-
-// SC-WP-N2 — the checkpoint-expiry attention provider, injected by the same async
-// engine-bootstrap seam once the retention cycle begins publishing notices. Until
-// it lands the `savecard:getAttention` read answers null honestly (no expiry yet).
-let saveCardAttentionProvider: SaveCardAttentionProvider | null = null;
-export function setSaveCardAttentionProvider(provider: SaveCardAttentionProvider | null): void {
-  saveCardAttentionProvider = provider;
 }
 
 function resolveMutationPathType(primaryPath: string, rootDirectory: string, pathType?: PathType): PathType {
@@ -432,26 +315,6 @@ export function registerIpcHandlers(
   // restore/revert). Registered synchronously here with a lazy getter so the
   // channels exist before the async engine bootstrap injects the routes.
   registerCheckpointIpc(ipcMain, () => humanCheckpointRoutes);
-  registerSaveCardIpc(ipcMain, () => saveCardRoutes);
-  registerSaveCardIntentIpc(ipcMain, () => saveCardRoutes);
-  // SC-WP-W1 — Stage ③ candidate channels. Registered synchronously here (lazy
-  // getters) so `savecard:preview` / `savecard:markDoneFleetAdhoc` exist before the
-  // async engine bootstrap injects their routes — the reported "No handler
-  // registered" error is exactly a channel that was defined but never registered.
-  registerSaveCardPreviewIpc(ipcMain, () => saveCardPreviewRoutes);
-  registerSaveCardMintIpc(ipcMain, () => saveCardMintRoutes);
-  registerSaveCardAttributionResolutionIpc(ipcMain, () =>
-    saveCardMintRoutes?.persistAttributionResolution ? {
-      persistAttributionResolution: saveCardMintRoutes.persistAttributionResolution,
-    } : null);
-  registerSaveCardFinalizeIpc(ipcMain, () => saveCardFinalizeRoutes);
-  registerCommitCoordinatorIpc(ipcMain, () => commitCoordinatorRoutes);
-  registerSaveSweepIpc(ipcMain, () => saveSweepService);
-  registerActivityMergeIpc(ipcMain, () => activityMergeService);
-  // SC-WP-N2 — the lightweight checkpoint-expiry attention read. Registered here
-  // (lazy provider getter) so `savecard:getAttention` exists before the async
-  // engine bootstrap starts publishing notices; a missing provider answers null.
-  registerSaveCardAttentionIpc(ipcMain, () => saveCardAttentionProvider);
   // 'agent:stop' is registered by registerLifecycleIpc (lifecycle/lifecycle-ipc.ts)
   // so that every stop endpoint assigns its own reason in ONE place and a
   // renderer can never supply one (§B9).

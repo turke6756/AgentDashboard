@@ -8,13 +8,13 @@ import type { PlanReviewProjection } from '../../../shared/types';
 
 const { sharedPreview } = vi.hoisted(() => ({ sharedPreview: vi.fn() }));
 
-vi.mock('../save/CandidatePreview', () => ({
-  default: (props: { showCommitAction?: boolean }) => {
+vi.mock('./PlanCandidatePreview', () => ({
+  default: (props: { planId: string }) => {
     sharedPreview(props);
     return (
       <div
         data-testid="shared-candidate-preview"
-        data-commit-action={String(props.showCommitAction)}
+        data-plan-id={props.planId}
       />
     );
   },
@@ -90,15 +90,15 @@ describe('PlanReviewView', () => {
 
     expect(sharedPreview).toHaveBeenCalledOnce();
     expect(container.querySelector('[data-testid="shared-candidate-preview"]')).not.toBeNull();
-    expect(container.querySelector('[data-commit-action="false"]')).not.toBeNull();
+    expect(container.querySelector('[data-plan-id="plan-1"]')).not.toBeNull();
     expect(sharedPreview.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws-1',
+      planId: 'plan-1',
       selection: {
         selectedComponentIds: ['component-1'],
         selectedUnattributedEntryIds: [],
         finalizationIds: [],
       },
-      showCommitAction: false,
     });
   });
 });

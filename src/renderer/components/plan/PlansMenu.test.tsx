@@ -14,7 +14,6 @@ beforeEach(() => {
   useDashboardStore.setState({
     fileViewerOpen: false,
     browserOpen: false,
-    saveCardOpen: false,
     plansOpen: false,
   });
   container = document.createElement('div');
@@ -41,7 +40,6 @@ describe('Plans navigation button', () => {
     expect(state.plansOpen).toBe(true);
     expect(state.fileViewerOpen).toBe(false);
     expect(state.browserOpen).toBe(false);
-    expect(state.saveCardOpen).toBe(false);
     expect(document.querySelector('[data-testid="plans-gallery"]')).toBeNull();
     expect(button.getAttribute('aria-pressed')).toBe('true');
   });

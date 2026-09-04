@@ -14,10 +14,8 @@
 //     the whole-component selection to this exact call — it can't be imported here
 //     because `plan-ipc` pulls the native DB, so we mirror its selection resolution).
 //
-//  2. REUSE of the shared `CandidatePreview` (no fork/copy). `PlanSurfaceView`, given
-//     a resolved selection, renders the SAME component the save lens uses: the member
-//     verdicts show, the commit message body is EDITABLE, and the server-derived
-//     `Lares-*` trailers render READ-ONLY.
+//  2. The plan-owned preview renders member paths and verdicts without exposing
+//     the retired Save message, trailer, or commit surfaces.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import React, { act } from 'react';
@@ -34,7 +32,7 @@ import type {
 import type { CommitRepresentation } from '../../../main/commit-candidates/commit-representation';
 import type { FrozenManifestMember } from '../../../main/commit-candidates/finalization-service';
 import type { PackageFinalization } from '../../../main/database';
-import type { SaveCardPreviewResponse } from '../../../shared/types';
+import type { PlanCandidatePreviewResponse } from '../../../shared/types';
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 //
@@ -215,7 +213,7 @@ describe('SC-WP-3I plan-lens candidate identity', () => {
   });
 });
 
-// ── property 2: PlanSurfaceView reuses the shared CandidatePreview ──────────────
+// ── property 2: PlanSurfaceView uses the plan-owned preview ────────────────────
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -225,12 +223,12 @@ async function render(el: React.ReactElement): Promise<HTMLDivElement> {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => { root!.render(el); });
-  // Flush CandidatePreview's async preview load.
+  // Flush PlanCandidatePreview's async preview load.
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   return container;
 }
 
-function previewResponse(): SaveCardPreviewResponse {
+function previewResponse(): PlanCandidatePreviewResponse {
   const ctx = context();
   const candidate = buildCandidate(
     { selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'] },
@@ -239,21 +237,17 @@ function previewResponse(): SaveCardPreviewResponse {
   return {
     candidate,
     isCandidate: true,
-    // Server-derived, read-only trailer previews (from the immutable snapshot).
-    laresTrailers: ['Lares-Turns: 2', 'Lares-Plan: plan-A', 'Lares-Plan: plan-B', 'Lares-Finalization: pkg-1@3'],
-    defaultMessageBody: 'Save 2 files',
-    unacknowledgedUnattributedEntryIds: [],
-    componentTopologyDigest: 'topo-1',
-    selectionDrift: { added: [], missing: [], reAttributed: [], byteMoved: [] },
-    selectionDriftDisplayPaths: {},
-    pinnedSelection: { selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], frozenMemberCount: 2 },
+    selection: { selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'] },
   };
 }
 
 describe('SC-WP-3I PlanSurfaceView candidate preview reuse', () => {
   beforeEach(() => {
     (window as unknown as { api: unknown }).api = {
-      saveCard: { preview: vi.fn(async () => previewResponse()) },
+      plans: {
+        previewCandidate: vi.fn(async () => previewResponse()),
+        boardList: vi.fn(async () => []),
+      },
     };
   });
 
@@ -265,14 +259,14 @@ describe('SC-WP-3I PlanSurfaceView candidate preview reuse', () => {
     delete (window as unknown as { api?: unknown }).api;
   });
 
-  it('renders the shared CandidatePreview for the plan lens when a selection is resolved', async () => {
+  it('renders the plan-owned candidate preview when a selection is resolved', async () => {
     const c = await render(
       <PlanSurfaceView
         workspaceId="ws-1"
+        planId="plan-A"
         candidateSelection={{ selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'] }}
       />,
     );
-    // The plan lens hosts the SHARED save-lens preview component (reused, not forked).
     expect(c.querySelector('[data-testid="plan-candidate-preview"]')).not.toBeNull();
     const preview = c.querySelector('[data-testid="candidate-preview"]');
     expect(preview).not.toBeNull();
@@ -281,42 +275,28 @@ describe('SC-WP-3I PlanSurfaceView candidate preview reuse', () => {
       .toBe('Review and undo now replace Save.');
     // Both member verdicts render.
     expect(c.querySelectorAll('[data-testid="candidate-member"]').length).toBe(2);
-    // window.api.saveCard.preview was driven with the plan lens's selection.
-    expect((window as unknown as { api: { saveCard: { preview: ReturnType<typeof vi.fn> } } }).api.saveCard.preview)
-      .toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-1', selectedComponentIds: ['c1'] }));
+    expect((window as unknown as { api: { plans: { previewCandidate: ReturnType<typeof vi.fn> } } }).api.plans.previewCandidate)
+      .toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-1', planId: 'plan-A', selectedComponentIds: ['c1'] }));
   });
 
-  it('renders an EDITABLE message body and READ-ONLY Lares-* trailers', async () => {
+  it('does not render Save-only message or trailer controls', async () => {
     const c = await render(
       <PlanSurfaceView
         workspaceId="ws-1"
+        planId="plan-A"
         candidateSelection={{ selectedComponentIds: ['c1'], selectedUnattributedEntryIds: [], finalizationIds: ['fin-1'] }}
       />,
     );
-    // Editable commit message body (a real textarea seeded with the server default).
-    const message = c.querySelector('[data-testid="candidate-preview-message"]') as HTMLTextAreaElement | null;
-    expect(message).not.toBeNull();
-    expect(message!.tagName).toBe('TEXTAREA');
-    expect(message!.readOnly).toBe(false);
-    expect(message!.value).toBe('Save 2 files');
-
-    // Read-only, server-derived Lares-* trailers — rendered as plain text (not inputs).
-    const trailers = Array.from(c.querySelectorAll('[data-testid="candidate-preview-trailer"]')).map(
-      (t) => t.textContent,
-    );
-    expect(trailers).toContain('Lares-Plan: plan-A');
-    expect(trailers).toContain('Lares-Plan: plan-B');
-    expect(trailers).toContain('Lares-Finalization: pkg-1@3');
-    const trailerBox = c.querySelector('[data-testid="candidate-preview-trailers"]')!;
-    expect(trailerBox.querySelector('input')).toBeNull();
-    expect(trailerBox.querySelector('textarea')).toBeNull();
-    expect(trailerBox.textContent).toMatch(/read-only/i);
+    expect(c.querySelector('[data-testid="candidate-preview-message"]')).toBeNull();
+    expect(c.querySelector('[data-testid="candidate-preview-trailers"]')).toBeNull();
+    expect(c.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
   });
 
   it('omits the preview when no candidate selection is resolved (unwired / nothing to save)', async () => {
     const c = await render(
       <PlanSurfaceView
         workspaceId="ws-1"
+        planId="plan-A"
         candidateSelection={null}
       />,
     );

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { SaveCardPreviewResponse } from '../../../shared/types';
+import type { PlanCandidatePreviewResponse } from '../../../shared/types';
 import PlanSurfaceView from './PlanSurfaceView';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -13,7 +13,7 @@ const selection = {
   finalizationIds: ['finalization-1'],
 };
 
-const preview: SaveCardPreviewResponse = {
+const preview: PlanCandidatePreviewResponse = {
   isCandidate: true,
   candidate: {
     candidateId: 'candidate-shared-1', contractVersion: 1,
@@ -34,32 +34,27 @@ const preview: SaveCardPreviewResponse = {
     }],
     eligibility: { eligible: true }, token: null,
   },
-  laresTrailers: ['Lares-Plan: plan-1'], defaultMessageBody: 'Save finalized plan work',
-  unacknowledgedUnattributedEntryIds: [], componentTopologyDigest: 'topo-1',
-  selectionDrift: { added: [], missing: [], reAttributed: [], byteMoved: [] },
-  selectionDriftDisplayPaths: {},
-  pinnedSelection: { selectedComponentIds: ['component-1'], selectedUnattributedEntryIds: [], frozenMemberCount: 1 },
+  selection,
 };
 
 let container: HTMLDivElement;
 let root: Root;
 
 async function renderReviewOnly() {
-  const sweep = vi.fn(async () => ({ halted: false, haltKind: null, results: [] }));
-  const commit = vi.fn();
   (window as unknown as { api: unknown }).api = {
-    saveCard: { preview: vi.fn(async () => preview), sweep },
-    commitCoordinator: { mint: vi.fn(), commit },
+    plans: {
+      previewCandidate: vi.fn(async () => preview),
+      boardList: vi.fn(async () => []),
+    },
   };
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root.render(<PlanSurfaceView workspaceId="workspace-1" candidateSelection={selection} />);
+    root.render(<PlanSurfaceView workspaceId="workspace-1" planId="plan-1" candidateSelection={selection} />);
     await Promise.resolve();
     await Promise.resolve();
   });
-  return { sweep, commit };
 }
 
 afterEach(() => {
@@ -83,9 +78,7 @@ describe('WP-N5 Plan-lens retired Save gesture', () => {
 
   const retiredOutcomes = ['saved', 'stale-refused', 'integrity-incident', 'repository-uncertain'] as const;
   it.each(retiredOutcomes)('cannot reach the retired %s commit outcome', async () => {
-    const { sweep, commit } = await renderReviewOnly();
+    await renderReviewOnly();
     expect(container.querySelector('[data-testid="candidate-preview-save"]')).toBeNull();
-    expect(sweep).not.toHaveBeenCalled();
-    expect(commit).not.toHaveBeenCalled();
   });
 });

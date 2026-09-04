@@ -286,7 +286,6 @@ const TESTS = [
   'dist/main/main/commit-candidates/dirty-inventory.test.js',
   'dist/main/main/commit-candidates/dirty-inventory-batch-hash.test.js',
   'dist/main/main/commit-candidates/scratch-policy-store.test.js',
-  'dist/main/main/commit-candidates/onboarding-discovery.test.js',
   'dist/main/main/commit-candidates/snapshot-registry.test.js',
   // Main-process OOM hardening WP-H: structural budget/single-flight oracle and
   // the small programmatic hostile real-Git workspace fixture. Keep these ahead
@@ -300,7 +299,6 @@ const TESTS = [
   'dist/main/main/commit-candidates/component-assembler.test.js',
   'dist/main/main/commit-candidates/protection-read.test.js',
   'dist/main/main/commit-candidates/candidate-service.read.test.js',
-  'dist/main/main/commit-candidates/save-card-ipc.test.js',
   // Save-card SC-WP-N2: checkpoint-expiry attention IPC — the lightweight read
   // channel (own channel, provider-gated, null before injection) + the push broadcast.
   'dist/main/main/commit-candidates/save-card-attention-ipc.test.js',
@@ -338,7 +336,6 @@ const TESTS = [
   // fails because it asserts an intent-ready state on a surface being retired.
   // DELETE it (do not repair it) when the subtraction plan removes the Save Card
   // committing routes and intent rail engine.
-  'dist/main/main/commit-candidates/save-sweep-service.test.js',
   'dist/main/main/database.intent-ledger.test.js',
   'dist/main/main/commit-candidates/preview-routes-pinned.test.js',
   'dist/main/main/git-checkpoints/boundary-filter-replay.test.js',
@@ -362,19 +359,13 @@ const TESTS = [
   // Save-card Stage 4 SC-WP-4E — lens-neutral IPC, main-process flag gate, and
   // saved-only-after the integrated CommitCoordinator → closure response path.
   'dist/main/main/commit-candidates/commit-coordinator-ipc.test.js',
-  // Save-card Stage 4 SC-WP-4K: production enablement with disabled behavior
-  // held invariant through the injected per-invocation flag seam.
-  'dist/main/main/commit-candidates/commit-coordinator.enablement.test.js',
   // Save-card Stage 4 SC-WP-4H — real-repository adversarial race matrix.
   'dist/main/main/git-checkpoints/commit-coordinator.races.test.js',
   // Save-card Stage 4 SC-WP-4J — real-repository path-semantics adversarial matrix.
   'dist/main/main/git-checkpoints/commit-coordinator.path-semantics.test.js',
   // Save-card Stage 4 SC-WP-4I — real hooks + §9.4 outcome/end-state matrix.
   'dist/main/main/git-checkpoints/commit-coordinator.hooks-outcomes.test.js',
-  // Save-card SC-WP-W2a: preload/source contract smoke test for inventory,
-  // preview, fleet-finalize, and coordinator bindings.
   'dist/main/main/plans/promoted-lifecycle.test.js',
-  'dist/main/preload/save-card-surface.test.js',
   'dist/main/main/supervisor/send-queue-checkpoint.test.js',
   'dist/main/main/supervisor/initial-user-prompt.test.js',
   'dist/main/main/supervisor/hook-spool-tailer.test.js',

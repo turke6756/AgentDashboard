@@ -359,23 +359,6 @@ test('registry admission is sequential, failed flights evict, and default LRU(8)
     'the default TTL expires at exactly 500 ms');
 });
 
-test('production composition gives both route constructors one registry and one policy authority', () => {
-  const source = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'index.ts'), 'utf8');
-  assert.equal((source.match(/new CommitCandidateSnapshotRegistry<CandidateInventoryRead>\(\)/g) ?? []).length, 1);
-  const saveStart = source.indexOf('setSaveCardRoutes(createSaveCardRoutes({');
-  const previewStart = source.indexOf('const previewRoutes = createPreviewRoutes({', saveStart);
-  assert.ok(saveStart >= 0 && previewStart > saveStart);
-  const saveComposition = source.slice(saveStart, previewStart);
-  const previewComposition = source.slice(previewStart, source.indexOf('setSaveCardPreviewRoutes', previewStart));
-  assert.match(saveComposition, /\bsnapshotRegistry,/);
-  assert.match(previewComposition, /\bsnapshotRegistry,/);
-  assert.match(saveComposition, /\bscratchPolicyStore,/);
-  assert.match(saveComposition, /\bresolvePolicyGeneration,/);
-  assert.match(previewComposition, /\bresolvePolicyGeneration,/);
-  assert.equal((source.match(/new ScratchPolicyStore\(/g) ?? []).length, 1);
-  assert.match(source, /scratchPolicyStore\.read\(repositoryKey\)\.policyGeneration/);
-});
-
 test('partial global evidence cannot mint while independently complete scoped evidence can', () => {
   const service = new CommitCandidateService({
     runGit: async () => ({ code: 0, stdout: '', stderr: '' }),

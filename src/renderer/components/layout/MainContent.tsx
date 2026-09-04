@@ -7,10 +7,8 @@ import FileViewerPanel from '../fileviewer/FileViewerPanel';
 import BrowserPanel from '../browser/BrowserPanel';
 import PlansMenu from '../plan/PlansMenu';
 import PlansPane from '../plan/PlansPane';
-import SaveCard from '../save/SaveCard';
 import ActivityTab from '../activity/ActivityTab';
 import { useBrowserStore, ensureBrowserBridge } from '../../stores/browser-store';
-import { useSaveCardStore, useSaveCardAttentionActive } from '../../stores/save-card-store';
 import * as Icons from 'lucide-react';
 import vscodeIcon from '../../assets/material-icons/vscode.svg';
 
@@ -56,13 +54,12 @@ function DetachedViewPlaceholder({ label }: { label: string }) {
 }
 
 export default function MainContent() {
-  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, saveCardOpen, plansOpen, activityOpen, openTabs, detachedViews } = useDashboardStore(
+  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, plansOpen, activityOpen, openTabs, detachedViews } = useDashboardStore(
     useShallow((s) => ({
       workspaces: s.workspaces,
       selectedWorkspaceId: s.selectedWorkspaceId,
       fileViewerOpen: s.fileViewerOpen,
       browserOpen: s.browserOpen,
-      saveCardOpen: s.saveCardOpen,
       plansOpen: s.plansOpen,
       activityOpen: s.activityOpen,
       openTabs: s.openTabs,
@@ -72,41 +69,9 @@ export default function MainContent() {
   const showFileViewer = useDashboardStore((s) => s.showFileViewer);
   const showBrowser = useDashboardStore((s) => s.showBrowser);
   const showDashboard = useDashboardStore((s) => s.showDashboard);
-  const showSaveCard = useDashboardStore((s) => s.showSaveCard);
   const showActivity = useDashboardStore((s) => s.showActivity);
   const browserPaneAttention = useBrowserStore((s) => s.paneAttention);
-  // SC-WP-N2 — the Save entry's amber attention: true when a checkpoint edge for the
-  // selected workspace is expiring soon. Driven by the lightweight
-  // `savecard:getAttention` read + `savecard:attentionChanged` push, so the badge
-  // illuminates WITHOUT running the expensive full inventory probe.
-  const saveCardAttention = useSaveCardAttentionActive(selectedWorkspaceId);
-  const setSaveAttention = useSaveCardStore((s) => s.setAttention);
   const [showLaunch, setShowLaunch] = useState(false);
-
-  // Keep the store's per-workspace attention fresh: subscribe once to the push, and
-  // pull the current value whenever the selected workspace changes (so a workspace
-  // switch reflects its own expiry state immediately, not the previous cycle's).
-  useEffect(() => {
-    // Defensive: the bridge always exposes saveCard in production (preload), but a
-    // partial window.api (early boot / test harness) must not crash the shell.
-    return window.api.saveCard?.onAttentionChanged?.(({ workspaceId, notice }) => {
-      setSaveAttention(workspaceId, notice);
-    });
-  }, [setSaveAttention]);
-
-  useEffect(() => {
-    if (!selectedWorkspaceId || !window.api.saveCard?.getAttention) return;
-    let active = true;
-    void window.api.saveCard
-      .getAttention({ workspaceId: selectedWorkspaceId })
-      .then((notice) => {
-        if (active) setSaveAttention(selectedWorkspaceId, notice);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [selectedWorkspaceId, setSaveAttention]);
 
   const workspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
@@ -217,12 +182,9 @@ export default function MainContent() {
 
   const workspaceTabCount = openTabs.filter((t) => t.workspaceId === selectedWorkspaceId).length;
   const hasOpenTabs = workspaceTabCount > 0;
-  // Center-view dispatch — precedence file viewer > browser > save card >
-  // dashboard grid. The Save card is a read-only peer surface (SC-WP-1I).
-  const dashboardActive = !fileViewerOpen && !browserOpen && !saveCardOpen && !plansOpen && !activityOpen;
-  const saveCardActive = saveCardOpen && !fileViewerOpen && !browserOpen;
-  const plansActive = plansOpen && !fileViewerOpen && !browserOpen && !saveCardOpen;
-  const activityActive = activityOpen && !fileViewerOpen && !browserOpen && !saveCardOpen && !plansOpen;
+  const dashboardActive = !fileViewerOpen && !browserOpen && !plansOpen && !activityOpen;
+  const plansActive = plansOpen && !fileViewerOpen && !browserOpen;
+  const activityActive = activityOpen && !fileViewerOpen && !browserOpen && !plansOpen;
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
@@ -308,26 +270,6 @@ export default function MainContent() {
               {!toolbarCompact && 'Activity'}
             </button>
             <button
-              data-testid="view-btn-save"
-              data-attention={saveCardAttention ? 'expiring' : undefined}
-              onClick={showSaveCard}
-              className={`ui-btn ui-btn-outline flex-1 whitespace-nowrap px-3 py-1.5 text-[13px] font-medium ${
-                saveCardActive
-                  ? 'ui-btn-success is-active'
-                  : saveCardAttention
-                    ? 'ui-btn-warning animate-pulse'
-                    : ''
-              }`}
-              title={
-                saveCardAttention
-                  ? 'Save progress — recovery checkpoints are expiring soon; save to keep this work'
-                  : 'Save progress — inspect uncommitted work (read-only)'
-              }
-            >
-              <Icons.Save className="w-4 h-4 shrink-0" />
-              {!toolbarCompact && 'Save'}
-            </button>
-            <button
               onClick={() => window.api.workspaces.openInVSCode(workspace.id)}
               className="ui-btn ui-btn-outline flex-1 whitespace-nowrap px-3 py-1.5 text-[13px] font-medium"
               title="Open workspace in VS Code"
@@ -360,8 +302,6 @@ export default function MainContent() {
         <DetachedViewPlaceholder label="Browser" />
       ) : fileViewerOpen && filesDetached ? (
         <DetachedViewPlaceholder label="Files" />
-      ) : saveCardActive ? (
-        <SaveCard />
       ) : plansActive && plansDetached ? (
         <DetachedViewPlaceholder label="Plans" />
       ) : plansActive ? (
