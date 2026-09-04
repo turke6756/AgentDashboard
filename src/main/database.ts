@@ -9384,6 +9384,35 @@ export function confirmPlanDispatchAttempt(input: {
   })();
 }
 
+/** Keep the confirmed turn and its dispatch attempt on the same durable session.
+ * Codex learns this value after opening its first turn, so the agent's current
+ * resume-session binding is the fallback when that turn was inserted with NULL. */
+export function backfillPlanDispatchSessionEvidence(input: {
+  attemptId: string;
+  confirmedTurnId: string;
+  targetAgentId: string | null;
+}): string | null {
+  return getDb().transaction((): string | null => {
+    const turnSessionId = getTurnRecord(input.confirmedTurnId)?.sessionId ?? null;
+    const targetSessionId = turnSessionId
+      ?? (input.targetAgentId ? getAgent(input.targetAgentId)?.resumeSessionId : null)
+      ?? null;
+    if (!targetSessionId) return null;
+    run(
+      `UPDATE plan_dispatch_attempts
+          SET target_session_id = COALESCE(target_session_id, ?)
+        WHERE id = ?`,
+      [targetSessionId, input.attemptId],
+    );
+    run(
+      `UPDATE turn_records SET session_id = ?
+        WHERE id = ? AND session_id IS NULL`,
+      [targetSessionId, input.confirmedTurnId],
+    );
+    return targetSessionId;
+  })();
+}
+
 export interface PlanDispatchReconcileResult {
   reconciledAttemptIds: string[];
   diagnostics: string[];
@@ -9398,6 +9427,20 @@ export function reconcilePlanDispatchAttempts(
   now: number = Date.now(),
 ): PlanDispatchReconcileResult {
   const result: PlanDispatchReconcileResult = { reconciledAttemptIds: [], diagnostics: [] };
+  const confirmedWithoutSession = queryAll(
+    `SELECT id, confirmed_turn_id, target_agent_id
+       FROM plan_dispatch_attempts
+      WHERE state IN ('delivered','reconciled')
+        AND target_session_id IS NULL
+        AND confirmed_turn_id IS NOT NULL`,
+  ) as Array<{ id: string; confirmed_turn_id: string; target_agent_id: string | null }>;
+  for (const attempt of confirmedWithoutSession) {
+    backfillPlanDispatchSessionEvidence({
+      attemptId: attempt.id,
+      confirmedTurnId: attempt.confirmed_turn_id,
+      targetAgentId: attempt.target_agent_id,
+    });
+  }
   for (const attempt of listOpenPlanDispatchAttempts()) {
     if (getPlanWorkPackage(attempt.packageId)?.state !== 'ready') continue;
     let turn: TurnRecord | null = null;

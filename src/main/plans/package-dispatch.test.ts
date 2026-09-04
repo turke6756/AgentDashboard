@@ -553,6 +553,78 @@ test('ambiguous fallback stays pending and surfaces a diagnostic', () => {
   assert.equal(dbm.getPlanWorkPackage(s.packageId)?.state, 'ready');
 });
 
+test('confirmation backfills the attempt and turn from the agent resume session', () => {
+  const s = seed();
+  const attemptId = `attempt-session-${serial}`;
+  const turnId = `turn-session-${serial}`;
+  const resumeSessionId = `codex-session-${serial}`;
+  dbm.getDb().prepare('UPDATE agents SET resume_session_id = ? WHERE id = ?')
+    .run(resumeSessionId, s.agentId);
+  dbm.insertPlanDispatchAttempt({
+    id: attemptId, packageId: s.packageId, planId: s.planId,
+    executionRunId: s.runId, targetAgentId: s.agentId,
+    requestedPlanItemId: s.packageId, createdAt: 3000,
+    intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
+      briefDigest: 'fixture-digest', createdById: null },
+  });
+  insertStampedTurnWithoutReconcile(s, turnId, 3010, s.intentId);
+
+  dbm.confirmPlanDispatchAttempt({
+    attemptId, confirmedTurnId: turnId, eventId: `event-session-${serial}`,
+    actor: 'test', confirmedAt: 3010,
+  });
+
+  assert.equal(dbm.getPlanDispatchAttempt(attemptId)?.targetSessionId, resumeSessionId);
+  assert.equal(dbm.getTurnRecord(turnId)?.sessionId, resumeSessionId);
+});
+
+test('reconciliation repairs session evidence for an already reconciled attempt', () => {
+  const s = seed();
+  const attemptId = `attempt-repaired-${serial}`;
+  const turnId = `turn-repaired-${serial}`;
+  const resumeSessionId = `codex-repaired-${serial}`;
+  dbm.getDb().prepare('UPDATE agents SET resume_session_id = ? WHERE id = ?')
+    .run(resumeSessionId, s.agentId);
+  dbm.insertPlanDispatchAttempt({
+    id: attemptId, packageId: s.packageId, planId: s.planId,
+    executionRunId: s.runId, targetAgentId: s.agentId,
+    requestedPlanItemId: s.packageId, createdAt: 3100,
+    intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
+      briefDigest: 'fixture-digest', createdById: null },
+  });
+  insertStampedTurnWithoutReconcile(s, turnId, 3110, s.intentId);
+  dbm.getDb().prepare(
+    `UPDATE plan_dispatch_attempts
+        SET state = 'reconciled', confirmed_turn_id = ?, confirmed_at = ?, reconciled_at = ?
+      WHERE id = ?`,
+  ).run(turnId, 3110, 3120, attemptId);
+
+  assert.doesNotThrow(() => dbm.reconcilePlanDispatchAttempts(3130));
+  assert.equal(dbm.getPlanDispatchAttempt(attemptId)?.targetSessionId, resumeSessionId);
+  assert.equal(dbm.getTurnRecord(turnId)?.sessionId, resumeSessionId);
+});
+
+test('missing turn and agent sessions remain null without throwing', () => {
+  const s = seed();
+  const attemptId = `attempt-null-session-${serial}`;
+  const turnId = `turn-null-session-${serial}`;
+  dbm.insertPlanDispatchAttempt({
+    id: attemptId, packageId: s.packageId, planId: s.planId,
+    executionRunId: s.runId, targetAgentId: s.agentId,
+    requestedPlanItemId: s.packageId, createdAt: 3200,
+    intent: { id: s.intentId, workspaceId: s.workspaceId, title: 'fixture',
+      briefDigest: 'fixture-digest', createdById: null },
+  });
+  insertStampedTurnWithoutReconcile(s, turnId, 3210, s.intentId);
+
+  assert.doesNotThrow(() => dbm.confirmPlanDispatchAttempt({
+    attemptId, confirmedTurnId: turnId, eventId: `event-null-session-${serial}`,
+    actor: 'test', confirmedAt: 3210,
+  }));
+  assert.equal(dbm.getPlanDispatchAttempt(attemptId)?.targetSessionId, null);
+  assert.equal(dbm.getTurnRecord(turnId)?.sessionId, null);
+});
+
 (async () => {
   const tmpAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'package-dispatch-'));
   process.env.APPDATA = tmpAppData;

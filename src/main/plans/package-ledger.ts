@@ -3,6 +3,7 @@
 // written here. Existing writers are rerouted by WP-D3.
 
 import {
+  backfillPlanDispatchSessionEvidence,
   getContinuationAttempt,
   getDb,
   getPackageFinalization,
@@ -425,13 +426,18 @@ export function transitionPlanPackage(
           || turn.agentId !== attempt.target_agent_id) {
         throw new Error('package-ledger: dispatch confirmation is not witnessed by a matching turn');
       }
+      const targetSessionId = backfillPlanDispatchSessionEvidence({
+        attemptId: command.dispatchAttemptId,
+        confirmedTurnId: turn.id,
+        targetAgentId: turn.agentId,
+      });
       getDb().prepare(
         'UPDATE plan_work_packages SET intent_id = ?, updated_at = ? WHERE id = ?',
       ).run(command.intentId, observed.observedAt, command.packageId);
       getDb().prepare(
         `UPDATE plan_dispatch_attempts SET state = 'delivered', confirmed_turn_id = ?,
            confirmed_at = ?, target_session_id = COALESCE(target_session_id, ?) WHERE id = ?`,
-      ).run(turn.id, observed.observedAt, turn.sessionId, command.dispatchAttemptId);
+      ).run(turn.id, observed.observedAt, targetSessionId, command.dispatchAttemptId);
       evidenceIds.push(command.dispatchAttemptId);
     } else if (command.type === 'gate-decided') {
       const observed = requireWitness(witness, 'gate');
