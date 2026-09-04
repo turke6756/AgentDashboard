@@ -41,6 +41,10 @@ import { RETENTION_CYCLE_INTERVAL_MS } from '../shared/constants';
 import { registerIpcHandlers, setHumanCheckpointRoutes, setSaveCardRoutes, setSaveCardPreviewRoutes, setSaveCardMintRoutes, setSaveCardFinalizeRoutes, setCommitCoordinatorRoutes, setSaveSweepService, setSaveCardAttentionProvider, setActivityMergeService } from './ipc-handlers';
 import { createSaveCardRoutes } from './commit-candidates/save-card-routes';
 import { createPreviewRoutes } from './commit-candidates/preview-routes';
+import {
+  createPlanCandidateRoutes,
+  type PlanCandidateRoutesDeps,
+} from './plans/plan-candidate-routes';
 import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
 import { ScratchPolicyStore } from './commit-candidates/scratch-policy-store';
 import { PinnedSnapshotStore } from './commit-candidates/pinned-snapshot-store';
@@ -111,6 +115,15 @@ import {
   detachedDirFor,
   defaultDetachedRegistryDeps,
 } from './detached-process-registry';
+
+export function wirePlanCandidateRoutes(
+  deps: PlanCandidateRoutesDeps,
+  provide: typeof providePlanPreviewRoutes = providePlanPreviewRoutes,
+) {
+  const routes = createPlanCandidateRoutes(deps);
+  provide(routes);
+  return routes;
+}
 
 // First executable statement of the main process, before any supervisor /
 // runner construction: strip Claude Code child-session markers inherited when
@@ -1007,7 +1020,14 @@ app.whenReady().then(async () => {
           });
           setSaveCardPreviewRoutes(previewRoutes.saveCardPreviewRoutes);
           setSaveCardMintRoutes(previewRoutes.saveCardMintRoutes);
-          providePlanPreviewRoutes(previewRoutes.planPreviewRoutes);
+          wirePlanCandidateRoutes({
+            gitExe: engine.gitExe,
+            queue: engine.queue,
+            captureFinalizationBoundary: engine.captureFinalizationBoundary,
+            snapshotRegistry,
+            resolvePolicyGeneration,
+            onRepositoryResolved: rememberRepository,
+          });
           setSaveCardFinalizeRoutes(previewRoutes.saveCardFinalizeRoutes);
           const candidateService = previewRoutes.productionSeams.candidateService;
           const activityMergeService = new ActivityMergeService({ gitExe: engine.gitExe });

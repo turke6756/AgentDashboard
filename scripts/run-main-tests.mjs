@@ -313,6 +313,7 @@ const TESTS = [
   // HEAD / fingerprint / finalizations / per-member temp-index reps) for BOTH
   // lenses. The 1G assembly seam is stubbed; the stitching is exercised directly.
   'dist/main/main/commit-candidates/preview-routes.test.js',
+  'dist/main/main/plans/plan-candidate-routes.test.js',
   // Save-card Stage ③ SC-WP-3C/3G — candidate build pipeline + immutable
   // index-fingerprint snapshot, real finalization service, and the finalize/
   // preview IPC facades (WP-3Z registration).
