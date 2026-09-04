@@ -14,6 +14,7 @@ interface AgentSession {
   workingDirectory: string;
   provider: AgentProvider;
   startedAt?: string;
+  discoveryPrompt?: string;
 }
 
 const MASTER_TICK_MS = 1000;
@@ -188,6 +189,12 @@ export class SessionLogDispatcher extends EventEmitter {
   private observedSessionIds = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
   private syntheticMarkers = new Map<string, SyntheticMarker[]>(); // agentId -> markers
+  // The first dashboard-submitted user text is a per-agent discovery signal
+  // for providers that cannot accept a launch-time session id (Agy). Keep it
+  // separate from the recency-only dedupe marker: dedupe intentionally ignores
+  // text because ConPTY can rewrite Unicode, while provider history preserves
+  // the exact submitted prompt.
+  private sessionDiscoveryPrompts = new Map<string, string>();
   private seenEventUuids = new Map<string, Set<string>>();
   private seenEventUuidOrder = new Map<string, string[]>();
   // WP-1c — byte-budget accounting for the chat ring. `ringEventBytes` is
@@ -280,6 +287,9 @@ export class SessionLogDispatcher extends EventEmitter {
   // the on-disk reader; pollOne dedupes it against markers stored here.
   appendSyntheticUserText(agentId: string, text: string): void {
     const now = Date.now();
+    if (!this.sessionDiscoveryPrompts.has(agentId)) {
+      this.sessionDiscoveryPrompts.set(agentId, text);
+    }
     this.recordSyntheticMarker(agentId, now);
 
     const ev: UserTextEvent = {
@@ -407,6 +417,7 @@ export class SessionLogDispatcher extends EventEmitter {
     this.seenEventUuids.delete(agentId);
     this.seenEventUuidOrder.delete(agentId);
     this.syntheticMarkers.delete(agentId);
+    this.sessionDiscoveryPrompts.delete(agentId);
     this.emittedInitialBatch.delete(agentId);
     this.observedSessionIds.delete(agentId);
     for (const reader of this.readers.values()) reader.invalidatePath(agentId);
@@ -440,6 +451,7 @@ export class SessionLogDispatcher extends EventEmitter {
     this.seenEventUuids.delete(agentId);
     this.seenEventUuidOrder.delete(agentId);
     this.syntheticMarkers.delete(agentId);
+    this.sessionDiscoveryPrompts.delete(agentId);
     this.emittedInitialBatch.delete(agentId);
     this.observedSessionIds.delete(agentId);
     // Poll bookkeeping: `tick()` only walks ACTIVE sessions, so a terminal
@@ -595,12 +607,15 @@ export class SessionLogDispatcher extends EventEmitter {
     }
     this.observedSessionIds.set(session.agentId, session.sessionId);
 
+    const exactDiscoveryPrompt = this.sessionDiscoveryPrompts.get(session.agentId);
     const readerSession: ChatLogReaderSession = {
       agentId: session.agentId,
       sessionId: session.sessionId,
       workingDirectory: session.workingDirectory,
       provider: session.provider,
       startedAt: session.startedAt,
+      discoveryPrompt: exactDiscoveryPrompt ?? session.discoveryPrompt,
+      discoveryPromptExact: exactDiscoveryPrompt !== undefined,
       subscribed: this.subscribers.has(session.agentId),
     };
 

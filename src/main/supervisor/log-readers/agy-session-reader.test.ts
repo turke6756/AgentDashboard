@@ -381,19 +381,22 @@ test('bound session id wins over newer cwd-matching conversations', () => {
   } finally { cleanup(root); }
 });
 
-test('same-cwd unbound agent ignores history binding, then reads its own DB once bound', () => {
+test('same-cwd unbound agent binds only through its exact launch prompt', () => {
   const root = tempRoot();
   try {
     createFixture(root, { sid: OTHER_SID, rows: [{ idx: 0, type: 14, status: 3, payload: userPayload('history-bound') }] });
     fs.writeFileSync(path.join(root, 'history.jsonl'), JSON.stringify({
       display: 'hello', timestamp: CREATED_MS + 1_000, workspace: CWD, conversationId: OTHER_SID,
     }) + '\n');
-    assert.equal(readAgyHistoryBinding(root, CWD, new Date(CREATED_MS).toISOString()), OTHER_SID);
+    assert.equal(
+      readAgyHistoryBinding(root, CWD, 'hello', new Date(CREATED_MS).toISOString(), CREATED_MS + 2_000),
+      OTHER_SID,
+    );
     const reader = readerAt(root);
-    assert.deepEqual(reader.pollSession(session({ sessionId: '' })), []);
-    assert.equal((reader as any).resolvedPaths.has('agent-1'), false);
-    const user = reader.pollSession(session({ sessionId: OTHER_SID })).find((e) => e.type === 'user-text');
+    const user = reader.pollSession(session({ sessionId: '', discoveryPrompt: 'hello' }))
+      .find((e) => e.type === 'user-text');
     assert.ok(user?.type === 'user-text' && user.text === 'history-bound');
+    assert.equal(reader.getResolvedSessionId('agent-1'), OTHER_SID);
   } finally { cleanup(root); }
 });
 
@@ -403,7 +406,10 @@ test('SQLite-format startedAt is UTC when binding history rows', () => {
     fs.writeFileSync(path.join(root, 'history.jsonl'), JSON.stringify({
       display: 'hello', timestamp: CREATED_MS + 1_000, workspace: CWD, conversationId: OTHER_SID,
     }) + '\n');
-    assert.equal(readAgyHistoryBinding(root, CWD, '2026-08-03 16:55:28'), OTHER_SID);
+    assert.equal(
+      readAgyHistoryBinding(root, CWD, 'hello', '2026-08-03 16:55:28', CREATED_MS + 2_000),
+      OTHER_SID,
+    );
   } finally { cleanup(root); }
 });
 
@@ -421,6 +427,105 @@ test('unbound agent does not choose the newest post-start DB for its cwd', () =>
     const reader = readerAt(root);
     assert.deepEqual(reader.pollSession(session({ sessionId: '' })), []);
     assert.equal((reader as any).resolvedPaths.has('agent-1'), false);
+  } finally { cleanup(root); }
+});
+
+test('two same-cwd agents with distinct launch prompts bind their own conversations', () => {
+  const root = tempRoot();
+  try {
+    createFixture(root, {
+      sid: SID,
+      rows: [{ idx: 0, type: 14, status: 3, payload: userPayload('prompt one') }],
+    });
+    createFixture(root, {
+      sid: OTHER_SID,
+      rows: [{ idx: 0, type: 14, status: 3, payload: userPayload('prompt two') }],
+    });
+    fs.writeFileSync(path.join(root, 'history.jsonl'), [
+      { display: 'prompt one', timestamp: CREATED_MS + 1_000, workspace: CWD },
+      { display: 'prompt two', timestamp: CREATED_MS + 1_500, workspace: CWD },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+    const reader = readerAt(root);
+    const sessions = [
+      session({ agentId: 'agent-1', sessionId: '' }),
+      session({ agentId: 'agent-2', sessionId: '' }),
+    ];
+    const dispatcher = new SessionLogDispatcher(() => sessions);
+    dispatcher.register(reader);
+    dispatcher.appendSyntheticUserText('agent-1', 'prompt one');
+    dispatcher.appendSyntheticUserText('agent-2', 'prompt two');
+    const resolved: Array<{ agentId: string; sessionId: string }> = [];
+    dispatcher.on('session-resolved', (event) => resolved.push(event));
+
+    dispatcher.pollNow('agent-1');
+    dispatcher.pollNow('agent-2');
+
+    assert.deepEqual(resolved, [
+      { agentId: 'agent-1', provider: 'agy', sessionId: SID },
+      { agentId: 'agent-2', provider: 'agy', sessionId: OTHER_SID },
+    ]);
+    assert.ok(dispatcher.getCachedEvents('agent-1').events.some(
+      (event) => event.type === 'user-text' && event.text === 'prompt one',
+    ));
+    assert.ok(dispatcher.getCachedEvents('agent-2').events.some(
+      (event) => event.type === 'user-text' && event.text === 'prompt two',
+    ));
+  } finally { cleanup(root); }
+});
+
+test('identical same-window prompts leave both same-cwd agents unbound', () => {
+  const root = tempRoot();
+  try {
+    createFixture(root, { sid: SID });
+    createFixture(root, { sid: OTHER_SID });
+    fs.writeFileSync(path.join(root, 'history.jsonl'), [
+      { display: 'same prompt', timestamp: CREATED_MS + 1_000, workspace: CWD, conversationId: SID },
+      { display: 'same prompt', timestamp: CREATED_MS + 1_500, workspace: CWD, conversationId: OTHER_SID },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+    const reader = readerAt(root);
+    const sessions = [
+      session({ agentId: 'agent-1', sessionId: '' }),
+      session({ agentId: 'agent-2', sessionId: '' }),
+    ];
+    const dispatcher = new SessionLogDispatcher(() => sessions);
+    dispatcher.register(reader);
+    dispatcher.appendSyntheticUserText('agent-1', 'same prompt');
+    dispatcher.appendSyntheticUserText('agent-2', 'same prompt');
+    const resolved: unknown[] = [];
+    dispatcher.on('session-resolved', (event) => resolved.push(event));
+
+    dispatcher.pollNow('agent-1');
+    dispatcher.pollNow('agent-2');
+
+    assert.deepEqual(resolved, []);
+    assert.equal(reader.getResolvedSessionId('agent-1'), null);
+    assert.equal(reader.getResolvedSessionId('agent-2'), null);
+  } finally { cleanup(root); }
+});
+
+test('durable task-label prefix selects one full history prompt after restart', () => {
+  const root = tempRoot();
+  try {
+    const fullPrompt = 'Validation agent C with a longer exact instruction body';
+    createFixture(root, {
+      sid: OTHER_SID,
+      rows: [{ idx: 0, type: 14, status: 3, payload: userPayload(fullPrompt) }],
+    });
+    fs.writeFileSync(path.join(root, 'history.jsonl'), JSON.stringify({
+      display: fullPrompt, timestamp: CREATED_MS + 1_000, workspace: CWD,
+    }) + '\n');
+
+    const reader = readerAt(root);
+    const events = reader.pollSession(session({
+      sessionId: '',
+      discoveryPrompt: 'Validation agent C with a longer',
+      discoveryPromptExact: false,
+    }));
+
+    assert.equal(reader.getResolvedSessionId('agent-1'), OTHER_SID);
+    assert.ok(events.some((event) => event.type === 'user-text' && event.text === fullPrompt));
   } finally { cleanup(root); }
 });
 

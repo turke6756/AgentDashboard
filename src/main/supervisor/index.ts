@@ -2821,17 +2821,23 @@ export class AgentSupervisor extends EventEmitter {
       const agents = getActiveAgents();
       return agents
         .filter(a => a.resumeSessionId || a.provider === 'codex' || a.provider === 'gemini' || a.provider === 'grok' || a.provider === 'agy')
-        .map(a => ({
-          agentId: a.id,
-          sessionId: a.resumeSessionId || '',
-          workingDirectory: a.workingDirectory,
-          provider: a.provider,
-          startedAt: a.createdAt,
-          // Context Window Warning: which per-role gauge cap this agent's
-          // readings are computed against (readers apply it via
-          // resolveContextGaugeCap).
-          role: contextGaugeRoleKeyOf(a),
-        }));
+        .map(a => {
+          const latestTurn = a.provider === 'agy' && !a.resumeSessionId
+            ? listTurnRecords(a.workspaceId, { agentId: a.id, limit: 1 })[0]
+            : undefined;
+          return {
+            agentId: a.id,
+            sessionId: a.resumeSessionId || '',
+            workingDirectory: a.workingDirectory,
+            provider: a.provider,
+            startedAt: a.createdAt,
+            discoveryPrompt: latestTurn?.taskLabel ?? undefined,
+            // Context Window Warning: which per-role gauge cap this agent's
+            // readings are computed against (readers apply it via
+            // resolveContextGaugeCap).
+            role: contextGaugeRoleKeyOf(a),
+          };
+        });
     });
     this.sessionLogReader.register(new ClaudeJsonlReader());
     this.sessionLogReader.register(new CodexRolloutReader());

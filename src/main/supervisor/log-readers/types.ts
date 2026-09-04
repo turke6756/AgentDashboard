@@ -10,6 +10,11 @@ export interface ChatLogReaderSession {
   workingDirectory: string;
   provider: AgentProvider;
   startedAt?: string;
+  /** Exact first user text submitted through the dashboard for this live agent.
+   *  Readers may use it only as a per-agent discovery tiebreaker. */
+  discoveryPrompt?: string;
+  /** False when discoveryPrompt is a durable, truncated task-label prefix. */
+  discoveryPromptExact?: boolean;
   /** True when the chat pane is open for this agent — readers may use this to do aggressive path re-resolution after N empty ticks. */
   subscribed: boolean;
   /** Gauge-cap role key (Context Window Warning): which per-role cap this

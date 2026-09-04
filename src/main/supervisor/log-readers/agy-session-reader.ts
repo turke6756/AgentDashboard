@@ -464,9 +464,18 @@ function tailUtf8(filePath: string, maxBytes: number): string {
   }
 }
 
-/** Strongest available live binding. Agy writes conversationId on history
- * rows after the first prompt in a conversation, alongside the exact cwd. */
-export function readAgyHistoryBinding(root: string, cwd: string, startedAt?: string): string | null {
+/** Per-agent live binding. Agy writes the exact submitted prompt, timestamp,
+ * and cwd in history.jsonl (conversationId may be absent on the first row).
+ * Only one prompt candidate inside this agent's launch window is attributable. */
+export function readAgyHistoryBinding(
+  root: string,
+  cwd: string,
+  prompt: string,
+  startedAt?: string,
+  nowMs = Date.now(),
+  promptExact = true,
+): string | null {
+  if (!prompt) return null;
   const historyPath = path.join(root, 'history.jsonl');
   let raw: string;
   try {
@@ -475,22 +484,69 @@ export function readAgyHistoryBinding(root: string, cwd: string, startedAt?: str
     return null;
   }
   const floorBase = parseStartedAtMs(startedAt);
-  const floor = floorBase ? floorBase - START_FLOOR_SLACK_MS : 0;
-  let best: { id: string; timestamp: number } | null = null;
+  if (!floorBase) return null;
+  const floor = floorBase - START_FLOOR_SLACK_MS;
+  const historyCandidates: Array<{ display: string; id: string }> = [];
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line) as Record<string, unknown>;
       const id = typeof row.conversationId === 'string' ? row.conversationId : '';
+      const display = typeof row.display === 'string' ? row.display : '';
       const workspace = typeof row.workspace === 'string' ? row.workspace : '';
       const timestamp = typeof row.timestamp === 'number' ? row.timestamp : 0;
-      if (!CONVERSATION_ID_RE.test(id) || !cwdMatches(workspace, cwd) || timestamp < floor) continue;
-      if (!best || timestamp > best.timestamp) best = { id, timestamp };
+      if (
+        (!!id && !CONVERSATION_ID_RE.test(id))
+        || (promptExact ? display !== prompt : !display.startsWith(prompt))
+        || !cwdMatches(workspace, cwd)
+        || !Number.isFinite(timestamp)
+        || timestamp < floor
+        || timestamp > nowMs
+      ) continue;
+      historyCandidates.push({ display, id });
+      if (historyCandidates.length > 1) return null;
     } catch {
       // Ignore malformed history rows.
     }
   }
-  return best?.id ?? null;
+  const history = historyCandidates[0];
+  if (!history) return null;
+  if (CONVERSATION_ID_RE.test(history.id)) return history.id;
+
+  // The first history row observed from Agy may omit conversationId. Resolve
+  // that row only by its full exact display text inside a same-cwd conversation;
+  // the durable task label was merely the per-agent selector for the history
+  // row and is never used to match conversation content.
+  const probe: ChatLogReaderSession = {
+    agentId: '__history-binding__',
+    sessionId: '',
+    workingDirectory: cwd,
+    provider: 'agy',
+    startedAt,
+    subscribed: false,
+  };
+  const matches: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(path.join(root, 'conversations'), { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.db')) continue;
+      const entryId = path.basename(entry.name, '.db');
+      if (!CONVERSATION_ID_RE.test(entryId)) continue;
+      const dbPath = path.join(root, 'conversations', entry.name);
+      try {
+        if (fs.statSync(dbPath).mtimeMs < floor) continue;
+      } catch {
+        continue;
+      }
+      const parsed = parseConversation(dbPath, probe, false);
+      if (!parsed || !cwdMatches(parsed.metadata.cwd, cwd)) continue;
+      if (!parsed.events.some((event) => event.type === 'user-text' && event.text === history.display)) continue;
+      matches.push(entryId);
+      if (matches.length > 1) return null;
+    }
+  } catch {
+    return null;
+  }
+  return matches[0] ?? null;
 }
 
 export class AgySessionReader implements ChatLogReader {
@@ -625,14 +681,23 @@ export class AgySessionReader implements ChatLogReader {
       }
       this.invalidatePath(session.agentId);
     }
-    // A cwd is a lane identity, not an agent identity. Many Agy agents share
-    // it, so an unbound live agent must remain empty until its own conversation
-    // id is persisted. Activity-window recovery for terminal history remains
-    // available through `recoverSessionEventsOnce`.
-    if (!CONVERSATION_ID_RE.test(session.sessionId)) return null;
     const root = this.getWindowsAgyRoot();
     if (!root) return null;
-    const candidate = conversationDbPath(root, session.sessionId);
+    // A cwd is a lane identity, not an agent identity. For an unbound live Agy
+    // agent, history discovery is allowed only through the agent's exact launch
+    // prompt and launch window. Zero or multiple history rows stay unbound.
+    const resolvedSessionId = CONVERSATION_ID_RE.test(session.sessionId)
+      ? session.sessionId
+      : readAgyHistoryBinding(
+          root,
+          session.workingDirectory,
+          session.discoveryPrompt ?? '',
+          session.startedAt,
+          Date.now(),
+          session.discoveryPromptExact !== false,
+        );
+    if (!resolvedSessionId) return null;
+    const candidate = conversationDbPath(root, resolvedSessionId);
     if (!fs.existsSync(candidate)) return null;
     const parsed = parseConversation(candidate, session, false);
     if (!parsed || !cwdMatches(parsed.metadata.cwd, session.workingDirectory)) return null;

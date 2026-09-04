@@ -89,6 +89,33 @@ test('unbound live reader emits its exact resolved provider session id', () => {
   }]);
 });
 
+test('unbound reader receives durable prompt prefix until its exact first synthetic prompt arrives', () => {
+  const seen: Array<{ prompt: string | undefined; exact: boolean | undefined }> = [];
+  const reader: ChatLogReader = {
+    provider: 'agy',
+    pollSession: (session) => {
+      seen.push({ prompt: session.discoveryPrompt, exact: session.discoveryPromptExact });
+      return [];
+    },
+    invalidatePath: () => {},
+  };
+  const dispatcher = new SessionLogDispatcher(() => [{
+    agentId: 'agy-1', sessionId: '', workingDirectory: '/shared-lane', provider: 'agy',
+    discoveryPrompt: 'durable task-label prefix',
+  }]);
+  dispatcher.register(reader);
+
+  dispatcher.pollNow('agy-1');
+  dispatcher.appendSyntheticUserText('agy-1', 'launch prompt');
+  dispatcher.appendSyntheticUserText('agy-1', 'later prompt');
+  dispatcher.pollNow('agy-1');
+
+  assert.deepEqual(seen, [
+    { prompt: 'durable task-label prefix', exact: false },
+    { prompt: 'launch prompt', exact: true },
+  ]);
+});
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 test('session-id change invalidates the reader and replaces the per-agent ring', () => {
