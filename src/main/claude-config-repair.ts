@@ -10,6 +10,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { isWslEnabled } from './wsl-enabled';
 import { getActiveAgents } from './database';
 import { windowsToWslPath } from './path-utils';
 
@@ -222,6 +223,7 @@ export function validateAndRepairClaudeJson(): void {
 /** WSL variant — thin, restore-only (no graft mode). The distro keeps its own
  *  ~/.claude.json; only relevant when WSL agents exist. */
 export function validateAndRepairWslClaudeJson(): void {
+  if (!isWslEnabled()) return;
   try {
     if (!getActiveAgents().some(a => a.tmuxSessionName)) return;
 

@@ -7,6 +7,7 @@ import { wslSpawn, isInotifywaitAvailable } from './wsl-bridge';
 import { listDirectoryEntriesAsync } from './file-reader';
 import { ensureWslPath } from './path-utils';
 import type { FsEvent, PathType } from '../shared/types';
+import { isWslEnabled } from './wsl-enabled';
 
 type Listener = (event: FsEvent) => void;
 
@@ -201,6 +202,7 @@ function startPollingWatcher(dirPath: string, pathType: PathType, key: string): 
 }
 
 async function startBackend(dirPath: string, pathType: PathType, key: string): Promise<() => void> {
+  if (pathType === 'wsl' && !isWslEnabled()) return () => {};
   const watchPath = backendPath(dirPath, pathType);
   if (pathType === 'windows') {
     return startWindowsWatcher(watchPath, key);

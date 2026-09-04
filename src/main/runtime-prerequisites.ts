@@ -39,6 +39,7 @@ import { PROVIDER_INSTALL_HINTS, OPTIONAL_TOOL_HINTS, MIN_SYSTEM_NODE_MAJOR, MIN
 import { getWindowsSystemPath, probeWindowsProvider } from './supervisor/provider-resolver';
 import { probeWorkspaceGit } from './git/git-runtime';
 import { getPassiveWslStatus, wslExec } from './wsl-bridge';
+import { isWslEnabled } from './wsl-enabled';
 
 /** Per-probe budget. The plan says 2s; that is generous for a `--version` on a
  *  warm machine and short enough that the worst case (every probe times out)
@@ -55,6 +56,7 @@ const REPORT_TTL_MS = 60_000;
 let cachedReport: RuntimePrerequisiteReport | null = null;
 let cachedAt = 0;
 let inFlight: Promise<RuntimePrerequisiteReport> | null = null;
+let inFlightWslEnabled: boolean | null = null;
 
 type ProviderId = 'claude' | 'codex' | 'grok' | 'agy';
 const PROVIDER_IDS: ProviderId[] = ['claude', 'codex', 'grok', 'agy'];
@@ -488,6 +490,7 @@ async function checkOptional(
  *  comes back `not-checked` and the UI must say "not checked", never "missing". */
 async function checkWslGroup(
   probe: boolean,
+  enabled: boolean,
 ): Promise<{ checks: PrerequisiteCheck[]; status: WslStatus }> {
   const wslHint = OPTIONAL_TOOL_HINTS.wsl;
   const tmuxHint = OPTIONAL_TOOL_HINTS.tmux;
@@ -515,7 +518,7 @@ async function checkWslGroup(
 
   if (!probe) {
     return {
-      status: { state: 'unknown', distros: [] },
+      status: { state: enabled ? 'unknown' : 'disabled', distros: [] },
       checks: [
         notChecked('wsl', wslHint.label, wslImpact, wslHint.docsUrl),
         notChecked('wsl-node', 'Node.js (inside WSL)', nodeImpact, OPTIONAL_TOOL_HINTS.node.docsUrl),
@@ -656,11 +659,14 @@ export async function detectRuntimePrerequisites(
   opts: DetectOptions = {},
 ): Promise<RuntimePrerequisiteReport> {
   const now = Date.now();
+  const wslEnabled = isWslEnabled();
   if (!opts.force && cachedReport && now - cachedAt < REPORT_TTL_MS) {
-    // Don't serve a cached WSL-less report to a caller that wants WSL probed.
-    if (!opts.hasWslWorkspace || cachedReport.wslChecked) return cachedReport;
+    if (cachedReport.wslEnabled === wslEnabled) {
+      // Don't serve a cached WSL-less report to a caller that wants WSL probed.
+      if (!opts.hasWslWorkspace || cachedReport.wslChecked) return cachedReport;
+    }
   }
-  if (!opts.force && inFlight) return inFlight;
+  if (!opts.force && inFlight && inFlightWslEnabled === wslEnabled) return inFlight;
 
   const run = (async (): Promise<RuntimePrerequisiteReport> => {
     const [providers, optional, wslGroup] = await Promise.all([
@@ -676,29 +682,38 @@ export async function detectRuntimePrerequisites(
           'Lares itself does not need this — it ships its own runtime. Some agent CLIs, hooks and workspace scripts do.',
         ),
       ]),
-      checkWslGroup(Boolean(opts.hasWslWorkspace)),
+      checkWslGroup(Boolean(opts.hasWslWorkspace) && wslEnabled, wslEnabled),
     ]);
 
     const report: RuntimePrerequisiteReport = {
       appVersion: safeAppVersion(),
       checkedAt: Date.now(),
+      wslEnabled,
       providers,
       anyProviderAvailable: providers.some((p) => p.status === 'available'),
       optional,
       wsl: wslGroup.checks,
-      wslChecked: Boolean(opts.hasWslWorkspace),
+      wslChecked: Boolean(opts.hasWslWorkspace) && wslEnabled,
       wslStatus: wslGroup.status,
     };
-    cachedReport = report;
-    cachedAt = Date.now();
+    // A toggle can happen while these async probes are still running. Never let
+    // the superseded result repopulate the cache for the new setting state.
+    if (isWslEnabled() === wslEnabled) {
+      cachedReport = report;
+      cachedAt = Date.now();
+    }
     return report;
   })();
 
   inFlight = run;
+  inFlightWslEnabled = wslEnabled;
   try {
     return await run;
   } finally {
-    if (inFlight === run) inFlight = null;
+    if (inFlight === run) {
+      inFlight = null;
+      inFlightWslEnabled = null;
+    }
   }
 }
 
@@ -721,6 +736,7 @@ function safeAppVersion(): string {
 export function toHealthCheck(report: RuntimePrerequisiteReport): HealthCheck {
   const find = (list: PrerequisiteCheck[], id: string) => list.find((c) => c.id === id);
   return {
+    wslEnabled: report.wslEnabled,
     wslAvailable: report.wslStatus.state === 'running',
     tmuxAvailable: find(report.wsl, 'tmux')?.status === 'available',
     claudeWindowsAvailable: find(report.providers, 'claude')?.status === 'available',
@@ -748,4 +764,5 @@ export function __resetPrerequisiteCache(): void {
   cachedReport = null;
   cachedAt = 0;
   inFlight = null;
+  inFlightWslEnabled = null;
 }

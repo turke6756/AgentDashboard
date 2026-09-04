@@ -20,6 +20,7 @@ import path from 'path';
 import fs from 'fs';
 import * as v8 from 'node:v8';
 import { loadPersistedTheme } from './theme-persistence';
+import { isWslEnabled } from './wsl-enabled';
 import {
   initDatabase, getWorkspaces, getActiveAgents, getAllAgents, reconcileStaleOpenContinuationAttempts,
   getWorkspace,
@@ -470,6 +471,7 @@ function getWorkspaceRootsWin(): string[] {
   const roots: string[] = [];
   for (const ws of getWorkspaces()) {
     if (ws.pathType === 'wsl') {
+      if (!isWslEnabled()) continue;
       let win = wslRootWinCache.get(ws.path);
       if (win === undefined) {
         win = wslToWindowsPath(ws.path);
@@ -863,6 +865,7 @@ app.whenReady().then(async () => {
     // first touch anyway; running it here makes the rename happen at one
     // predictable moment. Never throws — warn-and-fall-back inside.
     for (const ws of getWorkspaces()) {
+      if (ws.pathType === 'wsl' && !isWslEnabled()) continue;
       migrateWorkspaceStateDir(ws.path, ws.pathType);
       // P0.2 legacy `launch.vbs` sweep — detection + notice only, at the same
       // first-touch moment. Never executes/deletes anything; the renderer

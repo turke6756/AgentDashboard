@@ -35,6 +35,8 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
   const cache = useRef(new Map<string, DirectoryEntry[]>());
   const { prompt: promptName, modal: namePromptModal } = useNamePrompt();
   const checkHealth = useDashboardStore((s) => s.checkHealth);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
+  const wslBlocked = pathType === 'wsl' && !wslEnabled;
   const renameTabPath = useDashboardStore((s) => s.renameTabPath);
   const hasDirtyTabForPath = useDashboardStore((s) => s.hasDirtyTabForPath);
   const workspaceId = useDashboardStore((s) => {
@@ -46,6 +48,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
 
   const reloadRoot = useCallback(async () => {
     if (!rootPath) return;
+    if (wslBlocked) { setLoading(false); setRootEntries([]); return; }
     setLoading(true);
     cache.current.delete(rootPath);
     const entries = await window.api.files.listDirectory(rootPath, pathType);
@@ -55,16 +58,17 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
     if (pathType === 'wsl') {
       void checkHealth();
     }
-  }, [rootPath, pathType, checkHealth]);
+  }, [rootPath, pathType, checkHealth, wslBlocked]);
 
   const invalidateDir = useCallback((dirPath: string) => {
     cache.current.delete(dirPath);
   }, []);
 
   const handleRefresh = useCallback(() => {
+    if (wslBlocked) return;
     cache.current.clear();
     setRefreshTick((n) => n + 1);
-  }, []);
+  }, [wslBlocked]);
 
   const createFileAtRoot = useCallback(async (template: 'text' | 'markdown' | 'notebook', label: string, ext?: string) => {
     const rawName = await promptName({ title: label, okLabel: 'Create' });
@@ -178,6 +182,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
     let cancelled = false;
     setLoading(true);
     cache.current.clear();
+    if (wslBlocked) { setRootEntries([]); setLoading(false); return () => { cancelled = true; }; }
     window.api.files.listDirectory(rootPath, pathType).then((entries) => {
       if (!cancelled) {
         cache.current.set(rootPath, entries);
@@ -189,10 +194,10 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
       }
     });
     return () => { cancelled = true; };
-  }, [rootPath, pathType, refreshTick, checkHealth]);
+  }, [rootPath, pathType, refreshTick, checkHealth, wslBlocked]);
 
   useEffect(() => {
-    if (!rootPath) return;
+    if (!rootPath || wslBlocked) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Re-list on any watch event instead of patching entries in place: a
@@ -214,9 +219,10 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
       if (timer !== null) clearTimeout(timer);
       unsub();
     };
-  }, [rootPath, pathType, refreshTick]);
+  }, [rootPath, pathType, refreshTick, wslBlocked]);
 
   const loadChildren = useCallback(async (dirPath: string): Promise<DirectoryEntry[]> => {
+    if (wslBlocked) return [];
     const cached = cache.current.get(dirPath);
     if (cached) return cached;
     const entries = await window.api.files.listDirectory(dirPath, pathType);
@@ -225,7 +231,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
       void checkHealth();
     }
     return entries;
-  }, [pathType, checkHealth]);
+  }, [pathType, checkHealth, wslBlocked]);
 
   // Extract the root folder name from path
   const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
@@ -233,7 +239,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
   return (
     <div
       className="relative h-full flex flex-col border-r dark:border-white/10 light:border-black/10 bg-surface-0/40"
-      onContextMenu={handleRootContextMenu}
+      onContextMenu={wslBlocked ? undefined : handleRootContextMenu}
     >
       <div className="px-3 py-2 border-b dark:border-white/10 light:border-black/10 flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -244,6 +250,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
         </div>
         <button
           onClick={handleRefresh}
+          disabled={wslBlocked}
           title="Refresh (F5)"
           className="shrink-0 p-1 rounded text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
         >
@@ -259,7 +266,11 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
         onDragLeave={handleRootDragLeave}
         onDrop={handleRootDrop}
       >
-        {loading ? (
+        {wslBlocked ? (
+          <div className="px-3 py-4 text-[13px] text-gray-400 font-sans">
+            WSL is disabled. Turn it on in the sidebar status bar to browse this workspace.
+          </div>
+        ) : loading ? (
           <div className="px-3 py-4 text-[13px] text-gray-400 font-sans animate-pulse">Loading...</div>
         ) : rootEntries.length === 0 ? (
           <div className="px-3 py-4 text-[13px] text-gray-400 font-sans">Empty directory</div>
@@ -292,7 +303,7 @@ export default function DirectoryTree({ rootPath, pathType, activeFilePath, onFi
           onClose={() => setHistoryPath(null)}
         />
       )}
-      {rootContextMenu && (
+      {rootContextMenu && !wslBlocked && (
         <FileContextMenu
           x={rootContextMenu.x}
           y={rootContextMenu.y}

@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { assertWslEnabled } from '../wsl-enabled';
 import type { OverheadModel, PathType } from '../../shared/types';
 import { getScriptPath } from '../supervisor/paths';
 import { scanPersonas } from '../persona-scanner';
@@ -102,6 +103,7 @@ export function makeFileReader(pathType: PathType): FileReader {
   const cache = new Map<string, { content: string; bytes: number } | null>();
 
   if (pathType === 'wsl') {
+    assertWslEnabled();
     return {
       read(absPath) {
         if (cache.has(absPath)) return cache.get(absPath)!;

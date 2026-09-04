@@ -3,6 +3,8 @@ import type { WebContents } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { persistTheme } from './theme-persistence';
+import { isWslEnabled, setWslEnabled, WSL_DISABLED_MESSAGE } from './wsl-enabled';
+import { shutdownWsl } from './wsl-bridge';
 import type { ContinuationPhaseSignal, PathType, WslStatus, HealthCheck, RuntimePrerequisiteReport, FsEvent, DetachRequest, DetachResult, ViewDetachRequest, ScanOverheadRequest, ScanOverheadResult, ExtractKnowledgeRequest, ExtractKnowledgeResult, SkillUsageQuery, SkillUsageQueryResult, McpToolUsageQuery, McpToolUsageQueryResult, PriorSessionChat, ContextOptimizerQuery, ContextOptimizerQueryResult, MarkOptimizerActionAppliedRequest, MarkOptimizerActionAppliedResult, SignOptimizerDerivationRequest, SignOptimizerDerivationResult, SaveSweepRequest, SaveCardActivityMergeResolveRequest } from '../shared/types';
 import { TAB_CHANNELS, VIEW_CHANNELS } from '../shared/types';
 import { SAVE_SWEEP_CHANNEL, SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL } from '../shared/types';
@@ -36,7 +38,7 @@ import { registerPlanCommentIpc, registerPlanCommentReplyIpc } from './plans/pla
 import { getApiToken } from './security/api-auth';
 import type { ApiConnectionGate } from './api-connection';
 import { openInVSCode, openFileInVSCode, openFileInWorkspace } from './vscode-launcher';
-import { detectRuntimePrerequisites, toHealthCheck } from './runtime-prerequisites';
+import { detectRuntimePrerequisites, forcePrerequisiteRecheck, toHealthCheck } from './runtime-prerequisites';
 import { detectPathType, ensureWindowsPath, toAgentPath } from './path-utils';
 import { saveImage, pruneImages } from './pasted-image-store';
 import { readFileContents, listDirectoryEntriesAsync } from './file-reader';
@@ -419,7 +421,13 @@ export function registerIpcHandlers(
   ipcMain.handle('agent:list', (_e, workspaceId) => getAgentsByWorkspace(workspaceId));
   ipcMain.handle('agents:planBadgeSummary', (_e, workspaceId: string) => getAgentPlanBadgeSummary(workspaceId));
   ipcMain.handle('agent:list-all', () => getAllAgents());
-  ipcMain.handle('agent:launch', (_e, input) => supervisor.launchAgent(input));
+  ipcMain.handle('agent:launch', (_e, input) => {
+    const workspace = getWorkspace(input?.workspaceId);
+    if (workspace?.pathType === 'wsl' && !isWslEnabled()) {
+      throw new Error(`${WSL_DISABLED_MESSAGE}. Turn it on in the sidebar status bar before launching an agent.`);
+    }
+    return supervisor.launchAgent(input);
+  });
   // Git-Native WP-G2.2 — human checkpoint recovery surface (list/diff/preview/
   // restore/revert). Registered synchronously here with a lazy getter so the
   // channels exist before the async engine bootstrap injects the routes.
@@ -959,6 +967,23 @@ export function registerIpcHandlers(
     async (_e, force?: boolean): Promise<RuntimePrerequisiteReport> =>
       detectRuntimePrerequisites({ hasWslWorkspace: hasWslWorkspace(), force: Boolean(force) }),
   );
+
+  ipcMain.handle('system:get-wsl-enabled', () => isWslEnabled());
+  ipcMain.handle('system:set-wsl-enabled', (_e, enabled: boolean) => {
+    if (typeof enabled !== 'boolean') return;
+    setWslEnabled(enabled);
+    forcePrerequisiteRecheck();
+  });
+  ipcMain.handle('system:shutdown-wsl', async () => {
+    if (isWslEnabled()) throw new Error('Turn WSL off in Lares before shutting it down.');
+    const wslWorkspaceIds = new Set(getWorkspaces().filter((ws) => ws.pathType === 'wsl').map((ws) => ws.id));
+    const live = getAllAgents().filter((agent) =>
+      wslWorkspaceIds.has(agent.workspaceId) && agent.status !== 'done' && agent.status !== 'crashed');
+    if (live.length > 0) {
+      throw new Error(`Cannot shut down WSL while ${live.length} WSL agent${live.length === 1 ? ' is' : 's are'} still live.`);
+    }
+    await shutdownWsl();
+  });
 
   // Opening an external URL from the renderer. Deliberately ALLOWLISTED to
   // https, because the renderer runs with webSecurity:false and an unrestricted

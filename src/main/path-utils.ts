@@ -1,5 +1,6 @@
 import { PathType } from '../shared/types';
 import { execFileSync } from 'child_process';
+import { assertWslEnabled } from './wsl-enabled';
 
 export function detectPathType(p: string): PathType {
   // WSL paths start with /
@@ -32,6 +33,7 @@ export function wslToWindowsPath(wslPath: string): string {
     return `${mntMatch[1].toUpperCase()}:${mntMatch[2].replace(/\//g, '\\')}`;
   }
   // For native WSL paths, use wslpath
+  assertWslEnabled();
   try {
     const result = execFileSync('wsl.exe', ['wslpath', '-w', wslPath], {
       encoding: 'utf-8',

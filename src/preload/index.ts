@@ -411,6 +411,9 @@ const api: IpcApi = {
     // `force` bypasses its TTL cache for the Recheck button.
     getRuntimePrerequisites: (force?: boolean) =>
       ipcRenderer.invoke('system:get-runtime-prerequisites', force),
+    getWslEnabled: () => ipcRenderer.invoke('system:get-wsl-enabled'),
+    setWslEnabled: (enabled: boolean) => ipcRenderer.invoke('system:set-wsl-enabled', enabled),
+    shutdownWsl: () => ipcRenderer.invoke('system:shutdown-wsl'),
     /** https-only, main-side allowlisted. Returns false if the URL was rejected. */
     openExternal: (url: string) => ipcRenderer.invoke('system:open-external', url),
     openFile: (filePath, pathType) => ipcRenderer.invoke('system:open-file', filePath, pathType),

@@ -9,17 +9,35 @@ let container: HTMLDivElement;
 let root: Root;
 let mkdir: ReturnType<typeof vi.fn>;
 let listDirectory: ReturnType<typeof vi.fn>;
+let setWslEnabled: ReturnType<typeof vi.fn>;
+let wslEnabledSetting: boolean;
+
+const health = (enabled: boolean) => ({
+  wslEnabled: enabled,
+  wslAvailable: enabled,
+  tmuxAvailable: enabled,
+  claudeWindowsAvailable: true,
+  claudeWslAvailable: enabled,
+  wslStatus: { state: enabled ? 'running' as const : 'disabled' as const, distros: [] },
+});
 
 beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   mkdir = vi.fn().mockResolvedValue({ ok: true });
   listDirectory = vi.fn().mockResolvedValue([]);
+  wslEnabledSetting = true;
+  setWslEnabled = vi.fn(async (enabled: boolean) => { wslEnabledSetting = enabled; });
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
       files: { mkdir, listDirectory },
       workspaces: { openInVSCode: vi.fn() },
+      system: {
+        setWslEnabled,
+        shutdownWsl: vi.fn().mockResolvedValue(undefined),
+        healthCheck: vi.fn(async () => health(wslEnabledSetting)),
+      },
     },
   });
   useDashboardStore.setState({
@@ -36,6 +54,9 @@ beforeEach(() => {
     }],
     selectedWorkspaceId: 'workspace-1',
     workspaceHeat: {},
+    wslEnabled: true,
+    health: health(true),
+    healthChecking: false,
   });
 });
 
@@ -45,6 +66,43 @@ afterEach(() => {
 });
 
 describe('Sidebar workspace options', () => {
+  it('toggles WSL off and dims WSL workspace rows with an explanatory title', async () => {
+    useDashboardStore.setState({
+      workspaces: [{
+        id: 'wsl-workspace',
+        title: 'Linux Workspace',
+        path: '/home/test/project',
+        pathType: 'wsl',
+        description: '',
+        defaultCommand: '',
+        createdAt: '',
+        updatedAt: '',
+        lastOpenedAt: null,
+      }],
+      selectedWorkspaceId: 'wsl-workspace',
+      workspaceHeat: { 'wsl-workspace': { activeCount: 1, workingCount: 1, waitingCount: 0 } },
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Sidebar width={280} />);
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle.textContent).toContain('WSL Running');
+    expect(toggle.title).toContain('will not stop 1 live WSL agent');
+
+    await act(async () => { toggle.click(); });
+
+    expect(setWslEnabled).toHaveBeenCalledWith(false);
+    expect(toggle.textContent).toContain('WSL off');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    const workspaceButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent?.includes('Linux Workspace'))!;
+    expect(workspaceButton.className).toContain('opacity-40');
+    expect(workspaceButton.title).toBe('WSL is disabled  turn it on in the status bar');
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Shut down WSL now"]')?.disabled).toBe(true);
+  });
+
   it('creates a folder at the workspace root and expands its tree', async () => {
     await act(async () => {
       root = createRoot(container);

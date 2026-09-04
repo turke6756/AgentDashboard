@@ -64,6 +64,7 @@ const {
   __setProbeWorkspaceGitForTest,
   forcePrerequisiteRecheck,
 } = require('./runtime-prerequisites') as typeof import('./runtime-prerequisites');
+const { __setWslEnabledForTest } = require('./wsl-enabled') as typeof import('./wsl-enabled');
 
 /** A healthy git capability (system git, at repo root, non-protected). Override
  *  individual fields per case. */
@@ -113,10 +114,30 @@ function withEmptyHome(): () => void {
 }
 
 function reset(): void {
+  __setWslEnabledForTest(true);
   __resetPrerequisiteCache();
   wslCalls.passive = 0;
   wslCalls.exec = 0;
 }
+
+test('WSL disabled -> group is not checked and no WSL process seam is reached', async () => {
+  const restore = withEmptyHome();
+  reset();
+  __setWslEnabledForTest(false);
+  try {
+    const report = await detectRuntimePrerequisites({ hasWslWorkspace: true, force: true });
+    assert.equal(report.wslEnabled, false);
+    assert.equal(report.wslChecked, false);
+    assert.equal(report.wslStatus.state, 'disabled');
+    assert.equal(wslCalls.passive, 0);
+    assert.equal(wslCalls.exec, 0);
+    for (const check of report.wsl) assert.equal(check.status, 'not-checked');
+    assert.equal(toHealthCheck(report).wslEnabled, false);
+  } finally {
+    __setWslEnabledForTest(true);
+    restore();
+  }
+});
 
 // ── The 8eaa103 regression guard ───────────────────────────────────────────
 test('no WSL workspace → wsl.exe is never invoked at all', async () => {

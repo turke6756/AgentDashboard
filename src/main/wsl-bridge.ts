@@ -10,14 +10,26 @@
 import { execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import type { WslStatus, WslDistroStatus } from '../shared/types';
+import { isWslEnabled, WSL_DISABLED_MESSAGE } from './wsl-enabled';
 
-const execFileAsync = promisify(execFile);
+let execFileAsync = promisify(execFile);
+let spawnProcess = spawn;
+
+/** Test-only child-process seam. Null restores the real process functions. */
+export function __setWslProcessDepsForTest(deps: {
+  execFile?: typeof execFile;
+  spawn?: typeof spawn;
+} | null): void {
+  execFileAsync = promisify((deps?.execFile ?? execFile) as any) as typeof execFileAsync;
+  spawnProcess = deps?.spawn ?? spawn;
+}
 
 export function wslSpawn(command: string): ChildProcess {
+  if (!isWslEnabled()) throw new Error(WSL_DISABLED_MESSAGE);
   const env = { ...process.env };
   delete env.CLAUDECODE;
   delete env.ELECTRON_RUN_AS_NODE;
-  return spawn('wsl.exe', ['bash', '-lc', command], {
+  return spawnProcess('wsl.exe', ['bash', '-lc', command], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -124,6 +136,7 @@ function isAbsentWslState(state: WslStatus['state']): boolean {
 }
 
 export async function getPassiveWslStatus(): Promise<WslStatus> {
+  if (!isWslEnabled()) return { state: 'disabled', distros: [] };
   if (cachedAbsentWslStatus) return cachedAbsentWslStatus;
   const status = await probePassiveWslStatus();
   if (isAbsentWslState(status.state)) {
@@ -173,7 +186,7 @@ function wslExecWithInput(command: string, options: WslExecOptions, trimOutput: 
   return new Promise((resolve) => {
     const timeout = options.timeout ?? 10000;
     const maxBuffer = options.maxBuffer ?? 1024 * 1024;
-    const proc = spawn('wsl.exe', ['bash', '-lc', command], {
+    const proc = spawnProcess('wsl.exe', ['bash', '-lc', command], {
       env: wslEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -229,6 +242,11 @@ function wslExecWithInput(command: string, options: WslExecOptions, trimOutput: 
 
 export async function wslExecCommand(command: string, options: WslExecOptions = {}): Promise<WslExecResult> {
   const trimOutput = options.trimOutput ?? true;
+  if (!isWslEnabled()) {
+    const result = { stdout: '', stderr: WSL_DISABLED_MESSAGE, exitCode: 1 };
+    if (options.throwOnError) throw makeWslExecError(command, result);
+    return result;
+  }
   try {
     if (options.input !== undefined) {
       const result = await wslExecWithInput(command, options, trimOutput);
@@ -265,6 +283,15 @@ export async function wslExecCommand(command: string, options: WslExecOptions = 
 
 export async function wslExec(command: string, timeout = 10000): Promise<WslExecResult> {
   return wslExecCommand(command, { timeout });
+}
+
+/** Explicit user action. This is the sole wsl.exe call allowed while disabled. */
+export async function shutdownWsl(): Promise<void> {
+  await execFileAsync('wsl.exe', ['--shutdown'], {
+    env: wslEnv(),
+    timeout: 15000,
+    windowsHide: true,
+  });
 }
 
 export async function isWslAvailable(): Promise<boolean> {

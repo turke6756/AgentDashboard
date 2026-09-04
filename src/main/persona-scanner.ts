@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { assertWslEnabled } from './wsl-enabled';
 import type { AgentPersona, PathType, PersonaLane } from '../shared/types';
 import { SUPERVISOR_AGENT_NAME } from '../shared/constants';
 import {
@@ -61,6 +62,7 @@ function deletePersonaJson(workspacePath: string, pathType: PathType, name: stri
   const rel = personaJsonRel(name);
   if (!scaffoldFileExists(workspacePath, rel, pathType)) return;
   if (pathType === 'wsl') {
+    assertWslEnabled();
     try {
       execFileSync('wsl.exe', ['bash', '-lc', `rm -f '${workspacePath}/${rel}'`], { timeout: 5000, stdio: 'ignore' });
     } catch { /* best effort */ }
@@ -328,6 +330,7 @@ export function migratePersonas(workspacePath: string, pathType: PathType): void
  * Each is a persistent agent persona (custom agent type).
  */
 export function scanPersonas(workspacePath: string, pathType: PathType): AgentPersona[] {
+  if (pathType === 'wsl') assertWslEnabled();
   // Lift any legacy .claude/agents/ personas into .lares/agents/ first so
   // existing custom agents keep showing up after the relocation.
   migratePersonas(workspacePath, pathType);

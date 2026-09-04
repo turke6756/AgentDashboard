@@ -22,6 +22,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { LARES_DIR_NAME, LEGACY_LARES_DIR_NAME } from '../shared/constants';
+import { isWslEnabled } from './wsl-enabled';
 
 export interface StateDirResolution {
   /** Folder name in use for this workspace this session: '.lares' or '.dashboard'. */
@@ -50,6 +51,7 @@ function joinFor(workspaceRoot: string, name: string, pathType: string): string 
 
 function dirExists(full: string, pathType: string): boolean {
   if (pathType === 'wsl') {
+    if (!isWslEnabled()) return false;
     try {
       execFileSync('wsl.exe', ['bash', '-lc', `test -d '${full}'`], { timeout: 5000, stdio: 'ignore' });
       return true;

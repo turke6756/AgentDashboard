@@ -43,6 +43,7 @@ import {
   type WorkspaceRetentionResult,
 } from './retention';
 import { initWorkspaceGitRepo } from './git-init';
+import { isWslEnabled } from '../wsl-enabled';
 import {
   pruneWorkspaceCheckpoints,
   enumerateRepoLaresRefs,
@@ -473,7 +474,7 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
 
   const runStartupMaintenance = async () => {
     await runCheckpointStartupMaintenance({
-      workspaces: getWorkspaces(),
+      workspaces: getWorkspaces().filter((ws) => ws.pathType !== 'wsl' || isWslEnabled()),
       // WP-G1.7 seam upgrade: dangling-open close runs through the LIVE coordinator.
       closeOpenTurns: (workspaceId: string) => {
         reconcileCaptureAttempts(workspaceId);
@@ -490,6 +491,7 @@ export async function createCheckpointEngine(): Promise<CheckpointEngineHandle |
   const runRetention = async (): Promise<WorkspaceRetentionResult[]> => {
     const results: WorkspaceRetentionResult[] = [];
     for (const ws of getWorkspaces()) {
+      if (ws.pathType === 'wsl' && !isWslEnabled()) continue;
       try {
         const cap = await resolveCapabilityByWorkspace(ws.id);
         if (!cap || !cap.repoRoot || !cap.commonDirQueueKey) continue; // detect-and-degrade

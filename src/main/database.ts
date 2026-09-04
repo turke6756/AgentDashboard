@@ -8,6 +8,7 @@ import { AgentStopReason, AgentPlanBadge, deriveHookAvailability, isAgentStopRea
 import { Agent, AgentProvider, AgentSessionRow, AgentStatus, AgentTemplate, ContextStats, CreateAgentTemplateInput, CreateSelectionCommentInput, CreateSelectionCommentReplyInput, CreateWorkspaceInput, CreateTeamInput, FileActivity, FileOperation, Plan, PlanFormat, PlanTabKey, PlanTabOverview, SelectionComment, SelectionCommentReply, SelectionCommentStatus, SupervisorFocus, Team, TeamChannel, TeamMember, TeamMessage, TeamMessageStatus, TeamStatus, TeamTask, TeamTaskStatus, UpdateSelectionCommentInput, Workspace } from '../shared/types';
 import { parsePdfSelectionAnchor, serializePdfSelectionAnchor, validatePdfSelectionAnchor, type PdfSelectionAnchorV1, type SelectionAnchorType } from '../shared/pdf-annotations';
 import { DEFAULT_COMMAND, DEFAULT_COMMAND_WSL, SUPERVISOR_AGENT_MD } from '../shared/constants';
+import { assertWslEnabled } from './wsl-enabled';
 import { isCanonicalPlanRowId, isPlanArtifactId } from '../shared/planning-artifact-ids';
 import { OrchestrationBinding, OrchestrationEvent, OrchestrationRun, OrchestrationPlanBindingMode } from './orchestration/types';
 import { resolveWorkspaceForCwd, WORKSPACE_LINEAGE_VERSION, type WorkspaceRecordLite } from './skill-analytics/workspace-lineage';
@@ -11189,6 +11190,7 @@ export function checkAgentMdExists(workingDirectory: string, pathType: string): 
   const candidates = ['agent.md', 'AGENT.md'];
 
   if (pathType === 'wsl') {
+    assertWslEnabled();
     const { execFileSync } = require('child_process');
     for (const name of candidates) {
       try {

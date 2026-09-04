@@ -1,0 +1,100 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const handlers = new Map<string, (...args: any[]) => any>();
+const invocations: Array<[string, ...unknown[]]> = [];
+let exposedApi: any;
+const noop = () => undefined;
+const electronPath = require.resolve('electron');
+const priorElectron = require.cache[electronPath];
+require.cache[electronPath] = {
+  id: electronPath,
+  filename: electronPath,
+  loaded: true,
+  exports: {
+    ipcMain: { handle: (channel: string, handler: (...args: any[]) => any) => handlers.set(channel, handler) },
+    ipcRenderer: {
+      invoke: (channel: string, ...args: unknown[]) => { invocations.push([channel, ...args]); return Promise.resolve(); },
+      on: noop, removeListener: noop,
+    },
+    contextBridge: { exposeInMainWorld: (_name: string, api: unknown) => { exposedApi = api; } },
+    app: { getPath: () => '', isPackaged: false, on: noop },
+    dialog: { showOpenDialog: noop, showMessageBox: noop },
+    shell: { openExternal: noop, trashItem: noop },
+    BrowserWindow: class {},
+    nativeTheme: { on: noop, themeSource: 'system', shouldUseDarkColors: false },
+  },
+  children: [],
+  paths: [],
+} as any;
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-wsl-ipc-'));
+let resetWslProcessDeps: (() => void) | null = null;
+
+(async () => {
+  try {
+    const setting = require('./wsl-enabled') as typeof import('./wsl-enabled');
+    const wslBridge = require('./wsl-bridge') as typeof import('./wsl-bridge');
+    let shutdownCalls = 0;
+    wslBridge.__setWslProcessDepsForTest({
+      execFile: ((file: string, args: string[], _opts: unknown, callback: (...args: any[]) => void) => {
+        shutdownCalls++;
+        assert.equal(file, 'wsl.exe');
+        assert.deepEqual(args, ['--shutdown']);
+        callback(null, '', '');
+      }) as any,
+    });
+    resetWslProcessDeps = () => wslBridge.__setWslProcessDepsForTest(null);
+    setting.__setWslEnabledStoragePathForTest(path.join(root, 'wsl-enabled.json'));
+    const database = require('./database') as typeof import('./database');
+    (database as any).getWorkspace = () => ({ id: 'wsl-ws', path: '/home/test', pathType: 'wsl' });
+    (database as any).getWorkspaces = () => [{ id: 'wsl-ws', path: '/home/test', pathType: 'wsl' }];
+    (database as any).getAllAgents = () => [];
+
+    let launchCalls = 0;
+    const supervisor = new Proxy({ launchAgent: () => { launchCalls++; } }, { get: (target, key) => (target as any)[key] ?? noop });
+    const windowProxy = new Proxy({}, { get: () => noop });
+    const { registerIpcHandlers } = require('./ipc-handlers') as typeof import('./ipc-handlers');
+    registerIpcHandlers(supervisor as any, windowProxy as any, {} as any);
+    require('../preload');
+
+    const getEnabled = handlers.get('system:get-wsl-enabled');
+    const setEnabled = handlers.get('system:set-wsl-enabled');
+    const launch = handlers.get('agent:launch');
+    const shutdown = handlers.get('system:shutdown-wsl');
+    assert.ok(getEnabled && setEnabled && launch && shutdown, 'production registration exposes WSL setting, shutdown, and launch gate');
+    assert.equal(await getEnabled!({}), true);
+    await setEnabled!({}, false);
+    assert.equal(await getEnabled!({}), false);
+    assert.throws(() => launch!({}, { workspaceId: 'wsl-ws' }), /WSL is disabled in Lares/);
+    assert.equal(launchCalls, 0, 'disabled WSL launch never reaches the supervisor');
+    (database as any).getAllAgents = () => [{ workspaceId: 'wsl-ws', status: 'working' }];
+    await assert.rejects(() => shutdown!({}), /still live/);
+    assert.equal(shutdownCalls, 0, 'live agents block wsl.exe --shutdown');
+    (database as any).getAllAgents = () => [];
+    await shutdown!({});
+    assert.equal(shutdownCalls, 1);
+    await exposedApi.system.getWslEnabled();
+    await exposedApi.system.setWslEnabled(true);
+    await exposedApi.system.shutdownWsl();
+    assert.deepEqual(invocations.slice(-3), [
+      ['system:get-wsl-enabled'],
+      ['system:set-wsl-enabled', true],
+      ['system:shutdown-wsl'],
+    ]);
+    console.log('wsl-enabled-ipc: 9/9 passed');
+    console.log('REACHABILITY:wsl-enabled-toggle real IPC registration and launch gate entered');
+  } finally {
+    const setting = require('./wsl-enabled') as typeof import('./wsl-enabled');
+    setting.__setWslEnabledStoragePathForTest(null);
+    resetWslProcessDeps?.();
+    fs.rmSync(root, { recursive: true, force: true });
+    if (priorElectron) require.cache[electronPath] = priorElectron;
+    else delete require.cache[electronPath];
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

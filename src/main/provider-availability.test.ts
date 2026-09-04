@@ -43,6 +43,7 @@ function report(statuses: Partial<Record<LaunchableAgentProvider, 'available' | 
   return {
     appVersion: 'test',
     checkedAt: NOW - 10,
+    wslEnabled: true,
     providers,
     anyProviderAvailable: providers.some(row => row.status === 'available'),
     optional: [],

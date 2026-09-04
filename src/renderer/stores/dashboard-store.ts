@@ -300,6 +300,7 @@ interface DashboardState {
   // Per-workspace view-state snapshots (keyed by workspace id). See
   // WorkspaceViewState + selectWorkspace for the snapshot/restore contract.
   workspaceViewState: Record<string, WorkspaceViewState>;
+  wslEnabled: boolean;
   health: HealthCheck | null;
   healthChecking: boolean;
   // ── Runtime prerequisites (packaging plan §6.3) ──
@@ -462,6 +463,8 @@ interface DashboardState {
   updateAgent: (agent: Agent) => void;
   removeAgent: (id: string) => void;
   deleteAgent: (id: string) => Promise<void>;
+  setWslEnabled: (enabled: boolean) => Promise<void>;
+  shutdownWsl: () => Promise<void>;
   checkHealth: () => Promise<void>;
   loadPrerequisites: (force?: boolean) => Promise<RuntimePrerequisiteReport | null>;
   /** Load the report and open the modal only if this app version has not shown
@@ -578,6 +581,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   terminalAgentId: null,
   terminalPinned: false,
   workspaceViewState: {},
+  wslEnabled: true,
   health: null,
   healthChecking: false,
   prerequisites: null,
@@ -2170,6 +2174,19 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     get().updateWorkspaceHeat();
   },
 
+  setWslEnabled: async (enabled) => {
+    await window.api.system.setWslEnabled(enabled);
+    set({ wslEnabled: enabled });
+    // The main handler invalidates the prerequisite TTL. This single check is
+    // therefore forced-fresh on enable and immediately projects "disabled" on off.
+    await get().checkHealth();
+  },
+
+  shutdownWsl: async () => {
+    await window.api.system.shutdownWsl();
+    await get().checkHealth();
+  },
+
   checkHealth: async () => {
     set({ healthChecking: true });
     try {
@@ -2177,11 +2194,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       // The health check is a projection of the full prerequisite report, so a
       // refresh of one refreshes the other — the sidebar ticker and the
       // prerequisites dialog can never show contradictory answers.
-      set({ health, healthChecking: false, ...(health.prerequisites ? { prerequisites: health.prerequisites } : {}) });
+      set({ wslEnabled: health.wslEnabled, health, healthChecking: false, ...(health.prerequisites ? { prerequisites: health.prerequisites } : {}) });
     } catch (err) {
       console.error('Health check failed:', err);
       set({
         health: {
+          wslEnabled: get().wslEnabled,
           wslAvailable: false,
           tmuxAvailable: false,
           claudeWindowsAvailable: false,

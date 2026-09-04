@@ -1286,7 +1286,7 @@ export interface QueryResult {
   isError: boolean;
 }
 
-export type WslPassiveState = 'running' | 'stopped' | 'unavailable' | 'no-distro' | 'unknown';
+export type WslPassiveState = 'running' | 'stopped' | 'unavailable' | 'no-distro' | 'unknown' | 'disabled';
 
 export interface WslDistroStatus {
   name: string;
@@ -1386,6 +1386,8 @@ export interface PrerequisiteCheck {
 export interface RuntimePrerequisiteReport {
   appVersion: string;
   checkedAt: number;
+  /** Persisted app-level switch. False means no WSL probe was attempted. */
+  wslEnabled: boolean;
   /** One independent entry per launchable provider. */
   providers: PrerequisiteCheck[];
   /** True when AT LEAST ONE provider resolved. The single flag the UI should
@@ -1408,6 +1410,7 @@ export interface RuntimePrerequisiteReport {
  *  doing its own PATH lookup, so the ticker and the first-run dialog cannot
  *  contradict each other. */
 export interface HealthCheck {
+  wslEnabled: boolean;
   wslAvailable: boolean;
   tmuxAvailable: boolean;
   claudeWindowsAvailable: boolean;
@@ -3790,6 +3793,9 @@ export interface IpcApi {
     pickDirectory: (startInWsl?: boolean) => Promise<string | null>;
     healthCheck: () => Promise<HealthCheck>;
     getRuntimePrerequisites: (force?: boolean) => Promise<RuntimePrerequisiteReport>;
+    getWslEnabled: () => Promise<boolean>;
+    setWslEnabled: (enabled: boolean) => Promise<void>;
+    shutdownWsl: () => Promise<void>;
     openExternal: (url: string) => Promise<boolean>;
     openFile: (filePath: string, pathType: PathType) => Promise<void>;
     openFileInWorkspace: (filePath: string, workspaceDir: string, pathType: PathType) => Promise<void>;

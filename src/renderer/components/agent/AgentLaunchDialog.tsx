@@ -32,6 +32,8 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   useBrowserSuspension();
   const { loadAgents, checkHealth, agents } = useDashboardStore();
   const openPrerequisitesDialog = useDashboardStore((s) => s.openPrerequisitesDialog);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
+  const wslBlocked = workspace.pathType === 'wsl' && !wslEnabled;
   const [title, setTitle] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [workingDirectory, setWorkingDirectory] = useState(workspace.path);
@@ -103,11 +105,11 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
     window.api.templates.list(workspace.id)
       .then((list) => setTemplates(list.filter((template) => isLaunchableProvider(template.provider))))
       .catch(console.error);
-    window.api.personas.list(workspace.path, workspace.pathType).then(list => {
+    if (!wslBlocked) window.api.personas.list(workspace.path, workspace.pathType).then(list => {
       // Filter out supervisor — it's a role-lane option, not a custom agent.
       setPersonas(list.filter(p => !p.isSupervisor));
     }).catch(console.error);
-  }, [workspace.id, workspace.path, workspace.pathType]);
+  }, [workspace.id, workspace.path, workspace.pathType, wslBlocked]);
 
   // Apply template defaults / autofill title when the type changes.
   useEffect(() => {
@@ -177,6 +179,10 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
         setAgentMd(null);
         return;
       }
+      if (wslBlocked) {
+        setAgentMd(null);
+        return;
+      }
       try {
         const result = await window.api.agents.checkAgentMd(workingDirectory.trim(), workspace.pathType);
         setAgentMd(result);
@@ -185,7 +191,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
       }
     }, 300);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [workingDirectory, workspace.pathType]);
+  }, [workingDirectory, workspace.pathType, wslBlocked]);
 
   // Persona name minted from the title for the "+ New agent…" path.
   const newAgentSlug = title.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
@@ -193,6 +199,11 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
+
+    if (wslBlocked) {
+      setLaunchError('WSL is disabled in Lares. Turn it on in the sidebar status bar before launching an agent.');
+      return;
+    }
 
     setLaunchError(null);
     setLaunching(true);
@@ -661,6 +672,12 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             )
           )}
 
+          {wslBlocked && (
+            <div className="rounded-lg border border-gray-600 bg-white/5 px-3 py-2.5 text-[13px] text-gray-300">
+              WSL is disabled. Turn it on in the sidebar status bar before launching into this workspace.
+            </div>
+          )}
+
           {launchError && (
             <div className="rounded-lg border border-accent-red/40 bg-accent-red/5 px-3 py-2.5 text-[13px] text-gray-200 space-y-1.5">
               <p className="whitespace-pre-line">{launchError}</p>
@@ -684,7 +701,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             </button>
             <button
               type="submit"
-              disabled={!title.trim() || launching}
+              disabled={!title.trim() || launching || wslBlocked}
               className="ui-btn ui-btn-primary px-4 py-2 text-sm font-medium"
             >
               {launching ? 'Launching...' : 'Launch'}

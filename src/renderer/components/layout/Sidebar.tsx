@@ -32,6 +32,8 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
   const cache = useRef(new Map<string, DirectoryEntry[]>());
   const openTab = useDashboardStore((s) => s.openTab);
   const checkHealth = useDashboardStore((s) => s.checkHealth);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
+  const wslBlocked = pathType === 'wsl' && !wslEnabled;
   // Collapse to the active filePath primitive — only re-renders when that exact path changes.
   const activeFilePath = useDashboardStore(
     (s) => s.openTabs.find((t) => t.id === s.activeTabId)?.filePath ?? null
@@ -41,6 +43,7 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
   const { prompt: promptName, modal: namePromptModal } = useNamePrompt();
 
   const reloadRoot = useCallback(async () => {
+    if (wslBlocked) { setLoading(false); setRootEntries([]); return; }
     setLoading(true);
     cache.current.delete(rootPath);
     const entries = await window.api.files.listDirectory(rootPath, pathType);
@@ -50,7 +53,7 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
     if (pathType === 'wsl') {
       void checkHealth();
     }
-  }, [rootPath, pathType, checkHealth]);
+  }, [rootPath, pathType, checkHealth, wslBlocked]);
 
   const invalidateDir = useCallback((dirPath: string) => {
     cache.current.delete(dirPath);
@@ -60,6 +63,7 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
     let cancelled = false;
     setLoading(true);
     cache.current.clear();
+    if (wslBlocked) { setRootEntries([]); setLoading(false); return () => { cancelled = true; }; }
     window.api.files.listDirectory(rootPath, pathType).then((entries) => {
       if (!cancelled) {
         cache.current.set(rootPath, entries);
@@ -71,9 +75,10 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
       }
     });
     return () => { cancelled = true; };
-  }, [rootPath, pathType, checkHealth]);
+  }, [rootPath, pathType, checkHealth, wslBlocked]);
 
   const loadChildren = useCallback(async (dirPath: string): Promise<DirectoryEntry[]> => {
+    if (wslBlocked) return [];
     const cached = cache.current.get(dirPath);
     if (cached) return cached;
     const entries = await window.api.files.listDirectory(dirPath, pathType);
@@ -82,7 +87,7 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
       void checkHealth();
     }
     return entries;
-  }, [pathType, checkHealth]);
+  }, [pathType, checkHealth, wslBlocked]);
 
   const handleFileSelect = useCallback((filePath: string) => {
     openTab(filePath, rootPath, pathType, undefined, workspaceId);
@@ -90,7 +95,9 @@ function InlineWorkspaceTree({ rootPath, pathType, workspaceId, expandedPaths, o
 
   return (
     <div className={`pl-3 py-1 shadow-inner ${isLight ? 'bg-black/5' : 'bg-black/40'}`}>
-      {loading ? (
+      {wslBlocked ? (
+        <div className="px-4 py-2 text-[13px] text-gray-400 font-sans">WSL is disabled. Turn it on in the status bar.</div>
+      ) : loading ? (
         <div className="px-4 py-2 text-[13px] text-gray-300 font-sans animate-pulse">Loading...</div>
       ) : rootEntries.length === 0 ? (
         <div className="px-4 py-2 text-[13px] text-gray-300 font-sans">Empty directory</div>
@@ -159,6 +166,7 @@ export default function Sidebar({ width }: SidebarProps) {
   const selectedWorkspaceId = useDashboardStore((s) => s.selectedWorkspaceId);
   const health = useDashboardStore((s) => s.health);
   const healthChecking = useDashboardStore((s) => s.healthChecking);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
   const workspaceHeat = useDashboardStore((s) => s.workspaceHeat);
   const panelLayout = useDashboardStore((s) => s.panelLayout);
   const selectWorkspace = useDashboardStore((s) => s.selectWorkspace);
@@ -167,6 +175,8 @@ export default function Sidebar({ width }: SidebarProps) {
   const deleteWorkspace = useDashboardStore((s) => s.deleteWorkspace);
   const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
   const checkHealth = useDashboardStore((s) => s.checkHealth);
+  const setWslEnabled = useDashboardStore((s) => s.setWslEnabled);
+  const shutdownWsl = useDashboardStore((s) => s.shutdownWsl);
   const [showCreate, setShowCreate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; wsId: string } | null>(null);
@@ -195,7 +205,11 @@ export default function Sidebar({ width }: SidebarProps) {
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
   const headerLabel = selectedWorkspace?.title ?? 'Workspaces';
   const wslState = health?.wslStatus?.state;
-  const wslLabel = healthChecking
+  const liveWslAgentCount = workspaces.reduce((count, ws) =>
+    count + (ws.pathType === 'wsl' ? (workspaceHeat[ws.id]?.activeCount ?? 0) : 0), 0);
+  const wslLabel = !wslEnabled
+    ? 'WSL off'
+    : healthChecking
     ? 'Checking...'
     : wslState === 'running'
       ? 'WSL Running'
@@ -221,6 +235,16 @@ export default function Sidebar({ width }: SidebarProps) {
           : wslState === 'unknown'
             ? 'text-gray-500'
             : 'text-accent-red';
+  const wslToggleTitle = liveWslAgentCount > 0
+    ? `Turning WSL off will not stop ${liveWslAgentCount} live WSL agent${liveWslAgentCount === 1 ? '' : 's'}.`
+    : (wslEnabled ? 'Turn WSL off' : 'Turn WSL on');
+
+  const handleShutdownWsl = async () => {
+    if (wslEnabled || liveWslAgentCount > 0) return;
+    if (!window.confirm('Shut down WSL now? This runs wsl.exe --shutdown.')) return;
+    try { await shutdownWsl(); }
+    catch (err) { window.alert(err instanceof Error ? err.message : String(err)); }
+  };
 
   const handleTreeExpandedChange = useCallback((dirPath: string, expanded: boolean) => {
     setExpandedTreePaths((prev) => {
@@ -546,14 +570,16 @@ export default function Sidebar({ width }: SidebarProps) {
                   onClick={() => selectWorkspace(ws.id)}
                   onDoubleClick={(e) => toggleWorkspace(ws.id, e)}
                   onContextMenu={(e) => handleContextMenu(e, ws.id)}
-                  title={hasWaiting ? `${heat!.waitingCount} agent${heat!.waitingCount === 1 ? '' : 's'} waiting` : undefined}
+                  title={ws.pathType === 'wsl' && !wslEnabled
+                    ? 'WSL is disabled  turn it on in the status bar'
+                    : hasWaiting ? `${heat!.waitingCount} agent${heat!.waitingCount === 1 ? '' : 's'} waiting` : undefined}
                   className={`w-full text-left px-3 py-2 group transition-colors flex flex-col border-l-2 ${
                     hasWaiting ? 'outline outline-2 outline-accent-red outline-offset-[-2px] rounded-[2px]' : ''
                   } ${
                     isSelected
                       ? 'border-l-accent-blue-bright tree-row-selected'
                       : 'border-l-transparent hover:bg-white/[0.04]'
-                  } ${dragWsId === ws.id ? 'opacity-40' : ''}`}
+                  } ${dragWsId === ws.id || (ws.pathType === 'wsl' && !wslEnabled) ? 'opacity-40' : ''}`}
                   style={!isSelected ? { color: 'var(--color-fg-primary)' } : undefined}
                 >
                   <div className="flex items-center gap-1 w-full mb-0.5">
@@ -724,17 +750,36 @@ export default function Sidebar({ width }: SidebarProps) {
               <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>Tmux</span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className={`truncate max-w-[120px] ${wslStatusClass}`} title={health.wslStatus.error || wslLabel}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wslEnabled}
+                onClick={() => void setWslEnabled(!wslEnabled)}
+                className={`truncate max-w-[120px] rounded px-1.5 py-0.5 hover:bg-white/5 ${!wslEnabled ? 'text-gray-500' : wslStatusClass}`}
+                title={wslToggleTitle}
+              >
                 {wslLabel}
-              </span>
+              </button>
               <button
                 onClick={() => void checkHealth()}
-                disabled={healthChecking}
+                disabled={healthChecking || !wslEnabled}
                 className="p-1 rounded text-gray-500 hover:text-accent-blue hover:bg-white/5 transition-colors disabled:opacity-50"
                 title="Refresh WSL status"
               >
                 <Icons.RefreshCw className={`w-3.5 h-3.5 ${healthChecking ? 'animate-spin' : ''}`} />
               </button>
+              {!wslEnabled && (
+                <button
+                  type="button"
+                  onClick={() => void handleShutdownWsl()}
+                  disabled={liveWslAgentCount > 0}
+                  className="p-1 rounded text-gray-500 hover:text-accent-red hover:bg-white/5 transition-colors disabled:opacity-30"
+                  title={liveWslAgentCount > 0 ? 'Stop all live WSL agents before shutting WSL down' : 'Shut down WSL now'}
+                  aria-label="Shut down WSL now"
+                >
+                  <Icons.Power className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           </>
         ) : (

@@ -14,6 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { assertWslEnabled } from './wsl-enabled';
 import crypto from 'crypto';
 import { LARES_DIR_NAME, LEGACY_LARES_DIR_NAME } from '../shared/constants';
 import { translateStateRelPath } from './workspace-state-dir';
@@ -233,6 +234,7 @@ export function writeScaffoldMap(
  *  workspace's ACTUAL state dir first, so a rename-failed workspace (still on
  *  `.dashboard/` this session) keeps its scaffolds in one folder. */
 function scaffoldFullPath(workDir: string, relPath: string, pathType: string): string {
+  if (pathType === 'wsl') assertWslEnabled();
   const effectiveRel = translateStateRelPath(workDir, relPath, pathType);
   if (pathType === 'wsl') return `${workDir}/${effectiveRel}`;
   return path.join(workDir, effectiveRel);
