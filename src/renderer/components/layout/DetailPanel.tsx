@@ -446,6 +446,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         {detailPane === 1 && <DetailPaneProducts agentId={agent.id} pathType={pathType} />}
         {detailPane === 2 && (
           <ChatPane
+            key={agent.id}
             agentId={agent.id}
             agentStatus={agent.status}
             agentName={agent.title}

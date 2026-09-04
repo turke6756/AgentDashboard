@@ -19,6 +19,7 @@ import PromptStaging from './PromptStaging';
 import ToolBlock from './chat/blocks/ToolBlock';
 import ContextUsageBar from './chat/ContextUsageBar';
 import WatchGlass from './WatchGlass';
+import { mergeChatEvents } from './chat-event-merge';
 
 // A staged comment: a quote pulled from the transcript plus the note the user
 // typed. These accumulate in-memory (per pane) until the airplane sends the
@@ -665,7 +666,11 @@ export default function ChatPane({ agentId, agentStatus, agentName, stagingOpen 
       await window.api.agents.chatSubscribe(agentId);
       const initial = await window.api.agents.getChatEvents(agentId);
       if (!mounted) return;
-      setEvents(initial.events);
+      // `getChatEvents` force-polls. Because this pane subscribes first, that
+      // poll can deliver the same events through the live listener before its
+      // IPC reply arrives. Reconcile by uuid so hydration neither duplicates
+      // that batch nor overwrites a genuinely newer push.
+      setEvents((current) => mergeChatEvents(initial.events, current));
       setHistoryUnavailable(initial.source === 'unavailable');
       setHydrated(true);
       // Cheap DB lineage (no JSONL read) so we know whether prior sessions
@@ -684,7 +689,7 @@ export default function ChatPane({ agentId, agentStatus, agentName, stagingOpen 
 
     const unsub = window.api.agents.onChatEvents((batch: ChatEventBatch) => {
       if (batch.agentId !== agentId) return;
-      setEvents(prev => [...prev, ...batch.events]);
+      setEvents((prev) => mergeChatEvents(prev, batch.events));
     });
 
     return () => {
