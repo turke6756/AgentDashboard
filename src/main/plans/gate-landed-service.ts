@@ -1,11 +1,13 @@
 import {
   findGateLandedWitnessTurn,
+  getAgent,
   getDb,
   getPlanDispatchAttempt,
   getPlanPackageEvidenceProjection,
   getPlanPackageGateAttempt,
   getPlanWorkPackage,
   getWorkspace,
+  getTurnRecord,
   nextPlanPackageGateAttemptNo,
   reconcilePlanDispatchAttempts,
   type PlanDispatchAttempt,
@@ -53,6 +55,7 @@ export interface GateLandedServiceDeps {
   transition?: (command: PlanPackageCommand, witness: PlanPackageWitness) => TransitionResult;
   evaluate?: typeof evaluateCompletionReadiness;
   reconcile?: typeof reconcilePlanDispatchAttempts;
+  resolveTargetSessionId?: (attemptId: string) => string | null;
   resolveFinalize?: typeof resolveLandedFinalizeRequest;
   finalize?: typeof finalizePlanItemDone;
   now?: () => number;
@@ -61,8 +64,8 @@ export interface GateLandedServiceDeps {
 function defaultPlanAuthority(id: string): PlanAuthority | null {
   const row = getDb().prepare(
     `SELECT id, workspace_id, artifact_id, responsible_supervisor_id
-       FROM plans WHERE id = ? AND deleted_at IS NULL`,
-  ).get(id) as {
+       FROM plans WHERE (id = ? OR artifact_id = ?) AND deleted_at IS NULL`,
+  ).get(id, id) as {
     id: string; workspace_id: string; artifact_id: string | null;
     responsible_supervisor_id: string | null;
   } | undefined;
@@ -72,6 +75,24 @@ function defaultPlanAuthority(id: string): PlanAuthority | null {
     artifactId: row.artifact_id,
     responsibleSupervisorId: row.responsible_supervisor_id,
   } : null;
+}
+
+function defaultResolveTargetSessionId(attemptId: string): string | null {
+  const attempt = getPlanDispatchAttempt(attemptId);
+  if (!attempt) return null;
+  if (attempt.targetSessionId) return attempt.targetSessionId;
+  const turnSessionId = attempt.confirmedTurnId
+    ? getTurnRecord(attempt.confirmedTurnId)?.sessionId ?? null
+    : null;
+  const targetSessionId = turnSessionId
+    || (attempt.targetAgentId ? getAgent(attempt.targetAgentId)?.resumeSessionId : null);
+  if (!targetSessionId) return null;
+  getDb().prepare(
+    `UPDATE plan_dispatch_attempts
+        SET target_session_id = COALESCE(target_session_id, ?)
+      WHERE id = ?`,
+  ).run(targetSessionId, attemptId);
+  return getPlanDispatchAttempt(attemptId)?.targetSessionId ?? null;
 }
 
 function identity(pkg: PlanWorkPackage, plan: PlanAuthority, key: string) {
@@ -135,7 +156,7 @@ export async function gateLandedWorkPackage(
   (deps.reconcile ?? reconcilePlanDispatchAttempts)();
   const attempt = getAttempt(args.dispatch_attempt_id);
   if (!attempt) return refused('dispatch-attempt-not-found');
-  if (attempt.planId !== args.plan_id) return refused('attempt-plan-mismatch');
+  if (attempt.planId !== plan.id) return refused('attempt-plan-mismatch');
   if ((attempt.state !== 'delivered' && attempt.state !== 'reconciled') || !attempt.confirmedTurnId) {
     return refused('attempt-unconfirmed');
   }
@@ -143,9 +164,11 @@ export async function gateLandedWorkPackage(
   if (!pkg || pkg.planId !== plan.id || attempt.packageRevision !== pkg.revision) {
     return refused('stale-attempt-revision');
   }
+  const targetSessionId = attempt.targetSessionId
+    ?? (deps.resolveTargetSessionId ?? defaultResolveTargetSessionId)(attempt.id);
   if (attempt.captureStatus !== 'captured' || !attempt.repositoryKey || !attempt.branchRef
       || !attempt.dispatchTipOid || !attempt.frozenPaths?.length || !attempt.targetAgentId
-      || !attempt.targetSessionId || !pkg.intentId || attempt.intentId !== pkg.intentId || !plan.artifactId) {
+      || !targetSessionId || !pkg.intentId || attempt.intentId !== pkg.intentId || !plan.artifactId) {
     return refused('dispatch-evidence-unavailable');
   }
   const repositoryRoot = deps.getRepositoryRoot?.(pkg.workspaceId)
@@ -170,7 +193,7 @@ export async function gateLandedWorkPackage(
     packageId: pkg.id,
     intentId: pkg.intentId,
     targetAgentId: attempt.targetAgentId,
-    targetSessionId: attempt.targetSessionId,
+    targetSessionId,
     repositoryKey,
     commitOid: verification.commitOid,
     frozenPaths: attempt.frozenPaths,

@@ -118,6 +118,57 @@ test('gate retries reconciliation before refusing a stale pending attempt', asyn
   assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
 });
 
+test('portable plan id resolves to row authority and gates the matching attempt', async () => {
+  const ws = db.createWorkspace({ title: 'Portable gate', path: 'C:/portable-gate', pathType: 'windows' });
+  const supervisor = db.createAgent({ workspaceId: ws.id, title: 'portable sup', roleDescription: '',
+    workingDirectory: ws.path, command: 'x', tmuxSessionName: null, autoRestartEnabled: false,
+    logPath: 'portable-sup.log', isSupervisor: true });
+  const plan = db.createOrRevivePlan({ workspaceId: ws.id, path: '.lares/plans/portable-gate',
+    format: 'structured', runState: 'executing' });
+  db.getDb().prepare('UPDATE plans SET artifact_id = ?, responsible_supervisor_id = ? WHERE id = ?')
+    .run('plan_6c5351d6', supervisor.id, plan.id);
+  const attempt = { ...BASE_ATTEMPT, planId: plan.id };
+  const pkg = { ...BASE_PACKAGE, workspaceId: ws.id, planId: plan.id };
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan_6c5351d6', dispatch_attempt_id: attempt.id, commit_oid: OID,
+  }, supervisor.id, refusalDeps({
+    getAttempt: () => attempt,
+    getPackage: () => pkg,
+    getPlanAuthority: undefined,
+    verify: async () => ({ outcome: 'refused', reason: 'branch-unresolvable' }),
+  }));
+  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
+});
+
+test('missing target session is backfilled before gate evidence is evaluated', async () => {
+  const attempt = { ...BASE_ATTEMPT, targetSessionId: null };
+  const persisted: string[] = [];
+  let witnessedSessionId: string | null = null;
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: attempt.id, commit_oid: OID,
+  }, 'sup', refusalDeps({
+    getAttempt: () => attempt,
+    resolveTargetSessionId: (attemptId) => { persisted.push(attemptId); return 'codex-resume-session'; },
+    findWitness: (input) => { witnessedSessionId = input.targetSessionId; return null; },
+  }));
+  assert.deepEqual(persisted, [attempt.id]);
+  assert.equal(witnessedSessionId, 'codex-resume-session');
+  assert.deepEqual(result, { outcome: 'refused', reason: 'commit-witness-unavailable' });
+});
+
+test('missing target session everywhere remains dispatch-evidence-unavailable', async () => {
+  let verifyCalls = 0;
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+  }, 'sup', refusalDeps({
+    getAttempt: () => ({ ...BASE_ATTEMPT, targetSessionId: null }),
+    resolveTargetSessionId: () => null,
+    verify: async () => { verifyCalls += 1; return { outcome: 'refused', reason: 'branch-unresolvable' }; },
+  }));
+  assert.equal(verifyCalls, 0);
+  assert.deepEqual(result, { outcome: 'refused', reason: 'dispatch-evidence-unavailable' });
+});
+
 function apiRequest(port: number, workspaceId: string, supervisorId: string) {
   return (method: string, route: string, body?: unknown): Promise<unknown> => new Promise((resolve, reject) => {
     const req = http.request({ hostname: '127.0.0.1', port, path: route, method, agent: false,
@@ -163,8 +214,8 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
   db.insertPlanDispatchAttempt({ id: 'dispatch-entry', packageId: 'WP-4', planId: plan.id,
     executionRunId: 'run-entry', targetAgentId: worker.id, requestedPlanItemId: 'WP-4', createdAt: 2,
     targetSessionId: 'session-entry', repositoryKey: root, branchRef: 'refs/heads/main', dispatchTipOid: base,
-    frozenPaths: ['owned.txt'], captureStatus: 'captured' });
-  db.getDb().prepare('UPDATE plan_dispatch_attempts SET intent_id = ? WHERE id = ?').run('intent-entry', 'dispatch-entry');
+    frozenPaths: ['owned.txt'], captureStatus: 'captured', intent: { id: 'intent-entry', workspaceId: ws.id,
+      title: 'WP-4 dispatch', briefDigest: 'brief-entry', createdById: supervisor.id } });
   const turn = db.allocateAndInsertTurn(ws.id, { id: 'turn-entry', agentId: worker.id, planId: plan.id,
     planItemId: 'WP-4', intentId: 'intent-entry', sessionId: 'session-entry', startedAt: 3, status: 'open' });
   db.updateTurnRecord(turn.id, { touched: [{ path: 'owned.txt', op: 'write' }] });
@@ -188,11 +239,11 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
   const server = new ApiServer(stub, 0, undefined, '127.0.0.1'); const port = await server.start();
   try {
     const result = await tools.handlePlansToolCall('gate_landed_work_package', {
-      plan_id: plan.id, dispatch_attempt_id: 'dispatch-entry', commit_oid: commit,
+      plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-entry', commit_oid: commit,
     }, apiRequest(port, ws.id, supervisor.id));
     assert.match(result.content[0].text, /"outcome": "landed"/);
     const retried = await tools.handlePlansToolCall('gate_landed_work_package', {
-      plan_id: plan.id, dispatch_attempt_id: 'dispatch-entry', commit_oid: commit,
+      plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-entry', commit_oid: commit,
     }, apiRequest(port, ws.id, supervisor.id));
     assert.match(retried.content[0].text, /"outcome": "landed"/);
   } finally { server.stop(); }
