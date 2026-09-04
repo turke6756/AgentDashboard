@@ -575,14 +575,8 @@ export function registerIpcHandlers(
 
   // Chat pane (session-log-reader)
   ipcMain.handle('agent:get-chat-events', (_e, agentId, sinceUuid) => {
-    // BUG-28: the HTTP `/messages` route lazy-recovers a lost Codex
-    // resumeSessionId, but the dashboard chat pane renders via this IPC path
-    // instead. Mirror the recovery here (and on chat-subscribe) so a codex
-    // agent whose post-launch discovery race lost still gets its rollout
-    // reader bound — otherwise the pane stays blank even though the rollout
-    // JSONL on disk has every assistant turn. No-op for non-codex agents and
-    // codex agents that already have a sid.
-    supervisor.maybeRecoverCodexSid(agentId);
+    // Lane cwd is shared and carries no agent identity. Launch/session
+    // discovery owns binding; until then this pane intentionally stays empty.
     // A `done`/`crashed` agent's ring has been released (`forgetAgent`) and can
     // never be refilled — `resolveAgentChatEvents` re-reads its history from the
     // provider's session log on disk instead, and reports `source` so the pane
@@ -609,7 +603,6 @@ export function registerIpcHandlers(
     );
   });
   ipcMain.handle('agent:chat-subscribe', (_e, agentId) => {
-    supervisor.maybeRecoverCodexSid(agentId); // BUG-28: see get-chat-events
     supervisor.getSessionLogReader().addChatSubscriber(agentId);
   });
   ipcMain.handle('agent:chat-unsubscribe', (_e, agentId) => {

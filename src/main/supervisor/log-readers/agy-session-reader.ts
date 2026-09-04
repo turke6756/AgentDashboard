@@ -618,41 +618,25 @@ export class AgySessionReader implements ChatLogReader {
 
   private resolveDbPath(session: ChatLogReaderSession): string | null {
     const cached = this.resolvedPaths.get(session.agentId);
-    if (cached && fs.existsSync(cached)) return cached;
+    if (cached) {
+      const cachedSessionId = path.parse(cached).name;
+      if (CONVERSATION_ID_RE.test(session.sessionId) && cachedSessionId === session.sessionId && fs.existsSync(cached)) {
+        return cached;
+      }
+      this.invalidatePath(session.agentId);
+    }
+    // A cwd is a lane identity, not an agent identity. Many Agy agents share
+    // it, so an unbound live agent must remain empty until its own conversation
+    // id is persisted. Activity-window recovery for terminal history remains
+    // available through `recoverSessionEventsOnce`.
+    if (!CONVERSATION_ID_RE.test(session.sessionId)) return null;
     const root = this.getWindowsAgyRoot();
     if (!root) return null;
-
-    const candidates: string[] = [];
-    if (CONVERSATION_ID_RE.test(session.sessionId)) candidates.push(conversationDbPath(root, session.sessionId));
-    const historyId = readAgyHistoryBinding(root, session.workingDirectory, session.startedAt);
-    if (historyId && historyId !== session.sessionId) candidates.push(conversationDbPath(root, historyId));
-
-    const conversationsDir = path.join(root, 'conversations');
-    try {
-      const floorBase = parseStartedAtMs(session.startedAt);
-      const floor = floorBase ? floorBase - START_FLOOR_SLACK_MS : 0;
-      const newest = fs.readdirSync(conversationsDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && /^[0-9a-f-]{36}\.db$/i.test(entry.name))
-        .map((entry) => {
-          const dbPath = path.join(conversationsDir, entry.name);
-          try { return { dbPath, mtimeMs: fs.statSync(dbPath).mtimeMs }; } catch { return null; }
-        })
-        .filter((entry): entry is { dbPath: string; mtimeMs: number } => !!entry && entry.mtimeMs >= floor)
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
-      candidates.push(...newest.map((entry) => entry.dbPath));
-    } catch {
-      // Missing/unreadable conversation directory.
-    }
-
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-      if (seen.has(candidate) || !fs.existsSync(candidate)) continue;
-      seen.add(candidate);
-      const parsed = parseConversation(candidate, session, false);
-      if (!parsed || !cwdMatches(parsed.metadata.cwd, session.workingDirectory)) continue;
-      this.resolvedPaths.set(session.agentId, candidate);
-      return candidate;
-    }
-    return null;
+    const candidate = conversationDbPath(root, session.sessionId);
+    if (!fs.existsSync(candidate)) return null;
+    const parsed = parseConversation(candidate, session, false);
+    if (!parsed || !cwdMatches(parsed.metadata.cwd, session.workingDirectory)) return null;
+    this.resolvedPaths.set(session.agentId, candidate);
+    return candidate;
   }
 }

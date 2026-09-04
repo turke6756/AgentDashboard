@@ -185,6 +185,7 @@ export class SessionLogDispatcher extends EventEmitter {
 
   private subscribers = new Set<string>();
   private nextPollAt = new Map<string, number>();
+  private observedSessionIds = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
   private syntheticMarkers = new Map<string, SyntheticMarker[]>(); // agentId -> markers
   private seenEventUuids = new Map<string, Set<string>>();
@@ -407,6 +408,7 @@ export class SessionLogDispatcher extends EventEmitter {
     this.seenEventUuidOrder.delete(agentId);
     this.syntheticMarkers.delete(agentId);
     this.emittedInitialBatch.delete(agentId);
+    this.observedSessionIds.delete(agentId);
     for (const reader of this.readers.values()) reader.invalidatePath(agentId);
     // BUG-26 Layer 2/3: downstream caches (ContextStatsMonitor maps and the
     // file_activities DB rows) accumulate under the pre-rebind misattributed
@@ -439,6 +441,7 @@ export class SessionLogDispatcher extends EventEmitter {
     this.seenEventUuidOrder.delete(agentId);
     this.syntheticMarkers.delete(agentId);
     this.emittedInitialBatch.delete(agentId);
+    this.observedSessionIds.delete(agentId);
     // Poll bookkeeping: `tick()` only walks ACTIVE sessions, so a terminal
     // agent's entries here are pure garbage that never gets revisited.
     this.nextPollAt.delete(agentId);
@@ -580,6 +583,17 @@ export class SessionLogDispatcher extends EventEmitter {
   private pollOne(session: AgentSession): void {
     const reader = this.readers.get(session.provider);
     if (!reader) return;
+
+    // The DB session id is the attribution boundary. If it changes after an
+    // earlier poll (especially empty -> bound), discard the old reader path and
+    // ring before touching disk so cached sibling events cannot survive rebind.
+    if (
+      this.observedSessionIds.has(session.agentId) &&
+      this.observedSessionIds.get(session.agentId) !== session.sessionId
+    ) {
+      this.rebindAgent(session.agentId);
+    }
+    this.observedSessionIds.set(session.agentId, session.sessionId);
 
     const readerSession: ChatLogReaderSession = {
       agentId: session.agentId,

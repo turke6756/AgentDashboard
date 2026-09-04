@@ -70,12 +70,11 @@ interface GrokActiveSession {
  * `summary.json` (grok's updates.jsonl has no session-meta line of its own),
  * carrying `model = current_model_id` and `cwd = info.cwd`.
  *
- * Discovery: new dashboard launches bind a caller-minted Grok session id, so
- * their tail resolves only from the exact encoded-cwd/session-id path. While
- * that file is being created, polling waits rather than falling back to another
- * session in the shared cwd. Legacy agents without a bound id retain the old
- * heuristic: prefer `active_sessions.json` for the cwd, otherwise take the
- * newest `updates.jsonl` under its encoded group (subject to the start floor).
+ * Discovery: dashboard launches bind a caller-minted Grok session id, so their
+ * tail resolves only from the exact encoded-cwd/session-id path. While that
+ * binding or file creation is pending, polling returns no events rather than
+ * falling back to another session in the shared cwd. Historical recovery is a
+ * separate, activity-window-bounded operation.
  */
 export class GrokSessionReader implements ChatLogReader {
   readonly provider: AgentProvider = 'grok';
@@ -578,27 +577,19 @@ export class GrokSessionReader implements ChatLogReader {
 
   private resolveUpdatesPath(session: ChatLogReaderSession): string | null {
     const cached = this.resolvedPaths.get(session.agentId);
+    if (!session.sessionId) {
+      if (cached) this.invalidatePath(session.agentId);
+      return null;
+    }
     if (cached) {
       if (fs.existsSync(cached)) return cached;
       this.resolvedPaths.delete(session.agentId);
     }
 
-    // Exact session id (when the agent record carries one). Missing means the
-    // provider has not created this agent's file yet, never "try a sibling".
-    if (session.sessionId) {
-      const byId = this.findUpdatesById(session);
-      if (byId) {
-        this.resolvedPaths.set(session.agentId, byId);
-        return byId;
-      }
-      return null;
-    }
-
-    // Legacy cwd discovery for records created before Grok ids were bound.
-    const byCwd = this.findUpdatesByCwd(session);
-    if (byCwd) {
-      this.resolvedPaths.set(session.agentId, byCwd);
-      return byCwd;
+    const byId = this.findUpdatesById(session);
+    if (byId) {
+      this.resolvedPaths.set(session.agentId, byId);
+      return byId;
     }
     return null;
   }

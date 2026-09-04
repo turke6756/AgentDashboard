@@ -381,7 +381,7 @@ test('bound session id wins over newer cwd-matching conversations', () => {
   } finally { cleanup(root); }
 });
 
-test('history.jsonl binds an unbound active agent by cwd and conversationId', () => {
+test('same-cwd unbound agent ignores history binding, then reads its own DB once bound', () => {
   const root = tempRoot();
   try {
     createFixture(root, { sid: OTHER_SID, rows: [{ idx: 0, type: 14, status: 3, payload: userPayload('history-bound') }] });
@@ -389,7 +389,10 @@ test('history.jsonl binds an unbound active agent by cwd and conversationId', ()
       display: 'hello', timestamp: CREATED_MS + 1_000, workspace: CWD, conversationId: OTHER_SID,
     }) + '\n');
     assert.equal(readAgyHistoryBinding(root, CWD, new Date(CREATED_MS).toISOString()), OTHER_SID);
-    const user = readerAt(root).pollSession(session({ sessionId: '' })).find((e) => e.type === 'user-text');
+    const reader = readerAt(root);
+    assert.deepEqual(reader.pollSession(session({ sessionId: '' })), []);
+    assert.equal((reader as any).resolvedPaths.has('agent-1'), false);
+    const user = reader.pollSession(session({ sessionId: OTHER_SID })).find((e) => e.type === 'user-text');
     assert.ok(user?.type === 'user-text' && user.text === 'history-bound');
   } finally { cleanup(root); }
 });
@@ -410,17 +413,18 @@ test('startedAt parser handles SQLite UTC, ISO-with-Z, and undefined', () => {
   assert.equal(parseStartedAtMs(undefined), 0);
 });
 
-test('fallback chooses newest post-start DB whose metadata cwd matches', () => {
+test('unbound agent does not choose the newest post-start DB for its cwd', () => {
   const root = tempRoot();
   try {
     createFixture(root, { sid: SID, cwd: 'C:\\other', mtimeMs: CREATED_MS + 30_000 });
     createFixture(root, { sid: OTHER_SID, rows: [{ idx: 0, type: 14, status: 3, payload: userPayload('cwd-match') }], mtimeMs: CREATED_MS + 20_000 });
-    const user = readerAt(root).pollSession(session({ sessionId: '' })).find((e) => e.type === 'user-text');
-    assert.ok(user?.type === 'user-text' && user.text === 'cwd-match');
+    const reader = readerAt(root);
+    assert.deepEqual(reader.pollSession(session({ sessionId: '' })), []);
+    assert.equal((reader as any).resolvedPaths.has('agent-1'), false);
   } finally { cleanup(root); }
 });
 
-test('SQLite-format startedAt is UTC when resolving by conversation DB mtime', () => {
+test('SQLite-format startedAt does not enable unbound live discovery', () => {
   const root = tempRoot();
   try {
     createFixture(root, {
@@ -432,7 +436,7 @@ test('SQLite-format startedAt is UTC when resolving by conversation DB mtime', (
       sessionId: '',
       startedAt: '2026-08-03 16:55:28',
     }));
-    assert.ok(events.some((e) => e.type === 'user-text' && e.text === 'sqlite-floor-match'));
+    assert.deepEqual(events, []);
   } finally { cleanup(root); }
 });
 

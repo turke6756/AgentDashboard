@@ -349,15 +349,31 @@ test('findGroupDirForCwd resolves the encodeURIComponent group name', () => {
   }
 });
 
-test('cwd discovery tails the session with no bound session id', () => {
-  const root = writeSessionTree({ cwd: FIXTURE_CWD, sessionId: FIXTURE_SESSION_ID, lines: FIXTURE_LINES });
+test('same-cwd unbound agent stays empty, then reads only its own file once bound', () => {
+  const siblingSid = '11111111-1111-4111-8111-111111111111';
+  const ownSid = '22222222-2222-4222-8222-222222222222';
+  const root = writeSessionTree({
+    cwd: FIXTURE_CWD,
+    sessionId: siblingSid,
+    lines: [userLine(siblingSid, 'from sibling', 1785772800)],
+  });
   try {
     const reader = makeDiscoveryReader(root);
-    const events = reader.pollSession(
-      makeSession({ agentId: 'a1', sessionId: '', workingDirectory: FIXTURE_CWD })
+    const unbound = reader.pollSession(
+      makeSession({ agentId: 'a1', sessionId: '', workingDirectory: FIXTURE_CWD }),
     );
-    assert.ok(events.some((e) => e.type === 'user-text' && e.text === 'list the files'));
-    assert.ok(events.some((e) => e.type === 'assistant-text'));
+    assert.deepEqual(unbound, []);
+    assert.equal((reader as any).resolvedPaths.has('a1'), false);
+
+    writeSessionTree({
+      root,
+      cwd: FIXTURE_CWD,
+      sessionId: ownSid,
+      lines: [userLine(ownSid, 'from own session', 1785772801)],
+    });
+    const bound = reader.pollSession(makeSession({ agentId: 'a1', sessionId: ownSid }));
+    assert.ok(bound.some((e) => e.type === 'user-text' && e.text === 'from own session'));
+    assert.ok(!bound.some((e) => e.type === 'user-text' && e.text === 'from sibling'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -421,7 +437,7 @@ test('bound session id waits for its own file instead of selecting a newer sibli
   }
 });
 
-test('start floor: a live session whose mtime is just after a SQLite space-form createdAt is ACCEPTED (UTC parse)', () => {
+test('terminal recovery treats SQLite space-form createdAt as UTC', () => {
   // Regression for the start-floor timezone misparse: startedAt arrives from the
   // agents table as SQLite `datetime('now')` space-form ("YYYY-MM-DD HH:MM:SS",
   // UTC, no Z). A bare Date.parse reads it as LOCAL time, so on a west-of-UTC
@@ -433,16 +449,18 @@ test('start floor: a live session whose mtime is just after a SQLite space-form 
   const root = writeSessionTree({
     cwd: FIXTURE_CWD,
     sessionId: FIXTURE_SESSION_ID,
-    lines: FIXTURE_LINES,
+    lines: [userLine(FIXTURE_SESSION_ID, 'space-form recovery', (createdAtUtcMs + 5_000) / 1000)],
     mtimeMs: createdAtUtcMs + 5_000, // updates.jsonl written ~5s after the agent row
   });
   try {
     const reader = makeDiscoveryReader(root);
-    const events = reader.pollSession(
-      makeSession({ agentId: 'a1', sessionId: '', workingDirectory: FIXTURE_CWD, startedAt: startedAtSpaceForm })
+    const recovered = reader.recoverSessionEventsOnce(
+      FIXTURE_CWD,
+      startedAtSpaceForm,
+      new Date(createdAtUtcMs + 60_000).toISOString(),
     );
     assert.ok(
-      events.some((e) => e.type === 'user-text' && e.text === 'list the files'),
+      recovered?.events.some((e) => e.type === 'user-text' && e.text === 'space-form recovery'),
       'space-form createdAt must be treated as UTC so a just-after session is not falsely rejected as stale',
     );
   } finally {
@@ -450,7 +468,7 @@ test('start floor: a live session whose mtime is just after a SQLite space-form 
   }
 });
 
-test('active_sessions.json selects the live session over a newer stale one', () => {
+test('active_sessions.json cannot bind an unbound live agent in a shared cwd', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-'));
   const cwd = FIXTURE_CWD;
   const groupBase = path.join(root, 'sessions', encodeURIComponent(cwd));
@@ -485,10 +503,8 @@ test('active_sessions.json selects the live session over a newer stale one', () 
     const events = reader.pollSession(
       makeSession({ agentId: 'live', sessionId: '', workingDirectory: cwd })
     );
-    assert.ok(
-      events.some((e) => e.type === 'user-text' && e.text === 'from the live session'),
-      'active_sessions.json live id wins even though the stale session dir is newer'
-    );
+    assert.deepEqual(events, []);
+    assert.equal((reader as any).resolvedPaths.has('live'), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -580,7 +596,7 @@ test('dispatcher routes grok events end-to-end via pollNow + getCachedEvents', (
   try {
     const agentId = 'grok-agent-1';
     const dispatcher = new SessionLogDispatcher(() => [
-      { agentId, sessionId: '', workingDirectory: FIXTURE_CWD, provider: 'grok' },
+      { agentId, sessionId: FIXTURE_SESSION_ID, workingDirectory: FIXTURE_CWD, provider: 'grok' },
     ]);
     dispatcher.register(makeDiscoveryReader(root));
 

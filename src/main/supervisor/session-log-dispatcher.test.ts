@@ -91,6 +91,51 @@ test('unbound live reader emits its exact resolved provider session id', () => {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+test('session-id change invalidates the reader and replaces the per-agent ring', () => {
+  let sessionId = '';
+  let invalidations = 0;
+  const emittedFor = new Set<string>();
+  const reader: ChatLogReader = {
+    provider: 'grok',
+    invalidatePath: () => { invalidations++; },
+    pollSession: (session) => {
+      if (!session.sessionId || emittedFor.has(session.sessionId)) return [];
+      emittedFor.add(session.sessionId);
+      return [{
+        type: 'user-text',
+        uuid: `event:${session.sessionId}`,
+        timestamp: new Date().toISOString(),
+        agentId: session.agentId,
+        text: session.sessionId,
+      }];
+    },
+  };
+  const dispatcher = new SessionLogDispatcher(() => [{
+    agentId: 'grok-1', sessionId, workingDirectory: '/shared-lane', provider: 'grok',
+  }]);
+  dispatcher.register(reader);
+
+  dispatcher.pollNow('grok-1');
+  assert.deepEqual(dispatcher.getCachedEvents('grok-1').events, []);
+
+  sessionId = 'session-a';
+  dispatcher.pollNow('grok-1');
+  assert.equal(invalidations, 1, 'empty-to-bound transition invalidates cached reader state');
+  assert.deepEqual(
+    dispatcher.getCachedEvents('grok-1').events.map((event) => event.uuid),
+    ['event:session-a'],
+  );
+
+  sessionId = 'session-b';
+  dispatcher.pollNow('grok-1');
+  assert.equal(invalidations, 2, 'bound-to-bound transition invalidates cached reader state');
+  assert.deepEqual(
+    dispatcher.getCachedEvents('grok-1').events.map((event) => event.uuid),
+    ['event:session-b'],
+    'events from the prior session do not survive in the agent ring',
+  );
+});
+
 test('synthetic followed by matching real within window: real is dropped', () => {
   const { dispatcher, reader, emitted } = makeDispatcher();
   dispatcher.appendSyntheticUserText('agent-1', 'hello world');
