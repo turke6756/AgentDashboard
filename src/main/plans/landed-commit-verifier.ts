@@ -70,9 +70,10 @@ async function parseMatchingCommit(
   const physical = paragraphs.at(-1) ?? [];
   if (physical.length < 3) return null;
   // The canonical block is the one and only trailer paragraph. A separated
-  // earlier paragraph containing any trailer-shaped line (including an unknown
-  // key) is ambiguous evidence and invalidates the whole claim.
-  if (paragraphs.slice(0, -1).some((paragraph) =>
+  // body paragraph containing any trailer-shaped line (including an unknown
+  // key) is ambiguous evidence and invalidates the whole claim. The subject is
+  // excluded because conventional-commit subjects are trailer-shaped.
+  if (paragraphs.slice(1, -1).some((paragraph) =>
     paragraph.some((line) => TRAILER_LINE.test(line)))) return null;
   const fullCounts = new Map<string, number>();
   for (const line of commit.message.replace(/\r\n/g, '\n').split('\n')) {

@@ -71,6 +71,18 @@ test('verifies the sole canonical first-parent match and parses audit trailers',
     'gate verification walks the complete range without a cap');
 });
 
+test('matches a conventional-commit subject before a valid trailer block', async () => {
+  const git = new FakeGit();
+  git.commits.get(ONE)!.message = `feat(scope): thing\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
+  assert.equal((await verifyLandedCommit(input(), git)).outcome, 'verified');
+});
+
+test('matches a conventional-commit subject followed only by trailers', async () => {
+  const git = new FakeGit();
+  git.commits.get(ONE)!.message = `fix: x\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
+  assert.equal((await verifyLandedCommit(input(), git)).outcome, 'verified');
+});
+
 test('matches WP trailer identity using ingest case folding and still rejects a different id', async () => {
   const lowerTrailer = new FakeGit();
   lowerTrailer.commits.get(ONE)!.message = message(undefined, 'wp-2');
