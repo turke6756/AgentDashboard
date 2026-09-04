@@ -76,6 +76,7 @@ interface PendingPlanNavigation {
 const PLAN_NAVIGATION_TIMEOUT_MS = 5_000;
 const pendingPlanNavigations = new Map<string, PendingPlanNavigation>();
 const agentPlanBadgeRequestGenerations = new Map<string, number>();
+let healthCheckGeneration = 0;
 
 function finishPlanNavigation(requestId: string, outcome: PlanNavOutcome): void {
   const pending = pendingPlanNavigations.get(requestId);
@@ -2176,9 +2177,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   setWslEnabled: async (enabled) => {
     await window.api.system.setWslEnabled(enabled);
-    set({ wslEnabled: enabled });
-    // The main handler invalidates the prerequisite TTL. This single check is
-    // therefore forced-fresh on enable and immediately projects "disabled" on off.
+    // Invalidate any probe that started before the preference write. Its
+    // captured health projection may still describe the previous setting.
+    healthCheckGeneration += 1;
+    const persistedEnabled = await window.api.system.getWslEnabled();
+    set({ wslEnabled: persistedEnabled });
+    // The main handler invalidates the prerequisite TTL. Re-check after both
+    // transitions so enabling immediately probes WSL and disabling projects
+    // the explicit disabled state.
     await get().checkHealth();
   },
 
@@ -2188,14 +2194,22 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   checkHealth: async () => {
+    const generation = ++healthCheckGeneration;
     set({ healthChecking: true });
     try {
+      // Startup state comes from the persisted main-process preference, not
+      // the renderer's first-run default.
+      const persistedEnabled = await window.api.system.getWslEnabled();
+      if (generation !== healthCheckGeneration) return;
+      set({ wslEnabled: persistedEnabled });
       const health = await window.api.system.healthCheck();
+      if (generation !== healthCheckGeneration) return;
       // The health check is a projection of the full prerequisite report, so a
       // refresh of one refreshes the other — the sidebar ticker and the
       // prerequisites dialog can never show contradictory answers.
-      set({ wslEnabled: health.wslEnabled, health, healthChecking: false, ...(health.prerequisites ? { prerequisites: health.prerequisites } : {}) });
+      set({ wslEnabled: persistedEnabled, health, healthChecking: false, ...(health.prerequisites ? { prerequisites: health.prerequisites } : {}) });
     } catch (err) {
+      if (generation !== healthCheckGeneration) return;
       console.error('Health check failed:', err);
       set({
         health: {

@@ -212,13 +212,13 @@ export default function Sidebar({ width }: SidebarProps) {
     : healthChecking
     ? 'Checking...'
     : wslState === 'running'
-      ? 'WSL Running'
+      ? 'WSL running'
       : wslState === 'stopped'
-        ? 'WSL Stopped'
+        ? 'WSL stopped'
         : wslState === 'no-distro'
           ? 'No WSL distro'
           : wslState === 'unavailable'
-            ? 'WSL Unavailable'
+            ? 'WSL unavailable'
             // 'unknown' means the prerequisite check deliberately did NOT probe
             // WSL — there is no wsl-typed workspace, and probing anyway can raise
             // Windows' "install WSL" dialog (see runtime-prerequisites.ts). Say
@@ -235,7 +235,7 @@ export default function Sidebar({ width }: SidebarProps) {
           : wslState === 'unknown'
             ? 'text-gray-500'
             : 'text-accent-red';
-  const wslToggleTitle = liveWslAgentCount > 0
+  const wslToggleTitle = wslEnabled && liveWslAgentCount > 0
     ? `Turning WSL off will not stop ${liveWslAgentCount} live WSL agent${liveWslAgentCount === 1 ? '' : 's'}.`
     : (wslEnabled ? 'Turn WSL off' : 'Turn WSL on');
 
@@ -749,16 +749,26 @@ export default function Sidebar({ width }: SidebarProps) {
               <span className={health.wslStatus.state === 'running' ? 'text-accent-green' : 'text-gray-700'}>WSL</span>
               <span className={health.tmuxAvailable ? 'text-accent-green' : 'text-gray-700'}>Tmux</span>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center justify-end gap-1.5 min-w-0 overflow-hidden">
+              <span
+                className={`truncate min-w-0 ${!wslEnabled ? 'text-gray-500' : wslStatusClass}`}
+                title={health.wslStatus.error || wslLabel}
+              >
+                {wslLabel}
+              </span>
               <button
                 type="button"
                 role="switch"
                 aria-checked={wslEnabled}
+                aria-label={wslEnabled ? 'Turn WSL off' : 'Turn WSL on'}
                 onClick={() => void setWslEnabled(!wslEnabled)}
-                className={`truncate max-w-[120px] rounded px-1.5 py-0.5 hover:bg-white/5 ${!wslEnabled ? 'text-gray-500' : wslStatusClass}`}
+                className={`relative inline-flex w-7 h-4 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue ${wslEnabled ? 'bg-accent-green' : 'bg-gray-500'}`}
                 title={wslToggleTitle}
               >
-                {wslLabel}
+                <span
+                  aria-hidden="true"
+                  className={`block w-3 h-3 rounded-full bg-surface-base shadow-sm transition-transform ${wslEnabled ? 'translate-x-3.5' : 'translate-x-0.5'}`}
+                />
               </button>
               <button
                 onClick={() => void checkHealth()}

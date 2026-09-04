@@ -10,6 +10,8 @@ let root: Root;
 let mkdir: ReturnType<typeof vi.fn>;
 let listDirectory: ReturnType<typeof vi.fn>;
 let setWslEnabled: ReturnType<typeof vi.fn>;
+let getWslEnabled: ReturnType<typeof vi.fn>;
+let healthCheck: ReturnType<typeof vi.fn>;
 let wslEnabledSetting: boolean;
 
 const health = (enabled: boolean) => ({
@@ -28,15 +30,18 @@ beforeEach(() => {
   listDirectory = vi.fn().mockResolvedValue([]);
   wslEnabledSetting = true;
   setWslEnabled = vi.fn(async (enabled: boolean) => { wslEnabledSetting = enabled; });
+  getWslEnabled = vi.fn(async () => wslEnabledSetting);
+  healthCheck = vi.fn(async () => health(wslEnabledSetting));
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
       files: { mkdir, listDirectory },
       workspaces: { openInVSCode: vi.fn() },
       system: {
+        getWslEnabled,
         setWslEnabled,
         shutdownWsl: vi.fn().mockResolvedValue(undefined),
-        healthCheck: vi.fn(async () => health(wslEnabledSetting)),
+        healthCheck,
       },
     },
   });
@@ -88,19 +93,80 @@ describe('Sidebar workspace options', () => {
       root.render(<Sidebar width={280} />);
     });
     const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
-    expect(toggle.textContent).toContain('WSL Running');
+    expect(toggle.getAttribute('aria-label')).toBe('Turn WSL off');
+    expect(container.textContent).toContain('WSL running');
     expect(toggle.title).toContain('will not stop 1 live WSL agent');
 
     await act(async () => { toggle.click(); });
 
     expect(setWslEnabled).toHaveBeenCalledWith(false);
-    expect(toggle.textContent).toContain('WSL off');
+    expect(container.textContent).toContain('WSL off');
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     const workspaceButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent?.includes('Linux Workspace'))!;
     expect(workspaceButton.className).toContain('opacity-40');
     expect(workspaceButton.title).toBe('WSL is disabled  turn it on in the status bar');
     expect(container.querySelector<HTMLButtonElement>('[aria-label="Shut down WSL now"]')?.disabled).toBe(true);
+  });
+
+  it('turns WSL back on, adopts persisted state, and refreshes health', async () => {
+    wslEnabledSetting = false;
+    useDashboardStore.setState({
+      wslEnabled: false,
+      health: health(false),
+      healthChecking: false,
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Sidebar width={280} />);
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Turn WSL on');
+
+    await act(async () => { toggle.click(); });
+
+    expect(setWslEnabled).toHaveBeenCalledWith(true);
+    expect(getWslEnabled).toHaveBeenCalled();
+    expect(useDashboardStore.getState().wslEnabled).toBe(true);
+    expect(healthCheck).toHaveBeenCalledTimes(1);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(container.textContent).toContain('WSL running');
+  });
+
+  it('does not let an older disabled health result overwrite a later enable', async () => {
+    wslEnabledSetting = false;
+    let resolveStaleHealth!: (value: ReturnType<typeof health>) => void;
+    healthCheck
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStaleHealth = resolve; }))
+      .mockImplementation(async () => health(wslEnabledSetting));
+    useDashboardStore.setState({
+      wslEnabled: false,
+      health: health(false),
+      healthChecking: false,
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Sidebar width={280} />);
+    });
+    let staleCheck!: Promise<void>;
+    await act(async () => {
+      staleCheck = useDashboardStore.getState().checkHealth();
+      await Promise.resolve();
+    });
+    expect(healthCheck).toHaveBeenCalledTimes(1);
+
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    await act(async () => { toggle.click(); });
+    resolveStaleHealth(health(false));
+    await act(async () => { await staleCheck; });
+
+    expect(setWslEnabled).toHaveBeenCalledWith(true);
+    expect(healthCheck).toHaveBeenCalledTimes(2);
+    expect(useDashboardStore.getState().wslEnabled).toBe(true);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
 
   it('creates a folder at the workspace root and expands its tree', async () => {
