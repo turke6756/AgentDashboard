@@ -76,10 +76,15 @@ describe('PromotedPlansList', () => {
     expect(host.textContent).toContain('Archived plan');
   });
 
-  it('double-clicks through the existing plan-tab route', async () => {
+  it('opens through the existing plan-tab route with a single click and keyboard activation', async () => {
     await render();
     const row = host.querySelector<HTMLElement>('[data-testid="promoted-plan-row"]')!;
-    act(() => row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    expect(row.getAttribute('role')).toBe('button');
+    expect(row.tabIndex).toBe(0);
+    act(() => row.click());
+    act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })));
+    expect(openPlanTab).toHaveBeenCalledTimes(3);
     expect(openPlanTab).toHaveBeenCalledWith('active-id', 'Active plan', 'ws-1');
   });
 
@@ -122,16 +127,18 @@ describe('PromotedPlansList', () => {
     expect(host.querySelector('[data-testid="promoted-plan-owner"]')?.textContent).toContain('Edward');
   });
 
-  it('focuses the live responsible agent with one click and disables an offline owner', async () => {
+  it('focuses the live responsible agent without opening the plan and renders an offline owner as text', async () => {
     listPromotedFolders.mockResolvedValueOnce({ plans: [
       plan(),
       plan({ planId: 'offline', folderName: 'offline', title: 'Offline plan', activityTier: 'idle' }),
     ], warnings: [] });
     await render();
-    const owners = host.querySelectorAll<HTMLButtonElement>('[data-testid="promoted-plan-owner"]');
-    act(() => owners[0].click());
+    const owners = host.querySelectorAll<HTMLElement>('[data-testid="promoted-plan-owner"]');
+    expect(owners[0].tagName).toBe('BUTTON');
+    act(() => (owners[0] as HTMLButtonElement).click());
     expect(selectAgent).toHaveBeenCalledWith('s1');
-    expect(owners[1].disabled).toBe(true);
+    expect(openPlanTab).not.toHaveBeenCalled();
+    expect(owners[1].tagName).toBe('SPAN');
     expect(owners[1].textContent).toContain('owner offline');
   });
 
@@ -149,6 +156,7 @@ describe('PromotedPlansList', () => {
     expect(rows[0].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toContain('Complete');
     act(() => rows[0].querySelector<HTMLButtonElement>('[aria-label="Complete Ready plan"]')?.click());
     expect(selectAgent).toHaveBeenCalledWith('s1');
+    expect(openPlanTab).not.toHaveBeenCalled();
     expect(rows[1].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Archive');
     expect(rows[2].querySelector('[data-testid="promoted-plan-actions"]')?.textContent).toBe('Delete');
     expect(rows[2].querySelector<HTMLButtonElement>('[aria-label="Delete Archived plan"]')?.disabled).toBe(false);

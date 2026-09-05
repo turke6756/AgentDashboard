@@ -157,11 +157,18 @@ export default function PromotedPlansList(): React.ReactElement {
             return (
               <article
                 key={plan.folderName}
-                onDoubleClick={() => workspace && openPlanTab(plan.planId, plan.title, workspace.id)}
-                className="mb-1 flex w-full items-center gap-3 rounded border border-transparent px-3 py-2 text-left hover:border-white/10 hover:bg-white/5"
+                role="button"
+                tabIndex={0}
+                onClick={() => workspace && openPlanTab(plan.planId, plan.title, workspace.id)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  if (workspace) openPlanTab(plan.planId, plan.title, workspace.id);
+                }}
+                className="mb-1 flex w-full cursor-pointer items-center gap-3 rounded border border-transparent px-3 py-2 text-left hover:border-white/10 hover:bg-white/5"
                 data-testid="promoted-plan-row"
                 data-archived={plan.archived ? 'true' : 'false'}
-                title="Double-click to open the full planning surface"
+                title="Open the planning surface"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -176,17 +183,24 @@ export default function PromotedPlansList(): React.ReactElement {
                       />
                     )}
                   </div>
-                  {plan.responsibleSupervisor && (
+                  {plan.responsibleSupervisor && canFocusOwner && (
                     <button
                       type="button"
-                      className="block max-w-full truncate text-[11px] text-gray-500 enabled:hover:text-gray-300 disabled:cursor-not-allowed disabled:text-gray-600"
+                      className="block max-w-full truncate text-[11px] text-gray-500 hover:text-gray-300"
                       data-testid="promoted-plan-owner"
-                      disabled={!canFocusOwner}
-                      onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
-                      title={canFocusOwner ? 'Focus responsible agent' : 'Owner offline'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (ownerAgentId) selectAgent(ownerAgentId);
+                      }}
+                      title="Focus responsible agent"
                     >
-                      Responsible: {plan.responsibleSupervisor.display ?? ownerAgentId ?? 'unknown'}{canFocusOwner ? '' : ' · owner offline'}
+                      Responsible: {plan.responsibleSupervisor.display ?? ownerAgentId ?? 'unknown'}
                     </button>
+                  )}
+                  {plan.responsibleSupervisor && !canFocusOwner && (
+                    <span className="block max-w-full truncate text-[11px] text-gray-600" data-testid="promoted-plan-owner">
+                      Responsible: {plan.responsibleSupervisor.display ?? ownerAgentId ?? 'unknown'} · owner offline
+                    </span>
                   )}
                   {plan.rollup?.completed && (
                     <div className="text-[10px] text-accent-green/80" data-testid="promoted-plan-all-landed">
@@ -201,21 +215,30 @@ export default function PromotedPlansList(): React.ReactElement {
                   <div className="mt-1 flex gap-1" data-testid="promoted-plan-actions">
                     {canArchive && (
                       <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled={!canFocusOwner}
-                        aria-label={`Archive ${plan.title}`} onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
+                        aria-label={`Archive ${plan.title}`} onClick={(event) => {
+                          event.stopPropagation();
+                          if (ownerAgentId) selectAgent(ownerAgentId);
+                        }}
                         title={canFocusOwner ? 'Focus owner to archive this plan' : 'Owner offline'}>
                         Archive
                       </button>
                     )}
                     {canComplete && (
                       <button type="button" className="ui-btn px-2 py-0.5 text-[10px]" disabled={!canFocusOwner}
-                        aria-label={`Complete ${plan.title}`} onClick={() => ownerAgentId && selectAgent(ownerAgentId)}
+                        aria-label={`Complete ${plan.title}`} onClick={(event) => {
+                          event.stopPropagation();
+                          if (ownerAgentId) selectAgent(ownerAgentId);
+                        }}
                         title={canFocusOwner ? 'Focus owner to complete this plan' : 'Owner offline'}>
                         Complete
                       </button>
                     )}
                     {plan.lifecycle === 'archived' && (
                       <button type="button" className="ui-btn px-2 py-0.5 text-[10px] text-accent-red"
-                        aria-label={`Delete ${plan.title}`} onClick={() => setPendingDelete(plan)}
+                        aria-label={`Delete ${plan.title}`} onClick={(event) => {
+                          event.stopPropagation();
+                          setPendingDelete(plan);
+                        }}
                         title="Permanently delete this archived plan">
                         Delete
                       </button>
