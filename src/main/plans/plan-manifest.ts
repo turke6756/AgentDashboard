@@ -157,6 +157,7 @@ export interface PlanManifest {
   schema_version?: number;
   plan_artifact_id?: string;
   plan_sku?: string;
+  landed_gate_mode?: 'light' | 'strict';
   source_proposal?: { artifact_id?: string; rel_path?: string };
   responsibility_events?: ResponsibilityEvent[];
   lifecycle_events?: LifecycleEvent[];

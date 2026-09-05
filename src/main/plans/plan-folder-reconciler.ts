@@ -4,6 +4,7 @@ import type { Workspace } from '../../shared/types';
 import { isPlanArtifactId } from '../../shared/planning-artifact-ids';
 import {
   adoptStructuredPlan,
+  getDb,
   getPlanByWorkspaceArtifactId,
   recordPlanSourceProposalProjectionStatus,
   type StructuredPlanChange,
@@ -154,6 +155,23 @@ interface InFlightReconciliation {
 }
 const inFlight = new Map<string, InFlightReconciliation>();
 
+function reconcileLandedGateMode(planId: string, folderAbs: string): void {
+  const manifest = JSON.parse(fs.readFileSync(path.join(folderAbs, 'plan.json'), 'utf8')) as Record<string, unknown>;
+  const present = Object.prototype.hasOwnProperty.call(manifest, 'landed_gate_mode');
+  const rawMode = manifest.landed_gate_mode;
+  const landedGateMode = !present
+    ? null
+    : rawMode === 'light' || rawMode === 'strict'
+      ? rawMode
+      : 'invalid';
+  getDb().prepare('UPDATE plans SET landed_gate_mode = ? WHERE id = ?').run(landedGateMode, planId);
+  if (landedGateMode === 'invalid') {
+    console.warn(
+      `[plan-folder-reconciler] landed-gate-mode-invalid: landed_gate_mode must be exactly light or strict; got ${JSON.stringify(rawMode)}`,
+    );
+  }
+}
+
 /** The sole ordered folder-derived projection coordinator:
  * adopt row → intent ledger → source proposal → responsibility → work packages
  * → overview → downstream callbacks. Each projection keeps its own transaction. */
@@ -184,6 +202,7 @@ export function reconcilePlanFolderProjections(
       throw new PlanFolderAdoptionError(adoption.reason ?? 'conflict');
     }
     const planId = adoption.planId;
+    reconcileLandedGateMode(planId, resolved.folderAbs);
     const services = input.services ?? {};
     const intentLedger = (services.scanIntentLedger ?? scanPlanIntentLedger)({
       workspaceId: input.workspace.id,

@@ -113,6 +113,7 @@ type Plan = { id: string; workspaceId: string; deletedAt: string | null };
 
 type DbModule = {
   initDatabase(): void;
+  getDb(): { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined } };
   createWorkspace(input: { title: string; path: string; pathType: string }): { id: string };
   getPlanByWorkspaceArtifactId(workspaceId: string, artifactId: string): StructuredPlanRow | null;
   getPlans(filters?: { workspaceId?: string; includeDeleted?: boolean }): Plan[];
@@ -489,6 +490,51 @@ test('malformed plan.json is quarantined — not adopted, never rewritten', asyn
   assert.equal(dbm.getPlanByWorkspaceArtifactId(ws.id, artifactForSku(sku)), null, 'not adopted');
   assert.equal(fs.readFileSync(abs, 'utf8'), before, 'plan.json untouched');
   assert.ok(res.diagnostics.some((d) => d.kind === 'malformed-plan-json' && d.relPath === relOf(sku)));
+});
+
+test('REACHABILITY:plan-folder-reconciler projects absent, valid, and invalid landed gate modes', async () => {
+  const cases: Array<{ sku: string; mode: unknown; expected: string | null }> = [
+    { sku: 'gate-absent', mode: undefined, expected: null },
+    { sku: 'gate-light', mode: 'light', expected: 'light' },
+    { sku: 'gate-strict', mode: 'strict', expected: 'strict' },
+    { sku: 'gate-null', mode: null, expected: 'invalid' },
+    { sku: 'gate-number', mode: 7, expected: 'invalid' },
+    { sku: 'gate-unknown', mode: 'unsupported', expected: 'invalid' },
+  ];
+  for (const entry of cases) {
+    writeFolder(entry.sku, {
+      planJson: entry.mode === undefined ? {} : { landed_gate_mode: entry.mode },
+      mtimeMs: 1_000,
+    });
+  }
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    const watcher = newWatcher();
+    await watcher.reconcileWorkspace(ws, false);
+    for (const entry of cases) {
+      const plan = dbm.getPlanByWorkspaceArtifactId(ws.id, artifactForSku(entry.sku))!;
+      const row = dbm.getDb().prepare('SELECT landed_gate_mode FROM plans WHERE id = ?').get(plan.id);
+      assert.equal(row?.landed_gate_mode ?? null, entry.expected, `${entry.sku} projection`);
+    }
+    assert.equal(warnings.filter((line) => line.includes('landed-gate-mode-invalid')).length, 3,
+      'each invalid manifest value emits the dedicated diagnostic');
+
+    writeFolder('gate-strict', {
+      planJson: { landed_gate_mode: 'invalid-after-strict' },
+      mtimeMs: 2_000,
+    });
+    await watcher.reconcileWorkspace(ws, false);
+    const strictPlan = dbm.getPlanByWorkspaceArtifactId(ws.id, artifactForSku('gate-strict'))!;
+    const overwritten = dbm.getDb().prepare('SELECT landed_gate_mode FROM plans WHERE id = ?').get(strictPlan.id);
+    assert.equal(overwritten?.landed_gate_mode, 'invalid', 'valid-to-invalid edit overwrites the prior value');
+    assert.equal(warnings.filter((line) => line.includes('landed-gate-mode-invalid')).length, 4,
+      'valid-to-invalid edit emits the dedicated diagnostic');
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test('a removed folder is reported + soft-deleted, and revives (same id) when it reappears', async () => {
