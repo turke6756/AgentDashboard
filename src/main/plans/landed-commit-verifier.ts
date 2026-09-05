@@ -1,12 +1,14 @@
+import { TextDecoder } from 'node:util';
+import type {
+  LandedCommitEvidenceV2,
+  LandedCommitRefusal,
+  LandedCommitTouchV2,
+  LandedCommitVerification,
+} from '../../shared/types';
 import { runGit, runGitBytes } from '../git-checkpoints/git-command';
+import { briefedWorkPackageId } from './work-package-id';
 
-export type LandedCommitRefusal =
-  | 'branch-unresolvable'
-  | 'dispatch-tip-not-ancestor'
-  | 'no-matching-commit'
-  | 'multiple-matching-commits'
-  | 'commit-oid-not-the-match'
-  | 'changed-paths-diverge';
+export type { LandedCommitRefusal, LandedCommitVerification } from '../../shared/types';
 
 export interface LandedCommitVerificationInput {
   repositoryKey: string;
@@ -39,6 +41,7 @@ export interface LandedCommitGitOracle {
   changedPaths(repositoryKey: string, parentOid: string, commitOid: string): Promise<Buffer[]>;
 }
 
+/** Compatibility projection retained until the asserted tier adopts its V2 union. */
 export interface MatchingCommit {
   commitOid: string;
   subject: string;
@@ -47,73 +50,164 @@ export interface MatchingCommit {
   parentOid: string;
 }
 
-export type LandedCommitVerification =
-  | ({ outcome: 'verified' } & MatchingCommit)
-  | { outcome: 'refused'; reason: LandedCommitRefusal };
+const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-const ALLOWED_TRAILERS = new Set(['Plan', 'WP', 'Verified', 'Scope-omitted']);
-const TRAILER_LINE = /^([^:\s][^:]*):[ \t](.*)$/;
-
-function messageParagraphs(message: string): string[][] {
-  const normalized = message.replace(/\r\n/g, '\n').replace(/\n+$/, '');
-  return normalized.split(/\n\n+/).map((paragraph) => paragraph.split('\n'));
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 32));
 }
 
-async function parseMatchingCommit(
-  input: Pick<LandedCommitVerificationInput, 'repositoryKey' | 'planArtifactId' | 'wpId'>,
-  oid: string,
-  git: LandedCommitGitOracle,
-): Promise<MatchingCommit | null> {
-  const commit = await git.readCommit(input.repositoryKey, oid);
-  if (commit.parentOids.length !== 1) return null;
-  const paragraphs = messageParagraphs(commit.message);
-  const physical = paragraphs.at(-1) ?? [];
-  if (physical.length < 3) return null;
-  // The canonical block is the one and only trailer paragraph. A separated
-  // body paragraph containing any trailer-shaped line (including an unknown
-  // key) is ambiguous evidence and invalidates the whole claim. The subject is
-  // excluded because conventional-commit subjects are trailer-shaped.
-  if (paragraphs.slice(1, -1).some((paragraph) =>
-    paragraph.some((line) => TRAILER_LINE.test(line)))) return null;
-  const fullCounts = new Map<string, number>();
-  for (const line of commit.message.replace(/\r\n/g, '\n').split('\n')) {
-    const match = /^([^:\s][^:]*):(?:[ \t]|$)/.exec(line);
-    if (!match) continue;
-    const canonical = [...ALLOWED_TRAILERS].find((key) => key.toLowerCase() === match[1].toLowerCase());
-    if (!canonical) continue;
-    if (match[1] !== canonical) return null;
-    fullCounts.set(canonical, (fullCounts.get(canonical) ?? 0) + 1);
+function decodedPath(value: Buffer): string | null {
+  try {
+    const decoded = utf8.decode(value);
+    return Buffer.from(decoded, 'utf8').equals(value) ? decoded : null;
+  } catch {
+    return null;
   }
-  const parsedPhysical: Array<{ key: string; value: string }> = [];
-  for (const line of physical) {
-    const match = TRAILER_LINE.exec(line);
-    if (!match || !ALLOWED_TRAILERS.has(match[1])) return null;
-    parsedPhysical.push({ key: match[1], value: match[2] });
-  }
-  const counts = new Map<string, number>();
-  for (const trailer of parsedPhysical) counts.set(trailer.key, (counts.get(trailer.key) ?? 0) + 1);
-  if (counts.get('Plan') !== 1 || counts.get('WP') !== 1 || counts.get('Verified') !== 1
-      || (counts.get('Scope-omitted') ?? 0) > 1
-      || fullCounts.get('Plan') !== 1 || fullCounts.get('WP') !== 1 || fullCounts.get('Verified') !== 1
-      || (fullCounts.get('Scope-omitted') ?? 0) > 1) return null;
+}
 
-  // Git remains the parsing authority; the physical pass above supplies the
-  // duplicate/folded/alternate-case/unknown-key guarantees it does not expose.
-  const interpreted = await git.interpretTrailers(input.repositoryKey, commit.message);
-  if (interpreted.length !== parsedPhysical.length
-      || interpreted.some((value, index) => value.key !== parsedPhysical[index].key
-        || value.value !== parsedPhysical[index].value)) return null;
-  const one = (key: string): string | null => parsedPhysical.find((entry) => entry.key === key)?.value ?? null;
-  if (one('Plan') !== input.planArtifactId || one('WP')?.toLowerCase() !== input.wpId.toLowerCase()) return null;
+function encodedFrozenPaths(paths: readonly string[]): Buffer[] | null {
+  const encoded: Buffer[] = [];
+  for (const value of paths) {
+    const bytes = Buffer.from(value, 'utf8');
+    if (utf8.decode(bytes) !== value) return null;
+    encoded.push(bytes);
+  }
+  return encoded;
+}
+
+function decodedPaths(values: readonly Buffer[]): string[] | null {
+  const paths: string[] = [];
+  for (const value of values) {
+    const path = decodedPath(value);
+    if (path === null) return null;
+    paths.push(path);
+  }
+  return paths;
+}
+
+function samePathSet(actual: readonly Buffer[], frozen: readonly Buffer[]): boolean {
+  if (actual.length !== frozen.length) return false;
+  const actualHex = new Set(actual.map((value) => value.toString('hex')));
+  const frozenHex = new Set(frozen.map((value) => value.toString('hex')));
+  return actualHex.size === actual.length && frozenHex.size === frozen.length
+    && actualHex.size === frozenHex.size && [...actualHex].every((value) => frozenHex.has(value));
+}
+
+function trailerValues(trailers: readonly { key: string; value: string }[], key: string): string[] {
+  return trailers.filter((entry) => entry.key === key).map((entry) => entry.value);
+}
+
+async function commitTouch(
+  repositoryKey: string,
+  commitOid: string,
+  frozen: readonly Buffer[],
+  git: LandedCommitGitOracle,
+): Promise<LandedCommitTouchV2 | null | LandedCommitRefusal> {
+  const commit = await git.readCommit(repositoryKey, commitOid);
+  if (commit.parentOids.length === 0) return null;
+  const rawPaths = await git.changedPaths(repositoryKey, commit.parentOids[0], commitOid);
+  const paths = decodedPaths(rawPaths);
+  if (!paths) return 'unrepresentable-paths';
+  if (!rawPaths.some((path) => frozen.some((expected) => expected.equals(path)))) return null;
+  const trailers = await git.interpretTrailers(repositoryKey, commit.message);
   return {
-    commitOid: oid,
-    subject: commit.subject,
-    verifiedTrailer: one('Verified'),
-    scopeOmittedTrailer: one('Scope-omitted'),
-    parentOid: commit.parentOids[0],
+    commitOid,
+    parentOids: [...commit.parentOids],
+    paths,
+    planTrailers: trailerValues(trailers, 'Plan'),
+    wpTrailers: trailerValues(trailers, 'WP'),
   };
 }
 
+function withLegacyAliases(evidence: LandedCommitEvidenceV2): LandedCommitVerification {
+  const result = { outcome: 'verified' as const, evidence } as LandedCommitVerification;
+  // Current gate service consumes these until WP-4 moves it to evidence V2.
+  Object.defineProperties(result, {
+    commitOid: { value: evidence.namedCommit.commitOid },
+    parentOid: { value: evidence.namedCommit.parentOid },
+    subject: { value: evidence.namedCommit.subject },
+    verifiedTrailer: { value: evidence.labels.verified[0] ?? null },
+    scopeOmittedTrailer: { value: evidence.labels.scopeOmitted[0] ?? null },
+  });
+  return result;
+}
+
+export async function verifyLandedCommit(
+  input: LandedCommitVerificationInput,
+  git: LandedCommitGitOracle,
+): Promise<LandedCommitVerification> {
+  try {
+    const gateTipOid = await git.resolveCommit(input.repositoryKey, `${input.branchRef}^{commit}`);
+    if (!gateTipOid) return { outcome: 'refused', reason: 'branch-unresolvable' };
+    if (!await git.isAncestor(input.repositoryKey, input.dispatchTipOid, gateTipOid)) {
+      return { outcome: 'refused', reason: 'dispatch-tip-not-ancestor' };
+    }
+    const range = await git.listFirstParentRange(input.repositoryKey, input.dispatchTipOid, gateTipOid);
+    if (range.truncated) return { outcome: 'refused', reason: 'range-truncated' };
+    const namedIndex = range.commitOids.indexOf(input.commitOid);
+    if (namedIndex < 0) return { outcome: 'refused', reason: 'named-commit-not-in-range' };
+
+    const named = await git.readCommit(input.repositoryKey, input.commitOid);
+    if (named.parentOids.length !== 1) {
+      return { outcome: 'refused', reason: 'named-commit-not-single-parent' };
+    }
+    const frozen = encodedFrozenPaths(input.frozenPaths);
+    if (!frozen) return { outcome: 'refused', reason: 'unrepresentable-paths' };
+    const rawChangedPaths = await git.changedPaths(input.repositoryKey, named.parentOids[0], named.oid);
+    const changedPaths = decodedPaths(rawChangedPaths);
+    if (!changedPaths) return { outcome: 'refused', reason: 'unrepresentable-paths' };
+    if (!samePathSet(rawChangedPaths, frozen)) {
+      return { outcome: 'refused', reason: 'changed-paths-diverge' };
+    }
+
+    const trailers = await git.interpretTrailers(input.repositoryKey, named.message);
+    const plans = trailerValues(trailers, 'Plan');
+    const workPackages = trailerValues(trailers, 'WP');
+    const expectedWp = briefedWorkPackageId(input.wpId, input.planArtifactId);
+    if (plans.length !== 1 || plans[0] !== input.planArtifactId
+        || workPackages.length !== 1 || asciiLower(workPackages[0]) !== asciiLower(expectedWp)) {
+      return { outcome: 'refused', reason: 'labels-mismatch' };
+    }
+
+    const collectTouches = async (oids: readonly string[]): Promise<LandedCommitTouchV2[] | LandedCommitRefusal> => {
+      const touches: LandedCommitTouchV2[] = [];
+      for (const oid of oids) {
+        const touch = await commitTouch(input.repositoryKey, oid, frozen, git);
+        if (typeof touch === 'string') return touch;
+        if (touch) touches.push(touch);
+      }
+      return touches;
+    };
+    const priorFrozenPathTouches = await collectTouches(range.commitOids.slice(namedIndex + 1));
+    if (typeof priorFrozenPathTouches === 'string') {
+      return { outcome: 'refused', reason: priorFrozenPathTouches };
+    }
+    const postClaimTouches = await collectTouches(range.commitOids.slice(0, namedIndex));
+    if (typeof postClaimTouches === 'string') return { outcome: 'refused', reason: postClaimTouches };
+
+    return withLegacyAliases({
+      schemaVersion: 2,
+      repositoryKey: input.repositoryKey,
+      branchRef: input.branchRef,
+      dispatchTipOid: input.dispatchTipOid,
+      gateTipOid,
+      namedCommit: { commitOid: named.oid, parentOid: named.parentOids[0], subject: named.subject },
+      labels: {
+        plan: plans[0],
+        wp: workPackages[0],
+        verified: trailerValues(trailers, 'Verified'),
+        scopeOmitted: trailerValues(trailers, 'Scope-omitted'),
+      },
+      changedPaths,
+      priorFrozenPathTouches,
+      postClaimTouches,
+    });
+  } catch {
+    return { outcome: 'refused', reason: 'verifier-unavailable' };
+  }
+}
+
+/** Compatibility scan used by asserted-tier until WP-5 replaces candidate discovery. */
 export async function scanMatchingCommits(
   input: Omit<LandedCommitVerificationInput, 'commitOid' | 'frozenPaths'>,
   git: LandedCommitGitOracle,
@@ -128,20 +222,25 @@ export async function scanMatchingCommits(
     return { outcome: 'refused', reason: 'dispatch-tip-not-ancestor' };
   }
   const range = await git.listFirstParentRange(input.repositoryKey, input.dispatchTipOid, gateTipOid, cap);
+  const expectedWp = briefedWorkPackageId(input.wpId, input.planArtifactId);
   const matches: MatchingCommit[] = [];
   for (const oid of range.commitOids) {
-    const match = await parseMatchingCommit(input, oid, git);
-    if (match) matches.push(match);
+    const commit = await git.readCommit(input.repositoryKey, oid);
+    if (commit.parentOids.length !== 1) continue;
+    const trailers = await git.interpretTrailers(input.repositoryKey, commit.message);
+    const plans = trailerValues(trailers, 'Plan');
+    const workPackages = trailerValues(trailers, 'WP');
+    if (plans.length !== 1 || plans[0] !== input.planArtifactId || workPackages.length !== 1
+        || asciiLower(workPackages[0]) !== asciiLower(expectedWp)) continue;
+    matches.push({
+      commitOid: oid,
+      subject: commit.subject,
+      parentOid: commit.parentOids[0],
+      verifiedTrailer: trailerValues(trailers, 'Verified')[0] ?? null,
+      scopeOmittedTrailer: trailerValues(trailers, 'Scope-omitted')[0] ?? null,
+    });
   }
   return { outcome: 'scanned', gateTipOid, matches, truncated: range.truncated };
-}
-
-function samePathSet(actual: readonly Buffer[], frozen: readonly string[]): boolean {
-  if (actual.length !== frozen.length) return false;
-  const actualHex = new Set(actual.map((value) => value.toString('hex')));
-  const frozenHex = new Set(frozen.map((value) => Buffer.from(value, 'utf8').toString('hex')));
-  return actualHex.size === actual.length && frozenHex.size === frozen.length
-    && actualHex.size === frozenHex.size && [...actualHex].every((value) => frozenHex.has(value));
 }
 
 export async function changedPathsMatchFrozen(
@@ -150,27 +249,9 @@ export async function changedPathsMatchFrozen(
   frozenPaths: readonly string[],
   git: LandedCommitGitOracle,
 ): Promise<boolean> {
-  return samePathSet(await git.changedPaths(repositoryKey, match.parentOid, match.commitOid), frozenPaths);
-}
-
-export async function verifyLandedCommit(
-  input: LandedCommitVerificationInput,
-  git: LandedCommitGitOracle,
-): Promise<LandedCommitVerification> {
-  try {
-    const scan = await scanMatchingCommits(input, git);
-    if (scan.outcome === 'refused') return scan;
-    if (scan.matches.length === 0) return { outcome: 'refused', reason: 'no-matching-commit' };
-    if (scan.matches.length !== 1) return { outcome: 'refused', reason: 'multiple-matching-commits' };
-    const match = scan.matches[0];
-    if (input.commitOid !== match.commitOid) return { outcome: 'refused', reason: 'commit-oid-not-the-match' };
-    if (!await changedPathsMatchFrozen(input.repositoryKey, match, input.frozenPaths, git)) {
-      return { outcome: 'refused', reason: 'changed-paths-diverge' };
-    }
-    return { outcome: 'verified', ...match };
-  } catch {
-    return { outcome: 'refused', reason: 'branch-unresolvable' };
-  }
+  const frozen = encodedFrozenPaths(frozenPaths);
+  if (!frozen) return false;
+  return samePathSet(await git.changedPaths(repositoryKey, match.parentOid, match.commitOid), frozen);
 }
 
 export function createGitOracle(repositoryRoot: string): LandedCommitGitOracle {
@@ -201,11 +282,10 @@ export function createGitOracle(repositoryRoot: string): LandedCommitGitOracle {
     },
     async interpretTrailers(_repositoryKey, message) {
       const result = await text(['interpret-trailers', '--parse'], false, message);
-      const parsed = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+      return result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => {
         const index = line.indexOf(':');
         return { key: line.slice(0, index), value: line.slice(index + 1).trimStart() };
       });
-      return parsed;
     },
     async changedPaths(_repositoryKey, parentOid, commitOid) {
       const result = await runGitBytes(repositoryRoot,

@@ -10,11 +10,13 @@ import {
   type GitCommitView,
   type LandedCommitGitOracle,
 } from './landed-commit-verifier';
+import { briefedWorkPackageId } from './work-package-id';
 
 const OID = (char: string) => char.repeat(40);
 const BASE = OID('a');
-const ONE = OID('1');
-const TWO = OID('2');
+const PRIOR = OID('0');
+const NAMED = OID('1');
+const POST = OID('2');
 const OTHER = OID('3');
 
 function message(plan = 'plan_16910c64', wp = 'WP-2', extra = ''): string {
@@ -22,15 +24,20 @@ function message(plan = 'plan_16910c64', wp = 'WP-2', extra = ''): string {
 }
 
 class FakeGit implements LandedCommitGitOracle {
-  gateTip: string | null = TWO;
+  gateTip: string | null = POST;
   ancestor = true;
-  range = [ONE];
+  range = [POST, NAMED];
   truncated = false;
   commits = new Map<string, GitCommitView>([
-    [ONE, { oid: ONE, subject: 'one', message: message(), parentOids: [BASE] }],
-    [TWO, { oid: TWO, subject: 'two', message: message(), parentOids: [ONE] }],
+    [PRIOR, { oid: PRIOR, subject: 'prior', message: message(), parentOids: [BASE] }],
+    [NAMED, { oid: NAMED, subject: 'named', message: message(), parentOids: [BASE] }],
+    [POST, { oid: POST, subject: 'post', message: message(), parentOids: [NAMED] }],
   ]);
-  paths = new Map<string, Buffer[]>([[ONE, [Buffer.from('a.ts')]], [TWO, [Buffer.from('a.ts')]]]);
+  paths = new Map<string, Buffer[]>([
+    [PRIOR, [Buffer.from('a.ts')]],
+    [NAMED, [Buffer.from('a.ts')]],
+    [POST, [Buffer.from('other.ts')]],
+  ]);
   calls: Array<{ method: string; args: unknown[] }> = [];
 
   async resolveCommit(_repositoryKey: string, revision: string) {
@@ -45,58 +52,158 @@ class FakeGit implements LandedCommitGitOracle {
     this.calls.push({ method: 'listFirstParentRange', args: [from, to, cap] });
     return { commitOids: this.range, truncated: this.truncated };
   }
-  async readCommit(_repositoryKey: string, oid: string) { return this.commits.get(oid)!; }
+  async readCommit(_repositoryKey: string, oid: string) {
+    this.calls.push({ method: 'readCommit', args: [oid] });
+    return this.commits.get(oid)!;
+  }
   async interpretTrailers(_repositoryKey: string, value: string) {
-    return value.replace(/\r\n/g, '\n').trimEnd().split(/\n\n+/).at(-1)!.split('\n').map((line) => {
+    this.calls.push({ method: 'interpretTrailers', args: [value] });
+    const paragraph = value.replace(/\r\n/g, '\n').trimEnd().split(/\n\n+/).at(-1)!;
+    return paragraph.split('\n').filter((line) => line.includes(':')).map((line) => {
       const index = line.indexOf(':');
       return { key: line.slice(0, index), value: line.slice(index + 1).trimStart() };
     });
   }
-  async changedPaths(_repositoryKey: string, _parent: string, oid: string) { return this.paths.get(oid)!; }
+  async changedPaths(_repositoryKey: string, parent: string, oid: string) {
+    this.calls.push({ method: 'changedPaths', args: [parent, oid] });
+    return this.paths.get(oid)!;
+  }
 }
 
-const input = (commitOid = ONE) => ({
+const input = (commitOid = NAMED) => ({
   repositoryKey: 'repo', branchRef: 'refs/heads/master', dispatchTipOid: BASE,
   frozenPaths: ['a.ts'], planArtifactId: 'plan_16910c64', wpId: 'WP-2', commitOid,
 });
 
-test('verifies the sole canonical first-parent match and parses audit trailers', async () => {
+test('verifies the named OID in a complete range and records V2 evidence', async () => {
   const git = new FakeGit();
-  git.commits.get(ONE)!.message = message(undefined, undefined, '\nScope-omitted: none');
-  assert.deepEqual(await verifyLandedCommit(input(), git), {
-    outcome: 'verified', commitOid: ONE, subject: 'one', parentOid: BASE,
-    verifiedTrailer: 'tests => PASS (1 passed)', scopeOmittedTrailer: 'none',
+  git.commits.get(NAMED)!.message = `fix: subject\n\nbody Plan: prose is ignored\n\nPlan: plan_16910c64\nWP: wp-2\nVerified: first\nVerified: second\nScope-omitted: docs\nUnknown: tolerated`;
+  const result = await verifyLandedCommit(input(), git);
+  assert.deepEqual(result, {
+    outcome: 'verified',
+    evidence: {
+      schemaVersion: 2,
+      repositoryKey: 'repo',
+      branchRef: 'refs/heads/master',
+      dispatchTipOid: BASE,
+      gateTipOid: POST,
+      namedCommit: { commitOid: NAMED, parentOid: BASE, subject: 'named' },
+      labels: {
+        plan: 'plan_16910c64', wp: 'wp-2', verified: ['first', 'second'], scopeOmitted: ['docs'],
+      },
+      changedPaths: ['a.ts'],
+      priorFrozenPathTouches: [],
+      postClaimTouches: [],
+    },
   });
-  assert.equal(git.calls.find((call) => call.method === 'listFirstParentRange')!.args[2], undefined,
-    'gate verification walks the complete range without a cap');
+  assert.equal(git.calls.find((call) => call.method === 'listFirstParentRange')!.args[2], undefined);
+  assert.equal(git.calls.filter((call) => call.method === 'resolveCommit').length, 1);
 });
 
-test('matches a conventional-commit subject before a valid trailer block', async () => {
+test('normalizes minted package ids through the shared helper', async () => {
+  assert.equal(briefedWorkPackageId('wp:plan_16910c64:WP-2', 'plan_16910c64'), 'WP-2');
+  assert.equal(briefedWorkPackageId('WP-2', 'plan_16910c64'), 'WP-2');
   const git = new FakeGit();
-  git.commits.get(ONE)!.message = `feat(scope): thing\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
-  assert.equal((await verifyLandedCommit(input(), git)).outcome, 'verified');
+  assert.equal((await verifyLandedCommit({
+    ...input(), wpId: 'wp:plan_16910c64:WP-2',
+  }, git)).outcome, 'verified');
 });
 
-test('matches a conventional-commit subject followed only by trailers', async () => {
+test('refuses duplicate, missing, and conflicting identity trailers only', async () => {
+  const cases = [
+    message() + '\nPlan: plan_16910c64',
+    'subject\n\nWP: WP-2\nVerified: ok',
+    message('plan_deadbeef'),
+    message() + '\nWP: WP-X',
+  ];
+  for (const value of cases) {
+    const git = new FakeGit();
+    git.commits.get(NAMED)!.message = value;
+    assert.deepEqual(await verifyLandedCommit(input(), git), { outcome: 'refused', reason: 'labels-mismatch' });
+  }
+});
+
+test('uses byte-exact Plan and ASCII-only case-insensitive WP identity', async () => {
+  const cases = [
+    ['plan lookalike', 'plan_16910c6\u0434', 'WP-2'],
+    ['wp lookalike', 'plan_16910c64', 'W\u0420-2'],
+  ] as const;
+  for (const [label, plan, wp] of cases) {
+    const git = new FakeGit();
+    git.commits.get(NAMED)!.message = message(plan, wp);
+    assert.deepEqual(await verifyLandedCommit(input(), git),
+      { outcome: 'refused', reason: 'labels-mismatch' }, label);
+  }
+});
+
+test('returns branch, ancestry, range, named-range, and named-parent refusals', async () => {
+  const unresolved = new FakeGit(); unresolved.gateTip = null;
+  assert.deepEqual(await verifyLandedCommit(input(), unresolved),
+    { outcome: 'refused', reason: 'branch-unresolvable' });
+  const diverged = new FakeGit(); diverged.ancestor = false;
+  assert.deepEqual(await verifyLandedCommit(input(), diverged),
+    { outcome: 'refused', reason: 'dispatch-tip-not-ancestor' });
+  const truncated = new FakeGit(); truncated.truncated = true;
+  assert.deepEqual(await verifyLandedCommit(input(), truncated),
+    { outcome: 'refused', reason: 'range-truncated' });
+  const absent = new FakeGit(); absent.range = [POST];
+  assert.deepEqual(await verifyLandedCommit(input(), absent),
+    { outcome: 'refused', reason: 'named-commit-not-in-range' });
+  const merge = new FakeGit(); merge.commits.get(NAMED)!.parentOids = [BASE, OTHER];
+  assert.deepEqual(await verifyLandedCommit(input(), merge),
+    { outcome: 'refused', reason: 'named-commit-not-single-parent' });
+});
+
+test('REACHABILITY:landed-commit-verifier rejects missing and extra named-commit paths', async () => {
+  const missing = new FakeGit(); missing.paths.set(NAMED, []);
+  assert.deepEqual(await verifyLandedCommit(input(), missing),
+    { outcome: 'refused', reason: 'changed-paths-diverge' });
+  const extra = new FakeGit(); extra.paths.set(NAMED, [Buffer.from('a.ts'), Buffer.from('extra.ts')]);
+  assert.deepEqual(await verifyLandedCommit(input(), extra),
+    { outcome: 'refused', reason: 'changed-paths-diverge' });
+});
+
+test('records raw prior and post touches, including every merge parent OID', async () => {
   const git = new FakeGit();
-  git.commits.get(ONE)!.message = `fix: x\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
-  assert.equal((await verifyLandedCommit(input(), git)).outcome, 'verified');
+  git.range = [POST, NAMED, PRIOR];
+  git.commits.get(NAMED)!.parentOids = [PRIOR];
+  git.commits.get(POST)!.parentOids = [NAMED, OTHER];
+  git.paths.set(POST, [Buffer.from('a.ts'), Buffer.from('post.ts')]);
+  const result = await verifyLandedCommit(input(), git);
+  assert.equal(result.outcome, 'verified');
+  if (result.outcome !== 'verified') return;
+  assert.ok(result.evidence);
+  assert.deepEqual(result.evidence.priorFrozenPathTouches, [{
+    commitOid: PRIOR, parentOids: [BASE], paths: ['a.ts'],
+    planTrailers: ['plan_16910c64'], wpTrailers: ['WP-2'],
+  }]);
+  assert.deepEqual(result.evidence.postClaimTouches, [{
+    commitOid: POST, parentOids: [NAMED, OTHER], paths: ['a.ts', 'post.ts'],
+    planTrailers: ['plan_16910c64'], wpTrailers: ['WP-2'],
+  }]);
+  assert.equal(git.calls.filter((call) => call.method === 'readCommit' && call.args[0] === POST).length, 1);
 });
 
-test('matches WP trailer identity using ingest case folding and still rejects a different id', async () => {
-  const lowerTrailer = new FakeGit();
-  lowerTrailer.commits.get(ONE)!.message = message(undefined, 'wp-2');
-  assert.equal((await verifyLandedCommit(input(), lowerTrailer)).outcome, 'verified');
-
-  const upperTrailer = new FakeGit();
-  assert.equal((await verifyLandedCommit({ ...input(), wpId: 'wp-2' }, upperTrailer)).outcome, 'verified');
-
-  const different = new FakeGit();
-  assert.deepEqual(await verifyLandedCommit({ ...input(), wpId: 'WP-3' }, different),
-    { outcome: 'refused', reason: 'no-matching-commit' });
+test('refuses non-round-trippable named and touch path bytes', async () => {
+  const named = new FakeGit(); named.paths.set(NAMED, [Buffer.from([0xff])]);
+  assert.deepEqual(await verifyLandedCommit({ ...input(), frozenPaths: ['\ufffd'] }, named),
+    { outcome: 'refused', reason: 'unrepresentable-paths' });
+  const touch = new FakeGit(); touch.paths.set(POST, [Buffer.from([0xff])]);
+  assert.deepEqual(await verifyLandedCommit(input(), touch),
+    { outcome: 'refused', reason: 'unrepresentable-paths' });
+  const frozen = new FakeGit();
+  assert.deepEqual(await verifyLandedCommit({ ...input(), frozenPaths: ['\ud800'] }, frozen),
+    { outcome: 'refused', reason: 'unrepresentable-paths' });
 });
 
-test('injected oracle distinguishes the branch ref from a same-named filename', async () => {
+test('classifies thrown Git separately from an unresolved branch', async () => {
+  const git = new FakeGit();
+  git.resolveCommit = async () => { throw new Error('git unavailable'); };
+  assert.deepEqual(await verifyLandedCommit(input(), git),
+    { outcome: 'refused', reason: 'verifier-unavailable' });
+});
+
+test('real Git oracle distinguishes a branch ref from a same-named filename', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'landed-verifier-ref-'));
   try {
     execFileSync('git', ['init', '-b', 'master'], { cwd: root, windowsHide: true });
@@ -105,84 +212,14 @@ test('injected oracle distinguishes the branch ref from a same-named filename', 
     fs.writeFileSync(path.join(root, 'a.ts'), 'same-named file\n');
     execFileSync('git', ['add', 'a.ts'], { cwd: root, windowsHide: true });
     execFileSync('git', ['commit', '-m', 'base'], { cwd: root, windowsHide: true });
-    const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
-    const result = await verifyLandedCommit({ ...input(), branchRef: 'a.ts', dispatchTipOid: base }, createGitOracle(root));
+    const base = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root, encoding: 'utf8', windowsHide: true,
+    }).trim();
+    const result = await verifyLandedCommit({
+      ...input(), branchRef: 'a.ts', dispatchTipOid: base,
+    }, createGitOracle(root));
     assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('returns branch and ancestry refusals without consulting later oracle stages', async () => {
-  const unresolved = new FakeGit(); unresolved.gateTip = null;
-  assert.deepEqual(await verifyLandedCommit(input(), unresolved), { outcome: 'refused', reason: 'branch-unresolvable' });
-  assert.equal(unresolved.calls.length, 1);
-  const diverged = new FakeGit(); diverged.ancestor = false;
-  assert.deepEqual(await verifyLandedCommit(input(), diverged), { outcome: 'refused', reason: 'dispatch-tip-not-ancestor' });
-  assert.equal(diverged.calls.some((call) => call.method === 'listFirstParentRange'), false);
-});
-
-test('zero and multiple claims are distinct typed refusals', async () => {
-  const zero = new FakeGit(); zero.range = [];
-  assert.deepEqual(await verifyLandedCommit(input(), zero), { outcome: 'refused', reason: 'no-matching-commit' });
-  const many = new FakeGit(); many.range = [ONE, TWO];
-  assert.deepEqual(await verifyLandedCommit(input(), many), { outcome: 'refused', reason: 'multiple-matching-commits' },
-    'REACHABILITY:wp2-verifier-exactly-one');
-});
-
-test('requires the supplied full commit to be the sole match', async () => {
-  assert.deepEqual(await verifyLandedCommit(input(OTHER), new FakeGit()),
-    { outcome: 'refused', reason: 'commit-oid-not-the-match' });
-});
-
-test('NUL-safe changed path equality rejects both missing and extra paths', async () => {
-  const missing = new FakeGit(); missing.paths.set(ONE, []);
-  assert.deepEqual(await verifyLandedCommit(input(), missing), { outcome: 'refused', reason: 'changed-paths-diverge' });
-  const extra = new FakeGit(); extra.paths.set(ONE, [Buffer.from('a.ts'), Buffer.from('extra.ts')]);
-  assert.deepEqual(await verifyLandedCommit(input(), extra), { outcome: 'refused', reason: 'changed-paths-diverge' });
-});
-
-test('rejects duplicate, folded, alternate-case, unknown and merge-commit trailer claims', async () => {
-  const badMessages = [
-    message() + '\nWP: WP-2',
-    `Plan: plan_16910c64 in prose\n\n${message()}`,
-    message() + '\n continuation',
-    message().replace('Plan:', 'plan:'),
-    message() + '\nUnknown: value',
-  ];
-  for (const bad of badMessages) {
-    const git = new FakeGit(); git.commits.get(ONE)!.message = bad;
-    assert.deepEqual(await verifyLandedCommit(input(), git), { outcome: 'refused', reason: 'no-matching-commit' });
-  }
-  const merge = new FakeGit(); merge.commits.get(ONE)!.parentOids = [BASE, OTHER];
-  assert.deepEqual(await verifyLandedCommit(input(), merge), { outcome: 'refused', reason: 'no-matching-commit' });
-});
-
-test('rejects a second separated trailer-looking paragraph', async () => {
-  const git = new FakeGit();
-  git.commits.get(ONE)!.message = `subject\n\nOther: first-block\n\nPlan: plan_16910c64\nWP: WP-2\nVerified: tests => PASS (1 passed)`;
-  assert.deepEqual(await verifyLandedCommit(input(), git),
-    { outcome: 'refused', reason: 'no-matching-commit' });
-});
-
-test('REACHABILITY:wpf1-plan-prefix-forgery rejects Plan forgeries and non-case WP identity changes', async () => {
-  const lookalike = 'plan_16910c6\u0434';
-  const cases = [
-    ['different plan', 'plan_deadbeef', 'WP-2'],
-    ['plan prefix', 'plan_16910c64-forged', 'WP-2'],
-    ['plan suffix', 'forged-plan_16910c64', 'WP-2'],
-    ['plan whitespace', ' plan_16910c64', 'WP-2'],
-    ['plan lookalike', lookalike, 'WP-2'],
-    ['different wp', 'plan_16910c64', 'WP-X'],
-    ['wp prefix', 'plan_16910c64', 'WP-2-forged'],
-    ['wp suffix', 'plan_16910c64', 'forged-WP-2'],
-    ['wp whitespace', 'plan_16910c64', ' WP-2'],
-    ['wp lookalike', 'plan_16910c64', 'W\u0420-2'],
-  ] as const;
-  for (const [label, plan, wp] of cases) {
-    const git = new FakeGit();
-    git.commits.get(ONE)!.message = message(plan, wp);
-    assert.deepEqual(await verifyLandedCommit(input(), git),
-      { outcome: 'refused', reason: 'no-matching-commit' }, label);
   }
 });

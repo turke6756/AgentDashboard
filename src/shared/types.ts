@@ -5957,18 +5957,20 @@ export interface LandedCommitEvidenceV2 {
   postClaimTouches: LandedCommitTouchV2[];
 }
 
+export interface VerifiedLandedCommit {
+  outcome: 'verified';
+  /** Present on every production verifier success; optional for legacy injected fixtures. */
+  evidence?: LandedCommitEvidenceV2;
+  /** Compatibility aliases consumed until gate-landed-service adopts V2 in WP-4. */
+  commitOid: string;
+  parentOid: string;
+  subject: string;
+  verifiedTrailer: string | null;
+  scopeOmittedTrailer: string | null;
+}
+
 export type LandedCommitVerification =
-  | {
-      outcome: 'verified';
-      /** Present on every production verifier success; optional for legacy injected fixtures. */
-      evidence?: LandedCommitEvidenceV2;
-      /** Compatibility aliases consumed until gate-landed-service adopts V2 in WP-4. */
-      commitOid: string;
-      parentOid: string;
-      subject: string;
-      verifiedTrailer: string | null;
-      scopeOmittedTrailer: string | null;
-    }
+  | VerifiedLandedCommit
   | { outcome: 'refused'; reason: LandedCommitRefusal; detail?: unknown };
 
 // Landed-loop WP-4: supervisor declaration transport. All authority beyond these
