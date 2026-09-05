@@ -35,8 +35,10 @@ function pkg(state: MissionBoardPackageState = 'executing'): PlanWorkPackage {
 
 function evidence(oid = A, status: AssertedDispatchEvidence['scanStatus'] = 'complete'): AssertedDispatchEvidence {
   return { packageId: 'WP-5', dispatchAttemptId: 'dispatch', scanStatus: status,
-    candidates: status === 'unavailable' ? [] : [{ commitOid: oid, subject: 'land', verifiedTrailer: 'tests',
-      scopeOmittedTrailer: null, changedPathsMatchFrozen: true }],
+    candidates: status === 'unavailable' ? [] : [{ commitOid: oid, parentOid: B, subject: 'land',
+      sources: ['labels', 'changed-paths'], labelsMatch: true, changedPathsMatchFrozen: true,
+      planTrailer: 'plan_16910c64', wpTrailer: 'WP-5', verifiedTrailers: ['tests'],
+      scopeOmittedTrailers: [] }],
     ...(status === 'unavailable' ? { refusal: 'branch-unresolvable' as const } : {}) };
 }
 
@@ -113,6 +115,28 @@ test('differing completed citation and asserted OID solely emit declaration-comm
   const result = await findings({ state: 'done', asserted: [evidence(B)], acceptedOid: A,
     finalizations: [finalization()], stampedTurns: 1 });
   assert.deepEqual(result.findings, [{ kind: 'declaration-commit-mismatch', declared: A, asserted: B }]);
+});
+
+test('an extra complete-scan WIP candidate does not contradict a present accepted OID', async () => {
+  const complete = evidence(A);
+  complete.candidates.push(evidence(B).candidates[0]);
+  const result = await findings({ state: 'done', asserted: [complete], acceptedOid: A,
+    finalizations: [finalization()], stampedTurns: 1 });
+  assert.deepEqual(result.findings, []);
+});
+
+test('truncated-only candidates emit availability but never declaration mismatch', async () => {
+  const result = await findings({ state: 'done', asserted: [evidence(B, 'truncated')], acceptedOid: A,
+    finalizations: [finalization()], stampedTurns: 1 });
+  assert.deepEqual(result.findings, [{ kind: 'evidence-unavailable', scope: 'asserted',
+    detail: 'dispatch dispatch scan truncated' }]);
+});
+
+test('an unavailable-only scan never emits declaration mismatch', async () => {
+  const result = await findings({ state: 'done', asserted: [evidence(B, 'unavailable')], acceptedOid: A,
+    finalizations: [finalization()], stampedTurns: 1 });
+  assert.deepEqual(result.findings, [{ kind: 'evidence-unavailable', scope: 'asserted',
+    detail: 'dispatch dispatch: branch-unresolvable' }]);
 });
 
 test('done without a projectable citation solely emits its integrity finding', async () => {

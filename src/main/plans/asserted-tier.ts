@@ -4,9 +4,9 @@ import { planningWorktreesEnabled } from './planning-worktree-flag';
 import {
   changedPathsMatchFrozen,
   createGitOracle,
-  scanMatchingCommits,
   type LandedCommitGitOracle,
 } from './landed-commit-verifier';
+import { briefedWorkPackageId } from './work-package-id';
 
 export interface AssertedAttemptSource {
   packageId: string;
@@ -25,6 +25,14 @@ export interface AssertedTierDeps {
   listAttempts(planId: string): AssertedAttemptSource[];
   oracleFor(attempt: AssertedAttemptSource): LandedCommitGitOracle;
   scanCap?: number;
+}
+
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 32));
+}
+
+function trailerValues(trailers: readonly { key: string; value: string }[], key: string): string[] {
+  return trailers.filter((entry) => entry.key === key).map((entry) => entry.value);
 }
 
 function listAttempts(planId: string): AssertedAttemptSource[] {
@@ -81,34 +89,66 @@ export async function discoverAssertedDispatchEvidence(
     }
     try {
       const git = deps.oracleFor(attempt);
-      const scan = await scanMatchingCommits({
-        repositoryKey: attempt.repositoryKey,
-        branchRef: attempt.branchRef,
-        dispatchTipOid: attempt.dispatchTipOid,
-        planArtifactId: attempt.planArtifactId,
-        wpId: attempt.packageId,
-      }, git, deps.scanCap);
-      if (scan.outcome === 'refused') {
-        output.push({ ...base, scanStatus: 'unavailable', candidates: [], refusal: scan.reason });
+      const gateTipOid = await git.resolveCommit(attempt.repositoryKey, `${attempt.branchRef}^{commit}`);
+      if (!gateTipOid) {
+        output.push({ ...base, scanStatus: 'unavailable', candidates: [], refusal: 'branch-unresolvable' });
         continue;
       }
-      const candidates: AssertedCommitCandidate[] = [];
-      for (const match of scan.matches) {
-        let changedPathsMatch: boolean | null = null;
+      if (!await git.isAncestor(attempt.repositoryKey, attempt.dispatchTipOid, gateTipOid)) {
+        output.push({ ...base, scanStatus: 'unavailable', candidates: [], refusal: 'dispatch-tip-not-ancestor' });
+        continue;
+      }
+      const scan = await git.listFirstParentRange(
+        attempt.repositoryKey, attempt.dispatchTipOid, gateTipOid, deps.scanCap,
+      );
+      const expectedWp = briefedWorkPackageId(attempt.packageId, attempt.planArtifactId);
+      const candidates = new Map<string, AssertedCommitCandidate>();
+      for (const commitOid of scan.commitOids) {
+        const commit = await git.readCommit(attempt.repositoryKey, commitOid);
+        if (commit.parentOids.length !== 1) continue;
+        const trailers = await git.interpretTrailers(attempt.repositoryKey, commit.message);
+        const plans = trailerValues(trailers, 'Plan');
+        const workPackages = trailerValues(trailers, 'WP');
+        const labelsMatch = plans.length === 1 && plans[0] === attempt.planArtifactId
+          && workPackages.length === 1
+          && asciiLower(workPackages[0]) === asciiLower(expectedWp);
+        let pathsMatch: boolean | null = null;
         try {
-          changedPathsMatch = await changedPathsMatchFrozen(
-            attempt.repositoryKey, match, attempt.frozenPaths, git,
+          pathsMatch = await changedPathsMatchFrozen(
+            attempt.repositoryKey,
+            {
+              commitOid,
+              parentOid: commit.parentOids[0],
+              subject: commit.subject,
+              verifiedTrailer: null,
+              scopeOmittedTrailer: null,
+            },
+            attempt.frozenPaths,
+            git,
           );
-        } catch { /* candidate remains visible with unknown path status */ }
-        candidates.push({
-          commitOid: match.commitOid,
-          subject: match.subject,
-          verifiedTrailer: match.verifiedTrailer,
-          scopeOmittedTrailer: match.scopeOmittedTrailer,
-          changedPathsMatchFrozen: changedPathsMatch,
+        } catch { /* a labels-only candidate remains visible with an unknown path verdict */ }
+        const sources: AssertedCommitCandidate['sources'] = [];
+        if (labelsMatch) sources.push('labels');
+        if (pathsMatch === true) sources.push('changed-paths');
+        if (sources.length === 0) continue;
+        candidates.set(commitOid, {
+          commitOid,
+          parentOid: commit.parentOids[0],
+          subject: commit.subject,
+          sources,
+          labelsMatch,
+          changedPathsMatchFrozen: pathsMatch,
+          planTrailer: plans.length === 1 ? plans[0] : null,
+          wpTrailer: workPackages.length === 1 ? workPackages[0] : null,
+          verifiedTrailers: trailerValues(trailers, 'Verified'),
+          scopeOmittedTrailers: trailerValues(trailers, 'Scope-omitted'),
         });
       }
-      output.push({ ...base, scanStatus: scan.truncated ? 'truncated' : 'complete', candidates });
+      output.push({
+        ...base,
+        scanStatus: scan.truncated ? 'truncated' : 'complete',
+        candidates: [...candidates.values()],
+      });
     } catch {
       output.push({ ...base, scanStatus: 'unavailable', candidates: [], refusal: 'branch-unresolvable' });
     }

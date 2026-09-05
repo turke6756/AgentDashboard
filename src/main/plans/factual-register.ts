@@ -241,7 +241,9 @@ export async function projectPlanFactualRegister(
     const landed = projectLanded(pkg, projection, deps.listFinalizations(pkg.id));
     const accepted = latestAcceptedLinks(projection);
     const acceptedByOid = new Map(accepted.map((item) => [item.link.commitOid, item]));
-    const assertedOids = [...new Set(packageAsserted.flatMap((item) => item.candidates.map((candidate) => candidate.commitOid)))];
+    const completeScans = packageAsserted.filter((item) => item.scanStatus === 'complete');
+    const assertedOids = [...new Set(completeScans
+      .flatMap((item) => item.candidates.map((candidate) => candidate.commitOid)))];
 
     for (const item of packageAsserted) {
       if (item.scanStatus !== 'complete') findings.push({
@@ -261,8 +263,10 @@ export async function projectPlanFactualRegister(
         else if (!declaration) findings.push({ kind: 'commit-without-declaration', commitOid });
       }
     } else {
-      for (const declared of landed.declarationCommitOids) for (const shown of assertedOids) {
-        if (declared !== shown) findings.push({ kind: 'declaration-commit-mismatch', declared, asserted: shown });
+      for (const declared of landed.declarationCommitOids) {
+        if (completeScans.length > 0 && !assertedOids.includes(declared)) findings.push({
+          kind: 'declaration-commit-mismatch', declared, asserted: assertedOids[0] ?? '',
+        });
       }
     }
     if (pkg.state === 'done' && !landed) findings.push({ kind: 'done-without-finalization-citation' });

@@ -529,10 +529,15 @@ export interface AssertedDispatchEvidence {
 
 export interface AssertedCommitCandidate {
   commitOid: string;
+  parentOid: string;
   subject: string;
-  verifiedTrailer: string | null;
-  scopeOmittedTrailer: string | null;
+  sources: Array<'labels' | 'changed-paths'>;
+  labelsMatch: boolean;
   changedPathsMatchFrozen: boolean | null;
+  planTrailer: string | null;
+  wpTrailer: string | null;
+  verifiedTrailers: string[];
+  scopeOmittedTrailers: string[];
 }
 
 // Landed-loop WP-5: asynchronous factual register. This projection is
