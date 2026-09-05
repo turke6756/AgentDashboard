@@ -102,6 +102,7 @@ import {
   PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V2_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V3_HASH,
+  PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
   PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V3_HASH,
@@ -4570,6 +4571,9 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     2: PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V2_HASH,
     3: PROPOSAL_TO_PLAN_ACTIVITY_PROMOTE_MD_V3_HASH,
   } }],
+  ['references/activities/deliberate.md', { version: 2, previousHashes: {
+    1: PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD_V1_HASH,
+  } }],
   ['references/activities/package.md', { version: 5, previousHashes: {
     1: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V1_HASH,
     2: PROPOSAL_TO_PLAN_ACTIVITY_PACKAGE_MD_V2_HASH,
@@ -4601,6 +4605,50 @@ const PROPOSAL_TO_PLAN_VERSIONED_FILES = new Map<string, { version: number; prev
     6: PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V6_HASH,
   } }],
 ]);
+
+test('PLAN-INTENT-RESEARCH-FM. deliberate v2 unions R1 and research-validator frontmatter and pins pristine v1', () => {
+  const key = '.lares/workers/codex/.agents/skills/proposal-to-plan/references/activities/deliberate.md';
+  const managed = proposalToPlanEntries('.lares/workers/codex/.agents/skills/proposal-to-plan')[key];
+  const currentStep = [
+    '4. **Require the output frontmatter (§R1)** on every output artifact the run produces:',
+    '   `plan_artifact_id`, `intent_id`, `orchestration_id` (self-declared cross-check only), and',
+    '   `kind`. A `kind: research` output written to `.lares/research/inbox/` must carry the research',
+    '   validator keys **in addition to** those R1 keys: `id`, `topic`, `created` (ISO-8601),',
+    '   `source_urls` (a YAML block list of HTTP(S) URLs), `trust: untrusted`, and `summary`.',
+    '',
+    '   Example union for a research output:',
+    '',
+    '   ```yaml',
+    '   ---',
+    '   plan_artifact_id: plan_1234abcd',
+    '   intent_id: int_1234abcd',
+    '   orchestration_id: orc_1234abcd',
+    '   kind: research',
+    '   id: research-plan-intent-carrier',
+    '   topic: Plan-intent carrier discovery',
+    '   created: 2026-09-05T12:00:00Z',
+    '   source_urls:',
+    '     - https://example.com/source',
+    '   trust: untrusted',
+    '   summary: Evidence gathered for the marked planning intent.',
+    '   ---',
+    '   ```',
+    '',
+    '   `returned` derives from the R1 frontmatter, **never** from a filename convention.',
+  ].join('\n');
+  const v1Step = [
+    '4. **Require the output frontmatter (§R1)** on every in-folder output the run produces:',
+    '   `plan_artifact_id`, `intent_id`, `orchestration_id` (self-declared cross-check only), `kind`.',
+    '   `returned` derives from this frontmatter, **never** from a filename convention.',
+  ].join('\n');
+  assert.ok(managed.content.includes(currentStep), 'live deliberate scaffold must carry the full union requirement and example');
+  const pristineV1 = managed.content.replace(currentStep, v1Step);
+  assert.notEqual(pristineV1, managed.content, 'v1 reconstruction must replace the v2 frontmatter step');
+  assert.equal(sha256Hex(pristineV1), PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD_V1_HASH,
+    'frozen pristine v1 body must hash to previousHashes[1]');
+  assert.notEqual(sha256Hex(managed.content), PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD_V1_HASH,
+    'live v2 body must differ from the frozen v1 hash');
+});
 
 test('WP-P0C-TREE-HELPER. proposalToPlanEntries expands the full tree under a root prefix; scripts are executable', () => {
   const entries = proposalToPlanEntries('.lares/workers/codex/.agents/skills/proposal-to-plan');

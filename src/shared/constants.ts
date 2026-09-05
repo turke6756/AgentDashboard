@@ -7328,9 +7328,31 @@ required output frontmatter, and re-entry semantics).
      \`.lares/research/inbox/\`; cleared findings become durable in \`.lares/research/cleared/\`).
 3. **Brief the lane on the hardening context** — which part of the plan it serves and why (the
    intent's \`reason\`).
-4. **Require the output frontmatter (§R1)** on every in-folder output the run produces:
-   \`plan_artifact_id\`, \`intent_id\`, \`orchestration_id\` (self-declared cross-check only), \`kind\`.
-   \`returned\` derives from this frontmatter, **never** from a filename convention.
+4. **Require the output frontmatter (§R1)** on every output artifact the run produces:
+   \`plan_artifact_id\`, \`intent_id\`, \`orchestration_id\` (self-declared cross-check only), and
+   \`kind\`. A \`kind: research\` output written to \`.lares/research/inbox/\` must carry the research
+   validator keys **in addition to** those R1 keys: \`id\`, \`topic\`, \`created\` (ISO-8601),
+   \`source_urls\` (a YAML block list of HTTP(S) URLs), \`trust: untrusted\`, and \`summary\`.
+
+   Example union for a research output:
+
+   \`\`\`yaml
+   ---
+   plan_artifact_id: plan_1234abcd
+   intent_id: int_1234abcd
+   orchestration_id: orc_1234abcd
+   kind: research
+   id: research-plan-intent-carrier
+   topic: Plan-intent carrier discovery
+   created: 2026-09-05T12:00:00Z
+   source_urls:
+     - https://example.com/source
+   trust: untrusted
+   summary: Evidence gathered for the marked planning intent.
+   ---
+   \`\`\`
+
+   \`returned\` derives from the R1 frontmatter, **never** from a filename convention.
 
 ## Rules
 
