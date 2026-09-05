@@ -24,8 +24,6 @@ const TESTS = [
   'dist/main/main/agent-plan-badge.test.js',
   'dist/main/main/badge-invalidation.test.js',
   'dist/main/main/resolve-openable-workspace-path.test.js',
-  'dist/main/main/commit-candidates/pinned-snapshot-build.test.js',
-  'dist/main/main/commit-candidates/pinned-snapshot-store.test.js',
   'dist/main/shared/notification-classify.test.js',
   'dist/main/shared/package-rollup.test.js',
   // Edit-loss §4.0/§4.1: shared content-identity hash vectors + the
@@ -243,9 +241,6 @@ const TESTS = [
   // Git-Native WP-G1.8: ref/DB crash-consistency reconciliation (create/adopt/conflict
   // on real git) + dangling-open close + paired-ref deletion + temp-artifact sweeper.
   'dist/main/main/git-checkpoints/reconciler.test.js',
-  'dist/main/main/git-checkpoints/commit-reconciler.test.js',
-  // Save-card SC-WP-4G: exact post-commit ledger + whole-finalization closure.
-  'dist/main/main/git-checkpoints/commit-reconciler.closure.test.js',
   // Git-Native WP-G3.3 + Save-card SC-WP-2K: retention/pinning integration,
   // distill-before-prune ordering + G3 gate back-fill, triggered/bounded loose-object
   // maintenance (idle-only slot, no config mutation, nonfatal on lock), storage report.
@@ -254,10 +249,9 @@ const TESTS = [
   // Save-card SC-WP-N2 — checkpoint-expiry attention notice built from the retention
   // pass's ACTUAL retained-pin selection (pure builder + end-to-end via runRetentionPass).
   'dist/main/main/git-checkpoints/retention.expiry.test.js',
-  // Save-card Stage ③ SC-WP-3B/3D — finalization refs + crash-consistency
-  // reconcile and the boundary-ref retention partition (WP-3Z registration).
+  // Save-card Stage ③ SC-WP-3B/3D — finalization refs and the boundary-ref
+  // retention partition (WP-3Z registration).
   'dist/main/main/git-checkpoints/finalization-refs.test.js',
-  'dist/main/main/git-checkpoints/finalization-reconcile.test.js',
   'dist/main/main/git-checkpoints/retention.boundaryRef.test.js',
   // Git-Native WP-G1.7: witness-join recorder + DB choke point (above the live-cache
   // dedupe), dispatch-context builder, and the send-queue → before-checkpoint wiring.
@@ -279,13 +273,13 @@ const TESTS = [
   // repository discovery, dirty inventory, capture health, witness/topology assembly,
   // exact protection, read-only bundle service, and read-only IPC.
   'dist/main/shared/commit-candidates.export-shape.test.js',
+  'dist/main/shared/commit-effect-normalization.test.js',
   'dist/main/main/git-checkpoints/git-command.runGitBytes.test.js',
   'dist/main/main/commit-candidates/jcs.test.js',
   'dist/main/main/commit-candidates/repository-identity.test.js',
   'dist/main/main/commit-candidates/scope-discovery.test.js',
   'dist/main/main/commit-candidates/dirty-inventory.test.js',
   'dist/main/main/commit-candidates/dirty-inventory-batch-hash.test.js',
-  'dist/main/main/commit-candidates/scratch-policy-store.test.js',
   'dist/main/main/commit-candidates/snapshot-registry.test.js',
   // Main-process OOM hardening WP-H: structural budget/single-flight oracle and
   // the small programmatic hostile real-Git workspace fixture. Keep these ahead
@@ -299,18 +293,6 @@ const TESTS = [
   'dist/main/main/commit-candidates/component-assembler.test.js',
   'dist/main/main/commit-candidates/protection-read.test.js',
   'dist/main/main/commit-candidates/candidate-service.read.test.js',
-  // Save-card SC-WP-N2: checkpoint-expiry attention IPC — the lightweight read
-  // channel (own channel, provider-gated, null before injection) + the push broadcast.
-  'dist/main/main/commit-candidates/save-card-attention-ipc.test.js',
-  // Save-card SC-WP-1J: production route wiring — the bootstrap adapter that maps
-  // the renderer workspaceId to a repository-scoped request and delegates to the
-  // read-only facade (real temp git; only the registry + DB readers are faked).
-  'dist/main/main/commit-candidates/save-card-routes.test.js',
-  // Save-card SC-WP-W1: production candidate-preview route composition — the
-  // bootstrap adapter that stitches the read-only `CandidateBuildContext` (ledger /
-  // HEAD / fingerprint / finalizations / per-member temp-index reps) for BOTH
-  // lenses. The 1G assembly seam is stubbed; the stitching is exercised directly.
-  'dist/main/main/commit-candidates/preview-routes.test.js',
   'dist/main/main/plans/plan-candidate-routes.test.js',
   // Save-card Stage ③ SC-WP-3C/3G — candidate build pipeline + immutable
   // index-fingerprint snapshot, real finalization service, and the finalize/
@@ -337,12 +319,8 @@ const TESTS = [
   // DELETE it (do not repair it) when the subtraction plan removes the Save Card
   // committing routes and intent rail engine.
   'dist/main/main/database.intent-ledger.test.js',
-  'dist/main/main/commit-candidates/preview-routes-pinned.test.js',
   'dist/main/main/git-checkpoints/boundary-filter-replay.test.js',
   'dist/main/main/commit-candidates/finalization-service.test.js',
-  'dist/main/main/commit-candidates/save-card-ipc.finalize.test.js',
-  'dist/main/main/commit-candidates/save-card-ipc.preview.test.js',
-  'dist/main/main/commit-candidates/save-card-ipc.mint.test.js',
   'dist/main/main/commit-candidates/save-card.e2e.test.js',
   'dist/main/main/commit-candidates/pinned-selection-drift.test.js',
   'dist/main/main/git-checkpoints/raw-git-mode.test.js',
@@ -350,21 +328,6 @@ const TESTS = [
   // the repository-exclusive synchronous compose latch consumed by WP-4D.
   'dist/main/main/commit-candidates/compose-lock-registry.test.js',
   'dist/main/main/commit-candidates/candidate-service.mint.test.js',
-  // Save-card Stage 4 SC-WP-4D — CommitCoordinator core: serialization ordering
-  // (compose-lock-before-CAS, double-click CAS, contract-version/invalid-message
-  // rejection), live reassembly + final byte revalidation, and the §9.4 commit-
-  // attribution/outcome classification (committed / integrity-mismatch / uncertain /
-  // drift / index-integrity) — fake-seam + real-git `git commit --only`.
-  'dist/main/main/git-checkpoints/commit-coordinator.test.js',
-  // Save-card Stage 4 SC-WP-4E — lens-neutral IPC, main-process flag gate, and
-  // saved-only-after the integrated CommitCoordinator → closure response path.
-  'dist/main/main/commit-candidates/commit-coordinator-ipc.test.js',
-  // Save-card Stage 4 SC-WP-4H — real-repository adversarial race matrix.
-  'dist/main/main/git-checkpoints/commit-coordinator.races.test.js',
-  // Save-card Stage 4 SC-WP-4J — real-repository path-semantics adversarial matrix.
-  'dist/main/main/git-checkpoints/commit-coordinator.path-semantics.test.js',
-  // Save-card Stage 4 SC-WP-4I — real hooks + §9.4 outcome/end-state matrix.
-  'dist/main/main/git-checkpoints/commit-coordinator.hooks-outcomes.test.js',
   'dist/main/main/plans/promoted-lifecycle.test.js',
   'dist/main/main/supervisor/send-queue-checkpoint.test.js',
   'dist/main/main/supervisor/initial-user-prompt.test.js',

@@ -2657,52 +2657,6 @@ export interface CheckpointFileHistoryResult {
   versions: CheckpointFileHistoryVersion[];
 }
 
-/** Stage 1 Save-card IPC has one read-only inventory route. */
-export const SAVECARD_CHANNELS = {
-  getInventory: 'savecard:getInventory',
-} as const;
-
-export const SAVECARD_ADOPT_BASELINE_CHANNEL = 'savecard:adoptAllAsBaseline';
-export const SAVECARD_ONBOARDING_DECISION_CHANNEL = 'savecard:completeOnboarding' as const;
-export const SAVECARD_SCOPED_RESCAN_CHANNEL = 'savecard:scopedRescan' as const;
-
-/** Renderer request for the repository inventory containing this workspace. */
-export interface SaveCardInventoryRequest {
-  workspaceId: string;
-  /** Optional one-shot escalation for the Save-card longer-scan affordance. */
-  inventoryTimeBudgetMs?: number;
-}
-export const SAVE_CARD_LONGER_SCAN_BUDGET_MS = 24_000 as const;
-export interface SaveCardScopedRescanRequest extends SaveCardInventoryRequest {
-  pathBytesBase64: string;
-}
-
-export interface SaveCardAdoptBaselineRequest {
-  workspaceId: string;
-  /** Test/diagnostic budget override; production UI omits this. */
-  inventoryTimeBudgetMs?: number;
-}
-export type SaveCardAdoptBaselineResponse =
-  | { ok: true; intentId: string; title: string; memberCount: number }
-  | { ok: false; code: 'adopt-all-inventory-partial'; message: string }
-  /** Legacy test/provider compatibility; production routes always return ok. */
-  | { intentId: string; title: string; memberCount: number };
-export type SaveCardOnboardingDecision = 'exclude-selected' | 'keep-everything' | 'decide-later';
-export interface SaveCardOnboardingPrompt {
-  presentation: 'first-contact' | 'established';
-  recommendations: Array<{
-    pathBytesBase64: string;
-    displayPath: string;
-    countLabel: string;
-  }>;
-}
-export interface SaveCardOnboardingDecisionRequest {
-  workspaceId: string;
-  decision: SaveCardOnboardingDecision;
-  selectedPathBytesBase64: string[];
-}
-export interface SaveCardOnboardingDecisionResponse { policyGeneration: number; }
-
 /** A contributing agent shown inside its supervisor-unit package. */
 export interface SaveCardWorkerUnit {
   agentId: string | null;
@@ -2739,7 +2693,7 @@ export interface SaveCardMemberDto {
   protection: import('./commit-candidates').ProtectionRung | 'unknown';
 }
 
-/** Intent-first Save-card projection. Topology is disclosure evidence only. */
+/** Intent-first package projection. Topology is disclosure evidence only. */
 export type SaveIntentState = 'open' | 'ready' | 'committed' | 'superseded' | 'abandoned';
 
 export interface ConcurrencyCaseDto {
@@ -2794,113 +2748,7 @@ export interface SaveIntentUnitDto {
   mergeReason?: string | null;
 }
 
-export type PlanningActivityPromotionStatus =
-  | 'saved-in-plan-promotion-pending' | 'merge-conflicted' | 'promoted'
-  | 'recovery-required' | 'active' | 'cleaned';
-export interface SaveCardPlanningActivityDto {
-  executionRunId: string;
-  planId: string;
-  planTitle: string;
-  status: PlanningActivityPromotionStatus;
-  promotedHeadOid: string | null;
-  latestAttemptId: string | null;
-  conflicts: Array<{
-    pathBytesBase64: string;
-    displayPath: string;
-    baseBlobOid: string | null;
-    primaryBlobOid: string | null;
-    activityBlobOid: string | null;
-    resolution: 'keep-primary' | 'take-activity' | 'merged' | null;
-  }>;
-  failureCode: string | null;
-}
-
-/** Legacy v1 package boundaries remain visible after the intent cutover, but
- * are deliberately read-only: component selection identity is not reconstructed. */
-export interface SaveCardLegacyFinalizationDto {
-  finalizationId: string;
-  packageId: string;
-  packageRevision: number;
-  finalizationKind: 'plan-package' | 'fleet-adhoc';
-  boundaryStatus: string;
-  finalizedAt: number;
-}
-
-/**
- * Read-only Save-card inventory response. Carries renderer-safe intent units
- * plus the SC-WP-2L retention quota-weakening warning (null unless the pin
- * quota is forcing the release of a still-dirty recovery edge).
- */
-export interface SaveCardInventoryResponse {
-  intentUnits: SaveIntentUnitDto[];
-  /** Main-owned fallback projection. Absent only for legacy/test providers. */
-  fallbackUnits?: SaveIntentUnitDto[];
-  unwitnessed: SaveCardMemberDto[];
-  legacyTaskIdentityUnavailable: SaveCardMemberDto[];
-  /** Witnessed entries whose agent/session identity could not be resolved safely. */
-  witnessedUngroupable?: SaveCardMemberDto[];
-  legacyFinalizations: SaveCardLegacyFinalizationDto[];
-  planningActivities: SaveCardPlanningActivityDto[];
-  quotaWeakening: import('./commit-candidates').SaveCardQuotaWeakening | null;
-  /** Main-issued first-contact projection. Absent only for legacy/test providers. */
-  onboarding?: SaveCardOnboardingPrompt | null;
-  /** Main-owned bounded-computation evidence. Legacy/test providers may omit it
-   * and are treated as a complete global read by renderer compatibility code. */
-  computeState?: {
-    scope: 'global' | 'scoped';
-    inventory: {
-      completeness: 'complete' | 'partial';
-      dirtyCorpusStopReasons: Array<'entries' | 'status-bytes' | 'path-bytes' | 'deadline'>;
-      observedEntries: number;
-      observedStatusBytes: number;
-      observedPathBytes: number;
-      /** Observed counters are lower bounds whenever this is false. */
-      totalsExact: boolean;
-    };
-    protection: {
-      assessment: import('./commit-candidates').ProtectionAssessment;
-      checkpointStopReasons: Array<'pairs' | 'estimated-stdin' | 'deadline'>;
-    };
-    snapshot?: {
-      snapshotId: string;
-      boundaryInputFingerprint: string;
-      repositoryKey: string;
-      stability: 'stable' | 'unstable';
-    };
-  };
-}
-
-export const SAVECARD_ACTIVITY_MERGE_RESOLVE_CHANNEL = 'savecard:resolveActivityMerge' as const;
-export interface SaveCardActivityMergeResolveRequest {
-  attemptId: string;
-  resolutions: Array<{
-    pathBytesBase64: string;
-    resolution: 'keep-primary' | 'take-activity' | 'merged';
-    resolutionBlobOid?: string | null;
-  }>;
-}
-export type SaveCardActivityMergeResolveResponse =
-  | { status: 'promoted'; attemptId: string; primaryHeadOid: string }
-  | { status: 'conflicted'; attemptId: string }
-  | { status: 'stale' | 'pending' | 'recovery-required'; attemptId: string; reason?: string };
-
-// ── SC-WP-N2 — checkpoint-expiry attention signal ─────────────────────────────
-//
-// A LIGHTWEIGHT attention channel, deliberately kept OUT of `SAVECARD_CHANNELS`
-// (whose Stage ① audit test asserts exactly one read-only inventory route) —
-// mirroring how the preview + mark-done channels stay separate. It lets the Save
-// entry ILLUMINATE without running the expensive full inventory probe: the notice
-// is emitted straight from the retention pass's ACTUAL retained-pin selection.
-export const SAVECARD_ATTENTION_CHANNEL = 'savecard:getAttention' as const;
-export const SAVECARD_ATTENTION_CHANGED_CHANNEL = 'savecard:attentionChanged' as const;
-
-/**
- * The checkpoint-expiry attention notice: the retained recovery edges whose pin
- * extension expires within `expiresWithinMs` of `observedAt`. Built from the
- * retention pass's real selection (never re-derived from turn age); each edge
- * carries the exact `expiresAt` and the renderer-safe `affectedEntryIds` (dirty-
- * entry identities, never raw paths) so the Save pane can group edges onto bundles.
- */
+/** Retention-owned checkpoint-expiry notice retained independently of the retired Save Card UI. */
 export interface SaveCardCheckpointExpiryNotice {
   observedAt: number;
   expiresWithinMs: number;
@@ -2912,91 +2760,7 @@ export interface SaveCardCheckpointExpiryNotice {
     affectedEntryIds: string[];
   }>;
 }
-
-/** Renderer request for the checkpoint-expiry attention for one workspace. */
-export interface SaveCardAttentionRequest {
-  workspaceId: string;
-}
-
-/** Main → renderer push carrying the freshest per-workspace attention notice
- *  (null when the workspace has no edge expiring soon). */
-export interface SaveCardAttentionChangedPayload {
-  workspaceId: string;
-  notice: SaveCardCheckpointExpiryNotice | null;
-}
-
-// ── SC-WP-3H — Save-lens candidate preview channel ────────────────────────────
-//
-// A SECOND Save-card channel, deliberately kept OUT of `SAVECARD_CHANNELS` (whose
-// Stage ① audit test asserts exactly one read-only inventory route) — mirroring
-// how WP-3E kept its mutating `savecard:markDoneFleetAdhoc` channel separate. The
-// preview channel is itself read-only: it assembles a `CommitCandidate` /
-// `SelectionPreview` (WP-3G) for an explicit selection and returns the renderer-
-// safe verdicts plus server-derived, READ-ONLY `Lares-*` trailer previews. It
-// mutates nothing.
-export const SAVECARD_PREVIEW_CHANNEL = 'savecard:preview' as const;
-export const COMMIT_CANDIDATE_MINT_CHANNEL = 'savecard:mint' as const;
-export const SAVECARD_ATTRIBUTION_RESOLUTION_CHANNEL = 'savecard:resolveAttribution' as const;
-
-/** Renderer request to preview a candidate for one explicit selection. Component
- *  ids expand server-side to ALL their entries; unattributed entries are
- *  independent atoms; `finalizationIds` is the requested coverage set (empty ⇒ a
- *  `SelectionPreview`, never a committable candidate). */
-export interface SaveCardPreviewRequest {
-  workspaceId: string;
-  saveUnitIds?: string[];
-  selectedComponentIds?: string[];
-  selectedUnattributedEntryIds?: string[];
-  selectedIntentIds?: string[];
-  selectedNamedSaveSetIds?: string[];
-  resolutionIds?: string[];
-  finalizationIds: string[];
-  /** Optional prior main-issued review identity used by a fresh carry check. */
-  reviewedManifestDigest?: string;
-  /** Exact atoms the human saw and acknowledged; main validates coverage. */
-  acknowledgedChallengeAtoms?: import('./commit-candidates').ReviewChallengeAtom[];
-}
-
-/** Dedicated token-issuing transition. Preview remains strictly read-only; the
- * renderer may only echo server identities and explicit human acknowledgements. */
-export interface SaveCardMintRequestV2 {
-  workspaceId: string;
-  /** Canonical generic selection; task/named-set callers may continue to use
-   * their compatibility arrays during the transition. */
-  saveUnitIds?: string[];
-  selectedIntentIds: string[];
-  selectedNamedSaveSetIds: string[];
-  resolutionIds: string[];
-  finalizationIds: string[];
-  /** Optional prior main-issued review identity used by a fresh carry check. */
-  reviewedManifestDigest?: string;
-  /** Exact atoms the human saw and acknowledged; never an equivalence claim. */
-  acknowledgedChallengeAtoms?: import('./commit-candidates').ReviewChallengeAtom[];
-}
-
-/** Read-only v1 transport adapter retained until WP-7 cuts renderer selection over. */
-export interface LegacySaveCardMintRequest extends SaveCardPreviewRequest {
-  acknowledgeUnattributedEntryIds: string[];
-  [legacyCompatibilityField: string]: unknown;
-}
-
-export type SaveCardMintRequest = SaveCardMintRequestV2 | LegacySaveCardMintRequest;
-
-export interface SaveCardAttributionResolutionRequest {
-  workspaceId: string;
-  atom: import('./commit-candidates').CrossIntentChallengeAtom;
-  resolution: import('./commit-candidates').CrossIntentResolution;
-}
-
-export interface SaveCardAttributionResolutionResponse {
-  resolutionId: string;
-  evidenceDigest: string;
-  resolution: import('./commit-candidates').CrossIntentResolution;
-}
-
-/** Path-byte-authoritative movement between a frozen finalization manifest and
- * the package currently resolved by main. Added paths are informational; the
- * other three categories block minting the frozen package. */
+/** Path-byte-authoritative movement retained by the plan candidate engine. */
 export interface SelectionDrift {
   added: string[];
   missing: string[];
@@ -3004,147 +2768,11 @@ export interface SelectionDrift {
   byteMoved: string[];
 }
 
-/** Main-owned selection identities corresponding to the frozen manifest. The
- * renderer may echo these ids but must never derive them from paths. */
+/** Main-owned frozen selection identity retained by pinned-selection drift checks. */
 export interface SaveCardPinnedSelection {
   selectedComponentIds: string[];
   selectedUnattributedEntryIds: string[];
   frozenMemberCount: number;
-}
-
-/**
- * Renderer-safe result of a Save-lens preview. `candidate` is the WP-3G
- * `CommitCandidate` (finalization-backed) or `SelectionPreview` (unfinalized) —
- * the renderer reads its per-member `packageVerification` verdicts and
- * `eligibility` directly. `laresTrailers` are server-derived commit-message
- * trailer previews from the immutable snapshot; the renderer renders them
- * READ-ONLY and MUST NEVER let a user trailer override a `Lares-*` line. The
- * message body (`defaultMessageBody`) is a server suggestion the user may edit.
- */
-export interface SaveCardPreviewResponse {
-  candidate:
-    | import('./commit-candidates').CommitCandidate
-    | import('./commit-candidates').SelectionPreview;
-  /** True when `candidate` is a finalization-backed `CommitCandidate`; false for a
-   *  `SelectionPreview` (no finalization requested). Never one-click when false. */
-  isCandidate: boolean;
-  /** Server-derived, READ-ONLY `Lares-*` trailer previews from the immutable
-   *  snapshot (turns/plans/finalizations). Rendered verbatim; never user-editable. */
-  laresTrailers: string[];
-  /** Server-suggested, user-EDITABLE commit-message body. */
-  defaultMessageBody: string;
-  /** True when any selected component fused ≥2 owners/plans and needs an overlap
-   *  acknowledgement before a one-click save (renderer-side ack gate). */
-  /** Selected unattributed entry ids that each need an individual acknowledgement
-   *  before a one-click save (renderer-side ack gate). */
-  unacknowledgedUnattributedEntryIds: string[];
-  /** SC-WP-W6 — the server-computed union topology digest for this exact selection.
-   *  Stable across previews of the same selected set (a hash of the selection, not
-   *  the bytes). Retained read-only until the WP-7 renderer cutover. */
-  componentTopologyDigest: string;
-  selectionDrift: SelectionDrift;
-  /** Display-only names keyed by authoritative path bytes. */
-  selectionDriftDisplayPaths: Record<string, string>;
-  pinnedSelection: SaveCardPinnedSelection;
-  /** Null only when this transition may advance. SelectionDrift remains a
-   * separate typed DTO and supplies path-specific evidence for this refusal. */
-  refusal: import('./commit-candidates').SaveRefusal | null;
-  /** Renderer-safe projection of the versioned manifest built by main. */
-  reviewedManifest?: ReviewedSemanticReviewView;
-  /** Durable re-resolution handles; no live component/bundle/entry ids. */
-  durableFinalizationIntent?: Array<{
-    finalizationId: string;
-    packageId: string;
-    packageRevision: number;
-    boundaryStatus: 'ready';
-    frozenMemberManifestDigest: string;
-  }>;
-  /** Main's predicate verdict when the request attempted to carry prior review. */
-  reviewCarry?: {
-    carried: boolean;
-    reviewedManifestDigest: string;
-    reason?: string;
-    pendingPathBytesBase64?: string[];
-    dischargedPathBytesBase64?: string[];
-    paths?: string[];
-  };
-}
-
-export interface SaveCardMintResponse extends SaveCardPreviewResponse {}
-
-/** Renderer-safe projection of a reviewed manifest: reviewable effects and the
- * challenge the human saw, never repository topology, closure proof, or durable
- * main-process intent internals. */
-export interface ReviewedSemanticReviewView {
-  manifestVersion: number;
-  reviewedManifestDigest: string;
-  members: Array<{
-    finalPath: import('./commit-candidates').EncodedGitPath;
-    expectedState: 'present' | 'absent';
-    rawBlobOid: string | null;
-    commitBlobOid: string | null;
-    commitMode: string | null;
-    commitEffects: Array<{
-      path: import('./commit-candidates').EncodedGitPath;
-      operation: import('./commit-candidates').CommitEffectOperation;
-      expectedState: 'present' | 'absent';
-      rawBlobOid: string | null;
-      commitBlobOid: string | null;
-      commitMode: string | null;
-    }>;
-  }>;
-  challengeVersion: number;
-  challengeAtoms: import('./commit-candidates').ReviewChallengeAtom[];
-}
-
-// ── SC-WP-3E — fleet-adhoc mark-done route ────────────────────────────────
-
-/** Kept separate from the Stage-1 read-only channel map because this explicit
- * action mints a durable fleet-adhoc finalization boundary. */
-export const SAVECARD_FINALIZE_CHANNEL = 'savecard:markDoneFleetAdhoc' as const;
-
-export interface SaveCardFleetAdhocMarkDoneRequest {
-  packageId: string;
-  /** The workspace the Save PANE is scoped to — the repository the commit must
-   *  land in. A fleet-adhoc package's files live in the pane's repo regardless of
-   *  which agent's home workspace contributed them, so the finalize routes by this
-   *  (the same repository scope the inventory used), NEVER by a contributing
-   *  agent's home workspace or by scanning every registered workspace. */
-  targetWorkspaceId: string;
-  repositoryKey?: string;
-  pinnedSnapshotId?: string;
-  pinnedSnapshotFingerprint?: string;
-}
-
-export type SaveCardFinalizeOutcome =
-  | 'created'
-  | 'existing-unchanged'
-  | 'superseded'
-  | 'reattached-ready'
-  | 'boundary-unavailable';
-
-export interface SaveCardFleetAdhocMarkDoneSuccess {
-  finalizationId: string;
-  packageId: string;
-  finalizationKind: 'fleet-adhoc';
-  outcome: SaveCardFinalizeOutcome;
-  boundaryRef: string | null;
-  boundaryStatus: 'ready' | 'unavailable' | 'pruned';
-  packageRevision: number;
-  pinnedSelection: SaveCardPinnedSelection;
-  /** Present only when the freeze transition could not make the boundary live. */
-  refusal?: import('./commit-candidates').SaveRefusal;
-}
-
-/** Future-proof unit-shaped request used by fallback gestures. WP-F2 teaches
- * the finalization handler to resolve this shape; it never carries members. */
-export interface SaveCardSaveUnitMarkDoneRequest {
-  saveUnitId: string;
-  saveUnitKind: import('./commit-candidates').ProjectedSaveUnitKind;
-  targetWorkspaceId: string;
-  repositoryKey?: string;
-  pinnedSnapshotId?: string;
-  pinnedSnapshotFingerprint?: string;
 }
 
 export type SaveCardFleetAdhocRefusalCode =
@@ -3156,143 +2784,6 @@ export type SaveCardFleetAdhocRefusalCode =
   | 'snapshot-stale'
   | 'snapshot-repository-missing'
   | 'snapshot-gone';
-
-export interface SaveCardFleetAdhocMarkDoneRefusal {
-  ok: false;
-  code: SaveCardFleetAdhocRefusalCode;
-  message: string;
-  stage: import('./commit-candidates').SaveRefusalStage;
-  paths?: string[];
-  workspaceId: string;
-  workspaceTitle: string;
-}
-
-/** Known inability to pin is data, not a rejected IPC invocation. */
-export type SaveCardFleetAdhocMarkDoneResponse =
-  | SaveCardFleetAdhocMarkDoneSuccess
-  | SaveCardFleetAdhocMarkDoneRefusal;
-
-// ── SC-WP-4E — shared commit-coordinator consume route ───────────────────────
-
-/** Lens-neutral consume channel shared by the Save and Plan surfaces. */
-export const COMMIT_COORDINATOR_CHANNEL = 'commit-coordinator:consume' as const;
-
-/** Only stable candidate identity, its opaque token, and the editable message
- * body cross the wire. Lares trailers and commit members remain main-owned. */
-export interface CommitCoordinatorConsumeRequest {
-  candidateId: string;
-  tokenId: string;
-  message: string;
-}
-
-export interface CommitCoordinatorClosureResult {
-  finalizationId: string;
-  closed: boolean;
-  lifecycleStatus: 'active' | 'committed';
-  members: Array<{
-    pathBytesBase64: string;
-    disposition: import('./commit-candidates').FinalizationMemberDisposition | null;
-  }>;
-}
-
-type CommittedCoordinatorOutcome = Extract<
-  import('./commit-candidates').CommitOutcome,
-  { status: 'committed' }
->;
-type NonCommittedCoordinatorOutcome = Exclude<
-  import('./commit-candidates').CommitOutcome,
-  { status: 'committed' }
->;
-
-/** `saved` is deliberately a distinct terminal envelope: main emits it only after
- * WP-4G has verified the marked parent/tree, persisted exact links, and evaluated
- * every frozen finalization manifest. */
-export type CommitCoordinatorConsumeResponse =
-  | { kind: 'token-unresolved'; refusal: import('./commit-candidates').SaveRefusal }
-  | { kind: 'invalid-message'; reason: string; refusal: import('./commit-candidates').SaveRefusal }
-  | { kind: 'compose-in-flight'; refusal: import('./commit-candidates').SaveRefusal }
-  | { kind: 'outcome'; outcome: NonCommittedCoordinatorOutcome; refusal: import('./commit-candidates').SaveRefusal }
-  | {
-      kind: 'reconciliation-error';
-      outcome: CommittedCoordinatorOutcome;
-      error: { code: string; message: string };
-      refusal: import('./commit-candidates').SaveRefusal;
-    }
-  | {
-      kind: 'saved';
-      outcome: CommittedCoordinatorOutcome;
-      finalizations: CommitCoordinatorClosureResult[];
-    };
-
-// ── Save sweep — durable main-owned multi-package gesture ────────────────────
-
-export const SAVE_SWEEP_CHANNEL = 'savecard:sweep' as const;
-
-/** One durable package intent captured from a reviewed union. Live renderer
- * component, bundle, and dirty-entry ids are deliberately absent. */
-export interface SaveSweepIntent {
-  repositoryKey: string;
-  finalizationId: string;
-  packageId: string;
-  packageRevision: number;
-  frozenMemberManifestDigest: string;
-  reviewedManifestDigest: string;
-  message: string;
-}
-
-export interface SaveSweepRequest {
-  intents: SaveSweepIntent[];
-  /** Immutable package-review identities displayed by the opening union review. */
-  reviewedManifestDigests: string[];
-  /** Exact union of independently acknowledged atoms; fresh WP-4 checks may use
-   * any covered subset but can never add an unseen atom. */
-  acknowledgedChallengeAtoms: import('./commit-candidates').ReviewChallengeAtom[];
-}
-
-interface SaveSweepTerminalBase {
-  repositoryKey: string;
-  finalizationId: string;
-  packageId: string;
-  packageRevision: number;
-}
-
-/** Exactly one of these terminal records is returned for every input intent. */
-export type SaveSweepTerminalResult =
-  | (SaveSweepTerminalBase & {
-      kind: 'saved';
-      attemptId: string;
-      commitOid: string;
-    })
-  | (SaveSweepTerminalBase & {
-      kind: 'already-saved';
-      provingCommitOids: string[];
-    })
-  | (SaveSweepTerminalBase & {
-      kind: 'needs-attention';
-      code: string;
-      message: string;
-    })
-  | (SaveSweepTerminalBase & {
-      kind: 'blocked-unmerged';
-    })
-  | (SaveSweepTerminalBase & {
-      kind: 'not-attempted';
-      haltedAfterFinalizationId: string;
-    })
-  | (SaveSweepTerminalBase & {
-      kind: 'halted-uncertain';
-      code: string;
-      message: string;
-      attemptId?: string;
-      commitOid?: string;
-    });
-
-export interface SaveSweepResponse {
-  results: SaveSweepTerminalResult[];
-  halted: boolean;
-  haltKind: 'unmerged' | 'uncertain' | null;
-}
-
 // ── SC-WP-3I — Plan-lens candidate preview channel ────────────────────────────
 //
 // The plan lens's OWN read-only preview transport, deliberately kept SEPARATE from
@@ -4279,46 +3770,6 @@ export interface IpcApi {
    *  shared engine/service surface. `restore`/`revert` accept a `force`
    *  (stale-preview override) that is IPC-ONLY and refused while an active turn
    *  witnesses a requested path. */
-  /** Lens-neutral commit consume surface used by both Save and Plan. Main-process
-   *  flag enforcement remains authoritative even for direct IPC invocation. */
-  commitCoordinator: {
-    mint: (req: SaveCardMintRequest) => Promise<SaveCardMintResponse>;
-    commit: (req: CommitCoordinatorConsumeRequest) => Promise<CommitCoordinatorConsumeResponse>;
-  };
-  /** Save card: read-only dirty inventory (Stage ①) + the SC-WP-3H Save-lens
-   *  candidate preview (also read-only — verdicts + read-only `Lares-*` trailer
-   *  previews). No mutating method is exposed here. */
-  saveCard: {
-    getInventory: (req: SaveCardInventoryRequest) => Promise<SaveCardInventoryResponse>;
-    scopedRescan: (req: SaveCardScopedRescanRequest) => Promise<SaveCardInventoryResponse>;
-    adoptAllAsBaseline: (
-      req: SaveCardAdoptBaselineRequest,
-    ) => Promise<SaveCardAdoptBaselineResponse>;
-    completeOnboarding: (
-      req: SaveCardOnboardingDecisionRequest,
-    ) => Promise<SaveCardOnboardingDecisionResponse>;
-    preview: (req: SaveCardPreviewRequest) => Promise<SaveCardPreviewResponse>;
-    resolveAttribution: (
-      req: SaveCardAttributionResolutionRequest,
-    ) => Promise<SaveCardAttributionResolutionResponse>;
-    /** Explicitly freeze and pin a fleet-adhoc package boundary. */
-    markDone: (
-      req: SaveCardFleetAdhocMarkDoneRequest | SaveCardSaveUnitMarkDoneRequest,
-    ) => Promise<SaveCardFleetAdhocMarkDoneResponse>;
-    /** One reviewed, durable multi-package Save gesture. Main refreshes and
-     *  re-verifies every intent immediately before its just-in-time mint. */
-    sweep: (req: SaveSweepRequest) => Promise<SaveSweepResponse>;
-    resolveActivityMerge: (
-      req: SaveCardActivityMergeResolveRequest,
-    ) => Promise<SaveCardActivityMergeResolveResponse>;
-    /** SC-WP-N2 — lightweight checkpoint-expiry attention read (no full inventory
-     *  probe). Resolves the freshest notice for the workspace, or null. */
-    getAttention: (req: SaveCardAttentionRequest) => Promise<SaveCardCheckpointExpiryNotice | null>;
-    /** SC-WP-N2 — subscribe to per-workspace attention pushes. Returns an unsubscribe. */
-    onAttentionChanged: (
-      callback: (payload: SaveCardAttentionChangedPayload) => void,
-    ) => () => void;
-  };
   checkpoints: {
     list: (workspaceId: string, opts?: { agentId?: string }) => Promise<CheckpointListResult>;
     diff: (workspaceId: string, turnId: string) => Promise<CheckpointDiffResult>;
@@ -6469,6 +5920,57 @@ export interface ProposalReadResult {
   sizeBytes: number;
 }
 
+export type LandedCommitRefusal =
+  | 'dispatch-tip-not-ancestor'
+  | 'range-truncated'
+  | 'named-commit-not-in-range'
+  | 'named-commit-not-single-parent'
+  | 'labels-mismatch'
+  | 'changed-paths-diverge'
+  | 'unrepresentable-paths'
+  | 'branch-unresolvable'
+  | 'verifier-unavailable'
+  // Temporary compile compatibility for pre-WP-4 injected gate-service fixtures.
+  // verifyLandedCommit never emits these retired values.
+  | 'no-matching-commit'
+  | 'multiple-matching-commits'
+  | 'commit-oid-not-the-match';
+
+export interface LandedCommitTouchV2 {
+  commitOid: string;
+  parentOids: string[];
+  paths: string[];
+  planTrailers: string[];
+  wpTrailers: string[];
+}
+
+export interface LandedCommitEvidenceV2 {
+  schemaVersion: 2;
+  repositoryKey: string;
+  branchRef: string;
+  dispatchTipOid: string;
+  gateTipOid: string;
+  namedCommit: { commitOid: string; parentOid: string; subject: string };
+  labels: { plan: string; wp: string; verified: string[]; scopeOmitted: string[] };
+  changedPaths: string[];
+  priorFrozenPathTouches: LandedCommitTouchV2[];
+  postClaimTouches: LandedCommitTouchV2[];
+}
+
+export type LandedCommitVerification =
+  | {
+      outcome: 'verified';
+      /** Present on every production verifier success; optional for legacy injected fixtures. */
+      evidence?: LandedCommitEvidenceV2;
+      /** Compatibility aliases consumed until gate-landed-service adopts V2 in WP-4. */
+      commitOid: string;
+      parentOid: string;
+      subject: string;
+      verifiedTrailer: string | null;
+      scopeOmittedTrailer: string | null;
+    }
+  | { outcome: 'refused'; reason: LandedCommitRefusal; detail?: unknown };
+
 // Landed-loop WP-4: supervisor declaration transport. All authority beyond these
 // three opaque claims is derived server-side from the immutable dispatch attempt.
 export interface GateLandedWorkPackageArgs {
@@ -6486,6 +5988,12 @@ export type GateLandedRefusal =
   | 'dispatch-evidence-unavailable'
   | 'branch-unresolvable'
   | 'dispatch-tip-not-ancestor'
+  | 'range-truncated'
+  | 'named-commit-not-in-range'
+  | 'named-commit-not-single-parent'
+  | 'labels-mismatch'
+  | 'unrepresentable-paths'
+  | 'verifier-unavailable'
   | 'no-matching-commit'
   | 'multiple-matching-commits'
   | 'commit-oid-not-the-match'

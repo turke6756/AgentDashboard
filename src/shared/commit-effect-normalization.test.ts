@@ -7,8 +7,7 @@ import {
   type CommitEffectRepresentation,
   type NormalizedCommitEffect,
   type ReviewedSemanticManifest,
-} from '../../shared/commit-candidates';
-import { canonicalize } from './jcs';
+} from './commit-candidates';
 
 const path = (value: string): string => Buffer.from(value).toString('base64');
 const representation = (suffix: string, mode = '100644'): CommitEffectRepresentation => ({
@@ -84,7 +83,7 @@ test('mode change binds the new mode and canonicalizes independently of input or
   });
 
   assert.equal(first[0].commitMode, '100755');
-  assert.equal(canonicalize(first), canonicalize(second));
+  assert.deepEqual(first, second);
 });
 
 test('reviewed manifest canonicalization ignores insertion order of set-like arrays', () => {

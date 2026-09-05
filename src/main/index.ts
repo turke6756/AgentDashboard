@@ -45,7 +45,7 @@ import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-re
 import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
 import { installExternalNavHandlers, forceCloseAllDetached, getDetachedEntries, type DetachedWindowDeps } from './detached-windows';
 import { runCloseFlush, type FlushTarget } from './close-flush';
-import { TAB_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState } from '../shared/types';
+import { TAB_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState, type ResolveOpenableWorkspacePathRequest, type ResolveOpenableWorkspacePathResult } from '../shared/types';
 import { WsServer } from './ws-server';
 import { ApiServer, type BrowserToolProvider } from './api-server';
 import { OrchestrationService } from './orchestration/service';
@@ -84,7 +84,6 @@ import { HeapTelemetry, createHeapTelemetry, readV8Heap, readProcessMetrics } fr
 import { createCommitReader, type NativeCommitProvider } from './watchdog/commit-reader';
 import { RenderRecoveryPolicy } from './watchdog/render-recovery';
 import type { MemorySnapshot, AdmissionDecision } from './watchdog/types';
-import type { ResolveOpenableWorkspacePathRequest, ResolveOpenableWorkspacePathResult } from '../shared/types';
 // WAVE-4 full-D5: per-agent attribution + budgets service (owns the periodic
 // process-memory snapshot, the cached rollup, and the budget/owned-cap admission
 // helpers). Constructed at ready alongside the sampler.

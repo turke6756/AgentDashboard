@@ -5,8 +5,6 @@
 // cross-product.
 
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
 
 import type {
@@ -31,8 +29,6 @@ import {
   evaluateCheckpointProtection,
   type ProtectionMember,
 } from './protection-read';
-import { discoverFirstContactRoots } from './onboarding-discovery';
-import { ScratchPolicyStore } from './scratch-policy-store';
 import { CommitCandidateSnapshotRegistry } from './snapshot-registry';
 import { CommitCandidateService, type CandidateBuildContext } from './candidate-service';
 
@@ -275,31 +271,6 @@ test('ordinary probe failure is incomplete and an earlier proof survives as prov
   assert.equal(proven.members[0].protection, 'checkpoint-protected');
 });
 
-test('partial discovery labels both totals and per-directory counts as lower bounds', async () => {
-  const root = fs.mkdtempSync(path.join(process.cwd(), '.lares-wp-h-lower-bound-'));
-  try {
-    const store = new ScratchPolicyStore(path.join(root, 'policy'));
-    const status = (...records: string[]) => Buffer.from(`${records.join('\0')}\0`);
-    const result = await discoverFirstContactRoots({
-      repoRoot: root, repositoryKey: 'repo', workspaceKey: 'workspace', policyStore: store,
-      budgets: { maxEntries: 3 },
-      runGitBytes: async (_cwd, args) => ({
-        code: 0,
-        stdout: args.includes('--untracked-files=all')
-          ? status('? node_modules/a', '? node_modules/b', '? node_modules/c')
-          : status('? node_modules/'),
-        stderr: '',
-      }),
-    });
-    assert.equal(result.completeness, 'partial');
-    assert.equal(result.totalsExact, false);
-    assert.equal(result.recommendations[0].countExact, false);
-    assert.equal(result.recommendations[0].countLabel, '>=3');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test('registry admission is sequential, failed flights evict, and default LRU(8)/TTL(500ms) hold', async () => {
   let clock = 0;
   const registry = new CommitCandidateSnapshotRegistry<string>({ now: () => clock });
@@ -378,8 +349,4 @@ test('partial global evidence cannot mint while independently complete scoped ev
   assert.equal(scoped.eligibility.eligible, true);
   assert.ok(scoped.token, 'REACHABILITY:complete-scoped-can-mint');
 
-  const saveRoute = fs.readFileSync(
-    path.join(process.cwd(), 'src', 'main', 'commit-candidates', 'save-card-routes.ts'), 'utf8',
-  );
-  assert.match(saveRoute, /scopePathspec \? snapshotRegistry\.acquireScoped : snapshotRegistry\.acquire/);
 });

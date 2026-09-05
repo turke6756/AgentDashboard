@@ -1,7 +1,15 @@
 import * as fs from 'node:fs';
 
-import type { GitCapability, PlanCandidatePreviewRequest } from '../../shared/types';
-import type { DirtyEntry, WitnessedCommitProvenance } from '../../shared/commit-candidates';
+import type {
+  GitCapability,
+  PlanCandidatePreviewRequest,
+  SaveCardFleetAdhocRefusalCode,
+} from '../../shared/types';
+import type {
+  DirtyEntry,
+  SaveRefusalStage,
+  WitnessedCommitProvenance,
+} from '../../shared/commit-candidates';
 import { BUNDLE_CONTRACT_VERSION } from '../../shared/constants';
 import {
   getWorkspaces as dbGetWorkspaces,
@@ -44,7 +52,6 @@ import { createTurnStampSource, type TurnStampRecordReader } from '../commit-can
 import type { RunGitBytesLike, RunGitTextLike } from '../commit-candidates/dirty-inventory';
 import type { TurnWitnessReader } from '../commit-candidates/witness-projection';
 import type { CommitPathLinkReader } from '../commit-candidates/protection-read';
-import { SaveCardFinalizeRefusalError } from '../commit-candidates/save-card-ipc';
 import { parseFinalizationManifest, resolvePinnedSelectionDrift } from '../commit-candidates/pinned-selection-drift';
 import { deriveRepositoryIdentity } from '../commit-candidates/repository-identity';
 import type { CommitCandidateSnapshotRegistry } from '../commit-candidates/snapshot-registry';
@@ -56,6 +63,20 @@ import type {
 
 const OID_RE = /^[0-9a-f]{40,64}$/;
 const HEAD_TIMEOUT_MS = 10_000;
+
+export class SaveCardFinalizeRefusalError extends Error {
+  constructor(
+    message: string,
+    readonly code: SaveCardFleetAdhocRefusalCode,
+    readonly workspaceId: string,
+    readonly workspaceTitle: string,
+    readonly stage: SaveRefusalStage = 'boundary-capture',
+    readonly paths?: string[],
+  ) {
+    super(message);
+    this.name = 'SaveCardFinalizeRefusalError';
+  }
+}
 
 export interface PlanCandidateRoutesDeps {
   gitExe: string;
