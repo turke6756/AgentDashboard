@@ -1993,7 +1993,7 @@ function initContextOptimizerSchema(): void {
       ON capture_attempts(turn_id);
   `);
 
-  // FIVE guarded plans columns (exactly five — no more): the promotion + folder
+  // Guarded plans columns: the promotion + folder
   // linkage the P2/P3 pipeline enriches onto the structured plan row. All NULL for
   // legacy/proposal-only rows. `folder_rel_path` is the workspace-relative path of
   // the plan folder under <workspaceStateDir()>/plans/ (§R0), NULL for legacy HTML
@@ -2004,6 +2004,7 @@ function initContextOptimizerSchema(): void {
   try { db.exec(`ALTER TABLE plans ADD COLUMN promoted_at INTEGER`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plans ADD COLUMN promoted_content_hash TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE plans ADD COLUMN folder_rel_path TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE plans ADD COLUMN landed_gate_mode TEXT`); } catch { /* exists */ }
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_artifact
     ON plans(workspace_id, artifact_id) WHERE artifact_id IS NOT NULL`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_source_proposal
@@ -3836,6 +3837,34 @@ export function getPlans(filters?: { workspaceId?: string; includeDeleted?: bool
 export function getPlan(id: string): Plan | null {
   const row = queryOne('SELECT * FROM plans WHERE id = ?', [id]);
   return row ? rowToPlan(row) : null;
+}
+
+export interface PlanLandedGateAuthority {
+  id: string;
+  workspaceId: string;
+  artifactId: string | null;
+  responsibleSupervisorId: string | null;
+  landedGateMode: string | null;
+}
+
+/** Raw gate authority. Callers must distinguish SQL NULL from every non-null
+ * value so only NULL can inherit light mode. */
+export function getPlanLandedGateAuthority(id: string): PlanLandedGateAuthority | null {
+  const row = queryOne(
+    `SELECT id, workspace_id, artifact_id, responsible_supervisor_id, landed_gate_mode
+       FROM plans WHERE (id = ? OR artifact_id = ?) AND deleted_at IS NULL`,
+    [id, id],
+  ) as {
+    id: string; workspace_id: string; artifact_id: string | null;
+    responsible_supervisor_id: string | null; landed_gate_mode: string | null;
+  } | null;
+  return row ? {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    artifactId: row.artifact_id,
+    responsibleSupervisorId: row.responsible_supervisor_id,
+    landedGateMode: row.landed_gate_mode ?? null,
+  } : null;
 }
 
 export function getPlanByWorkspacePath(workspaceId: string, planPath: string): Plan | null {
@@ -6291,6 +6320,14 @@ export function listCommitTurnLinks(repositoryKey: string, commitOid: string): C
      WHERE repository_key = ? AND commit_oid = ? ORDER BY turn_id`,
     [repositoryKey, commitOid],
   ).map(rowToCommitTurnLink);
+}
+
+/** Commit-global provenance lookup used for conflict detection. Deliberately
+ * has no plan, package, agent, session, or time predicate. */
+export function listCommitGlobalTurnLinks(
+  repositoryKey: string, commitOid: string,
+): CommitTurnLink[] {
+  return listCommitTurnLinks(repositoryKey, commitOid);
 }
 
 /** Reverse commit lookup for one activity page. Intentionally one SQL query;
@@ -9266,6 +9303,102 @@ export function findGateLandedWitnessTurn(input: {
     }
   }
   return null;
+}
+
+/** Positive landed-commit attribution bounded to the dispatched execution.
+ * A later execution-run dispatch for the package closes the witness window. */
+export function findGateLandedPositiveWitnessTurn(input: {
+  dispatchAttemptId: string;
+  repositoryKey: string;
+  commitOid: string;
+  frozenPaths: readonly string[];
+}): TurnRecord | null {
+  const attempt = getPlanDispatchAttempt(input.dispatchAttemptId);
+  if (!attempt?.targetAgentId || !attempt.targetSessionId) return null;
+  const executionRun = getPlanExecutionRun(attempt.executionRunId);
+  if (!executionRun) return null;
+  const rows = queryAll(
+    `SELECT t.*,
+            EXISTS (
+              SELECT 1 FROM commit_turn_links ctl
+               WHERE ctl.repository_key = ? AND ctl.commit_oid = ? AND ctl.turn_id = t.id
+            ) AS commit_linked
+       FROM turn_records t
+      WHERE t.plan_id = ? AND t.plan_item_id = ?
+        AND t.agent_id = ? AND t.session_id = ?
+        AND t.started_at >= ? AND t.started_at >= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM plan_dispatch_attempts later
+           WHERE later.package_id = ?
+             AND later.execution_run_id <> ?
+             AND later.created_at > ?
+             AND later.created_at <= t.started_at
+        )
+      ORDER BY commit_linked DESC, t.turn_seq DESC`,
+    [input.repositoryKey, input.commitOid, attempt.planId, attempt.packageId,
+      attempt.targetAgentId, attempt.targetSessionId, attempt.createdAt,
+      executionRun.triggeredAt, attempt.packageId, attempt.executionRunId,
+      attempt.createdAt],
+  ) as Array<Record<string, unknown> & { commit_linked: number }>;
+  const frozen = new Set(input.frozenPaths);
+  for (const row of rows) {
+    if (Number(row.commit_linked) === 1) return rowToTurnRecord(row);
+    let touched: unknown = null;
+    try { touched = typeof row.touched === 'string' ? JSON.parse(row.touched) : null; } catch { touched = null; }
+    if (!Array.isArray(touched)) continue;
+    const witnessed = new Set(touched.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const witnessedPath = (entry as { path?: unknown }).path;
+      return typeof witnessedPath === 'string' ? [witnessedPath] : [];
+    }));
+    if (frozen.size > 0 && [...frozen].every((witnessedPath) => witnessed.has(witnessedPath))) {
+      return rowToTurnRecord(row);
+    }
+  }
+  return null;
+}
+
+export interface CurrentRevisionSuccessorDispatch {
+  attempt: PlanDispatchAttempt;
+  passedGateAttemptIds: string[];
+}
+
+/** Captured sibling dispatches that can account for post-claim touches. Git
+ * range, label, parent, and path-set checks remain the gate service's job. */
+export function listCurrentRevisionSuccessorDispatches(input: {
+  planId: string;
+  excludePackageId: string;
+  repositoryKey: string;
+  branchRef: string;
+}): CurrentRevisionSuccessorDispatch[] {
+  const rows = queryAll(
+    `SELECT d.*, g.id AS passed_gate_attempt_id
+       FROM plan_dispatch_attempts d
+       JOIN plan_work_packages wp
+         ON wp.id = d.package_id AND wp.revision = d.package_revision
+       LEFT JOIN plan_package_gate_attempts g
+         ON g.package_id = d.package_id
+        AND g.package_revision = d.package_revision
+        AND g.outcome = 'passed'
+      WHERE d.plan_id = ? AND d.package_id <> ?
+        AND d.repository_key = ? AND d.branch_ref = ?
+        AND d.state IN ('delivered','reconciled')
+        AND d.capture_status = 'captured'
+      ORDER BY d.created_at, d.id, g.attempt_no, g.id`,
+    [input.planId, input.excludePackageId, input.repositoryKey, input.branchRef],
+  ) as Array<Record<string, unknown> & { id: string; passed_gate_attempt_id: string | null }>;
+  const byAttempt = new Map<string, CurrentRevisionSuccessorDispatch>();
+  for (const row of rows) {
+    let successor = byAttempt.get(row.id);
+    if (!successor) {
+      successor = { attempt: rowToPlanDispatchAttempt(row), passedGateAttemptIds: [] };
+      byAttempt.set(row.id, successor);
+    }
+    if (row.passed_gate_attempt_id !== null) {
+      successor.passedGateAttemptIds.push(row.passed_gate_attempt_id);
+    }
+  }
+  return [...byAttempt.values()];
 }
 
 export function listOpenPlanDispatchAttempts(): PlanDispatchAttempt[] {

@@ -25,6 +25,7 @@ let sqlJsCtor: new () => SqlJsDatabase;
 class FakeBetterSqlite {
   private static stores = new Map<string, SqlJsDatabase>();
   private db: SqlJsDatabase;
+  private transactionDepth = 0;
   constructor(dbPath = ':memory:') {
     let store = FakeBetterSqlite.stores.get(dbPath);
     if (!store) { store = new sqlJsCtor(); FakeBetterSqlite.stores.set(dbPath, store); }
@@ -52,9 +53,19 @@ class FakeBetterSqlite {
   }
   transaction<A extends unknown[]>(fn: (...args: A) => unknown) {
     return (...args: A) => {
-      this.db.exec('BEGIN');
-      try { const result = fn(...args); this.db.exec('COMMIT'); return result; }
-      catch (err) { this.db.exec('ROLLBACK'); throw err; }
+      const outermost = this.transactionDepth === 0;
+      if (outermost) this.db.exec('BEGIN');
+      this.transactionDepth += 1;
+      try {
+        const result = fn(...args);
+        this.transactionDepth -= 1;
+        if (outermost) this.db.exec('COMMIT');
+        return result;
+      } catch (err) {
+        this.transactionDepth -= 1;
+        if (outermost) this.db.exec('ROLLBACK');
+        throw err;
+      }
     };
   }
 }
@@ -106,6 +117,12 @@ function seedTurn(id: string, packageId: string, status = 'completed'): void {
 
 function seedDispatch(packageId: string, id = `dispatch-${packageId}`, state = 'delivered'): void {
   dbm.getDb().prepare(
+    `INSERT OR REPLACE INTO save_intents
+       (id, workspace_id, kind, plan_id, plan_item_id, title, dispatch_attempt_id,
+        created_by, state, revision, created_at)
+     VALUES (?, ?, 'task', ?, ?, ?, ?, 'task-dispatch', 'open', 1, 10)`,
+  ).run(INTENT, WS, PLAN, packageId, packageId, id);
+  dbm.getDb().prepare(
     `INSERT INTO plan_dispatch_attempts
        (id, package_id, plan_id, execution_run_id, target_agent_id,
         requested_plan_item_id, confirmed_turn_id, state, created_at, confirmed_at,
@@ -121,6 +138,11 @@ function recordCommit(packageId: string, oid = OID_A, key = `commits-${packageId
     commits: [{ repositoryKey: 'repo', commitOid: oid, parentOid: null,
       observedAt: 40, source: 'lares', pushedRemoteCount: 0, lastReconciledAt: 40 }],
   });
+}
+
+function commitRecord(oid: string, observedAt = 40) {
+  return { repositoryKey: 'repo', commitOid: oid, parentOid: null,
+    observedAt, source: 'lares' as const, pushedRemoteCount: 0, lastReconciledAt: observedAt };
 }
 
 function passGate(packageId: string, gateKey: string, oid: string | null, key: string, evidence?: unknown): void {
@@ -194,6 +216,142 @@ test('failed gate blocks; passed retry preserves the failed row and is idempoten
   assert.deepEqual(dbm.listPlanPackageGateAttempts('pkg-retry', 1).map((row) => row.outcome), ['failed', 'passed']);
   assert.equal(dbm.getPlanWorkPackage('pkg-retry')?.state, 'blocked');
   assert.throws(() => service.transitionPlanPackage({ ...failed, gateKey: 'other' }, failedWitness), /conflicting idempotency/);
+});
+
+test('REACHABILITY:package-ledger null-turn commits persist without synthetic links and retry idempotently', () => {
+  seedPackage('pkg-null-turn');
+  const command = identity('commits-observed', 'pkg-null-turn', 'commits-null-turn');
+  const witness = {
+    kind: 'git' as const, actor: 'git-observer', observedAt: 40, turnId: null,
+    commits: [commitRecord(OID_B)],
+  };
+  const first = service.transitionPlanPackage(command, witness);
+  const retry = service.transitionPlanPackage(command, { ...witness, observedAt: 99 });
+  assert.equal(dbm.getCommitRecord('repo', OID_B)?.commitOid, OID_B);
+  assert.deepEqual(dbm.listCommitGlobalTurnLinks('repo', OID_B), []);
+  assert.deepEqual(first.evidenceIds, [`commit-record:repo:${OID_B}`]);
+  assert.deepEqual(retry.evidenceIds, first.evidenceIds);
+  assert.equal(raw(
+    'SELECT COUNT(*) AS count FROM commit_records WHERE repository_key = ? AND commit_oid = ?',
+    'repo', OID_B,
+  ).count, 1);
+});
+
+test('non-null commit witness still requires the matching stamped turn', () => {
+  seedPackage('pkg-stamped-turn');
+  assert.throws(() => service.transitionPlanPackage(
+    identity('commits-observed', 'pkg-stamped-turn', 'commits-bad-turn'),
+    { kind: 'git', actor: 'git-observer', observedAt: 40, turnId: 'missing-turn',
+      commits: [commitRecord(OID_C)] },
+  ), /matching stamped turn/);
+  assert.equal(dbm.getCommitRecord('repo', OID_C), null);
+});
+
+test('marker reader decodes the last package-ledger marker and rejects unrelated text', () => {
+  const result = {
+    commandType: 'commits-observed' as const, idempotencyKey: 'marker-key',
+    packageId: 'pkg-marker', packageRevision: 1, stateBefore: 'executing' as const,
+    stateAfter: 'executing' as const, stateChanged: false,
+    evidenceIds: [`commit-record:repo:${OID_A}`],
+  };
+  const marker = { version: 1 as const, digest: 'digest', result };
+  assert.deepEqual(service.readMarker(`prefix\npackage-ledger:v1:${JSON.stringify(marker)}`), marker);
+  assert.equal(service.readMarker('not-a-marker'), null);
+  assert.equal(service.readMarker('package-ledger:v1:{bad-json'), null);
+});
+
+test('gate database accessors preserve raw mode and enforce witness/successor predicates', () => {
+  assert.equal(raw(
+    `SELECT COUNT(*) AS count FROM pragma_table_info('plans') WHERE name = 'landed_gate_mode'`,
+  ).count, 1);
+  assert.equal(dbm.getPlanLandedGateAuthority(ARTIFACT)?.landedGateMode, null);
+  dbm.getDb().prepare('UPDATE plans SET landed_gate_mode = ? WHERE id = ?').run('invalid', PLAN);
+  assert.equal(dbm.getPlanLandedGateAuthority(PLAN)?.landedGateMode, 'invalid');
+
+  seedPackage('pkg-witness');
+  dbm.getDb().prepare(
+    `INSERT INTO plan_execution_runs
+       (id, plan_id, repository_key, baseline_kind, baseline_head_oid, baseline_ref,
+        trigger_source, app_user_id, triggered_at, lifecycle_state)
+     VALUES ('run-witness-1', ?, 'repo', 'head', ?, 'refs/lares/test/run-1',
+             'renderer-user-action', 'user', 15, 'active')`,
+  ).run(PLAN, OID_A);
+  dbm.getDb().prepare(
+    `INSERT INTO plan_execution_runs
+       (id, plan_id, repository_key, baseline_kind, baseline_head_oid, baseline_ref,
+        trigger_source, app_user_id, triggered_at, lifecycle_state)
+     VALUES ('run-witness-2', ?, 'repo', 'head', ?, 'refs/lares/test/run-2',
+             'renderer-user-action', 'user', 30, 'active')`,
+  ).run(PLAN, OID_A);
+  const insertAttempt = (id: string, packageId: string, runId: string, createdAt: number,
+      state: 'pending' | 'delivered' | 'failed' | 'reconciled' = 'delivered',
+      revision = 1, branchRef = 'refs/heads/main', captured = true) => {
+    dbm.getDb().prepare(
+      `INSERT INTO plan_dispatch_attempts
+         (id, package_id, plan_id, execution_run_id, target_agent_id,
+          requested_plan_item_id, state, created_at, package_revision,
+          target_session_id, repository_key, branch_ref, dispatch_tip_oid,
+          frozen_paths_json, capture_status)
+       VALUES (?, ?, ?, ?, 'agent-1', ?, ?, ?, ?, 'session-1', ?, ?, ?, ?, ?)`,
+    ).run(id, packageId, PLAN, runId, packageId, state, createdAt, revision,
+      captured ? 'repo' : null, captured ? branchRef : null, captured ? OID_A : null,
+      captured ? JSON.stringify(['src/a.ts']) : null, captured ? 'captured' : 'unavailable');
+  };
+  insertAttempt('dispatch-witness-1', 'pkg-witness', 'run-witness-1', 20);
+  insertAttempt('dispatch-witness-2', 'pkg-witness', 'run-witness-2', 30);
+  const insertWitnessTurn = (id: string, seq: number, startedAt: number, agent = 'agent-1') => {
+    dbm.getDb().prepare(
+      `INSERT INTO turn_records
+         (id, workspace_id, turn_seq, agent_id, session_id, started_at, ended_at,
+          status, touched, plan_id, plan_item_id, plan_stamp_source, intent_id)
+       VALUES (?, ?, ?, ?, 'session-1', ?, ?, 'completed', ?, ?, 'pkg-witness', 'explicit', ?)`,
+    ).run(id, WS, seq, agent, startedAt, startedAt + 1,
+      JSON.stringify([{ path: 'src/a.ts', op: 'M' }]), PLAN, INTENT);
+  };
+  insertWitnessTurn('turn-before-dispatch', 100, 19);
+  insertWitnessTurn('turn-positive', 101, 25);
+  insertWitnessTurn('turn-wrong-agent', 102, 26, 'agent-2');
+  insertWitnessTurn('turn-later-run', 103, 31);
+  assert.equal(dbm.findGateLandedPositiveWitnessTurn({
+    dispatchAttemptId: 'dispatch-witness-1', repositoryKey: 'repo',
+    commitOid: OID_C, frozenPaths: ['src/a.ts'],
+  })?.id, 'turn-positive');
+  dbm.getDb().prepare('DELETE FROM turn_records WHERE id = ?').run('turn-positive');
+  assert.equal(dbm.findGateLandedPositiveWitnessTurn({
+    dispatchAttemptId: 'dispatch-witness-1', repositoryKey: 'repo',
+    commitOid: OID_C, frozenPaths: ['src/a.ts'],
+  }), null);
+
+  dbm.upsertCommitTurnLink({ repositoryKey: 'repo', commitOid: OID_C,
+    turnId: 'turn-before-dispatch', planId: PLAN, planItemId: 'pkg-witness',
+    relation: 'candidate_member', captureQuality: null });
+  dbm.upsertCommitTurnLink({ repositoryKey: 'repo', commitOid: OID_C,
+    turnId: 'turn-later-run', planId: PLAN, planItemId: 'pkg-witness',
+    relation: 'candidate_member', captureQuality: null });
+  assert.deepEqual(
+    dbm.listCommitGlobalTurnLinks('repo', OID_C).map((link) => link.turnId),
+    ['turn-before-dispatch', 'turn-later-run'],
+  );
+
+  seedPackage('pkg-successor');
+  seedPackage('pkg-stale-successor', 'executing', 2);
+  insertAttempt('dispatch-successor', 'pkg-successor', 'run-witness-1', 21, 'reconciled');
+  insertAttempt('dispatch-stale', 'pkg-stale-successor', 'run-witness-1', 22, 'delivered', 1);
+  insertAttempt('dispatch-pending', 'pkg-successor', 'run-witness-1', 23, 'pending');
+  insertAttempt('dispatch-wrong-branch', 'pkg-successor', 'run-witness-1', 24, 'delivered', 1, 'refs/heads/other');
+  insertAttempt('dispatch-unavailable', 'pkg-successor', 'run-witness-1', 25, 'delivered', 1, 'refs/heads/main', false);
+  dbm.getDb().prepare(
+    `INSERT INTO plan_package_gate_attempts
+       (id, workspace_id, plan_id, plan_artifact_id, intent_id, package_id,
+        package_revision, gate_key, gate_revision, attempt_no, outcome, created_at)
+     VALUES ('gate-successor', ?, ?, ?, ?, 'pkg-successor', 1,
+             'supervisor-acceptance', 1, 1, 'passed', 50)`,
+  ).run(WS, PLAN, ARTIFACT, INTENT);
+  const successors = dbm.listCurrentRevisionSuccessorDispatches({
+    planId: PLAN, excludePackageId: 'pkg-witness', repositoryKey: 'repo', branchRef: 'refs/heads/main',
+  });
+  assert.deepEqual(successors.map((entry) => entry.attempt.id), ['dispatch-successor']);
+  assert.deepEqual(successors[0].passedGateAttemptIds, ['gate-successor']);
 });
 
 test('code completion refuses missing evidence, then requires gate-covered commit, boundary, deployment, and freshness', () => {

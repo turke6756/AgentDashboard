@@ -85,7 +85,7 @@ export type PlanPackageWitness =
       witnessTurnId?: string | null; evidence?: unknown;
       verifiedCommits?: readonly CommitRef[];
     })
-  | (BaseWitness & { kind: 'git'; turnId: string; commits: readonly CommitRecord[] })
+  | (BaseWitness & { kind: 'git'; turnId: string | null; commits: readonly CommitRecord[] })
   | (BaseWitness & {
       kind: 'deployment'; environment: string; state: PlanPackageDeploymentState;
       repositoryKey?: string | null; commitOid?: string | null;
@@ -121,7 +121,7 @@ export type CompletionReadinessFinding =
   | { kind: 'reachability-witness-missing' }
   | { kind: 'reachability-not-fresh' };
 
-type Marker = {
+export type PackageLedgerMarker = {
   version: 1; digest: string; result: Omit<TransitionResult, 'replayed'>;
   evidence?: unknown;
 };
@@ -144,12 +144,12 @@ function digestOf(command: PlanPackageCommand, witness: PlanPackageWitness): str
   return canonical({ command, witness: stableWitness });
 }
 
-function markerText(marker: Marker): string { return MARKER_PREFIX + JSON.stringify(marker); }
-function readMarker(raw: unknown): Marker | null {
+function markerText(marker: PackageLedgerMarker): string { return MARKER_PREFIX + JSON.stringify(marker); }
+export function readMarker(raw: unknown): PackageLedgerMarker | null {
   if (typeof raw !== 'string') return null;
   const at = raw.lastIndexOf(MARKER_PREFIX);
   if (at < 0) return null;
-  try { return JSON.parse(raw.slice(at + MARKER_PREFIX.length)) as Marker; } catch { return null; }
+  try { return JSON.parse(raw.slice(at + MARKER_PREFIX.length)) as PackageLedgerMarker; } catch { return null; }
 }
 
 function commandRowId(key: string): string {
@@ -157,7 +157,7 @@ function commandRowId(key: string): string {
   return `package-ledger:${key}`;
 }
 
-function findPrior(key: string): Marker | null {
+function findPrior(key: string): PackageLedgerMarker | null {
   const db = getDb();
   const id = commandRowId(key);
   const candidates = [
@@ -170,7 +170,7 @@ function findPrior(key: string): Marker | null {
       WHERE capture_quality LIKE ?`,
   ).all(`%${MARKER_PREFIX}%`) as Array<{ marker?: unknown }>;
   candidates.push(...links.filter((row) => readMarker(row.marker)?.result.idempotencyKey === key));
-  const markers = candidates.map((row) => readMarker(row?.marker)).filter((m): m is Marker => m !== null);
+  const markers = candidates.map((row) => readMarker(row?.marker)).filter((m): m is PackageLedgerMarker => m !== null);
   if (markers.length > 1 && markers.some((m) => canonical(m) !== canonical(markers[0]))) {
     throw new Error(`package-ledger: corrupt duplicate idempotency key ${key}`);
   }
@@ -242,7 +242,7 @@ function assertEdge(command: PlanPackageCommand, state: PlanWorkPackageState): P
 
 function appendStateProjection(
   command: PlanPackageCommand, witness: BaseWitness, from: PlanWorkPackageState,
-  to: PlanWorkPackageState, marker: Marker, primaryId?: string,
+  to: PlanWorkPackageState, marker: PackageLedgerMarker, primaryId?: string,
 ): string | null {
   if (from === to) return null;
   const id = primaryId ?? commandRowId(command.idempotencyKey);
@@ -388,7 +388,7 @@ export function requireCompletion(command: Extract<PlanPackageCommand, { type: '
     let evidence: unknown;
     try {
       const raw = review.evidenceJson?.startsWith(MARKER_PREFIX)
-        ? JSON.parse(review.evidenceJson.slice(MARKER_PREFIX.length)) as Marker : null;
+        ? JSON.parse(review.evidenceJson.slice(MARKER_PREFIX.length)) as PackageLedgerMarker : null;
       evidence = raw?.evidence ?? null;
     } catch { evidence = null; }
     const justification = (evidence as { reviewedJustification?: unknown } | null)?.reviewedJustification;
@@ -453,10 +453,12 @@ export function transitionPlanPackage(
       // assembled here, then inserted once with that durable marker.
     } else if (command.type === 'commits-observed') {
       const observed = requireWitness(witness, 'git');
-      const turn = getTurnRecord(observed.turnId);
-      if (!turn || turn.planId !== command.planId || turn.planItemId !== command.packageId
-          || turn.intentId !== command.intentId) {
-        throw new Error('package-ledger: commits require a matching stamped turn');
+      if (observed.turnId !== null) {
+        const turn = getTurnRecord(observed.turnId);
+        if (!turn || turn.planId !== command.planId || turn.planItemId !== command.packageId
+            || turn.intentId !== command.intentId) {
+          throw new Error('package-ledger: commits require a matching stamped turn');
+        }
       }
       if (observed.commits.length === 0) throw new Error('package-ledger: no commits observed');
       for (const record of observed.commits) {
@@ -479,7 +481,9 @@ export function transitionPlanPackage(
         ? [primaryId]
         : command.type === 'commits-observed'
           ? requireWitness(witness, 'git').commits.map(
-              (record) => `${record.repositoryKey}:${record.commitOid}:${requireWitness(witness, 'git').turnId}`,
+              (record) => requireWitness(witness, 'git').turnId === null
+                ? `commit-record:${record.repositoryKey}:${record.commitOid}`
+                : `${record.repositoryKey}:${record.commitOid}:${requireWitness(witness, 'git').turnId}`,
             )
           : pkg.state !== to ? [primaryId] : evidenceIds;
     const baseResult: Omit<TransitionResult, 'replayed'> = {
@@ -488,7 +492,7 @@ export function transitionPlanPackage(
       stateBefore: pkg.state, stateAfter: to, stateChanged: pkg.state !== to,
       evidenceIds: predictedEvidenceIds,
     };
-    const marker: Marker = {
+    const marker: PackageLedgerMarker = {
       version: 1, digest, result: baseResult,
       ...(command.type === 'gate-decided'
         ? { evidence: requireWitness(witness, 'gate').evidence ?? null } : {}),
@@ -531,21 +535,23 @@ export function transitionPlanPackage(
       evidenceIds.push(primaryId);
     } else if (command.type === 'commits-observed') {
       const observed = requireWitness(witness, 'git');
-      for (const record of observed.commits) {
-        const existing = getDb().prepare(
-          `SELECT relation, capture_quality FROM commit_turn_links
-            WHERE repository_key = ? AND commit_oid = ? AND turn_id = ?`,
-        ).get(record.repositoryKey, record.commitOid, observed.turnId) as
-          { relation: 'candidate_member' | 'exact_path_match' | 'metadata_only'; capture_quality: string | null } | undefined;
-        const durableMarker = markerText(marker);
-        upsertCommitTurnLink({
-          repositoryKey: record.repositoryKey, commitOid: record.commitOid,
-          turnId: observed.turnId, planId: command.planId, planItemId: command.packageId,
-          relation: existing?.relation ?? 'candidate_member',
-          captureQuality: existing?.capture_quality
-            ? `${existing.capture_quality}\n${durableMarker}` : durableMarker,
-        });
-        evidenceIds.push(`${record.repositoryKey}:${record.commitOid}:${observed.turnId}`);
+      if (observed.turnId !== null) {
+        for (const record of observed.commits) {
+          const existing = getDb().prepare(
+            `SELECT relation, capture_quality FROM commit_turn_links
+              WHERE repository_key = ? AND commit_oid = ? AND turn_id = ?`,
+          ).get(record.repositoryKey, record.commitOid, observed.turnId) as
+            { relation: 'candidate_member' | 'exact_path_match' | 'metadata_only'; capture_quality: string | null } | undefined;
+          const durableMarker = markerText(marker);
+          upsertCommitTurnLink({
+            repositoryKey: record.repositoryKey, commitOid: record.commitOid,
+            turnId: observed.turnId, planId: command.planId, planItemId: command.packageId,
+            relation: existing?.relation ?? 'candidate_member',
+            captureQuality: existing?.capture_quality
+              ? `${existing.capture_quality}\n${durableMarker}` : durableMarker,
+          });
+          evidenceIds.push(`${record.repositoryKey}:${record.commitOid}:${observed.turnId}`);
+        }
       }
     } else {
       const eventId = appendStateProjection(command, witness, pkg.state, to, marker);
