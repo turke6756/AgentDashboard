@@ -11,9 +11,9 @@ import { Agent, AgentProvider, AgentRoleLane, AgentStatus, AgentStopReason, Bulk
 import { assembleGuardSnapshot, evaluateStopEligibility, type AgentBrowserState, type GuardDeps } from '../lifecycle/guards';
 import {
   TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL, RESEARCHER_CLAUDE_MODEL, RESEARCHER_CODEX_MODEL,
-  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_AGENT_MD_V27, SUPERVISOR_AGENT_MD_V28, SUPERVISOR_AGENT_MD_V29, SUPERVISOR_AGENT_MD_V31, SUPERVISOR_MEMORY_MD,
+  SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_CHILD, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_AGENT_MD_V27, SUPERVISOR_AGENT_MD_V28, SUPERVISOR_AGENT_MD_V29, SUPERVISOR_AGENT_MD_V31, SUPERVISOR_MEMORY_MD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON, SUPERVISOR_CLAUDE_SETTINGS_JSON_V1, SUPERVISOR_CLAUDE_SETTINGS_JSON_V2,
-  SUPERVISOR_CLAUDE_SETTINGS_JSON_V3,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON_V3, SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL,
   SUPERVISOR_CONTEXT_ANALYTICS_SKILL,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
@@ -1697,6 +1697,25 @@ export function proveProductionEntryPointEntry(rootPrefix: string): Record<strin
   return {
     [`${rootPrefix}/SKILL.md`]: { content: PROVE_PRODUCTION_ENTRY_POINT_SKILL, version: 1 },
   };
+}
+
+function childScaffoldEntries(
+  source: Record<string, ScaffoldFile>,
+  parentPrefix: string,
+  childPrefix: string,
+  contentOverrides: Record<string, string> = {},
+): Record<string, ScaffoldFile> {
+  const out: Record<string, ScaffoldFile> = {};
+  for (const [rel, file] of Object.entries(source)) {
+    if (file.removed) continue;
+    const entry: ScaffoldFile = {
+      content: contentOverrides[rel] ?? file.content,
+      version: 1,
+    };
+    if (file.executable) entry.executable = true;
+    out[childPrefix + rel.slice(parentPrefix.length)] = entry;
+  }
+  return out;
 }
 
 /** SHA-256 hex of the v5 `.dashboard/researcher/CLAUDE.md` (pre-`.lares`
@@ -3962,7 +3981,7 @@ export class AgentSupervisor extends EventEmitter {
       // pathType guarded).
       if (provider === 'codex' && pathType !== 'windows') this.ensureCodexHookProfile(pathType);
     } else if (resolvedInput.isSupervisor) {
-      this.ensureSupervisorScaffold(workDir, pathType);
+      this.ensureSupervisorScaffold(workDir, provider, pathType);
     } else if (isResearcher) {
       // Researcher role-lane (STEP 5): scaffold .lares/researcher/<provider>/;
       // Claude gets its native persona/settings files and Codex gets AGENTS.md
@@ -4081,7 +4100,14 @@ export class AgentSupervisor extends EventEmitter {
    *  Scripts get +x on WSL. Layout per docs/PERSISTENT_AGENT_LAUNCH_CONTRACT.md.
    *  Versioning per plans/scaffold-version-migration.md — bumping a file's
    *  `version` triggers managed-upgrade-on-launch in old workspaces. */
-  private static SUPERVISOR_FILES: Record<string, ScaffoldFile> = {
+  static readonly SUPERVISOR_SHARED_PARENT_FILES: Record<string, ScaffoldFile> = {
+    [`.lares/supervisor/scripts/read-agent-log.sh`]:    { content: SCRIPT_READ_AGENT_LOG,    version: 1, executable: true },
+    [`.lares/supervisor/scripts/list-agents.sh`]:       { content: SCRIPT_LIST_AGENTS,       version: 1, executable: true },
+    [`.lares/supervisor/scripts/send-message.sh`]:      { content: SCRIPT_SEND_MESSAGE,      version: 1, executable: true },
+    [`.lares/supervisor/scripts/get-context-stats.sh`]: { content: SCRIPT_GET_CONTEXT_STATS, version: 1, executable: true },
+  };
+
+  static readonly LEGACY_SUPERVISOR_FILES: Record<string, ScaffoldFile> = {
     ...proposalToPlanEntries('.lares/supervisor/.claude/skills/proposal-to-plan'),
     ...writeProposalEntry('.lares/supervisor/.claude/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/supervisor/.claude/skills/read-planning-surface'),
@@ -4159,10 +4185,6 @@ export class AgentSupervisor extends EventEmitter {
     // contract, parallels worker behavioral.md). Keeping it in this map would
     // let a future version bump `.bak` + overwrite a supervisor's accumulated
     // memory. Do not re-add it.
-    [`.lares/supervisor/scripts/read-agent-log.sh`]:                              { content: SCRIPT_READ_AGENT_LOG,                version: 1, executable: true },
-    [`.lares/supervisor/scripts/list-agents.sh`]:                                 { content: SCRIPT_LIST_AGENTS,                   version: 1, executable: true },
-    [`.lares/supervisor/scripts/send-message.sh`]:                                { content: SCRIPT_SEND_MESSAGE,                  version: 1, executable: true },
-    [`.lares/supervisor/scripts/get-context-stats.sh`]:                           { content: SCRIPT_GET_CONTEXT_STATS,             version: 1, executable: true },
   };
 
   /** Memory & Lessons v2 (WP-F1) — the Codex-supervisor skill map. WP-R proved a
@@ -4173,7 +4195,7 @@ export class AgentSupervisor extends EventEmitter {
    *  supervisor might run on Codex — the `.agents/` path is inert for a Claude
    *  supervisor (Claude reads only `.claude/skills/`), so an always-present copy
    *  is harmless. */
-  private static SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile> = {
+  static readonly LEGACY_SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile> = {
     ...proposalToPlanEntries('.lares/supervisor/.agents/skills/proposal-to-plan'),
     ...writeProposalEntry('.lares/supervisor/.agents/skills/write-proposal'),
     ...readPlanningSurfaceEntry('.lares/supervisor/.agents/skills/read-planning-surface'),
@@ -4191,6 +4213,23 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/supervisor/.agents/skills/remember/SKILL.md`]: { content: REMEMBER_SKILL, version: 4, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH } }, // v4: parser-valid concrete date in the expires example
   };
+
+  static readonly SUPERVISOR_FILES_CLAUDE_CHILD = childScaffoldEntries(
+    AgentSupervisor.LEGACY_SUPERVISOR_FILES,
+    '.lares/supervisor',
+    '.lares/supervisor/claude',
+    {
+      '.lares/supervisor/CLAUDE.md': SUPERVISOR_AGENT_MD_CHILD,
+      '.lares/supervisor/.claude/settings.json': SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
+    },
+  );
+
+  static readonly SUPERVISOR_FILES_CODEX_CHILD = childScaffoldEntries(
+    AgentSupervisor.LEGACY_SUPERVISOR_FILES_CODEX,
+    '.lares/supervisor',
+    '.lares/supervisor/codex',
+    { '.lares/supervisor/AGENTS.md': SUPERVISOR_AGENT_MD_CHILD },
+  );
 
   /** Class IV — workspace-shared hook script. Written on first supervised
    *  worker launch of any provider; lives at .lares/scripts/ so a single
@@ -4380,19 +4419,27 @@ export class AgentSupervisor extends EventEmitter {
 
   /** Create the full .lares/supervisor/ scaffold in a workspace.
    *  Only writes files that don't already exist — never overwrites user edits. */
-  private ensureSupervisorScaffold(workDir: string, pathType: string): void {
-    const created = this.writeScaffoldMap(workDir, AgentSupervisor.SUPERVISOR_FILES, pathType);
-    // WP-F1 — the Codex-supervisor `remember` copy under `.agents/skills/` (inert
-    // for a Claude supervisor). Written on every supervisor scaffold so it is
-    // present whenever the workspace's supervisor runs on Codex.
-    const codexCreated = this.writeScaffoldMap(workDir, AgentSupervisor.SUPERVISOR_FILES_CODEX, pathType);
+  private ensureSupervisorScaffold(workDir: string, provider: AgentProvider, pathType: string): void {
+    const parentCreated = this.writeScaffoldMap(
+      workDir,
+      AgentSupervisor.SUPERVISOR_SHARED_PARENT_FILES,
+      pathType,
+    );
+    // Provision only the launched provider's child kit. The other child stays
+    // absent until that provider is actually launched in this workspace.
+    const childFiles = provider === 'claude'
+      ? AgentSupervisor.SUPERVISOR_FILES_CLAUDE_CHILD
+      : provider === 'codex'
+        ? AgentSupervisor.SUPERVISOR_FILES_CODEX_CHILD
+        : {};
+    const childCreated = this.writeScaffoldMap(workDir, childFiles, pathType);
     // MEMORY.md is seed-once (NOT in SUPERVISOR_FILES) so an edited copy is
     // never clobbered. On workspaces scaffolded before this change the sidecar
     // still carries a stale `supervisor/memory/MEMORY.md` managed-version
     // entry; it is intentionally left orphaned — writeScaffoldMap no longer
     // iterates that key, so the entry is never read and is harmless.
     const memCreated = this.seedSupervisorMemoryIfAbsent(workDir, pathType);
-    const total = created + codexCreated + memCreated;
+    const total = parentCreated + childCreated + memCreated;
     if (total > 0) {
       console.log(`[supervisor] Scaffolded ${total} files in ${workDir}/.lares/supervisor/`);
       addEvent('system', 'supervisor_scaffold_created', JSON.stringify({ workDir, filesCreated: total }));
@@ -4734,7 +4781,7 @@ export class AgentSupervisor extends EventEmitter {
     // hooks resolve `${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs`
     // (or `../../` for workers/personas) against the agent's ACTUAL cwd.
     const files: Record<string, ScaffoldFile> = { ...AgentSupervisor.WORKSPACE_SCRIPT_FILES };
-    if (lane === 'supervisor') Object.assign(files, AgentSupervisor.SUPERVISOR_FILES);
+    if (lane === 'supervisor') Object.assign(files, AgentSupervisor.LEGACY_SUPERVISOR_FILES);
     else if (lane === 'researcher') Object.assign(files, AgentSupervisor.RESEARCHER_FILES);
     else if (lane === 'workers/claude') Object.assign(files, AgentSupervisor.WORKER_FILES_CLAUDE);
     // non-Claude workers use their provider-specific hook carriers.
@@ -10091,7 +10138,7 @@ export class AgentSupervisor extends EventEmitter {
           // which would add a dashboard writer inside the startup herd window.
           if (ws) {
             if (agent.isSupervisor) {
-              this.ensureSupervisorScaffold(ws.path, pathType);
+              this.ensureSupervisorScaffold(ws.path, agent.provider, pathType);
             } else if (agent.isResearcher) {
               // Researcher role-lane (STEP 5): refresh persona + store scaffold
               // on reconnect/auto-restart, same self-healing rationale as the

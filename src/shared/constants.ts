@@ -1030,6 +1030,8 @@ export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V31.replace(
   SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR,
   `${SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR}\n\n${SUPERVISOR_AGENT_MD_V32_RECORD_READING_SECTION}`,
 );
+export const SUPERVISOR_AGENT_MD_CHILD = SUPERVISOR_AGENT_MD
+  .split('./memory/').join('../memory/');
 
 export const SUPERVISOR_MEMORY_MD = `# Supervisor Memory
 
@@ -1111,6 +1113,10 @@ export const SUPERVISOR_CLAUDE_SETTINGS_JSON = `{
  *  workspace's on-disk settings.json can be hashed and silently upgraded to v4
  *  (which adds the statusLine → dashboard-statusline.mjs usage-capture block).
  *  Byte-identical to the prior live SUPERVISOR_CLAUDE_SETTINGS_JSON v3 body. */
+export const SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD = SUPERVISOR_CLAUDE_SETTINGS_JSON
+  .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+  .join('${CLAUDE_PROJECT_DIR}/../../scripts/');
+
 export const SUPERVISOR_CLAUDE_SETTINGS_JSON_V3 = `{
   "autoMemoryEnabled": false,
   "autoCompactEnabled": false,

@@ -43,6 +43,7 @@ const TESTS = [
   'dist/main/main/supervisor/session-id-discovery.test.js',
   'dist/main/main/supervisor/codex-launch-gate.test.js',
   'dist/main/main/supervisor/launch-lane-cwd.test.js',
+  'dist/main/main/supervisor/supervisor-scaffold-split.test.js',
   'dist/main/main/supervisor/launch-first-user-message-prefix.test.js',
   'dist/main/main/supervisor/codex-rollout-freshness.test.js',
   'dist/main/main/supervisor/env-sanitize.test.js',
