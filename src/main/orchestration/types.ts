@@ -10,7 +10,7 @@ import type { DispatchContext } from '../git-checkpoints/dispatch-context';
 export type OrchestrationName = 'groupthink' | 'promotion';
 export type OrchestrationMode = 'serial' | 'parallel';
 export type RunStatus = 'starting' | 'running' | 'complete' | 'stalled' | 'aborted' | 'error';
-export type OrchestrationPlanBindingMode = 'explicit' | 'agent-default';
+export type OrchestrationPlanBindingMode = 'explicit' | 'agent-default' | 'none';
 
 export interface OrchestrationBinding {
   planId: string | null;
@@ -44,12 +44,10 @@ export interface RunOrchestrationRequest {
   // Legacy resume input only. New plan-bound launches ignore this caller value
   // and freeze a server-derived target from the registered plan row.
   planPath?: string;
-  // WP6 planning-surface rail: when set, the run edits an EXISTING plan surface
-  // registered in the plans table at `sectionAnchor` rather than writing a fresh
-  // plan file. planId references a `plans` row; sectionAnchor is the `sec_`
-  // writeback target. Both are stamped onto every launched member's env
-  // (AGENT_DASHBOARD_PLAN_ID / _PLAN_SECTION) via the WP1 launch rail, and drive
-  // one-writer-per-plan enforcement (§D-WRITE-POLICY) + section-change done-detection.
+  // Plan binding is optional; absent means a plan-less deliberation. When set,
+  // planId references a `plans` row and sectionAnchor is the `sec_` writeback
+  // target stamped onto every launched member's env
+  // (AGENT_DASHBOARD_PLAN_ID / _PLAN_SECTION) via the WP1 launch rail.
   planId?: string;
   /** Requested marked planning intent. Trusted launch code validates this
    *  against (workspaceId, planId) before freezing it onto the run row. */
@@ -86,7 +84,8 @@ export type SendInputConfirmedResult = {
 export type SubmitRecoveryPolicy = 'raw' | 'recover-fallthrough' | 'recover-throw';
 
 /** Frozen writeback shape chosen from the registered plan path at launch. */
-export type OrchestrationPlanOutputKind = 'folder-deliberation' | 'registered-surface';
+export type OrchestrationPlanOutputKind =
+  'folder-deliberation' | 'registered-surface' | 'library-deliberation';
 
 /** The single contract predicate used by target derivation, prompts, and completion. */
 export function isFolderPlanOutput(kind: OrchestrationPlanOutputKind | null | undefined): boolean {

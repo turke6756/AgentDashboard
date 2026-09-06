@@ -97,6 +97,51 @@ function makeRun(overrides: Partial<OrchestrationRun> = {}): OrchestrationRun {
     assert.equal(db.getOrchestrationBinding('missing'), null);
   });
 
+  test('plan-less binding freezes every plan association while allowing baseline updates', () => {
+    const originalPath = path.join(os.tmpdir(), 'frozen-plan-less-deliberation.md');
+    const planless = makeRun({
+      runId: 'none-db', planPath: originalPath, planBindingMode: 'none',
+      planOutputKind: 'library-deliberation', planBaselineHash: 'baseline-before',
+    });
+    db.insertOrchestration(planless);
+    db.insertOrchestration({
+      ...planless,
+      planPath: path.join(os.tmpdir(), 'redirected-plan.md'),
+      planId: 'retrofit-plan',
+      planArtifactId: 'plan_retrofit',
+      planOutputKind: 'registered-surface',
+      planBaselineHash: 'baseline-after',
+      planningIntentId: 'intent-retrofit',
+      planItemId: 'item-retrofit',
+      sectionAnchor: 'sec_retrofit',
+      planBindingMode: 'explicit',
+    });
+
+    const persisted = db.getOrchestrationRun('none-db');
+    assert.ok(persisted);
+    assert.equal(persisted.planId, undefined);
+    assert.equal(persisted.planArtifactId, null);
+    assert.equal(persisted.planningIntentId, null);
+    assert.equal(persisted.planItemId, null);
+    assert.equal(persisted.sectionAnchor, undefined);
+    assert.equal(persisted.planPath, originalPath);
+    assert.equal(persisted.planOutputKind, 'library-deliberation');
+    assert.equal(persisted.planBindingMode, 'none');
+    assert.equal(persisted.planBaselineHash, 'baseline-after');
+    assert.deepEqual(db.getOrchestrationBinding('none-db'), {
+      planId: null, planItemId: null, mode: 'none',
+    });
+  });
+
+  test('binding validator still rejects unknown persisted modes', () => {
+    db.insertOrchestration(makeRun({
+      runId: 'invalid-mode-db', planBindingMode: 'invalid-mode' as OrchestrationRun['planBindingMode'],
+    }));
+    assert.throws(
+      () => db.getOrchestrationBinding('invalid-mode-db'),
+      /Invalid orchestration plan binding mode: invalid-mode/,
+    );
+  });
   test('explicit plan-only wins while omitted binding freezes worker default with no item', async () => {
     const explicitRun = makeRun({ planId: 'plan-explicit', planBindingMode: 'explicit' });
     const defaultRun = makeRun({ runId: 'default-context', planBindingMode: 'agent-default' });

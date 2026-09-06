@@ -12139,19 +12139,21 @@ export function insertOrchestration(r: OrchestrationRun): void {
      ON CONFLICT(run_id) DO UPDATE SET
        name = excluded.name, mode = excluded.mode, status = excluded.status,
        workspace_id = excluded.workspace_id, supervisor_id = excluded.supervisor_id,
-       topic = excluded.topic, plan_path = excluded.plan_path,
+       topic = excluded.topic,
+       plan_path = CASE WHEN orchestrations.plan_binding_mode='none' THEN orchestrations.plan_path ELSE excluded.plan_path END,
        lead_provider = excluded.lead_provider, reviewer_provider = excluded.reviewer_provider,
        turn_timeout_ms = excluded.turn_timeout_ms, lead_id = excluded.lead_id,
        reviewer_id = excluded.reviewer_id, turn = excluded.turn, round = excluded.round,
        last_relayed_ts = excluded.last_relayed_ts, started_at = excluded.started_at,
        updated_at = excluded.updated_at, ended_at = excluded.ended_at, error = excluded.error,
-       plan_id = excluded.plan_id,
-       plan_artifact_id = COALESCE(orchestrations.plan_artifact_id, excluded.plan_artifact_id),
+       plan_id = CASE WHEN orchestrations.plan_binding_mode='none' THEN NULL ELSE excluded.plan_id END,
+       plan_artifact_id = CASE WHEN orchestrations.plan_binding_mode='none' THEN NULL ELSE COALESCE(orchestrations.plan_artifact_id, excluded.plan_artifact_id) END,
        plan_baseline_hash = excluded.plan_baseline_hash,
-       plan_output_kind = COALESCE(orchestrations.plan_output_kind, excluded.plan_output_kind),
-       section_anchor = excluded.section_anchor,
-       plan_item_id = excluded.plan_item_id, plan_binding_mode = excluded.plan_binding_mode,
-       planning_intent_id = COALESCE(orchestrations.planning_intent_id, excluded.planning_intent_id)`,
+       plan_output_kind = CASE WHEN orchestrations.plan_binding_mode='none' THEN orchestrations.plan_output_kind ELSE COALESCE(orchestrations.plan_output_kind, excluded.plan_output_kind) END,
+       section_anchor = CASE WHEN orchestrations.plan_binding_mode='none' THEN NULL ELSE excluded.section_anchor END,
+       plan_item_id = CASE WHEN orchestrations.plan_binding_mode='none' THEN NULL ELSE excluded.plan_item_id END,
+       plan_binding_mode = CASE WHEN orchestrations.plan_binding_mode='none' THEN 'none' ELSE excluded.plan_binding_mode END,
+       planning_intent_id = CASE WHEN orchestrations.plan_binding_mode='none' THEN NULL ELSE COALESCE(orchestrations.planning_intent_id, excluded.planning_intent_id) END`,
     [
       r.runId, r.name, r.mode, r.status, r.workspaceId, r.supervisorId,
       r.topic, r.planPath, r.leadProvider, r.reviewerProvider, r.turnTimeoutMs,
@@ -12214,7 +12216,7 @@ export function getOrchestrationBinding(orchestrationId: string): OrchestrationB
   );
   if (!row) return null;
   const mode = row.plan_binding_mode as OrchestrationPlanBindingMode;
-  if (mode !== 'explicit' && mode !== 'agent-default') {
+  if (mode !== 'explicit' && mode !== 'agent-default' && mode !== 'none') {
     throw new Error(`Invalid orchestration plan binding mode: ${String(row.plan_binding_mode)}`);
   }
   return {
