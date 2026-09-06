@@ -1671,12 +1671,12 @@ test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --too
       assert.ok(disVal.includes(banned), `--disallowedTools must list ${banned}; got: ${disVal}`);
     }
 
-    // --add-dir of the research store (NOT the workspace root).
-    const expectedStore = path.join(wsRoot, '.lares', 'research');
+    // --add-dir of the library (NOT the workspace root).
+    const expectedStore = path.join(wsRoot, '.lares', 'library');
     const addDirIdx = capturedArgs.indexOf('--add-dir');
     assert.ok(addDirIdx !== -1, 'researcher must pass --add-dir');
     assert.equal(capturedArgs[addDirIdx + 1], expectedStore,
-      `researcher --add-dir must target the research store; got: ${capturedArgs[addDirIdx + 1]}`);
+      `researcher --add-dir must target the library; got: ${capturedArgs[addDirIdx + 1]}`);
 
     // Workspace-root preamble file present.
     assert.ok(capturedArgs.includes('--append-system-prompt-file'),
