@@ -76,7 +76,6 @@ test('SKILL.md splits into skill-header (baseline) + skill-body (scenario) sourc
     'estimate is clearly larger than the tiny YAML header block above it.',
     'More body text to make the body substantially bigger than the header.',
   ].join('\n');
-  const expectedInjectText = ${MEMORY_FRAMING_PREAMBLE}\n\n${projectedIndex};
   const files: Record<string, string> = { [skillPath]: content };
   const reader: FileReader = {
     read(p) { const c = files[p]; return c !== undefined ? { content: c, bytes: c.length } : null; },
@@ -136,7 +135,7 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
     '- read-if: always',
     '- detail: memory/details/mb-2026-08-20-live.md',
   ].join('\n');
-  const expectedInjectText = ${MEMORY_FRAMING_PREAMBLE}\n\n${projectedIndex};
+  const expectedInjectText = `${MEMORY_FRAMING_PREAMBLE}\n\n${projectedIndex}`;
   const files: Record<string, string> = { [memPath]: content };
   const reader: FileReader = {
     read(p) { const c = files[p]; return c !== undefined ? { content: c, bytes: c.length } : null; },
