@@ -25,6 +25,7 @@ import {
   getSupervisorFocus, upsertSupervisorFocus, deleteSupervisorFocus,
   bumpSupervisorFocusAttended, getSupervisorFocusedPlans,
   listPlanWorkPackagesOrdered,
+  readPlanGateProgressEvidence,
   getPlanResponsibleSupervisorId,
 } from './database';
 import { readFileContents } from './file-reader';
@@ -147,7 +148,7 @@ function truncatePlanListText(value: string, maxBytes: number): string {
   return result + suffix;
 }
 
-function planStateRow(
+export function planStateRow(
   manifest: PlanManifest,
   plan: ReturnType<typeof getPlan>,
   freshness: Record<string, unknown>,
@@ -171,6 +172,8 @@ function planStateRow(
     row.title = null;
     row.project = null;
   }
+  row.override_count = freshness.override_count ?? null;
+  row.landed_gate_mode = freshness.landed_gate_mode ?? null;
   return row;
 }
 
@@ -4020,8 +4023,12 @@ export class ApiServer {
               card: { ...card, updatedAt: manifest.state_updated_at },
               packages: listPlanWorkPackagesOrdered(plan.id)
                 .filter((pkg) => pkg.workspaceId === identity.workspaceId && pkg.planId === plan.id),
+              gateEvidence: readPlanGateProgressEvidence(plan.id),
             })
-          : { db_snapshot_version: null, snapshot_age_s: null, fresh: false };
+          : {
+              db_snapshot_version: null, snapshot_age_s: null, fresh: false,
+              override_count: null, landed_gate_mode: null,
+            };
         const row = planStateRow(manifest, plan, projection);
         if (Buffer.byteLength(JSON.stringify(row), 'utf8') > PLAN_LIST_ROW_MAX_BYTES) {
           warnings.push(`skipped ${card.folderName}: bounded state row exceeds ${PLAN_LIST_ROW_MAX_BYTES} bytes`);
@@ -4075,7 +4082,10 @@ export class ApiServer {
         workspace.path,
         workspace.pathType,
       ).plans.find((candidate) => candidate.planId === planId) ?? null;
-      return buildPlanProgressProjection({ detail, plan, card, packages });
+      return buildPlanProgressProjection({
+        detail, plan, card, packages,
+        gateEvidence: readPlanGateProgressEvidence(planId),
+      });
     }
 
     // GET /api/plans/:id deliberately remains UUID-only: this route has no

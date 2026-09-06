@@ -3783,6 +3783,7 @@ function rowToPlan(row: any): Plan {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at ?? null,
+    landedGateMode: row.landed_gate_mode ?? null,
   };
 }
 
@@ -9703,6 +9704,74 @@ export function listPlanPackageGateAttempts(
       ORDER BY gate_key, attempt_no, created_at, id`,
     [packageId, packageRevision],
   ).map(rowToPlanPackageGateAttempt);
+}
+
+interface PlanGateProgressRow {
+  row_id: number;
+  package_id: string;
+  gate_revision: number;
+  attempt_no: number;
+  outcome: PlanPackageGateOutcome;
+  evidence_json: string | null;
+  decided_at: number | null;
+}
+
+/** Deterministic reducer for current-revision acceptance rows. */
+export function summarizePlanGateProgressRows(
+  rows: readonly PlanGateProgressRow[],
+): import('../shared/types').PlanGateProgressEvidence {
+  const result: import('../shared/types').PlanGateProgressEvidence = {
+    highWater: { rowCount: rows.length, maxRowId: 0, maxDecidedAt: 0 },
+    overrideCount: 0,
+    byPackage: {},
+  };
+  const latest = new Map<string, { attemptNo: number; rowId: number }>();
+  for (const row of rows) {
+    result.highWater.maxRowId = Math.max(result.highWater.maxRowId, row.row_id);
+    result.highWater.maxDecidedAt = Math.max(result.highWater.maxDecidedAt, row.decided_at ?? 0);
+    const packageEvidence = result.byPackage[row.package_id] ??= {
+      latestDecision: null,
+      overrideCount: 0,
+    };
+    if (row.outcome !== 'passed') continue;
+    const evidence = packageLedger().readMarker(row.evidence_json)?.evidence;
+    const decision = row.gate_revision > 1
+      && evidence !== null
+      && typeof evidence === 'object'
+      && (evidence as { schemaVersion?: unknown }).schemaVersion === 2
+      && (evidence as { decision?: unknown }).decision === 'passed-by-override'
+      ? 'passed-by-override' as const
+      : 'passed' as const;
+    if (decision === 'passed-by-override') {
+      packageEvidence.overrideCount += 1;
+      result.overrideCount += 1;
+    }
+    const prior = latest.get(row.package_id);
+    if (!prior || row.attempt_no > prior.attemptNo
+        || (row.attempt_no === prior.attemptNo && row.row_id > prior.rowId)) {
+      latest.set(row.package_id, { attemptNo: row.attempt_no, rowId: row.row_id });
+      packageEvidence.latestDecision = decision;
+    }
+  }
+  return result;
+}
+
+/** Current package-revision gate evidence for progress and fleet reads. */
+export function readPlanGateProgressEvidence(
+  planId: string,
+): import('../shared/types').PlanGateProgressEvidence {
+  const rows = queryAll(
+    `SELECT g.rowid AS row_id, g.package_id, g.gate_revision, g.attempt_no,
+            g.outcome, g.evidence_json, g.decided_at
+       FROM plan_package_gate_attempts g
+       JOIN plan_work_packages wp
+         ON wp.id = g.package_id
+        AND wp.plan_id = g.plan_id
+        AND wp.revision = g.package_revision
+      WHERE g.plan_id = ? AND g.gate_key = 'supervisor-acceptance'`,
+    [planId],
+  ) as PlanGateProgressRow[];
+  return summarizePlanGateProgressRows(rows);
 }
 
 /** Indexed existence probe for lifecycle hooks that must stay cheap when there

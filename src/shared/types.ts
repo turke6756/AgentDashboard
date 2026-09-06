@@ -399,6 +399,8 @@ export interface Plan {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;  // soft-delete marker (D-05)
+  /** Reconciled plan-folder gate policy. `invalid` preserves a rejected manifest value. */
+  landedGateMode?: LandedGateMode | 'invalid' | null;
 }
 
 /** A plan row plus a cheap gallery snippet. Returned by `plans.list` for the
@@ -6041,6 +6043,15 @@ export interface GateDecisionEvidenceV2 {
   postClaimClassification: PostClaimTouchClassificationV2[];
   witness: GateWitnessEvidence;
   override: null | { refusal: GateLandedRefusal; reason: string };
+}
+
+export interface PlanGateProgressEvidence {
+  highWater: { rowCount: number; maxRowId: number; maxDecidedAt: number };
+  overrideCount: number;
+  byPackage: Record<string, {
+    latestDecision: 'passed' | 'passed-by-override' | null;
+    overrideCount: number;
+  }>;
 }
 
 export type GateLandedRefusal =

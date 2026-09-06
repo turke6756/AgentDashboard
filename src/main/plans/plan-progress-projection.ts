@@ -1,5 +1,5 @@
 import type { PlanWorkPackage } from '../database';
-import type { PromotedPlanFolder } from '../../shared/types';
+import type { PlanGateProgressEvidence, PromotedPlanFolder } from '../../shared/types';
 import { derivePackageRollup, type PackageStateCounts } from '../../shared/package-rollup';
 import { createHash } from 'node:crypto';
 
@@ -7,10 +7,12 @@ export type PlanProgressDetail = 'card' | 'packages';
 
 export interface PlanProgressProjectionInput {
   detail: PlanProgressDetail;
-  plan: { id: string; slug: string | null; runState: string | null; updatedAt: string };
+  plan: { id: string; slug: string | null; runState: string | null; updatedAt: string; landedGateMode?: string | null };
   card: PromotedPlanFolder | null;
   /** Must already be in the database's stable package order. */
   packages: readonly PlanWorkPackage[];
+  /** Production callers always supply this; optional only for legacy test fixtures. */
+  gateEvidence?: PlanGateProgressEvidence;
   /** Test clock; production reads use the wall clock. */
   nowMs?: number;
 }
@@ -20,6 +22,11 @@ const PACKAGES_MAX_BYTES = 4 * 1024;
 const PACKAGES_MAX_ROWS = 40;
 const TITLE_MAX_BYTES = 120;
 const PACKAGE_STATES = ['blocked', 'executing', 'ready', 'done', 'archived'] as const;
+const EMPTY_GATE_EVIDENCE: PlanGateProgressEvidence = {
+  highWater: { rowCount: 0, maxRowId: 0, maxDecidedAt: 0 },
+  overrideCount: 0,
+  byPackage: {},
+};
 
 type PackageState = typeof PACKAGE_STATES[number];
 
@@ -46,7 +53,11 @@ function stateCounts(packages: readonly PlanWorkPackage[]): PackageStateCounts {
   return counts;
 }
 
-function snapshotVersion(planUpdatedAt: string, packages: readonly PlanWorkPackage[]): string {
+function snapshotVersion(
+  planUpdatedAt: string,
+  packages: readonly PlanWorkPackage[],
+  gateEvidence: PlanGateProgressEvidence,
+): string {
   const digest = createHash('sha256');
   digest.update(planUpdatedAt);
   for (const pkg of packages) {
@@ -54,6 +65,9 @@ function snapshotVersion(planUpdatedAt: string, packages: readonly PlanWorkPacka
     digest.update(pkg.id);
     digest.update(`:${pkg.revision}:${pkg.updatedAt}`);
   }
+  digest.update(`\0gate:${gateEvidence.highWater.rowCount}`);
+  digest.update(`:${gateEvidence.highWater.maxRowId}`);
+  digest.update(`:${gateEvidence.highWater.maxDecidedAt}`);
   return `sha256:${digest.digest('hex')}`;
 }
 
@@ -75,6 +89,7 @@ function timestampMs(value: string | number | null | undefined): number | null {
 }
 
 function snapshotFreshness(input: PlanProgressProjectionInput): SnapshotFreshness {
+  const gateEvidence = input.gateEvidence ?? EMPTY_GATE_EVIDENCE;
   const planUpdatedAt = timestampMs(input.plan.updatedAt);
   const packageUpdatedAts = input.packages
     .map((pkg) => timestampMs(pkg.updatedAt))
@@ -86,7 +101,7 @@ function snapshotFreshness(input: PlanProgressProjectionInput): SnapshotFreshnes
   const projectionsSynced = input.packages.every((pkg) => pkg.projectionStatus === 'synced');
   const nowMs = input.nowMs ?? Date.now();
   return {
-    db_snapshot_version: snapshotVersion(input.plan.updatedAt, input.packages),
+    db_snapshot_version: snapshotVersion(input.plan.updatedAt, input.packages, gateEvidence),
     snapshot_age_s: dbUpdatedAt === null ? null : Math.max(0, Math.floor((nowMs - dbUpdatedAt) / 1_000)),
     fresh: sourceUpdatedAt !== null
       && dbUpdatedAt !== null
@@ -97,6 +112,7 @@ function snapshotFreshness(input: PlanProgressProjectionInput): SnapshotFreshnes
 
 function buildCard(input: PlanProgressProjectionInput): Record<string, unknown> {
   const { card, plan, packages } = input;
+  const gateEvidence = input.gateEvidence ?? EMPTY_GATE_EVIDENCE;
   const freshness = snapshotFreshness(input);
   const fallbackRollup = packages.length > 0 ? derivePackageRollup(stateCounts(packages)) : null;
   const rollup = card?.rollup ?? fallbackRollup;
@@ -115,6 +131,8 @@ function buildCard(input: PlanProgressProjectionInput): Record<string, unknown> 
     complete: freshness.fresh ? rollup?.completed ?? null : null,
     owner,
     activityTier: card?.activityTier ?? 'unknown',
+    landed_gate_mode: plan.landedGateMode ?? null,
+    override_count: gateEvidence.overrideCount,
     rollup: freshness.fresh ? rollup : 'unknown',
     ...freshness,
   };
@@ -163,6 +181,7 @@ function omittedByState(all: readonly PlanWorkPackage[], included: readonly Plan
 }
 
 function buildPackages(input: PlanProgressProjectionInput): Record<string, unknown> {
+  const gateEvidence = input.gateEvidence ?? EMPTY_GATE_EVIDENCE;
   const ordered = priorityOrdered(input.packages);
   const included = ordered.slice(0, PACKAGES_MAX_ROWS);
   const counts = stateCounts(input.packages);
@@ -171,7 +190,14 @@ function buildPackages(input: PlanProgressProjectionInput): Record<string, unkno
     const omissions = omittedByState(input.packages, included);
     return {
       rollup: freshness.fresh ? derivePackageRollup(counts) : 'unknown',
-      packages: included.map((pkg) => ({ id: pkg.id, title: truncateUtf8(pkg.title, TITLE_MAX_BYTES), state: pkg.state })),
+      override_count: gateEvidence.overrideCount,
+      packages: included.map((pkg) => ({
+        id: pkg.id,
+        title: truncateUtf8(pkg.title, TITLE_MAX_BYTES),
+        state: pkg.state,
+        gate_decision: gateEvidence.byPackage[pkg.id]?.latestDecision ?? null,
+        override_count: gateEvidence.byPackage[pkg.id]?.overrideCount ?? 0,
+      })),
       packages_omitted: input.packages.length - included.length,
       packages_omitted_by_state: omissions,
       ...freshness,
