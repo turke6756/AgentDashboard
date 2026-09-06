@@ -1739,8 +1739,8 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
       `WSL researcher --disallowedTools must list the dangerous built-ins; got: ${rendered}`);
     assert.ok(rendered.includes(`--model ${RESEARCHER_CLAUDE_MODEL}`),
       `WSL researcher must be pinned to Sonnet; got: ${rendered}`);
-    assert.ok(rendered.includes(`--add-dir '${wslWorkspaceRoot}/.lares/research'`),
-      `WSL researcher --add-dir must target the research store; got: ${rendered}`);
+    assert.ok(rendered.includes(`--add-dir '${wslWorkspaceRoot}/.lares/library'`),
+      `WSL researcher --add-dir must target the library; got: ${rendered}`);
     // Containment: the dangerous tools must not appear in the --tools allowlist.
     const toolsMatch = rendered.match(/--tools '([^']*)'/);
     assert.ok(toolsMatch, 'should find --tools value');

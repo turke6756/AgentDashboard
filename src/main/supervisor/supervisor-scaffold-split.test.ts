@@ -109,7 +109,7 @@ function run(): void {
       [statics.LEGACY_SUPERVISOR_FILES_CODEX, '.lares/supervisor/AGENTS.md'],
     ] as const) {
       const instructions = files[rel];
-      assert.equal(instructions.version, 33, `${rel} must advance to scaffold version 33`);
+      assert.equal(instructions.version, 34, `${rel} must advance to scaffold version 34`);
       assert.equal(
         instructions.previousHashes?.[32],
         digestText(SUPERVISOR_AGENT_MD_V32),
