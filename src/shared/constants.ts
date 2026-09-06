@@ -9051,7 +9051,7 @@ export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2 =
 
 // WP-7 (plan_16910c64) — close the manual read-back loop through the shipped
 // supervisor-only declaration seam without weakening any completion guard.
-export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3 =
   `${SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2.trimEnd()}
 
 6. After the manual read-back above succeeds — including the immutable dispatch
@@ -9067,6 +9067,79 @@ export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL =
    durable but its typed \`unmet\` evidence is still owed. Supply that deployment,
    finalization-boundary, or reachability evidence and retry the same gate call;
    never bypass or relax a completion guard.
+`;
+
+// WP-7 (plan_640966a4) — align the managed read-back instructions with the
+// named-OID v2 gate service and its audited override contract.
+export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL = `---
+name: gate-landed-work-package
+description: >-
+  Gate one named landing commit through its captured dispatch envelope, the
+  configured witness policy, and the supervisor-only declaration service.
+---
+
+# Gate a landed work package
+
+Use the supervisor-only \`gate_landed_work_package\` tool. The captured dispatch
+attempt is the authority for repository, full branch ref, dispatch-tip OID,
+current package revision, plan/WP identity, and the frozen NUL-safe path set.
+Never substitute current-state guesses or a recent-history window.
+
+## Ordinary named-OID gate
+
+Pass the plan rail DB UUID as \`plan_id\`, the captured
+\`dispatch_attempt_id\`, and the worker's named full 40-hex commit OID as
+\`commit_oid\`. The service resolves one immutable gate tip and verifies that:
+
+- the dispatch tip is its ancestor and the complete first-parent range is read;
+- the named commit is in that range, has exactly one parent, and its changed
+  paths exactly equal the dispatch's frozen paths; and
+- the complete message has exactly one byte-equal \`Plan\` identity and one
+  ASCII-case-insensitively equal \`WP\` identity.
+
+The verifier does not select a commit by searching labels. \`Verified\` and
+\`Scope-omitted\` values are recorded as audit evidence, not gate predicates,
+and other trailer keys are tolerated. Earlier frozen-path touches are recorded
+but do not refuse the named commit.
+
+Every later commit through the captured gate tip that touches a frozen path
+must be accounted to a different current-revision dispatch that is delivered or
+reconciled, captured, on the same plan/repository/branch, and whose own exact
+Plan/WP identities, single-parent changed paths, and first-parent range match
+that successor commit. A qualifying captured dispatch passes; an existing
+passed gate strengthens its disposition to \`accounted-successor-gated\`.
+Copied labels, stale or same-package dispatches, wrong paths, commits outside
+the captured range, and zero- or multi-parent touches remain unaccounted.
+
+## Witness mode and overrides
+
+Mode comes only from \`plan.json\`'s \`landed_gate_mode\`: absent means
+\`light\`; valid values are \`light\` and \`strict\`. Light mode records absent
+or conflicting witness evidence without blocking. Strict mode refuses healthy
+absence (\`commit-witness-unavailable\`) and conflict
+(\`commit-witness-conflict\`); degraded capture remains evidence, not proof of
+absence. An invalid non-null mode refuses and cannot be overridden.
+
+An override is audited, considered only after a fresh matching refusal, and
+requires a non-empty reason of at most 1000 UTF-8 bytes. Exactly these refusal
+codes are overridable:
+
+- \`branch-unresolvable\` and \`verifier-unavailable\`, each with complete
+  manual testimony containing gate tip, named commit, parent, Plan/WP labels,
+  and changed paths matching the immutable request and dispatch envelope; and
+- \`commit-witness-unavailable\` in strict mode, only after successful app
+  verification and with no manual testimony.
+
+Manual testimony validates shapes and envelope equality only. It cannot prove
+ancestry or Git objects, is persisted as \`manual-testimony\`, and performs no
+other Git I/O. All other refusals are non-overridable. Normal app verification
+and the strict witness-unavailable override reread the branch immediately before
+the first ledger mutation and refuse \`branch-tip-moved\` with zero writes.
+
+Accept the package only on \`outcome: 'landed'\`. An
+\`accepted-not-landed\` result preserves the gate decision but means its typed
+deployment, reachability, or finalization evidence is still owed; supply that
+evidence and retry without weakening a completion guard.
 `;
 
 // WP-1 (plan_d85b0a78) — frozen managed scaffold file v1.
@@ -9854,7 +9927,7 @@ as both entries: the old path expected ABSENT and the new path expected present.
 
 // WP-1h (plan_d85b0a78) — remove stale step-7 verification bullets.
 // Derived from the frozen v7 managed body.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V7.replace(
+export const LAND_WORK_PACKAGE_SKILL_MD_V8 = LAND_WORK_PACKAGE_SKILL_MD_V7.replace(
   `     byte-exact content. No CR-count, BOM, or numstat heuristic can substitute,
      and none is needed for \`A\` or \`D\` entries;
    - \`git diff-tree -r -z --no-renames BASE CANDIDATE\` yields a NUL-safe path
@@ -9863,4 +9936,38 @@ export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V7.replace(
      Do not call \`rev-parse CANDIDATE:path\` for a deleted path.`,
   `     byte-exact content. No CR-count, BOM, or numstat heuristic can substitute,
      and none is needed for \`A\` or \`D\` entries.`,
+);
+
+// WP-7 (plan_640966a4) — preserve the prepared-index transaction while making
+// the named verifier's identity/audit split explicit.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V8.replace(
+  `For a plan-bound worker, \`Plan\`, \`WP\`, and \`Verified\` are mandatory;
+\`Scope-omitted\` is optional. Use exact brief values:
+\`Plan: plan_[0-9a-f]{8}\` and \`WP: <exact briefed identifier>\`. Do not impose
+a numeric-only WP grammar: identifiers such as \`WP-Z\`, \`WP-HOV-1\`, and
+\`WP-PROMOTE-1\` are valid. An ad-hoc worker may use \`Verified\` but must omit
+\`Plan\` and \`WP\` rather than inventing join keys.
+
+Free prose may appear above the trailers. The trailer paragraph must be the
+final paragraph, separated from the subject or body by a blank line, and contain
+only canonical trailer lines. Each permitted key occurs at most once; for a
+plan-bound commit, \`Plan\`, \`WP\`, and \`Verified\` occur exactly once. Each
+value occupies one physical line. Folded or continuation values, duplicates,
+alternate capitalization, and unknown keys in the block are malformed.`,
+  `For a plan-bound worker, the canonical landing block contains exactly one
+\`Plan\`, one \`WP\`, and one \`Verified\`; \`Scope-omitted\` is optional. Use
+exact brief values: \`Plan: plan_[0-9a-f]{8}\` and
+\`WP: <exact briefed identifier>\`. Do not impose a numeric-only WP grammar:
+identifiers such as \`WP-Z\`, \`WP-HOV-1\`, and \`WP-PROMOTE-1\` are valid. An
+ad-hoc worker may use \`Verified\` but must omit \`Plan\` and \`WP\` rather than
+inventing join keys.
+
+Free prose may appear above the trailers. Put the canonical trailer block in the
+final paragraph, separated from the subject or body by a blank line, with each
+canonical value on one physical line. \`Plan\` and \`WP\` are the verifier's
+only identity predicates and duplicates of either are invalid. \`Verified\` and
+\`Scope-omitted\` are audit evidence only: they do not make a commit pass or
+fail the named-OID gate. Other trailer keys are tolerated by that verifier and
+must not be reported as an identity failure. The stricter canonical block is
+still this worker's landing and audit contract.`,
 );

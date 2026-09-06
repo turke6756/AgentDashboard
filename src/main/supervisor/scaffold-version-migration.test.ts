@@ -44,6 +44,8 @@ import {
   SUPERVISOR_AGENT_MD_V19_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH,
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH,
+  LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
   WORKER_CLAUDE_MD_V8_HASH,
   WORKER_CODEX_AGENTS_MD_V1_HASH,
   GUARD_GIT_DISCARD_MJS_V1_HASH,
@@ -206,6 +208,9 @@ import {
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2,
+  SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3,
+  LAND_WORK_PACKAGE_SKILL_MD,
+  LAND_WORK_PACKAGE_SKILL_MD_V8,
   WORKER_CLAUDE_MD,
   WORKER_CLAUDE_MD_V1,
   WORKER_CLAUDE_MD_V8,
@@ -6302,7 +6307,7 @@ test('WP-2 record-reading doctrine reaches every derived worker body and follows
   assert.ok(SUPERVISOR_AGENT_MD.indexOf(rollbackLine) > SUPERVISOR_AGENT_MD.indexOf(gateLine));
 });
 
-test('wp2b-gate-landed-work-package-v1-upgrade remains cumulative through v3', () => {
+test('wp2b-gate-landed-work-package-v1-upgrade remains cumulative through v4', () => {
   const cases = [
     {
       map: supFilesMap(),
@@ -6316,15 +6321,18 @@ test('wp2b-gate-landed-work-package-v1-upgrade remains cumulative through v3', (
     },
   ];
 
-  assert.match(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, /git rev-list --first-parent/);
+  assert.match(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3, /git rev-list --first-parent/);
+  assert.match(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, /complete first-parent range/);
   assert.notEqual(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1);
+  assert.equal(sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH);
 
   for (const entry of cases) {
     const managed = entry.map[entry.rel];
     assert.equal(managed.previousHashes?.[1], sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1));
     assert.equal(managed.previousHashes?.[2], sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2));
-    assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2]);
-    assert.equal(managed.version, 3);
+    assert.equal(managed.previousHashes?.[3], SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH);
+    assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2, 3]);
+    assert.equal(managed.version, 4);
 
     const workDir = mktmp('wp2b-gate-skill-v2-upgrade');
     const { supervisor, cleanup } = makeSupervisor();
@@ -6339,9 +6347,9 @@ test('wp2b-gate-landed-work-package-v1-upgrade remains cumulative through v3', (
 
       const upgraded = fs.readFileSync(skillPath, 'utf-8');
       assert.equal(upgraded, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL);
-      assert.match(upgraded, /git rev-list --first-parent/);
+      assert.match(upgraded, /complete first-parent range/);
       assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
-      assert.equal(readSidecar(workDir)[entry.key], 3);
+      assert.equal(readSidecar(workDir)[entry.key], 4);
     } finally {
       cleanup();
       rmrf(workDir);
@@ -6349,7 +6357,7 @@ test('wp2b-gate-landed-work-package-v1-upgrade remains cumulative through v3', (
   }
 });
 
-test('WP-7 scaffold bodies name the launch envelope, declaration seam, and honest partial outcome', () => {
+test('WP-7 scaffold bodies describe the named-OID gate and identity/audit split', () => {
   const policy = SUPERVISOR_AGENT_MD.split('## Worker commit policy')[1]?.split('## Constraints')[0] ?? '';
   assert.match(policy, /launch_agent/);
   assert.match(policy, /`plan_id`/);
@@ -6357,24 +6365,114 @@ test('WP-7 scaffold bodies name the launch envelope, declaration seam, and hones
   assert.match(policy, /accepted only through `gate_landed_work_package`/);
 
   const skill = SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL;
-  assert.match(skill, /dispatch record's `dispatch_attempt_id`/);
-  assert.match(skill, /sole[\s\S]*matching commit's full 40-hex OID as `commit_oid`/);
-  assert.match(skill, /Accept the package only when the tool returns `outcome: 'landed'`/);
-  assert.match(skill, /`accepted-not-landed` result[\s\S]*typed `unmet` evidence is still owed/);
-  assert.match(skill, /never bypass or relax a completion guard/);
+  assert.match(skill, /named full 40-hex commit OID as\s+`commit_oid`/);
+  assert.match(skill, /different current-revision dispatch/);
+  assert.match(skill, /`light`[\s\S]*`strict`/);
+  assert.match(skill, /`branch-unresolvable` and `verifier-unavailable`/);
+  assert.match(skill, /`commit-witness-unavailable` in strict mode/);
+  assert.match(skill, /persisted as `manual-testimony`/);
+
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /`Plan` and `WP` are the verifier's\s+only identity predicates/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /`Verified` and\s+`Scope-omitted` are audit evidence only/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /Other trailer keys are tolerated/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /## Temporary-index commit transaction/);
+  assert.notEqual(LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V8);
+});
+
+test('REACHABILITY:scaffold-version-migration WP-7 deploys both v3 gate and both v8 land skill copies cumulatively', () => {
+  assert.equal(sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH);
+  assert.equal(sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V8), LAND_WORK_PACKAGE_SKILL_MD_V8_HASH);
+
+  const gateCases = [
+    {
+      rel: '.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md',
+      key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md',
+      map: supFilesMap(),
+    },
+    {
+      rel: '.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md',
+      key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md',
+      map: supCodexFilesMap(),
+    },
+  ] as const;
+  for (const entry of gateCases) {
+    const managed = entry.map[entry.rel];
+    assert.equal(managed.version, 4);
+    assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2, 3]);
+    assert.equal(managed.previousHashes?.[3], SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH);
+    const workDir = mktmp('wp7-gate-v3-upgrade');
+    const { supervisor, cleanup } = makeSupervisor();
+    try {
+      const full = path.join(workDir, entry.rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3, 'utf-8');
+      fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+      fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [entry.key]: 3 }, null, 2) + '\n', 'utf-8');
+      supervisor.ensureSupervisorScaffold(workDir, 'windows');
+      assert.equal(fs.readFileSync(full, 'utf-8'), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL);
+      assert.equal(readSidecar(workDir)[entry.key], 4);
+      assert.equal(fs.readdirSync(path.dirname(full)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
+    } finally {
+      cleanup();
+      rmrf(workDir);
+    }
+  }
+
+  const landCases = [
+    {
+      provider: 'claude' as const,
+      rel: '.lares/workers/claude/.claude/skills/land-work-package/SKILL.md',
+      key: 'workers/claude/.claude/skills/land-work-package/SKILL.md',
+    },
+    {
+      provider: 'codex' as const,
+      rel: '.lares/workers/codex/.agents/skills/land-work-package/SKILL.md',
+      key: 'workers/codex/.agents/skills/land-work-package/SKILL.md',
+    },
+  ];
+  for (const entry of landCases) {
+    const workDir = mktmp('wp7-land-v8-upgrade');
+    const { supervisor, cleanup } = makeSupervisor();
+    const scaffoldSurface = supervisor as unknown as {
+      writeScaffoldMap(root: string, files: Record<string, ScaffoldFile>, pathType: string): boolean;
+    };
+    const writeScaffoldMap = scaffoldSurface.writeScaffoldMap.bind(scaffoldSurface);
+    let managed: ScaffoldFile | undefined;
+    scaffoldSurface.writeScaffoldMap = (root, files, pathType) => {
+      managed = files[entry.rel] ?? managed;
+      return writeScaffoldMap(root, files, pathType);
+    };
+    try {
+      const full = path.join(workDir, entry.rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, LAND_WORK_PACKAGE_SKILL_MD_V8, 'utf-8');
+      fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+      fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [entry.key]: 8 }, null, 2) + '\n', 'utf-8');
+      supervisor.ensureWorkerScaffold(workDir, entry.provider, 'windows');
+      assert.equal(managed?.version, 9);
+      assert.deepEqual(Object.keys(managed?.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6, 7, 8]);
+      assert.equal(managed?.previousHashes?.[8], LAND_WORK_PACKAGE_SKILL_MD_V8_HASH);
+      assert.equal(fs.readFileSync(full, 'utf-8'), LAND_WORK_PACKAGE_SKILL_MD);
+      assert.equal(readSidecar(workDir)[entry.key], 9);
+      assert.equal(fs.readdirSync(path.dirname(full)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
+    } finally {
+      cleanup();
+      rmrf(workDir);
+    }
+  }
 });
 
 test('WP-7 pristine gate skill v2 and supervisor policy v29 upgrade without backups', () => {
   const cases = [
     {
       map: supFilesMap(), rel: '.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md',
-      key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2,
-      live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 2, newVersion: 3,
+      key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3,
+      live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 3, newVersion: 4,
     },
     {
       map: supCodexFilesMap(), rel: '.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md',
-      key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2,
-      live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 2, newVersion: 3,
+      key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3,
+      live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 3, newVersion: 4,
     },
     {
       map: supFilesMap(), rel: '.lares/supervisor/CLAUDE.md', key: 'supervisor/CLAUDE.md',
@@ -6412,8 +6510,8 @@ test('WP-7 pristine gate skill v2 and supervisor policy v29 upgrade without back
 
 test('WP-7 user-modified gate skill and supervisor policy are preserved in backups during upgrade', () => {
   const cases = [
-    { rel: '.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md', key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2, live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 2, newVersion: 3 },
-    { rel: '.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md', key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2, live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 2, newVersion: 3 },
+    { rel: '.lares/supervisor/.claude/skills/gate-landed-work-package/SKILL.md', key: 'supervisor/.claude/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3, live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 3, newVersion: 4 },
+    { rel: '.lares/supervisor/.agents/skills/gate-landed-work-package/SKILL.md', key: 'supervisor/.agents/skills/gate-landed-work-package/SKILL.md', oldBody: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3, live: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, oldVersion: 3, newVersion: 4 },
     { rel: '.lares/supervisor/CLAUDE.md', key: 'supervisor/CLAUDE.md', oldBody: SUPERVISOR_AGENT_MD_V29, live: SUPERVISOR_AGENT_MD, oldVersion: 29, newVersion: 32 },
     { rel: '.lares/supervisor/AGENTS.md', key: 'supervisor/AGENTS.md', oldBody: SUPERVISOR_AGENT_MD_V29, live: SUPERVISOR_AGENT_MD, oldVersion: 29, newVersion: 32 },
   ] as const;
