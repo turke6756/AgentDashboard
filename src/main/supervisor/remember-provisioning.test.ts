@@ -44,20 +44,20 @@ test('lessonTargetRelPaths(remember) enumerates exactly the four WP-R roots', ()
   ]);
 });
 
-test('the Claude-supervisor remember copy is a managed v4 child entry', () => {
+test('the Claude-supervisor remember copy is a managed v1 child entry', () => {
   const e = statics.SUPERVISOR_FILES_CLAUDE_CHILD[CLAUDE_SUP];
   assert.ok(e, `SUPERVISOR_FILES_CLAUDE_CHILD has ${CLAUDE_SUP}`);
   assert.equal(e.content, REMEMBER_SKILL);
-  assert.equal(e.version, 4);
-  assert.deepEqual(e.previousHashes, { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH });
+  assert.equal(e.version, 1);
+  assert.equal(e.previousHashes, undefined);
 });
 
-test('the Codex-supervisor remember copy is a managed v4 child entry', () => {
+test('the Codex-supervisor remember copy is a managed v1 child entry', () => {
   const e = statics.SUPERVISOR_FILES_CODEX_CHILD[CODEX_SUP];
   assert.ok(e, `SUPERVISOR_FILES_CODEX_CHILD has ${CODEX_SUP}`);
   assert.equal(e.content, REMEMBER_SKILL);
-  assert.equal(e.version, 4);
-  assert.deepEqual(e.previousHashes, { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH });
+  assert.equal(e.version, 1);
+  assert.equal(e.previousHashes, undefined);
 });
 
 test('the Claude-worker remember copy is a managed v4 entry in WORKER_FILES_CLAUDE', () => {
