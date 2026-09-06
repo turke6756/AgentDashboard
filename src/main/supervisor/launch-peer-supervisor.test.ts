@@ -134,15 +134,15 @@ function baseInput(over: Partial<LaunchAgentInput> = {}): LaunchAgentInput {
 
 // ── supervisor-peer canonicalization ────────────────────────────────────────────
 
-test('supervisor-peer resolves the .lares/supervisor cwd (not just the flags)', () => withHarness(async (h) => {
+test('supervisor-peer resolves the Claude child-supervisor cwd (not just the flags)', () => withHarness(async (h) => {
   const agent = await h.supervisor.launchAgent(baseInput({ launchMode: 'supervisor-peer' }));
-  const expected = path.join(h.workspacePath, '.lares', 'supervisor');
+  const expected = path.join(h.workspacePath, '.lares', 'supervisor', 'claude');
   assert.equal(agent.workingDirectory, expected,
     `resolved cwd must be the supervisor state dir; got ${agent.workingDirectory}`);
   // the SAME resolved cwd reaches the runner-facing launch method
   assert.ok(h.captured.agent, 'a launch was dispatched');
   assert.equal(h.captured.agent!.workingDirectory, expected, 'the launched agent carries the resolved supervisor cwd');
-  assert.equal(path.basename(agent.workingDirectory), 'supervisor');
+  assert.equal(path.basename(agent.workingDirectory), 'claude');
 }));
 
 test('supervisor-peer forces isSupervisor:true, clears isSupervised/isWorker, no owner edge', () => withHarness(async (h) => {
