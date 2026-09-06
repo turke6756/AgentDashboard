@@ -326,7 +326,13 @@ test('shim list_workspaces is a registered observability-core tool (auto-appears
   assert.ok(names.includes('list_workspaces'), 'list_workspaces is defined');
   assert.ok(names.includes('list_agents'), 'list_agents still defined');
   const lw = defs.find((d: any) => d.name === 'list_workspaces');
-  assert.deepEqual(lw.inputSchema.properties, {}, 'no-arg schema');
+  assert.deepEqual(lw.inputSchema.properties, {
+    instance: {
+      type: 'string',
+      enum: ['self', 'dev'],
+      description: 'Dashboard instance to target (default: self).',
+    },
+  }, 'optional instance selector schema');
 });
 
 // ── Runner ─────────────────────────────────────────────────────────────────────
