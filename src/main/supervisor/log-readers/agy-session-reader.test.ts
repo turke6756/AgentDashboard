@@ -53,8 +53,14 @@ function commonMeta(ms: number, extra: Encoded[] = []): Encoded {
 function userPayload(text: string, ms = CREATED_MS + 1_000): Encoded {
   return msg(vi(1, 14), vi(4, 3), by(5, commonMeta(ms)), by(19, msg(by(2, text), by(3, msg(by(1, text))))));
 }
-function assistantPayload(text: string, kind = 2, ms = CREATED_MS + 2_000, withUsage = true): Encoded {
-  const usage = msg(vi(2, 1_200), vi(3, 40), vi(5, 800));
+function assistantPayload(
+  text: string,
+  kind = 2,
+  ms = CREATED_MS + 2_000,
+  withUsage = true,
+  tokenUsage = { input: 1_200, output: 40, cached: 800 },
+): Encoded {
+  const usage = msg(vi(2, tokenUsage.input), vi(3, tokenUsage.output), vi(5, tokenUsage.cached));
   return msg(
     vi(1, 15), vi(4, 3),
     by(5, commonMeta(ms, withUsage ? [by(9, usage)] : [])),
@@ -210,16 +216,28 @@ test('non-final assistant content maps to thinking', () => {
   } finally { cleanup(root); }
 });
 
-test('usage maps token counts and role gauge cap', () => {
+test('usage treats cached input as additional and rounds the role-cap percentage', () => {
   const root = tempRoot();
   try {
-    createFixture(root);
+    createFixture(root, {
+      rows: [{
+        idx: 1,
+        type: 15,
+        status: 3,
+        payload: assistantPayload(
+          'cached-heavy', 2, CREATED_MS + 2_000, true,
+          { input: 600, output: 40, cached: 1_801 },
+        ),
+      }],
+    });
     const event = readerAt(root).pollSession(session()).find((e) => e.type === 'usage');
     assert.ok(event?.type === 'usage');
-    assert.equal(event.inputTokens, 1_200);
+    assert.equal(event.inputTokens, 600);
     assert.equal(event.outputTokens, 40);
-    assert.equal(event.cachedTokens, 800);
-    assert.equal(event.totalTokens, 1_240);
+    assert.equal(event.cachedTokens, 1_801, 'cached input may exceed uncached input');
+    assert.equal(event.cumulativeContextTokens, 2_401);
+    assert.equal(event.totalTokens, 2_441);
+    assert.equal(event.contextPercentage, 1, '1.2005% is emitted as the rounded integer 1%');
     assert.equal(event.sessionId, SID);
   } finally { cleanup(root); }
 });

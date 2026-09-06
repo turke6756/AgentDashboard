@@ -341,6 +341,8 @@ function parseStep(
     const cachedTokens = numberField(usage, 5);
     if (inputTokens || outputTokens || cachedTokens) {
       const cap = resolveContextGaugeCap(session.role);
+      // Antigravity reports uncached input and cached input as additive fields.
+      const cumulativeContextTokens = inputTokens + cachedTokens;
       out.push({
         type: 'usage',
         ...eventBase(session, conversationId, row.idx, 'usage', timestamp),
@@ -351,10 +353,10 @@ function parseStep(
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cachedTokens,
-        totalTokens: inputTokens + outputTokens,
-        cumulativeContextTokens: inputTokens,
+        totalTokens: cumulativeContextTokens + outputTokens,
+        cumulativeContextTokens,
         contextWindowMax: cap,
-        contextPercentage: Math.min(100, (inputTokens / cap) * 100),
+        contextPercentage: Math.min(100, Math.round((cumulativeContextTokens / cap) * 100)),
       } satisfies UsageEvent);
     }
     return out;

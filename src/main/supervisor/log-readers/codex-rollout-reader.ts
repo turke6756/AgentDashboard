@@ -589,17 +589,15 @@ export class CodexRolloutReader implements ChatLogReader {
 
     const model = this.currentModel.get(session.agentId) || 'codex/unknown';
     const stashWindow = this.modelContextWindow.get(session.agentId);
-    // Gauge policy: 100% = the per-role configured cap (default 200K) even
-    // when the rollout reports a larger window (e.g. 258K/1M GPT models) —
-    // matches the claude reader.
-    const contextWindowMax = Math.min(
-      stashWindow ?? windowFromInfo ?? getContextWindowForModel(model) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
-      resolveContextGaugeCap(session.role)
-    );
+    // Persist the provider-reported window. The role cap remains the warning
+    // denominator for the percentage rather than replacing that model fact.
+    const contextWindowMax =
+      stashWindow ?? windowFromInfo ?? getContextWindowForModel(model) ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+    const percentageWindowMax = Math.min(contextWindowMax, resolveContextGaugeCap(session.role));
     const cumulativeContextTokens = totalTokens || (inputTokens + outputTokens);
     const contextPercentage = Math.min(
       100,
-      Math.round((cumulativeContextTokens / contextWindowMax) * 100)
+      Math.round((cumulativeContextTokens / percentageWindowMax) * 100)
     );
 
     const ev: UsageEvent = {

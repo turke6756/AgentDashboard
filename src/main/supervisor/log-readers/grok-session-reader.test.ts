@@ -238,6 +238,36 @@ test('usage reads the grok turn_completed usage shape', () => {
   assert.equal(u.sessionId, FIXTURE_SESSION_ID);
 });
 
+test('multi-call turn usage does not claim a current context occupancy', () => {
+  const sid = FIXTURE_SESSION_ID;
+  const tmp = path.join(os.tmpdir(), `grok-multi-call-${process.pid}.jsonl`);
+  fs.writeFileSync(tmp, JSON.stringify({
+    timestamp: 1785772806,
+    method: '_x.ai/session/update',
+    params: {
+      sessionId: sid,
+      update: {
+        sessionUpdate: 'turn_completed',
+        stop_reason: 'end_turn',
+        usage: {
+          inputTokens: 240_000,
+          outputTokens: 80,
+          totalTokens: 240_080,
+          cachedReadTokens: 200_000,
+          modelCalls: 2,
+        },
+      },
+      _meta: { eventId: `${sid}-multi`, agentTimestampMs: 1785772806000 },
+    },
+  }) + '\n');
+  try {
+    const events = makeReader(tmp).pollSession(makeSession());
+    assert.ok(!events.some((event) => event.type === 'usage'));
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
 test('thinking emitted from agent_thought_chunk', () => {
   const events = pollAll(makeReader());
   const think = events.filter((e) => e.type === 'thinking');

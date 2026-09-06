@@ -74,7 +74,7 @@ export function DashboardMcpOffBadge({ agent }: { agent: Agent }) {
 // and percentage. `className` overrides the wrapper spacing so the vertical card
 // and the horizontal owner bar can each place it appropriately.
 export function ContextStatsBar({ cs, className = 'mb-2' }: { cs: ContextStats; className?: string }) {
-  const pct = cs.contextPercentage;
+  const pct = Math.round(cs.contextPercentage);
   const isWarning = pct > 60;
   const isCritical = pct > 85;
   const barColor = isCritical ? 'bg-accent-red' : isWarning ? 'bg-accent-orange' : 'bg-accent-blue';

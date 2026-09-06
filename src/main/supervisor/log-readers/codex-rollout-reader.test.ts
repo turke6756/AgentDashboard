@@ -250,8 +250,10 @@ test('usage reads last_token_usage (single call), not total_token_usage (cumulat
     assert.equal(usage.outputTokens, 3_752);
     assert.equal(usage.totalTokens, 147_946);
     assert.equal(usage.cumulativeContextTokens, 147_946);
-    // Gauge policy caps the rollout-reported 258_400 window at 200K.
-    assert.equal(usage.contextWindowMax, 200_000);
+    // The provider-reported window remains visible instead of being replaced
+    // by the role's warning threshold.
+    assert.equal(usage.contextWindowMax, 258_400);
+    // Existing role-cap semantics still use 200K as the warning denominator:
     // 147946 / 200000 = 74% — emphatically not 100% (cumulative would be 585%).
     assert.equal(usage.contextPercentage, 74);
   } finally {

@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { Agent, AgentPlanBadge } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import AgentCard from './AgentCard';
+import { ContextStatsBar } from './agent-card-bits';
 
 let container: HTMLDivElement;
 let root: Root | null;
@@ -67,5 +68,21 @@ describe('AgentCard plan badges', () => {
     await renderCard();
     expect(container.querySelectorAll('[data-testid="agent-plan-badge"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="agent-plan-overflow"]')?.textContent).toBe('+1');
+  });
+});
+
+describe('ContextStatsBar', () => {
+  it('displays and fills with one consistently rounded percentage', async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<ContextStatsBar cs={{
+        agentId: 'a1', sessionId: 's1', model: 'antigravity', inputTokens: 600,
+        cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 40,
+        totalOutputTokens: 40, totalContextTokens: 2_401, contextWindowMax: 200_000,
+        contextPercentage: 1.2005, turnCount: 1, lastUpdatedAt: '2026-09-06T00:00:00Z',
+      }} />);
+    });
+    expect(container.textContent).toContain('1%');
+    expect((container.querySelector('.bg-accent-blue') as HTMLElement)?.style.width).toBe('1%');
   });
 });

@@ -508,6 +508,8 @@ export class GrokSessionReader implements ChatLogReader {
     out: SessionEvent[]
   ): void {
     if (!usage || typeof usage !== 'object') return;
+    // Aggregate usage from several calls is not current context occupancy.
+    if (numOr0(usage.modelCalls) !== 1) return;
     const inputTokens = numOr0(usage.inputTokens);
     const outputTokens = numOr0(usage.outputTokens);
     // cachedReadTokens is a subset of inputTokens (the cache-hit portion), not
