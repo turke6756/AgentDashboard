@@ -52,7 +52,8 @@ function patchDb(agentsMap: Map<string, Agent>, audit: AuditRow[], workspace?: W
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const db = require('../database') as Record<string, unknown>;
   const keys = [
-    'updateAgentStatus', 'applyStatusTransition', 'updateAgentHookStatus', 'updateAgentPid', 'getAgent',
+    'updateAgentStatus', 'applyStatusTransition', 'updateAgentHookStatus',
+    'updateAgentDashboardMcpStatus', 'updateAgentPid', 'getAgent',
     'addEvent', 'updateAgentLastOutput', 'updateAgentExitCode',
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent', 'addFileActivity',
     'updateAgentResumeSessionId', 'getWorkspace', 'createAgent',
@@ -68,6 +69,7 @@ function patchDb(agentsMap: Map<string, Agent>, audit: AuditRow[], workspace?: W
     const a = agentsMap.get(id);
     if (a) { a.hookStatus = hookStatus; if (lastHookEventAt !== undefined) a.lastHookEventAt = lastHookEventAt; }
   };
+  db.updateAgentDashboardMcpStatus = () => {};
   db.updateAgentPid = () => {};
   db.getAgent = (id: string) => agentsMap.get(id) ?? null;
   db.addEvent = (id: string, type: string, payload?: string | null) => {
