@@ -112,6 +112,8 @@ const TESTS = [
   'dist/main/main/supervisor/event-payload-builder.test.js',
   'dist/main/main/supervisor/status-monitor.test.js',
   'dist/main/main/supervisor/terminal-screen-state.test.js',
+  // plan_a66a1d0f WP-2: keep ahead of the known foreign fail-fast point.
+  'dist/main/main/supervisor/grok-mcp-carrier.test.js',
   // plan_486141e6 WP-H: keep ahead of the known foreign fail-fast point so this package always enters.
   'dist/main/main/supervisor/agy-researcher-lane.test.js',
   'dist/main/main/supervisor/grok-researcher-lane.test.js',

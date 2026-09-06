@@ -248,6 +248,7 @@ import {
   toolsetsForLane,
   buildDashboardMcpConfigArg,
   buildCodexMcpConfigArgs,
+  AGY_DASHBOARD_MCP_LIMITATION,
   DASHBOARD_API_TOKEN_ENV_VAR,
   laneUsesStrictMcp,
   redactMcpToken,
@@ -255,6 +256,11 @@ import {
   RESEARCHER_ALLOWED_TOOLS,
   RESEARCHER_DISALLOWED_TOOLS,
 } from './mcp-config-builder';
+import {
+  assessGrokMcpDisposition,
+  buildGrokMcpCarrierToml,
+  isGrokCwdTrusted,
+} from './grok-mcp-carrier';
 // Re-export the pure WP-A.2 builders so existing `./index` importers (and the
 // follow-on researcher-lane slice) get them from the supervisor module too;
 // the canonical home is ./mcp-config-builder.
@@ -4616,8 +4622,8 @@ export class AgentSupervisor extends EventEmitter {
       // Grok Build lane (plans/grok-provider-lane-implementation.md §2). The
       // agent cwd (.lares/workers/grok/) is resolved by the provider-interpolated
       // cwd branch above (`workers/${provider}`) — no explicit grok switch there.
-      // The ONLY managed carrier is the claude-compat .claude/settings.json; grok
-      // loads it natively as a hook source.
+      // The hook carrier remains the claude-compat .claude/settings.json, which
+      // Grok loads natively; the sibling .grok/config.toml carries dashboard MCP.
       //
       // Commit 7 (PowerShell-safe carrier): grok 0.2.118 on Windows executes
       // claude-compat hook commands through POWERSHELL, where ${CLAUDE_PROJECT_DIR}
@@ -4640,6 +4646,14 @@ export class AgentSupervisor extends EventEmitter {
         ? windowsToWslPath(workDir)
         : workDir.replace(/\\/g, '/');
       const grokFiles: Record<string, ScaffoldFile> = {
+        [`.lares/workers/grok/.grok/config.toml`]: {
+          content: buildGrokMcpCarrierToml({
+            runtimePath: process.execPath,
+            sidecarPath: getScriptPath('mcp-dashboard.js'),
+            toolsets: toolsetsForLane('worker'),
+          }),
+          version: 1,
+        },
         [`.lares/workers/grok/.claude/settings.json`]: {
           content: workerGrokSettingsJson(posixWorkspaceRoot),
           // v2 (Commit 7, PowerShell-safe): absolute materialized script paths,
@@ -6011,6 +6025,41 @@ export class AgentSupervisor extends EventEmitter {
       }
       codexSnapshot = await snapshotCodexSessions('windows');
       codexLaunchStartedAt = Date.now();
+    }
+    if ((agent.provider === 'grok' || agent.provider === 'agy') && roleLaneOf(agent) === 'worker') {
+      const workspaceRoot = getEffectiveWorkspaceRoot(agent);
+      const expectedCwd = path.join(workspaceStateDir(workspaceRoot, 'windows'), 'workers', agent.provider);
+      const normalizedCwd = (value: string): string => {
+        let normalized = path.resolve(value);
+        try { normalized = fs.realpathSync.native(normalized); } catch { /* compare resolved spelling */ }
+        return normalized.toLowerCase();
+      };
+      const canonicalWorkerCwd = normalizedCwd(agent.workingDirectory) === normalizedCwd(expectedCwd);
+      if (canonicalWorkerCwd && agent.provider === 'grok') {
+        const runtimePath = process.execPath;
+        const sidecarPath = getScriptPath('mcp-dashboard.js');
+        const expectedCarrierText = buildGrokMcpCarrierToml({
+          runtimePath,
+          sidecarPath,
+          toolsets: toolsetsForLane('worker'),
+        });
+        const carrierPath = path.join(agent.workingDirectory, '.grok', 'config.toml');
+        let actualCarrierText: string | null = null;
+        try { actualCarrierText = fs.readFileSync(carrierPath, 'utf8'); } catch { /* assessed as absent */ }
+        const disposition = assessGrokMcpDisposition({
+          expectedCarrierText,
+          actualCarrierText,
+          runtimeExists: fs.existsSync(runtimePath),
+          sidecarExists: fs.existsSync(sidecarPath),
+          tokenWillBeInjected: !!capabilityToken
+            && extraEnv.AGENT_DASHBOARD_API_TOKEN === capabilityToken,
+          canonicalWorkerCwd,
+          trustEligible: isGrokCwdTrusted(agent.workingDirectory),
+        });
+        updateAgentDashboardMcpStatus(agent.id, disposition.status, disposition.reason);
+      } else if (canonicalWorkerCwd && agent.provider === 'agy') {
+        updateAgentDashboardMcpStatus(agent.id, 'degraded', AGY_DASHBOARD_MCP_LIMITATION);
+      }
     }
     const extraEnvArg = Object.keys(extraEnv).length > 0 ? extraEnv : undefined;
     // P1 §2 step 4a(iii) — current-launch stamp for the tmux-option freshness

@@ -119,7 +119,7 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
  *  dashboard `plans-read` toolset yet. Agy continues to read its user-global
  *  MCP configuration, which is not an equivalent guaranteed grant. */
 export const AGY_DASHBOARD_MCP_LIMITATION =
-  'Agy has no Lares-controlled per-launch MCP mount; plans-read is unavailable to Agy worker/researcher lanes.';
+  'Antigravity dashboard MCP is unavailable: as last verified with Agy 1.1.26, env values in mcp_config.json are literal (a token cannot be kept out of the file), the workspace .agents/mcp_config.json does not load, and there is no per-launch carrier. ALL dashboard MCP tools are unavailable to Agy lanes until a per-agent carrier is designed (tracked as a follow-up).';
 
 /** Does this role-lane launch with `--strict-mcp-config`?
  *

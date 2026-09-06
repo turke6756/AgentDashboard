@@ -72,4 +72,23 @@ describe('AgentCard dashboard MCP delivery badge', () => {
     });
     expect(mcpBadge()).toBeNull();
   });
+  it('shows no badge for an available Grok worker', async () => {
+    await render(agent({ provider: 'grok', command: 'grok', dashboardMcpStatus: 'available' }));
+    expect(mcpBadge()).toBeNull();
+  });
+
+  it('shows the Grok degraded reason in the badge tooltip', async () => {
+    const message = 'Grok worker cwd is not trusted for project MCP discovery.';
+    await render(agent({ provider: 'grok', command: 'grok', dashboardMcpStatus: 'degraded', dashboardMcpMessage: message }));
+    expect(mcpBadge()).toBeTruthy();
+    expect(mcpBadge()?.getAttribute('title')).toBe(message);
+  });
+
+  it('shows the Antigravity degraded reason in the badge tooltip', async () => {
+    const message = 'Antigravity dashboard MCP is unavailable for this launch.';
+    await render(agent({ provider: 'agy', command: 'agy', dashboardMcpStatus: 'degraded', dashboardMcpMessage: message }));
+    expect(mcpBadge()).toBeTruthy();
+    expect(mcpBadge()?.getAttribute('title')).toBe(message);
+  });
+
 });
