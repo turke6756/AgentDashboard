@@ -96,6 +96,7 @@ function post(
   const dbKeys = [
     'getWorkspace', 'getPlan', 'getPlanByWorkspaceArtifactId', 'getSupervisorAgent',
     'getAgent', 'createAgent', 'upsertSupervisorFocus', 'updateAgentStatus',
+    'updateAgentDashboardMcpStatus',
     'applyStatusTransition', 'updateAgentPid', 'addEvent', 'updateAgentLastOutput',
     'updateAgentExitCode', 'getActiveAgents', 'getAllAgents', 'addFileActivity',
     'updateAgentResumeSessionId', 'getTeamMembership', 'getAgentTemplate',
@@ -124,6 +125,7 @@ function post(
   };
   db.upsertSupervisorFocus = (input: { planId: string }) => { focusedPlanIds.push(input.planId); return input; };
   db.updateAgentStatus = () => {};
+  db.updateAgentDashboardMcpStatus = () => {};
   db.updateAgentPid = () => {};
   db.addEvent = () => {};
   db.updateAgentLastOutput = () => {};
