@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import type { LibraryProgressEvent } from '../../shared/library';
 import { createLibraryIngestor, ingestLibraryDocuments } from './library-ingest';
+import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 import { registerProductionLibraryIpc } from './library-ipc';
 import { closeLibraryStore, listLibraryChunks, openLibraryStore } from './library-store';
 
@@ -17,6 +18,47 @@ function workspace(): string {
   fs.copyFileSync(path.resolve('examples/library-fixtures/deterministic.docx'), path.join(root, 'docs', 'deterministic.docx'));
   return root;
 }
+
+function fakeEmbeddings(texts: string[]) {
+  return Promise.resolve({
+    vectors: texts.map(() => new Float32Array(LIBRARY_EMBEDDING_DIMENSIONS)),
+    load_ms: 0,
+    embed_ms: 0,
+  });
+}
+
+test('resolved report folders derive trust and research type unless the request is explicit', async () => {
+  const root = workspace();
+  const sources = {
+    inbox: path.join(root, '.lares', 'library', 'inbox', 'nested', 'inbox.md'),
+    cleared: path.join(root, '.lares', 'library', 'cleared', 'cleared.md'),
+    other: path.join(root, 'docs', 'b.md'),
+    explicit: path.join(root, '.lares', 'library', 'inbox', 'explicit.md'),
+  };
+  for (const source of Object.values(sources)) {
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    if (!fs.existsSync(source)) fs.writeFileSync(source, '# Report\n\nBody.');
+  }
+  const store = openLibraryStore(root);
+  try {
+    const ingest = createLibraryIngestor({ workspaceRoot: root, store, embedTexts: fakeEmbeddings });
+    const inbox = await ingest({ source_path: sources.inbox, trigger: 'report-arrival' });
+    const cleared = await ingest({ source_path: sources.cleared, trigger: 'report-arrival' });
+    const other = await ingest({ source_path: sources.other, trigger: 'add' });
+    const explicit = await ingest({
+      source_path: sources.explicit,
+      trigger: 'report-arrival',
+      type: 'note',
+      trust: 'user-trusted',
+    });
+
+    assert.deepEqual([inbox.document.type, inbox.document.trust], ['research', 'untrusted'],
+      'REACHABILITY:ingest:trust-from-folder');
+    assert.deepEqual([cleared.document.type, cleared.document.trust], ['research', 'cleared']);
+    assert.deepEqual([other.document.type, other.document.trust], ['md', 'user-trusted']);
+    assert.deepEqual([explicit.document.type, explicit.document.trust], ['note', 'user-trusted']);
+  } finally { closeLibraryStore(store); }
+});
 
 test('fresh stores and shuffled enumeration produce identical chunk ids', async () => {
   const roots = [workspace(), workspace()];
@@ -62,6 +104,31 @@ test('rescan reuses unchanged rows and invalidates changed source rows', async (
   } finally { closeLibraryStore(store); }
 });
 
+test('report-arrival reuses unchanged ready rows without embedding while user ingest still reindexes', async () => {
+  const root = workspace();
+  const source = path.join(root, '.lares', 'library', 'inbox', 'arrival.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, '# Arrival\n\nUnchanged report content. '.repeat(20));
+  const store = openLibraryStore(root);
+  let embedCalls = 0;
+  const embedTexts = async (texts: string[]) => {
+    embedCalls += 1;
+    return fakeEmbeddings(texts);
+  };
+  try {
+    const ingest = createLibraryIngestor({ workspaceRoot: root, store, embedTexts });
+    const first = await ingest({ source_path: source, trigger: 'report-arrival' });
+    const unchanged = await ingest({ source_path: source, trigger: 'report-arrival' });
+    assert.equal(unchanged.reused, true);
+    assert.deepEqual(unchanged.chunk_ids, first.chunk_ids);
+    assert.equal(embedCalls, 1);
+
+    const userIngest = await ingest({ source_path: source, trigger: 'drop' });
+    assert.equal(userIngest.reused, false);
+    assert.equal(embedCalls, 2);
+  } finally { closeLibraryStore(store); }
+});
+
 test('all explicit triggers use the visible state machine', async () => {
   for (const trigger of ['report-arrival', 'add', 'drop', 'rescan'] as const) {
     const root = workspace();
@@ -83,6 +150,8 @@ test('production IPC entry registers ingest, rescan, list, and progress-capable 
     () => null,
     () => undefined,
   );
-  assert.deepEqual([...handlers.keys()], ['library:ingest', 'library:rescan', 'library:list-documents', 'library:query', 'library:save-note'],
-    'REACHABILITY:registerIpcHandlers:library:ingest');
+  const registered = new Set(handlers.keys());
+  for (const channel of ['library:ingest', 'library:rescan', 'library:list-documents', 'library:query', 'library:save-note']) {
+    assert.ok(registered.has(channel), `REACHABILITY:registerIpcHandlers:library:ingest missing ${channel}`);
+  }
 });

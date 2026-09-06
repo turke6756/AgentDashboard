@@ -10,6 +10,7 @@ export type LibraryTrust = 'untrusted' | 'cleared' | 'user-trusted';
 export type LibraryHighlightKind = 'exact' | 'similar';
 
 export type LibraryIngestTrigger = 'report-arrival' | 'add' | 'drop' | 'rescan';
+export type LibraryHashReuseTrigger = Extract<LibraryIngestTrigger, 'report-arrival' | 'rescan'>;
 export type LibraryDocumentStatus =
   | 'queued'
   | 'extracting'
