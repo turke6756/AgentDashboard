@@ -11,7 +11,10 @@
 //   node dist/main/main/api-server-plans.test.js
 
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
 import http from 'http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { ApiServer } from './api-server';
 import { getApiToken } from './security/api-auth';
 import type { AgentSupervisor } from './supervisor';
@@ -25,7 +28,7 @@ function test(name: string, fn: () => Promise<void> | void): void { tests.push({
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require('./database') as Record<string, any>;
 
-const WS_WIN = { id: 'ws-1', title: 'WS', path: 'C:/nonexistent/ws-1', pathType: 'windows' };
+const WS_WIN = { id: 'ws-1', title: 'WS', path: fs.mkdtempSync(path.join(os.tmpdir(), 'api-plans-')), pathType: 'windows' };
 const WS_WSL = { id: 'ws-wsl', title: 'WSL', path: '/home/x/ws', pathType: 'wsl' };
 const PLAN_ROW = {
   id: '11111111-2222-4333-8444-555555555555', workspaceId: 'ws-1', path: 'plans/auth.md',
@@ -48,8 +51,14 @@ function installDefaultStubs(): void {
   db.getPlan = (id: string) => (id === PLAN_ROW.id ? PLAN_ROW : null);
   db.getPlanByWorkspacePath = () => null;
   db.createOrRevivePlan = (input: any) => { lastCreate = input; return { ...PLAN_ROW, ...input }; };
-  db.updatePlan = (id: string, updates: any) => { lastUpdate = { id, updates }; return { ...PLAN_ROW, ...updates }; };
-  db.softDeletePlan = (id: string) => { lastSoftDelete = id; return { ...PLAN_ROW, id, deletedAt: 't-del' }; };
+  db.updatePlanWithBadgeResult = (id: string, updates: any) => {
+    lastUpdate = { id, updates };
+    return { plan: { ...PLAN_ROW, ...updates }, badgeChanged: false };
+  };
+  db.softDeletePlanIfLive = (id: string) => {
+    lastSoftDelete = id;
+    return { plan: { ...PLAN_ROW, id, deletedAt: 't-del' }, changed: true };
+  };
   // derivePlanSlug is a pure fn — keep the real implementation for DEC-4 recompute.
 }
 const created = () => lastCreate;
@@ -190,7 +199,7 @@ test('POST /api/plans backslashes normalize to forward slashes', () =>
 
 test('POST /api/plans DEC-2: no mtime/size + un-statable file → 400', () =>
   withServer(async (port) => {
-    // ws-1 is windows but its path is nonexistent → statPlanMeta returns null.
+    // The plans/ghost.md fixture is absent → statPlanMeta returns null.
     const res = await request(port, 'POST', '/api/plans', JSON_AUTH,
       JSON.stringify({ workspace_id: 'ws-1', path: 'plans/ghost.md', format: 'md' }));
     assert.equal(res.status, 400);
@@ -215,7 +224,7 @@ test('PATCH /api/plans/:id rebinds path + recomputes slug (DEC-4), keeps id', ()
 
 test('PATCH /api/plans/:id onto a live destination path → 409 (DEC-1)', () =>
   withServer(async (port) => {
-    db.updatePlan = () => { throw Object.assign(new Error('Destination path already in use by a live plan'), { statusCode: 409 }); };
+    db.updatePlanWithBadgeResult = () => { throw Object.assign(new Error('Destination path already in use by a live plan'), { statusCode: 409 }); };
     const res = await request(port, 'PATCH', `/api/plans/${PLAN_ROW.id}`, JSON_AUTH,
       JSON.stringify({ path: 'plans/taken.md' }));
     assert.equal(res.status, 409);
@@ -223,7 +232,7 @@ test('PATCH /api/plans/:id onto a live destination path → 409 (DEC-1)', () =>
 
 test('PATCH /api/plans/:id unknown id → 404', () =>
   withServer(async (port) => {
-    db.updatePlan = () => null;
+    db.updatePlanWithBadgeResult = () => ({ plan: null, badgeChanged: false });
     const res = await request(port, 'PATCH', '/api/plans/nope', JSON_AUTH, JSON.stringify({ run_state: 'x' }));
     assert.equal(res.status, 404);
   }));
@@ -241,7 +250,7 @@ test('DELETE /api/plans/:id is soft — returns {ok, planId, deletedAt}', () =>
 
 test('DELETE /api/plans/:id unknown id → 404', () =>
   withServer(async (port) => {
-    db.softDeletePlan = () => null;
+    db.softDeletePlanIfLive = () => ({ plan: null, changed: false });
     const res = await request(port, 'DELETE', '/api/plans/nope', AUTH);
     assert.equal(res.status, 404);
   }));
