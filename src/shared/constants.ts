@@ -1119,6 +1119,26 @@ export const SUPERVISOR_CLAUDE_SETTINGS_JSON = `{
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\" subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\" subagent-stop"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
@@ -1156,6 +1176,60 @@ export const SUPERVISOR_CLAUDE_SETTINGS_JSON = `{
 export const SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD = SUPERVISOR_CLAUDE_SETTINGS_JSON
   .split('${CLAUDE_PROJECT_DIR}/../scripts/')
   .join('${CLAUDE_PROJECT_DIR}/../../scripts/');
+
+/** Supervisor settings v4 body before subagent bookkeeping hooks were added. */
+export const SUPERVISOR_CLAUDE_SETTINGS_JSON_V4 = `{
+  "autoMemoryEnabled": false,
+  "autoCompactEnabled": false,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\" session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\" working"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-status.mjs\\" waiting"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \\"\${CLAUDE_PROJECT_DIR}/../scripts/dashboard-statusline.mjs\\"",
+    "padding": 0
+  }
+}
+`;
 
 export const SUPERVISOR_CLAUDE_SETTINGS_JSON_V3 = `{
   "autoMemoryEnabled": false,
@@ -1230,6 +1304,26 @@ export const SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON = `{
   "autoMemoryEnabled": false,
   "autoCompactEnabled": false,
   "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" subagent-stop"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -2134,6 +2228,26 @@ export const WORKER_CLAUDE_SETTINGS_JSON = `{
   "autoMemoryEnabled": false,
   "autoCompactEnabled": false,
   "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" subagent-stop"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -2298,6 +2412,71 @@ export function workerAgyHooksJson(workspaceRoot: string, nodePath: string): str
 /** Frozen hash of the retired v1 agy carrier (global-shaped nested
  *  PreInvocation entry). Used only to migrate a pristine v1 local copy. */
 export const WORKER_AGY_HOOKS_JSON_V1_HASH = 'ec6af430eb0bfc7ada36ff61de8bb86070ae48358e272964c9ed9357191e7065';
+
+/** Claude worker settings v8 body before subagent bookkeeping hooks were added. */
+export const WORKER_CLAUDE_SETTINGS_JSON_V8 = `{
+  "autoMemoryEnabled": false,
+  "autoCompactEnabled": false,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" working"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs\\" waiting"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/guard-git-discard.mjs\\""
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \\"\${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-statusline.mjs\\"",
+    "padding": 0
+  }
+}
+`;
 
 /** Pre-guard Claude worker settings (v7) — the 4-hook + statusLine block WITHOUT
  *  the PreToolUse(Bash) git-discard guard, kept verbatim so a v7 workspace's
@@ -3363,8 +3542,8 @@ try {
  *  v7 contract:
  *    - Step 0: read hook JSON from stdin (64 KB cap raced against a 300 ms
  *      timeout with defensive listener-removal + destroy), resolve
- *      hookEventName stdin → CLAUDE_HOOK_EVENT_NAME → argv, extended
- *      SubagentStop bail (env OR stdin), then build ONE event record with a
+   *      hookEventName stdin → CLAUDE_HOOK_EVENT_NAME → argv, then build ONE
+   *      event record with correlated SubagentStart/SubagentStop bookkeeping and a
  *      single ts — all transports carry identical bytes so the dashboard's
  *      dedupe key {agentId, ts, hookEventName, turnId} matches across channels.
  *    - Transport 1 — spool: ALWAYS appended (not just on HTTP failure). Path
@@ -3458,22 +3637,25 @@ async function main() {
   const argvEventName = rawState === 'working' ? 'UserPromptSubmit'
     : rawState === 'session-start' ? 'SessionStart'
     : rawState === 'waiting' ? 'Notification'
+    : rawState === 'subagent-start' ? 'SubagentStart'
+    : rawState === 'subagent-stop' ? 'SubagentStop'
     : 'Stop';
   const stdinEventName = typeof stdinMeta.hook_event_name === 'string' ? stdinMeta.hook_event_name : '';
   const hookEventName = stdinEventName || process.env.CLAUDE_HOOK_EVENT_NAME || explicitEventName || argvEventName;
-
-  // SubagentStop guard (v6, extended to stdin): a Task-tool subagent finishing
-  // mid-turn must not flip the still-working main agent idle. Bail before any
-  // transport writes — nothing is spooled, posted, or set.
-  if (process.env.CLAUDE_HOOK_EVENT_NAME === 'SubagentStop' || stdinEventName === 'SubagentStop') return;
 
   // argv[2] selects the lifecycle event:
   //   'session-start' → state 'active'  (SessionStart hook; canary proof —
   //                       must NOT flip working/idle)
   //   'working'       → state 'working' (UserPromptSubmit hook)
   //   (default)       → state 'idle'    (Stop hook)
-  let state, source;
-  if (rawState === 'session-start') { state = 'active'; source = 'hook-session-start'; }
+  let state, source, kind;
+  if (hookEventName === 'SubagentStart') {
+    state = 'active'; source = 'hook-subagent-start'; kind = 'subagent-start';
+  }
+  else if (hookEventName === 'SubagentStop') {
+    state = 'active'; source = 'hook-subagent-stop'; kind = 'subagent-stop';
+  }
+  else if (rawState === 'session-start') { state = 'active'; source = 'hook-session-start'; }
   else if (rawState === 'working') { state = 'working'; source = 'hook-start'; }
   else if (rawState === 'waiting') { state = 'waiting'; source = 'hook-notification'; }
   else { state = 'idle'; source = 'hook-stop'; }
@@ -3482,8 +3664,8 @@ async function main() {
   // isNonBlockingNotificationType in src/shared/notification-classify.ts. KEEP
   // THIS ARRAY IN SYNC; a drift test asserts every entry appears in this script
   // source plus the fallback regex. A Notification that is the ~60s idle reminder
-  // or another informational type must write NOTHING to any transport — bail like
-  // the SubagentStop guard above so the agent stays correctly idle.
+  // or another informational type must write NOTHING to any transport so the
+  // agent stays correctly idle.
   if (state === 'waiting') {
     const nonBlockingTypes = ['idle_prompt', 'auth_success', 'elicitation_complete', 'elicitation_response'];
     const nt = (typeof stdinMeta.notification_type === 'string' ? stdinMeta.notification_type : '').trim().toLowerCase();
@@ -3496,8 +3678,10 @@ async function main() {
 
   // ONE record, ONE ts — identical bytes on every transport.
   const record = { v: 1, agentId, state, source, ts: Date.now(), hookEventName };
+  if (kind) record.kind = kind;
   if (typeof stdinMeta.turn_id === 'string' && stdinMeta.turn_id) record.turnId = stdinMeta.turn_id;
   if (typeof stdinMeta.session_id === 'string' && stdinMeta.session_id) record.sessionId = stdinMeta.session_id;
+  if (kind && typeof stdinMeta.agent_id === 'string' && stdinMeta.agent_id) record.subagentId = stdinMeta.agent_id;
   // Notification waiting metadata — newline-stripped + capped so the tmux
   // newline-framed transport line stays single-line.
   if (typeof stdinMeta.message === 'string' && stdinMeta.message) record.excerpt = String(stdinMeta.message).replace(/[\\r\\n]+/g, ' ').slice(0, 300);
@@ -3771,6 +3955,9 @@ export const DASHBOARD_STATUS_SCRIPT_V9_HASH = '3d51ee05cbc11a3f519db503681c0795
 
 /** v10 hash literal â€” the body before bounded pending-status rotation. */
 export const DASHBOARD_STATUS_SCRIPT_V10_HASH = 'f423640feaf69047660c0b248f224111278983dae1dec647795891690d848af9';
+
+/** v11 hash literal — the body before correlated subagent hook routing. */
+export const DASHBOARD_STATUS_SCRIPT_V11_HASH = '6b5e239cf9fdd2b33efffb2d9d617fc6b2ed361fdfaad5f4700d042c999cc199';
 
 /** v6 verbatim (POST self-abort 2500ms + SubagentStop guard) — frozen so a v6
  *  workspace's on-disk dashboard-status.mjs can be hashed and silently

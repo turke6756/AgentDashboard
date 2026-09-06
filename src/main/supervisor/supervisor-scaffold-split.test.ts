@@ -139,9 +139,9 @@ function run(): void {
       SUPERVISOR_CLAUDE_SETTINGS_JSON
         .split('${CLAUDE_PROJECT_DIR}/../scripts/')
         .join('${CLAUDE_PROJECT_DIR}/../../scripts/'),
-      'child settings rewrite only the five script-depth references',
+      'child settings rewrite only the seven script-depth references',
     );
-    assert.equal(count(SUPERVISOR_CLAUDE_SETTINGS_JSON, '${CLAUDE_PROJECT_DIR}/../scripts/'), 5);
+    assert.equal(count(SUPERVISOR_CLAUDE_SETTINGS_JSON, '${CLAUDE_PROJECT_DIR}/../scripts/'), 7);
 
     const flatHashes = new Map<string, string>();
     for (const files of legacyMaps) {
@@ -196,8 +196,13 @@ function run(): void {
     assert.ok(fs.readFileSync(claudeMdPath, 'utf8').includes('../memory/MEMORY.md'));
     const settings = fs.readFileSync(claudeSettingsPath, 'utf8');
     assert.equal(settings, SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD);
-    assert.equal(count(settings, '${CLAUDE_PROJECT_DIR}/../../scripts/'), 5);
+    assert.equal(count(settings, '${CLAUDE_PROJECT_DIR}/../../scripts/'), 7);
     assert.equal(count(settings, '${CLAUDE_PROJECT_DIR}/../scripts/'), 0);
+    const childHooks = JSON.parse(settings).hooks;
+    assert.equal(childHooks.SubagentStart[0].hooks[0].command,
+      'node "${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs" subagent-start');
+    assert.equal(childHooks.SubagentStop[0].hooks[0].command,
+      'node "${CLAUDE_PROJECT_DIR}/../../scripts/dashboard-status.mjs" subagent-stop');
     assert.equal(
       fs.existsSync(path.join(workDir, '.lares', 'supervisor', 'codex')),
       false,

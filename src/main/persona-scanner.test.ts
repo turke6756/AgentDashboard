@@ -33,8 +33,10 @@ import {
 import {
   SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
   WORKER_CLAUDE_SETTINGS_JSON,
   WORKER_CLAUDE_SETTINGS_JSON_V5,
+  WORKER_CLAUDE_SETTINGS_JSON_V8,
   WORKER_CODEX_CONFIG_TOML,
 } from '../shared/constants';
 import { sha256Hex } from './scaffold-writer';
@@ -177,6 +179,9 @@ test('a supervisor-lane persona gets SUPERVISOR_PERSONA settings (double-`..` pa
   assert.ok(body.includes('../../scripts/dashboard-status.mjs'), 'persona depth: double-`..` script path');
   assert.ok(body.includes('dashboard-status.mjs\\" waiting') || body.includes('dashboard-status.mjs" waiting'),
     'Notification hook invokes the script with the waiting arg');
+  const hooks = JSON.parse(body).hooks;
+  assert.ok(hooks.SubagentStart, 'supervisor-lane persona has a SubagentStart hook');
+  assert.ok(hooks.SubagentStop, 'supervisor-lane persona has a SubagentStop hook');
   // It must NOT be the supervisor's single-`..` ../scripts variant (silent no-op
   // footgun: a persona at .lares/agents/<name>/ needs ../../scripts).
   assert.notEqual(body, SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -195,6 +200,8 @@ test('a non-lane persona gets the WORKER settings variant (now also carrying the
     'non-lane persona must NOT get the supervisor single-`..` variant');
   // The worker variant gained the Notification hook in this feature.
   assert.ok(body.includes('"Notification"'), 'worker variant now carries the Notification hook');
+  assert.ok(JSON.parse(body).hooks.SubagentStart, 'worker variant carries SubagentStart');
+  assert.ok(JSON.parse(body).hooks.SubagentStop, 'worker variant carries SubagentStop');
   assert.ok(body.includes('../../scripts/dashboard-status.mjs'), 'worker variant uses the double-`..` path');
 });
 
@@ -208,16 +215,16 @@ test('worker/researcher-lane personas get the WORKER settings variant (not the s
   }
 });
 
-test('persona settings.json is managed at version 4 with previousHashes[1] = pre-Notification worker hash', () => {
+test('persona settings.json is managed at version 5 with previousHashes[1] = pre-Notification worker hash', () => {
   const ws = freshWorkspace();
   scaffoldPersona(ws, 'windows', 'versioned', undefined, 'supervisor');
   // The managed sidecar records the on-disk version: v1 → v2 added the
   // Notification hook, v2 → v3 added the statusLine usage-capture block, v3 → v4
   // inherited the PreToolUse(Bash) git-discard guard, so the current shipped
-  // scaffold is version 4.
+  // scaffold is version 5 after adding correlated subagent bookkeeping hooks.
   const sc = readSidecar(ws);
-  assert.equal(sc['agents/versioned/.claude/settings.json'], 4,
-    'persona settings.json is managed at version 4');
+  assert.equal(sc['agents/versioned/.claude/settings.json'], 5,
+    'persona settings.json is managed at version 5');
   // The previousHashes[1] anchor is the pre-Notification (v5) worker body hash, so
   // a pre-Notification on-disk persona upgrades silently. Assert the anchor const
   // exists and differs from the now-current content hashes.
@@ -247,8 +254,8 @@ test('a persona with the pre-Notification worker settings on disk upgrades SILEN
   const claudeEntries = fs.readdirSync(agentFile(ws, 'legacy-sup', '.claude'));
   assert.ok(!claudeEntries.some(e => e.includes('.bak')),
     'no .bak written when the on-disk hash matches previousHashes[1]');
-  assert.equal(readSidecar(ws)['agents/legacy-sup/.claude/settings.json'], 4,
-    'sidecar advanced to version 4 after the silent upgrade');
+  assert.equal(readSidecar(ws)['agents/legacy-sup/.claude/settings.json'], 5,
+    'sidecar advanced to version 5 after the silent upgrade');
 });
 
 test('a non-lane persona with the pre-Notification worker settings upgrades SILENTLY to the worker variant', () => {
@@ -265,6 +272,38 @@ test('a non-lane persona with the pre-Notification worker settings upgrades SILE
     'no-lane persona upgrades to the worker (Notification-bearing) variant');
   const claudeEntries = fs.readdirSync(agentFile(ws, 'legacy-wrk', '.claude'));
   assert.ok(!claudeEntries.some(e => e.includes('.bak')), 'no .bak written for the silent worker upgrade');
+});
+
+test('persona worker and supervisor v4 settings silently migrate to v5 subagent hooks', () => {
+  const supervisorPersonaV4 = SUPERVISOR_CLAUDE_SETTINGS_JSON_V4
+    .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+    .join('${CLAUDE_PROJECT_DIR}/../../scripts/');
+  for (const entry of [
+    { name: 'wp3-worker', lane: 'worker' as const, oldBody: WORKER_CLAUDE_SETTINGS_JSON_V8, live: WORKER_CLAUDE_SETTINGS_JSON },
+    { name: 'wp3-supervisor', lane: 'supervisor' as const, oldBody: supervisorPersonaV4, live: SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON },
+  ]) {
+    const ws = freshWorkspace();
+    fs.mkdirSync(agentFile(ws, entry.name, '.claude'), { recursive: true });
+    fs.writeFileSync(agentFile(ws, entry.name, 'CLAUDE.md'), '# Existing persona\n', 'utf-8');
+    fs.writeFileSync(agentFile(ws, entry.name, 'persona.json'), JSON.stringify({ lane: entry.lane }) + '\n', 'utf-8');
+    const settings = agentFile(ws, entry.name, '.claude', 'settings.json');
+    fs.writeFileSync(settings, entry.oldBody, 'utf-8');
+    fs.mkdirSync(path.join(ws, '.lares'), { recursive: true });
+    fs.writeFileSync(
+      path.join(ws, '.lares', '.scaffold-versions.json'),
+      JSON.stringify({ [`agents/${entry.name}/.claude/settings.json`]: 4 }, null, 2) + '\n',
+      'utf-8',
+    );
+
+    ensurePersonaScaffold(ws, 'windows', entry.name);
+
+    assert.equal(fs.readFileSync(settings, 'utf-8'), entry.live);
+    assert.equal(readSidecar(ws)[`agents/${entry.name}/.claude/settings.json`], 5);
+    assert.equal(fs.readdirSync(path.dirname(settings)).filter((name) => name.startsWith('settings.json.bak.')).length, 0);
+    const hooks = JSON.parse(fs.readFileSync(settings, 'utf-8')).hooks;
+    assert.ok(hooks.SubagentStart);
+    assert.ok(hooks.SubagentStop);
+  }
 });
 
 test('applyPersonaLaneToLaunchInput still sets privilegeLane=supervisor and NOT isSupervisor for a supervisor-lane persona', () => {

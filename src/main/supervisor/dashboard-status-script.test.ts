@@ -294,33 +294,48 @@ test('(e) stdin never closes → still exits 0 in ~1 s (300 ms stdin race)', asy
   }
 });
 
-test('(f) SubagentStop via env AND via stdin → nothing written anywhere, exit 0', async () => {
+test('(f) SubagentStop routes a correlated active bookkeeping record to every transport', async () => {
   const ws = makeWorkspace();
   const server = await startMockServer();
   const spool = path.join(ws.dir, 'spool.jsonl');
   try {
-    // Via env.
-    const res1 = await runScript(ws, {
-      env: {
-        AGENT_ID: 'ag-f', DASHBOARD_PORT: String(server.port), DASHBOARD_HOST: '127.0.0.1',
-        DASHBOARD_SPOOL_PATH: spool, CLAUDE_HOOK_EVENT_NAME: 'SubagentStop',
-        TMUX: undefined, TMUX_PANE: undefined,
-      },
-    });
-    assert.equal(res1.status, 0);
-    // Via stdin (no env).
-    const res2 = await runScript(ws, {
+    const res = await runScript(ws, {
+      argv: ['subagent-stop'],
       env: {
         AGENT_ID: 'ag-f', DASHBOARD_PORT: String(server.port), DASHBOARD_HOST: '127.0.0.1',
         DASHBOARD_SPOOL_PATH: spool, CLAUDE_HOOK_EVENT_NAME: undefined,
         TMUX: undefined, TMUX_PANE: undefined,
       },
-      stdinBody: JSON.stringify({ hook_event_name: 'SubagentStop' }),
+      stdinBody: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        session_id: 'session-f',
+        agent_id: 'child-f',
+      }),
     });
-    assert.equal(res2.status, 0);
-
-    assert.equal(fs.existsSync(spool), false, 'SubagentStop must never spool');
-    assert.equal(server.received.length, 0, 'SubagentStop must never POST');
+    assert.equal(res.status, 0);
+    const records = readSpool(spool);
+    assert.equal(records.length, 1, 'REACHABILITY:dashboard-status-script-subagent');
+    assert.equal(server.received.length, 1, 'SubagentStop must POST exactly once');
+    assert.deepStrictEqual(records[0], JSON.parse(server.received[0].body));
+    assert.deepStrictEqual(
+      {
+        state: records[0].state,
+        source: records[0].source,
+        kind: records[0].kind,
+        hookEventName: records[0].hookEventName,
+        sessionId: records[0].sessionId,
+        subagentId: records[0].subagentId,
+      },
+      {
+        state: 'active',
+        source: 'hook-subagent-stop',
+        kind: 'subagent-stop',
+        hookEventName: 'SubagentStop',
+        sessionId: 'session-f',
+        subagentId: 'child-f',
+      },
+    );
+    assert.notEqual(records[0].state, 'idle', 'SubagentStop bookkeeping is never idle');
   } finally {
     await server.close();
     ws.cleanup();
@@ -473,27 +488,48 @@ test('(w2) blocking permission prompt: multiline message → CR/LF collapsed to 
   }
 });
 
-test('(w3) SubagentStop bails BEFORE any waiting record, even with argv "waiting"', async () => {
+test('(w3) SubagentStart routes a correlated active bookkeeping record and never idle', async () => {
   const ws = makeWorkspace();
   const server = await startMockServer();
   const spool = path.join(ws.dir, 'spool.jsonl');
   try {
     const res = await runScript(ws, {
-      argv: ['waiting'],
+      argv: ['subagent-start'],
       env: {
         AGENT_ID: 'ag-w3', DASHBOARD_PORT: String(server.port), DASHBOARD_HOST: '127.0.0.1',
         DASHBOARD_SPOOL_PATH: spool, CLAUDE_HOOK_EVENT_NAME: undefined,
         TMUX: undefined, TMUX_PANE: undefined,
       },
       stdinBody: JSON.stringify({
-        hook_event_name: 'SubagentStop',
-        notification_type: 'permission_prompt',
-        message: 'should never be recorded',
+        hook_event_name: 'SubagentStart',
+        session_id: 'session-w3',
+        agent_id: 'child-w3',
       }),
     });
     assert.equal(res.status, 0, `exit 0; stderr=${res.stderr}`);
-    assert.equal(fs.existsSync(spool), false, 'SubagentStop must never spool a waiting record');
-    assert.equal(server.received.length, 0, 'SubagentStop must never POST a waiting record');
+    const records = readSpool(spool);
+    assert.equal(records.length, 1, 'SubagentStart must spool exactly once');
+    assert.equal(server.received.length, 1, 'SubagentStart must POST exactly once');
+    assert.deepStrictEqual(records[0], JSON.parse(server.received[0].body));
+    assert.deepStrictEqual(
+      {
+        state: records[0].state,
+        source: records[0].source,
+        kind: records[0].kind,
+        hookEventName: records[0].hookEventName,
+        sessionId: records[0].sessionId,
+        subagentId: records[0].subagentId,
+      },
+      {
+        state: 'active',
+        source: 'hook-subagent-start',
+        kind: 'subagent-start',
+        hookEventName: 'SubagentStart',
+        sessionId: 'session-w3',
+        subagentId: 'child-w3',
+      },
+    );
+    assert.notEqual(records[0].state, 'idle', 'SubagentStart bookkeeping is never idle');
   } finally {
     await server.close();
     ws.cleanup();

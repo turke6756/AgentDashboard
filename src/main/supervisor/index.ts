@@ -13,7 +13,7 @@ import {
   TMUX_SESSION_PREFIX, PROVIDER_COMMANDS, WORKER_CLAUDE_MODEL, RESEARCHER_CLAUDE_MODEL, RESEARCHER_CODEX_MODEL,
   SUPERVISOR_AGENT_NAME, SUPERVISOR_AGENT_MD, SUPERVISOR_AGENT_MD_CHILD, SUPERVISOR_AGENT_MD_CHILD_V1, SUPERVISOR_AGENT_MD_CHILD_V2, SUPERVISOR_AGENT_MD_CHILD_V3, SUPERVISOR_AGENT_MD_V24, SUPERVISOR_AGENT_MD_V27, SUPERVISOR_AGENT_MD_V28, SUPERVISOR_AGENT_MD_V29, SUPERVISOR_AGENT_MD_V31, SUPERVISOR_AGENT_MD_V32, SUPERVISOR_AGENT_MD_V33, SUPERVISOR_AGENT_MD_V34, SUPERVISOR_MEMORY_MD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON, SUPERVISOR_CLAUDE_SETTINGS_JSON_V1, SUPERVISOR_CLAUDE_SETTINGS_JSON_V2,
-  SUPERVISOR_CLAUDE_SETTINGS_JSON_V3, SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON_V3, SUPERVISOR_CLAUDE_SETTINGS_JSON_V4, SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL,
   SUPERVISOR_CONTEXT_ANALYTICS_SKILL,
   SUPERVISOR_CHECKPOINT_FORENSICS_SKILL,
@@ -22,7 +22,7 @@ import {
   WORKER_CLAUDE_MD, WORKER_CLAUDE_MD_V1, WORKER_CLAUDE_MD_V11, WORKER_CLAUDE_MD_V13, WORKER_CLAUDE_MD_V14, WORKER_CLAUDE_MD_V15, WORKER_CLAUDE_MD_V16, WORKER_CLAUDE_MD_V17, WORKER_CLAUDE_MD_V18, WORKER_BEHAVIORAL_MD,
   WORKER_CLAUDE_SETTINGS_JSON, WORKER_CLAUDE_SETTINGS_JSON_V2, WORKER_CLAUDE_SETTINGS_JSON_V3,
   WORKER_CLAUDE_SETTINGS_JSON_V4, WORKER_CLAUDE_SETTINGS_JSON_V5, WORKER_CLAUDE_SETTINGS_JSON_V6,
-  WORKER_CLAUDE_SETTINGS_JSON_V7, workerGrokSettingsJson, workerAgyHooksJson, workerAgyHooksJsonV2,
+  WORKER_CLAUDE_SETTINGS_JSON_V7, WORKER_CLAUDE_SETTINGS_JSON_V8, workerGrokSettingsJson, workerAgyHooksJson, workerAgyHooksJsonV2,
   WORKER_AGY_HOOKS_JSON_V1_HASH,
   WORKER_CODEX_CONFIG_TOML, WORKER_CODEX_CONFIG_TOML_V1, WORKER_CODEX_CONFIG_TOML_V2,
   WORKER_CODEX_CONFIG_TOML_V3, WORKER_CODEX_CONFIG_TOML_V4, WORKER_CODEX_CONFIG_TOML_V5,
@@ -33,7 +33,7 @@ import {
   GUARD_GIT_DISCARD_MJS, GUARD_GIT_DISCARD_MJS_V4, GUARD_GIT_DISCARD_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS, DASHBOARD_STATUS_SCRIPT_MJS_V3, DASHBOARD_STATUS_SCRIPT_MJS_V4, DASHBOARD_STATUS_SCRIPT_MJS_V5,
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
-  DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
+  DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH, DASHBOARD_STATUS_SCRIPT_V11_HASH,
   DASHBOARD_STATUSLINE_SCRIPT_MJS,
   CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS, SUBAGENT_ORPHAN_MS,
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
@@ -4217,8 +4217,8 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
-      version: 4, // v4 adds the statusLine → dashboard-statusline.mjs usage-capture block
-      previousHashes: { 1: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V2), 3: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V3) },
+      version: 5, // v5 adds correlated SubagentStart/SubagentStop bookkeeping hooks
+      previousHashes: { 1: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V1), 2: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V2), 3: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V3), 4: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V4) },
     },
     [`.lares/supervisor/.claude/skills/run-orchestration/SKILL.md`]:              {
       content: SUPERVISOR_RUN_ORCHESTRATION_SKILL,
@@ -4365,11 +4365,14 @@ export class AgentSupervisor extends EventEmitter {
    *  Notification types (idle_prompt et al.) so the ~60s idle reminder no longer
    *  flips the card to waiting.
    *  v10 adds explicit `--event`; v11 adds bounded pending-status rotation.
+   *  v12 routes SubagentStart/SubagentStop as active bookkeeping records; this
+   *  is safe because the supervisor now correlates children and never treats a
+   *  child stop as the parent's idle boundary.
    *  All previous hashes are recorded for silent upgrade. */
   private static WORKSPACE_SCRIPT_FILES: Record<string, ScaffoldFile> = {
     [`.lares/scripts/dashboard-status.mjs`]: {
       content: DASHBOARD_STATUS_SCRIPT_MJS,
-      version: 11,
+      version: 12,
       executable: true,
       previousHashes: {
         1: DASHBOARD_STATUS_SCRIPT_V1_HASH,
@@ -4382,6 +4385,7 @@ export class AgentSupervisor extends EventEmitter {
         8: DASHBOARD_STATUS_SCRIPT_V8_HASH,
         9: DASHBOARD_STATUS_SCRIPT_V9_HASH,
         10: DASHBOARD_STATUS_SCRIPT_V10_HASH,
+        11: DASHBOARD_STATUS_SCRIPT_V11_HASH,
       },
     },
     // Persona kit (§1.4) — one shared copy of the read-comments helper script.
@@ -4452,7 +4456,7 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/workers/claude/.claude/settings.json`]:           {
       content: WORKER_CLAUDE_SETTINGS_JSON,
-      version: 8, // v7 adds the statusLine → dashboard-statusline.mjs usage-capture block; v8 adds the PreToolUse(Bash) → guard-git-discard.mjs hook (blocks git commands that discard uncommitted work in the shared tree)
+      version: 9, // v9 adds correlated SubagentStart/SubagentStop bookkeeping hooks
       previousHashes: {
         1: WORKER_CLAUDE_SETTINGS_JSON_V1_HASH,
         2: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V2),
@@ -4461,6 +4465,7 @@ export class AgentSupervisor extends EventEmitter {
         5: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V5),
         6: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V6),
         7: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V7),
+        8: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V8),
       },
     },
     // Memory & Lessons v2 (WP-F1): the `remember` skill for the Claude WORKER

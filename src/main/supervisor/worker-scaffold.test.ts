@@ -416,6 +416,18 @@ test('WP-G: every lane settings.json keeps autoMemoryEnabled: false', () => {
   }
 });
 
+test('WP-3: worker and supervisor Claude settings register only correlated subagent hooks', () => {
+  for (const [lane, blob] of [
+    ['supervisor', SUPERVISOR_CLAUDE_SETTINGS_JSON],
+    ['worker', WORKER_CLAUDE_SETTINGS_JSON],
+  ] as const) {
+    const hooks = (JSON.parse(blob) as { hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>> }).hooks;
+    assert.equal(hooks.SubagentStart?.[0]?.hooks?.[0]?.command.endsWith('dashboard-status.mjs" subagent-start'), true, `${lane} SubagentStart command`);
+    assert.equal(hooks.SubagentStop?.[0]?.hooks?.[0]?.command.endsWith('dashboard-status.mjs" subagent-stop'), true, `${lane} SubagentStop command`);
+    assert.deepEqual((hooks.PreToolUse ?? []).filter((group) => group.matcher === 'Agent'), []);
+  }
+});
+
 // ── Grok Build worker scaffold (plan §2.6) ───────────────────────────
 //
 // The grok lane's hook carrier is the claude-compat managed file
@@ -506,7 +518,7 @@ test('Grok: sidecar records workers/grok/.claude/settings.json:2, independent of
     // carrier key, and the claude carrier is at its own (higher) version — so the
     // two lanes' carrier versions diverge freely.
     assert.equal(
-      sidecar['workers/claude/.claude/settings.json'], 8,
+      sidecar['workers/claude/.claude/settings.json'], 9,
       `claude carrier must keep its own version; got ${JSON.stringify(sidecar)}`,
     );
     assert.notEqual(

@@ -10,7 +10,8 @@ import {
 } from './scaffold-writer';
 import {
   WORKER_CLAUDE_SETTINGS_JSON, WORKER_CLAUDE_SETTINGS_JSON_V5, WORKER_CLAUDE_SETTINGS_JSON_V6,
-  WORKER_CLAUDE_SETTINGS_JSON_V7,
+  WORKER_CLAUDE_SETTINGS_JSON_V7, WORKER_CLAUDE_SETTINGS_JSON_V8,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
   SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON, SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON_V1,
   PERSONA_CREATE_PERSONA_SKILL, PERSONA_CREATE_PERSONA_SKILL_V1,
   PERSONA_READ_COMMENTS_SKILL, PERSONA_READ_COMMENTS_SKILL_V2, PERSONA_READ_COMMENTS_SKILL_V3, PERSONA_AGENT_MD_TEMPLATE,
@@ -164,11 +165,14 @@ function buildPersonaManagedFiles(
   // persona upgrades via the sidecar-drift branch.
   // previousHashes[2]/[3] are lane-specific because those bodies differ by lane;
   // previousHashes[1] stays the pre-Notification worker hash for both.
+  const supervisorPersonaSettingsV4 = SUPERVISOR_CLAUDE_SETTINGS_JSON_V4
+    .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+    .join('${CLAUDE_PROJECT_DIR}/../../scripts/');
   const settingsPrevHashes: Record<number, string> = lane === 'supervisor'
-    ? { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V5), 2: sha256Hex(SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON_V1), 3: sha256Hex(SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON) }
-    : { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V5), 2: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V6), 3: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V7) };
+    ? { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V5), 2: sha256Hex(SUPERVISOR_PERSONA_CLAUDE_SETTINGS_JSON_V1), 3: sha256Hex(supervisorPersonaSettingsV4), 4: sha256Hex(supervisorPersonaSettingsV4) }
+    : { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V5), 2: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V6), 3: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V7), 4: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V8) };
   return {
-    [`${base}/.claude/settings.json`]:                  { content: settingsContent, version: 4, previousHashes: settingsPrevHashes },
+    [`${base}/.claude/settings.json`]:                  { content: settingsContent, version: 5, previousHashes: settingsPrevHashes },
     // v3 (`.lares` rename): previousHashes[2] is the LAST v2-era bundled body
     // (the post-QW2 skill). A persona kit scaffolded between the QW2 bump and
     // that content change also sits at sidecar version 2 but with the older
