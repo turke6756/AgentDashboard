@@ -17,6 +17,8 @@
 import assert from 'node:assert/strict';
 import {
   WORKER_CLAUDE_SETTINGS_JSON,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON,
+  SUBAGENT_ORPHAN_MS,
   workerGrokSettingsJson,
   workerAgyHooksJson,
   WORKER_CODEX_CONFIG_TOML,
@@ -49,6 +51,22 @@ test('A1. Claude worker settings.json has a SessionStart hook → dashboard-stat
   assert.ok(/\bsession-start\b/.test(cmd), `SessionStart command must pass the session-start arg; got: ${cmd}`);
   // The session-start hook must NOT pass the 'working' arg (that would flip status).
   assert.ok(!/\bworking\b/.test(cmd), `SessionStart command must not pass 'working'; got: ${cmd}`);
+});
+
+test('A1b. delegation uses the 20-minute corruption bound and no production PreToolUse Agent hook', () => {
+  assert.equal(SUBAGENT_ORPHAN_MS, 20 * 60 * 1000);
+  for (const [label, raw] of [
+    ['worker', WORKER_CLAUDE_SETTINGS_JSON],
+    ['supervisor', SUPERVISOR_CLAUDE_SETTINGS_JSON],
+  ] as const) {
+    const hooks = (JSON.parse(raw) as {
+      hooks?: Record<string, Array<{ matcher?: string }>>;
+    }).hooks ?? {};
+    const agentMatchers = (hooks.PreToolUse ?? [])
+      .map((group) => group.matcher)
+      .filter((matcher) => matcher === 'Agent');
+    assert.deepEqual(agentMatchers, [], `${label} settings must not register production PreToolUse(Agent)`);
+  }
 });
 
 test('A2. Codex worker config.toml has a SessionStart hook → dashboard-status.mjs session-start', () => {

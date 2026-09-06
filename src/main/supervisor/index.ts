@@ -35,7 +35,7 @@ import {
   DASHBOARD_STATUS_SCRIPT_MJS_V6, DASHBOARD_STATUS_SCRIPT_V7_HASH, DASHBOARD_STATUS_SCRIPT_V8_HASH,
   DASHBOARD_STATUS_SCRIPT_V9_HASH, DASHBOARD_STATUS_SCRIPT_V10_HASH,
   DASHBOARD_STATUSLINE_SCRIPT_MJS,
-  CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS,
+  CODEX_WORKER_PROFILE_TOML, HOOK_CANARY_WINDOW_MS, SUBAGENT_ORPHAN_MS,
   HANDSHAKE_CONFIRM_WINDOW_MS, HANDSHAKE_CONFIRM_POLL_MS,
   TMUX_OPTION_MAX_AGE_MS, TMUX_OPTION_LAUNCH_SKEW_MS, STATUS_POLL_INTERVAL_MS,
   RESEARCH_STORE_README_MD, RESEARCH_STORE_README_MD_V2, RESEARCH_STORE_README_MD_V5, RESEARCH_WRITE_GUARD_MJS, RESEARCH_WRITE_GUARD_MJS_V8, RESEARCHER_CLAUDE_SETTINGS_JSON,
@@ -112,6 +112,7 @@ import {
 } from '../scaffold-writer';
 import { resolveLaunchCommand } from './launch-command';
 import { TurnEvidenceTracker } from './turn-evidence';
+import { SubagentDelegationTracker } from './subagent-delegation-tracker';
 import type { TurnCoordinator, TurnContext, TurnClosedEvent } from '../git-checkpoints/turn-coordinator';
 import type { TurnCompletionTracker } from './turn-completion-tracker';
 import { recordHandoffResult } from '../plans/package-ledger';
@@ -935,6 +936,8 @@ export interface ParsedHookEvent {
   hookEventName?: string;
   turnId?: string;
   sessionId?: string;
+  kind?: 'subagent-start' | 'subagent-stop' | string;
+  subagentId?: string;
   /** v≤6 HTTP body — bypass dedupe/freshness/ordering (steps 3–5). */
   legacy?: boolean;
 }
@@ -2683,6 +2686,8 @@ export class AgentSupervisor extends EventEmitter {
   private codexGateReleases = new Map<string, () => void>();
   // Rate limiter for invalid-event warnings (per agent, 60 s).
   private lastInvalidHookWarnAt = new Map<string, number>();
+  private lastSubagentOrphanWarnAt = new Map<string, number>();
+  private readonly subagentDelegations: SubagentDelegationTracker;
   // §3 — spool tailers, keyed by CANONICAL spool read path (the resolved
   // Windows-side path the tailer actually opens — UNC form for WSL
   // workspaces), NOT by workspace id: the same logical workspace reached via
@@ -2756,8 +2761,9 @@ export class AgentSupervisor extends EventEmitter {
   private readonly readEnvironment: EnvironmentReader;
   private readonly devDiscoveryFile: string;
 
-  constructor(deps: { readEnv?: EnvironmentReader; devDiscoveryFile?: string } = {}) {
+  constructor(deps: { readEnv?: EnvironmentReader; devDiscoveryFile?: string; now?: () => number } = {}) {
     super();
+    this.subagentDelegations = new SubagentDelegationTracker(deps.now ?? Date.now, SUBAGENT_ORPHAN_MS);
     this.readEnvironment = deps.readEnv ?? ((name) => process.env[name]);
     const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
     this.devDiscoveryFile = deps.devDiscoveryFile ?? devDiscoveryFilePath(appData);
@@ -2875,7 +2881,10 @@ export class AgentSupervisor extends EventEmitter {
     // supervisor's public emitter; the continuation watcher (wired in
     // src/main/index.ts) rides this existing periodic seam instead of owning
     // its own interval.
-    this.monitor.on('tick', () => this.emit('monitorTick'));
+    this.monitor.on('tick', () => {
+      this.monitorSubagentDelegations();
+      this.emit('monitorTick');
+    });
 
     // Direct emits from this supervisor (runner-exit / launch / restart / stop /
     // restart-failed) still need to reach the bridge — those paths bypass
@@ -8010,8 +8019,10 @@ export class AgentSupervisor extends EventEmitter {
     // inherit a stale dedupe registry / ordering watermark / launch stamp.
     this.appliedHookEvents.delete(agentId);
     this.lastAppliedHookTs.delete(agentId);
+    this.subagentDelegations.clear(agentId);
     this.launchStartedAt.delete(agentId);
     this.lastInvalidHookWarnAt.delete(agentId);
+    this.lastSubagentOrphanWarnAt.delete(agentId);
     this.releaseSpoolTailer(agentId);
     // WP-P2 — drop any undelivered initial prompt with the agent record.
     this.pendingInitialPrompts.delete(agentId);
@@ -8699,10 +8710,35 @@ export class AgentSupervisor extends EventEmitter {
     if (hookEventName.length === 0) {
       return this.invalidHookEvent(agentId, transport, 'empty hookEventName');
     }
+    const isDelegationEvent = event.kind === 'subagent-start' || event.kind === 'subagent-stop';
+    const hasDelegationShape = event.kind !== undefined
+      || hookEventName === 'SubagentStart'
+      || hookEventName === 'SubagentStop'
+      || event.subagentId !== undefined;
+    if (hasDelegationShape) {
+      const expectedName = event.kind === 'subagent-start'
+        ? 'SubagentStart'
+        : event.kind === 'subagent-stop'
+          ? 'SubagentStop'
+          : undefined;
+      if (
+        !expectedName
+        || event.state !== 'active'
+        || hookEventName !== expectedName
+        || typeof event.sessionId !== 'string'
+        || event.sessionId.length === 0
+        || typeof event.subagentId !== 'string'
+        || event.subagentId.length === 0
+      ) {
+        return this.invalidHookEvent(agentId, transport, 'invalid subagent bookkeeping combination');
+      }
+    }
 
     if (!event.legacy) {
       // 3. Dedupe — key is byte-identical across transports by construction.
-      const key = `${event.ts}:${hookEventName}:${event.turnId ?? ''}`;
+      const key = isDelegationEvent
+        ? `${event.ts}:${hookEventName}:${event.turnId ?? ''}:${event.kind}:${event.subagentId ?? ''}`
+        : `${event.ts}:${hookEventName}:${event.turnId ?? ''}`;
       const seen = this.appliedHookEvents.get(agentId);
       if (seen?.has(key)) {
         // No timestamp advance — a re-read of an already-applied event must
@@ -8743,8 +8779,10 @@ export class AgentSupervisor extends EventEmitter {
       //    in arrival order); strictly-older is stale. Same no-timestamp-
       //    advance rule as duplicates; no healthy side effect (the newer
       //    applied event already stamped it).
-      const lastTs = this.lastAppliedHookTs.get(agentId);
-      if (lastTs !== undefined && event.ts < lastTs) return 'stale';
+      if (!isDelegationEvent) {
+        const lastTs = this.lastAppliedHookTs.get(agentId);
+        if (lastTs !== undefined && event.ts < lastTs) return 'stale';
+      }
 
       // 6. Record the key + advance the ordering watermark.
       let set = seen;
@@ -8758,7 +8796,7 @@ export class AgentSupervisor extends EventEmitter {
         const oldest = set.values().next().value as string;
         set.delete(oldest);
       }
-      this.lastAppliedHookTs.set(agentId, event.ts);
+      if (!isDelegationEvent) this.lastAppliedHookTs.set(agentId, event.ts);
     }
 
     // 7. Stamp (applied events only), centrally, with receivedAt — the
@@ -8780,8 +8818,42 @@ export class AgentSupervisor extends EventEmitter {
             ? event.source
             : event.state === 'working' ? 'hook-start' : event.state === 'active' ? 'hook-session-start' : 'hook-stop');
 
+    if (
+      hookEventName === 'UserPromptSubmit'
+      && typeof event.sessionId === 'string'
+      && event.sessionId.length > 0
+    ) {
+      this.subagentDelegations.notePrompt(agentId, event.sessionId);
+    }
+
+    if (isDelegationEvent) {
+      const mutation = event.kind === 'subagent-start'
+        ? this.subagentDelegations.start(agentId, event.sessionId!, event.subagentId!, event.ts)
+        : this.subagentDelegations.stop(
+            agentId,
+            event.sessionId!,
+            event.subagentId!,
+            event.ts,
+            agent.status === 'waiting',
+          );
+      if (mutation.disposition !== 'applied') return mutation.disposition;
+      if (event.kind === 'subagent-start' && agent.status === 'idle') {
+        this.forceWorkingFromHook(agentId, flipSource);
+      }
+      return 'applied';
+    }
+
     if (event.state === 'idle') {
-      this.forceIdleFromHook(agentId, flipSource, receivedAt);
+      if (hookEventName === 'Stop' && this.subagentDelegations.inFlightCount(agentId) > 0) {
+        this.subagentDelegations.deferParentStop(agentId, {
+          hookTs: event.ts,
+          receivedAt,
+          source: flipSource,
+        });
+      } else {
+        if (hookEventName === 'Stop') this.subagentDelegations.authoritativeParentStop(agentId);
+        this.forceIdleFromHook(agentId, flipSource, receivedAt);
+      }
     } else if (event.state === 'working') {
       this.forceWorkingFromHook(agentId, flipSource);
     } else if (event.state === 'waiting') {
@@ -8800,6 +8872,7 @@ export class AgentSupervisor extends EventEmitter {
         !isNonBlockingNotificationType(event.notificationType) &&
         !isTurnCompleteNotificationMessage(notificationMessage)
       ) {
+        this.subagentDelegations.noteWaiting(agentId);
         this.monitor.forceWaiting(agentId, 'notification', event.waitingExcerpt ?? '');
       }
     }
@@ -8850,6 +8923,32 @@ export class AgentSupervisor extends EventEmitter {
       this.bindCodexSessionFromHook(agentId, event.sessionId);
     }
     return 'applied';
+  }
+
+  private monitorSubagentDelegations(): void {
+    const now = Date.now();
+    for (const agentId of this.subagentDelegations.trackedAgentIds) {
+      const agent = getAgent(agentId);
+      if (!agent) {
+        this.subagentDelegations.clear(agentId);
+        continue;
+      }
+      const result = this.subagentDelegations.sweep(agentId, agent.status === 'waiting');
+      if (result.expiredChildIds.length > 0) {
+        const lastWarn = this.lastSubagentOrphanWarnAt.get(agentId) ?? 0;
+        if (now - lastWarn >= 60_000) {
+          this.lastSubagentOrphanWarnAt.set(agentId, now);
+          console.warn(
+            `[subagent-delegation] expired running children for ${agentId} `
+            + `session=${result.parentSessionId ?? ''} children=${result.expiredChildIds.join(',')} `
+            + `oldestAgeMs=${result.oldestExpiredAgeMs ?? 0}`,
+          );
+        }
+      }
+      if (result.drain) {
+        this.forceIdleFromHook(agentId, result.drain.source, result.drain.receivedAt);
+      }
+    }
   }
 
   /** Rate-limited (60 s/agent) warn helper for applyHookStatusEvent. */
@@ -10208,6 +10307,12 @@ export class AgentSupervisor extends EventEmitter {
     // Relaunch agents that were running before the app was closed
     const activeAgents = getActiveAgents();
     for (const agent of activeAgents) {
+      if (agent.status === 'working' && !this.subagentDelegations.getState(agent.id)) {
+        // Correlation is intentionally process-local. Bound any pre-restart
+        // persisted working row even when reconnect is blocked and no new hook
+        // can arrive to authoritatively end the old turn.
+        this.subagentDelegations.reconcileRestart(agent.id);
+      }
       if (agent.provider === 'gemini') {
         const message = 'Gemini provider discontinued; the historical agent remains readable but will not be relaunched. Use Antigravity (agy) for new work.';
         const transition = applyStatusTransition(agent.id, 'crashed');

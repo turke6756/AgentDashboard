@@ -165,6 +165,47 @@ test('POST /api/agents/:id/status with full v7 meta → non-legacy event, ts pas
   }
 });
 
+test('POST /api/agents/:id/status accepts only complete subagent bookkeeping combinations', async () => {
+  const agent = makeAgent('a-sub');
+  const h = makeApi({ agent });
+  try {
+    for (const [kind, hookEventName, subagentId] of [
+      ['subagent-start', 'SubagentStart', 'child-a'],
+      ['subagent-stop', 'SubagentStop', 'child-a'],
+    ] as const) {
+      const res = await callRoute(h.api, 'POST', '/api/agents/a-sub/status', {
+        state: 'active', source: `hook-${kind}`, ts: 1717171718000,
+        hookEventName, kind, sessionId: 'session-a', subagentId,
+      });
+      assert.equal(res.status, 200, `valid ${kind} should be accepted; body=${JSON.stringify(res.body)}`);
+    }
+    assert.deepEqual(
+      h.recorded.map(({ event }) => [event.kind, event.hookEventName, event.sessionId, event.subagentId]),
+      [
+        ['subagent-start', 'SubagentStart', 'session-a', 'child-a'],
+        ['subagent-stop', 'SubagentStop', 'session-a', 'child-a'],
+      ],
+    );
+
+    const invalidBodies = [
+      { state: 'working', kind: 'subagent-start', hookEventName: 'SubagentStart', sessionId: 'session-a', subagentId: 'child-a' },
+      { state: 'active', kind: 'subagent-start', hookEventName: 'SubagentStop', sessionId: 'session-a', subagentId: 'child-a' },
+      { state: 'active', kind: 'subagent-start', hookEventName: 'SubagentStart', sessionId: '', subagentId: 'child-a' },
+      { state: 'active', kind: 'subagent-start', hookEventName: 'SubagentStart', sessionId: 'session-a', subagentId: '' },
+      { state: 'active', kind: 'subagent-bogus', hookEventName: 'SubagentStart', sessionId: 'session-a', subagentId: 'child-a' },
+      { state: 'active', hookEventName: 'SubagentStart', sessionId: 'session-a', subagentId: 'child-a' },
+      { state: 'active', hookEventName: 'SessionStart', sessionId: 'session-a', subagentId: 'child-a' },
+    ];
+    for (const body of invalidBodies) {
+      const res = await callRoute(h.api, 'POST', '/api/agents/a-sub/status', {
+        source: 'hook-test', ts: 1717171718001, ...body,
+      });
+      assert.equal(res.status, 400, `invalid bookkeeping must be rejected: ${JSON.stringify(body)}`);
+    }
+    assert.equal(h.recorded.length, 2, 'invalid bookkeeping never reaches the authoritative applier');
+  } finally { h.cleanup(); }
+});
+
 test('POST /api/agents/:id/status with full waiting body → applied, excerpt + notificationType threaded', async () => {
   const agent = makeAgent('a-w');
   const h = makeApi({ agent });

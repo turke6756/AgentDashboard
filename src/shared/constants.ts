@@ -311,6 +311,7 @@ export const HANDSHAKE_CONFIRM_POLL_MS = 250;
 // long turn does NOT trigger this: streaming output / TUI spinner redraws
 // keep the raw PTY timestamp fresh.
 export const WORKER_STALL_WARN_MS = 15 * 60 * 1000;  // 15 min
+export const SUBAGENT_ORPHAN_MS = 20 * 60 * 1000; // 20 min
 
 // Synchronous submit confirmation (plans/global-hook-rollout-and-submit-confirmation.md
 // §2.3/§2.4, Q4). The send chokepoint (`AgentSupervisor._doSendInput`) confirms a

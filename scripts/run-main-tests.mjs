@@ -123,6 +123,11 @@ const TESTS = [
   'dist/main/main/supervisor/agy-researcher-lane.test.js',
   'dist/main/main/supervisor/grok-researcher-lane.test.js',
   'dist/main/main/supervisor/agent-supervisor.test.js',
+  // plan_11bfa6ab WP-2: delegation tracker, authoritative applier/restart drain,
+  // and HTTP edge validation. Keep ahead of unrelated fail-fast suites.
+  'dist/main/main/supervisor/subagent-delegation-tracker.test.js',
+  'dist/main/main/supervisor/subagent-delegation-applier.test.js',
+  'dist/main/main/api-server-status.test.js',
   // Idle-agent lifecycle: §B2/§B3 migration + transition writer, §B5/§B6 stop engine.
   'dist/main/main/lifecycle-transition.test.js',
   'dist/main/main/supervisor/lifecycle-stop.test.js',

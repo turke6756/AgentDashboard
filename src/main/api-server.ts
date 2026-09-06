@@ -2416,8 +2416,42 @@ export class ApiServer {
         sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined,
         waitingExcerpt: typeof parsed.excerpt === 'string' ? parsed.excerpt : undefined,
         notificationType: typeof parsed.notificationType === 'string' ? parsed.notificationType : undefined,
+        // WP-2 (deliberation D1): subagent delegation bookkeeping fields. Only
+        // subagent-start / subagent-stop records carry them; every other body
+        // leaves them undefined and keeps the pre-WP-2 shape byte-for-byte.
+        kind: typeof parsed.kind === 'string' ? parsed.kind : undefined,
+        subagentId: typeof parsed.subagentId === 'string' ? parsed.subagentId : undefined,
         legacy,
       };
+      // WP-2 (D1) — validate combinations, not fields, at the transport edge too.
+      // The applier is authoritative (spool/tmux bypass this normalizer), but a
+      // malformed HTTP bookkeeping body is rejected here as a 400 rather than
+      // silently degrading to a SessionStart-like `active`.
+      const hasDelegationShape = event.kind !== undefined
+        || event.hookEventName === 'SubagentStart'
+        || event.hookEventName === 'SubagentStop'
+        || event.subagentId !== undefined;
+      if (hasDelegationShape) {
+        const expectedName = event.kind === 'subagent-start'
+          ? 'SubagentStart'
+          : event.kind === 'subagent-stop'
+            ? 'SubagentStop'
+            : undefined;
+        if (
+          !expectedName
+          || event.state !== 'active'
+          || event.hookEventName !== expectedName
+          || typeof event.sessionId !== 'string'
+          || event.sessionId.length === 0
+          || typeof event.subagentId !== 'string'
+          || event.subagentId.length === 0
+        ) {
+          throw Object.assign(
+            new Error('invalid subagent bookkeeping combination'),
+            { statusCode: 400 },
+          );
+        }
+      }
       const result = this.supervisor.applyHookStatusEvent(agentId, event, 'http');
       return { ok: true, agentId, state, source: sourceTag, result };
     }
