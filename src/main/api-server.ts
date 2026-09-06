@@ -57,7 +57,7 @@ import * as nodePath from 'path';
 import { canonicalizeToAbsolute } from './file-activity-normalize';
 import type { SigninPendingResult, SigninPendingEntry } from '../shared/browser';
 import { isKeyName, mapKeyToBytes, SUPPORTED_KEY_NAMES } from './supervisor/key-bytes';
-import type { OrchestrationService } from './orchestration/service';
+import { orchestrationArtifactKind, type OrchestrationService } from './orchestration/service';
 import crypto from 'crypto';
 import os from 'os';
 // ── WP7 agent-facing read-only optimizer surface (additive; GET-only). ──
@@ -2714,7 +2714,7 @@ export class ApiServer {
     if (method === 'GET' && orchOne) {
       const run = this.orchestration!.getRun(orchOne[1]);
       if (!run) throw Object.assign(new Error('Run not found'), { statusCode: 404 });
-      return run;
+      return { ...run, planId: run.planId ?? null, artifactKind: orchestrationArtifactKind(run) };
     }
     // DELETE /api/orchestrations/:runId — abort + clean up members
     if (method === 'DELETE' && orchOne) return this.orchestration!.abort(orchOne[1]);

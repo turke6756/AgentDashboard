@@ -26,6 +26,7 @@ import {
   __resetOrchestrationProviderSettingsForTest,
   updateOrchestrationProviderSettings,
 } from './orchestration-provider-settings';
+import { resetWorkspaceStateDirCacheForTests } from '../workspace-state-dir';
 
 // ── In-memory DB patch ───────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -38,6 +39,7 @@ const providerSettingsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-orches
 const workspaceRoots = {
   defaulted: path.join(providerSettingsRoot, 'defaulted'),
   builtIn: path.join(providerSettingsRoot, 'built-in'),
+  dashboard: path.join(providerSettingsRoot, 'dashboard'),
 };
 const PLAN_UUID = '11111111-1111-4111-8111-111111111111';
 const SECOND_PLAN_UUID = '22222222-2222-4222-8222-222222222222';
@@ -55,6 +57,7 @@ const WSL_PLAN_ARTIFACT_ID = 'plan_f1a2b3c4';
 db.getWorkspace = (id: string) => {
   if (id === 'ws-1') return { id: 'ws-1', path: workspaceRoots.defaulted, pathType: 'windows' };
   if (id === 'ws-built-in') return { id: 'ws-built-in', path: workspaceRoots.builtIn, pathType: 'windows' };
+  if (id === 'ws-dashboard') return { id: 'ws-dashboard', path: workspaceRoots.dashboard, pathType: 'windows' };
   if (id === 'ws-wsl') return { id: 'ws-wsl', path: workspaceRoots.defaulted, pathType: 'wsl' };
   return null;
 };
@@ -185,6 +188,10 @@ function baseReq(extra: Record<string, unknown> = {}) {
   return req as any;
 }
 
+function planlessReq(extra: Record<string, unknown> = {}) {
+  return baseReq({ planId: undefined, planningIntentId: undefined, ...extra });
+}
+
 interface HttpResult { status: number; body: string; }
 function request(port: number, body: Record<string, unknown>, workspaceId = 'ws-1'): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
@@ -206,6 +213,26 @@ function request(port: number, body: Record<string, unknown>, workspaceId = 'ws-
     });
     req.on('error', reject);
     req.end(payload);
+  });
+}
+
+function getRequest(port: number, requestPath: string, workspaceId = 'ws-1'): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1', port, path: requestPath, method: 'GET', agent: false,
+      headers: {
+        Authorization: `Bearer ${getApiToken()}`,
+        'X-Workspace-Id': workspaceId,
+        'X-Supervisor-Id': 'sup-1',
+      },
+    }, (res) => {
+      let responseBody = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: responseBody }));
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -330,6 +357,103 @@ function priorRun(runId: string, leadProvider = 'claude', reviewerProvider = 'co
     updatedAt: now,
   };
 }
+
+test('plan-less fresh launch freezes the none binding and a contained library target', async () => {
+  const gate = deferred();
+  const runner: OrchestrationRunner = async () => { await gate.promise; };
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const { runId, planId } = svc.start_run(planlessReq());
+  const run = getRun(runId)!;
+
+  assert.equal(planId, null);
+  assert.equal(run.planId, undefined);
+  assert.equal(run.planArtifactId, null);
+  assert.equal(run.planningIntentId, null);
+  assert.equal(run.planItemId, null);
+  assert.equal(run.sectionAnchor, undefined);
+  assert.equal(run.planBindingMode, 'none');
+  assert.equal(run.planOutputKind, 'library-deliberation');
+  assert.equal(path.dirname(path.dirname(run.planPath)), path.join(workspaceRoots.defaulted, '.lares', 'library'));
+  assert.match(path.basename(run.planPath), /^\d{4}-\d{2}-\d{2}-groupthink-[0-9a-f]{8}\.md$/);
+  assert.ok(fs.statSync(path.dirname(run.planPath)).isDirectory(), 'deliberations parent exists before dispatch');
+  assert.equal(run.planBaselineHash, null, 'the absent frozen target has a null baseline');
+
+  gate.resolve();
+  await waitFor(() => getRun(runId)?.status === 'complete');
+});
+
+test('fresh and resume launches enforce plan/intent pairing and reject orphan anchors before branching', () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  db.insertOrchestration(priorRun('pair-resume'));
+
+  const rejected = [
+    baseReq({ planningIntentId: undefined }),
+    baseReq({ planId: undefined }),
+    baseReq({ planId: '', planningIntentId: 'int_1234abcd' }),
+    baseReq({ planId: 7, planningIntentId: 'int_1234abcd' }),
+    baseReq({ planId: PLAN_ARTIFACT_ID, planningIntentId: 7 }),
+    planlessReq({ sectionAnchor: 'sec_orphan' }),
+    baseReq({ resumeRunId: 'pair-resume', planId: PLAN_ARTIFACT_ID, planningIntentId: undefined }),
+    baseReq({ resumeRunId: 'pair-resume', sectionAnchor: 'sec_orphan' }),
+  ];
+  for (const req of rejected) {
+    assert.throws(
+      () => svc.start_run(req),
+      (err: unknown) => (err as { statusCode?: number }).statusCode === 400,
+      'REACHABILITY:orchestration-service-planless-gate',
+    );
+  }
+
+  assert.doesNotThrow(() => svc.start_run(planlessReq()));
+  assert.doesNotThrow(() => svc.start_run(baseReq({ sectionAnchor: 'sec_bound' })));
+  assert.doesNotThrow(() => svc.start_run(baseReq({ resumeRunId: 'pair-resume' })));
+
+  db.insertOrchestration({
+    ...priorRun('pair-resume-mismatch'),
+    planId: PLAN_UUID,
+    planningIntentId: 'int_1234abcd',
+  });
+  assert.throws(
+    () => svc.start_run(baseReq({
+      resumeRunId: 'pair-resume-mismatch',
+      planId: SECOND_PLAN_ARTIFACT_ID,
+      planningIntentId: 'int_1234abcd',
+    })),
+    (err: unknown) => (err as { statusCode?: number; code?: string }).statusCode === 409
+      && (err as { code?: string }).code === 'plan_ref_resume_mismatch',
+  );
+});
+
+test('plan-less target follows both live and legacy workspace-state roots', async () => {
+  const runner: OrchestrationRunner = async () => {};
+  const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+  const live = svc.start_run(planlessReq());
+  assert.equal(
+    path.dirname(path.dirname(getRun(live.runId)!.planPath)),
+    path.join(workspaceRoots.defaulted, '.lares', 'library'),
+  );
+
+  fs.mkdirSync(path.join(workspaceRoots.dashboard, '.dashboard'), { recursive: true });
+  resetWorkspaceStateDirCacheForTests();
+  const renameSync = fs.renameSync;
+  (fs as any).renameSync = (from: fs.PathLike, to: fs.PathLike) => {
+    if (path.resolve(String(from)) === path.resolve(workspaceRoots.dashboard, '.dashboard')) {
+      const err = Object.assign(new Error('simulated locked legacy state dir'), { code: 'EPERM' });
+      throw err;
+    }
+    return renameSync(from, to);
+  };
+  try {
+    const legacy = svc.start_run(planlessReq({ workspaceId: 'ws-dashboard' }));
+    assert.equal(
+      path.dirname(path.dirname(getRun(legacy.runId)!.planPath)),
+      path.join(workspaceRoots.dashboard, '.dashboard', 'library'),
+    );
+  } finally {
+    (fs as any).renameSync = renameSync;
+  }
+});
 
 test('resume rejects provider mutation with 409, including legacy-command-derived providers', () => {
   const svc = new OrchestrationService(makeClient(), makeDeliver().fn);
@@ -488,7 +612,9 @@ test('complete and stalled events report the derived deliberation target', async
   await waitFor(() => getRun(complete.runId)?.status === 'complete');
   const completePath = getRun(complete.runId)!.planPath;
   const completeEvent = eventsFor(complete.runId).find((event) => event.kind === 'complete');
-  assert.deepEqual(completeEvent?.payload, { planPath: completePath });
+  assert.deepEqual(completeEvent?.payload, {
+    planPath: completePath, planId: PLAN_UUID, artifactKind: 'plan',
+  });
   assert.ok(completeDeliver.calls[0].text.includes(completePath));
 
   const stalledDeliver = makeDeliver();
@@ -503,6 +629,48 @@ test('complete and stalled events report the derived deliberation target', async
   assert.equal((stalledEvent?.payload as { planPath?: string }).planPath, stalledPath);
   const stalledDelivery = JSON.parse(stalledDeliver.calls[0].text.split('\n').slice(1).join('\n'));
   assert.equal(stalledDelivery.planPath, stalledPath);
+});
+
+test('plan-less lifecycle events, relay, GET, and stamp expose deliberation semantics without focus mutation', async () => {
+  lastFocusUpsert = null;
+  const runner: OrchestrationRunner = async (_client, ctx) => {
+    fs.writeFileSync(ctx.run.planPath, '# Standalone deliberation\n');
+  };
+  const delivery = makeDeliver();
+  const svc = new OrchestrationService(makeClient(), delivery.fn, { serial: runner, parallel: runner });
+  const supervisor = { getUsageLimits: () => ({ available: false }) } as unknown as AgentSupervisor;
+  const server = new ApiServer(supervisor, 0, svc, '127.0.0.1');
+  const port = await server.start();
+  try {
+    const launched = await request(port, {
+      name: 'groupthink',
+      params: { workspaceId: 'ws-1', supervisorId: 'sup-1', topic: 'Plan-less lifecycle' },
+    });
+    assert.equal(launched.status, 200);
+    const { runId } = JSON.parse(launched.body) as { runId: string };
+    await waitFor(() => getRun(runId)?.status === 'complete');
+    const run = getRun(runId)!;
+
+    const started = eventsFor(runId).find((event) => event.kind === 'started')?.payload as any;
+    const complete = eventsFor(runId).find((event) => event.kind === 'complete')?.payload as any;
+    assert.equal(started.planId, null);
+    assert.equal(started.artifactKind, 'deliberation');
+    assert.equal(complete.planId, null);
+    assert.equal(complete.artifactKind, 'deliberation');
+    assert.match(delivery.calls[0].text, new RegExp(`Deliberation at .*${runId}\\.md`));
+
+    const pulled = await getRequest(port, `/api/orchestrations/${runId}`);
+    assert.equal(pulled.status, 200);
+    const serialized = JSON.parse(pulled.body);
+    assert.equal(serialized.planId, null);
+    assert.equal(serialized.artifactKind, 'deliberation');
+    assert.equal(focusUpserted(), null, 'plan-less POST does not auto-focus a plan');
+
+    const content = fs.readFileSync(run.planPath, 'utf8');
+    assert.equal((content.match(/<!-- groupthink_run:/g) ?? []).length, 1, 'completion stamps exactly once');
+  } finally {
+    server.stop();
+  }
 });
 
 test('new-launch plan and intent failures preserve the settled rung codes and exact messages', () => {
@@ -690,7 +858,7 @@ test('a STALL throw transitions the run to stalled + emits a resume_hint', async
   const { fn, calls } = makeDeliver();
   const svc = new OrchestrationService(makeClient(), fn, { serial: runner, parallel: runner });
 
-  const { runId } = svc.start_run(baseReq());
+  const { runId } = svc.start_run(planlessReq());
   await waitFor(() => getRun(runId)?.status === 'stalled');
   const run = getRun(runId)!;
   assert.equal(run.status, 'stalled');
@@ -699,6 +867,10 @@ test('a STALL throw transitions the run to stalled + emits a resume_hint', async
   assert.equal(calls.length, 1);
   assert.match(calls[0].text, /orchestration\.groupthink\.stalled/);
   assert.match(calls[0].text, new RegExp(runId), 'resume_hint carries the runId');
+  const payload = eventsFor(runId).find((event) => event.kind === 'stalled')?.payload as any;
+  assert.equal(payload.planId, null);
+  assert.equal(payload.artifactKind, 'deliberation');
+  assert.equal(payload.resume_hint.params.resumeRunId, runId);
 });
 
 test('a non-stall throw transitions the run to error', async () => {
@@ -721,7 +893,7 @@ test('abort cancels the run, delivers an aborted event, and persists aborted', a
   const { fn, calls } = makeDeliver();
   const svc = new OrchestrationService(makeClient(), fn, { serial: runner, parallel: runner });
 
-  const { runId } = svc.start_run(baseReq());
+  const { runId } = svc.start_run(planlessReq());
   await waitFor(() => getRun(runId)?.status === 'running');
 
   const res = svc.abort(runId);
@@ -731,6 +903,10 @@ test('abort cancels the run, delivers an aborted event, and persists aborted', a
   // The runner rejection after abort must NOT also deliver a stalled event.
   await new Promise((r) => setTimeout(r, 50));
   assert.ok(!calls.some((c) => /stalled/.test(c.text)), 'no stalled delivery on an aborted run');
+  const payload = JSON.parse(calls.find((c) => /orchestration\.groupthink\.aborted/.test(c.text))!.text.split('\n').slice(1).join('\n'));
+  assert.equal(payload.planId, null);
+  assert.equal(payload.artifactKind, 'deliberation');
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, 'resume_hint'), false);
 });
 
 test('delivery_failed event is recorded when the supervisor is unreachable', async () => {
@@ -754,6 +930,9 @@ test('boot reconcile marks orphaned running rows aborted + emits a resume hint',
     supervisorId: 'sup-boot',
     topic: 'left mid-flight',
     planPath: path.join(os.tmpdir(), 'plan.md'),
+    planId: undefined,
+    planOutputKind: 'library-deliberation',
+    planBindingMode: 'none',
     leadProvider: 'claude',
     reviewerProvider: 'codex',
     turnTimeoutMs: 600000,
@@ -772,6 +951,10 @@ test('boot reconcile marks orphaned running rows aborted + emits a resume hint',
   const delivered = calls.find((c) => /dashboard_restarted/.test(c.text))!;
   assert.match(delivered.text, /orphan01/, 'resume hint carries the orphaned runId');
   assert.equal(delivered.supervisorId, 'sup-boot');
+  const payload = JSON.parse(delivered.text.split('\n').slice(1).join('\n'));
+  assert.equal(payload.planId, null);
+  assert.equal(payload.artifactKind, 'deliberation');
+  assert.equal(payload.resume_hint.params.resumeRunId, 'orphan01');
 });
 
 // ── WP6: planning-surface rail persistence ──────────────────────────────────
@@ -813,8 +996,8 @@ test('new launches reject missing or mismatched plan/intent bindings before pers
   const svc = new OrchestrationService(makeClient(), fn, { serial: runner, parallel: runner });
 
   const before = runsStore.size;
-  assert.throws(() => svc.start_run(baseReq({ planId: undefined })), /require both/);
-  assert.throws(() => svc.start_run(baseReq({ planningIntentId: undefined })), /require both/);
+  assert.throws(() => svc.start_run(baseReq({ planId: undefined })), /must be provided together, or both omitted/);
+  assert.throws(() => svc.start_run(baseReq({ planningIntentId: undefined })), /must be provided together, or both omitted/);
   assert.throws(() => svc.start_run(baseReq({ planningIntentId: 'int_deadbeef' })), /status 'withdrawn'; expected 'active'/);
   assert.throws(() => svc.start_run(baseReq({ planningIntentId: 'intent_bad' })), /must match/);
   assert.equal(runsStore.size, before, 'rejected launches write no orchestration row');

@@ -49,6 +49,7 @@ export function getOrchestrationDispatch(run: OrchestrationRun): DispatchContext
   const existing = runDispatches.get(run);
   if (existing) return existing;
   const mode = run.planBindingMode ?? (run.planId ? 'explicit' : 'agent-default');
+  const source = mode === 'none' ? 'explicit-none' : mode;
   const dispatch = withResolvedPlanStamp(
     { origin: 'orchestration', ownerAgentId: run.supervisorId },
     {
@@ -56,7 +57,7 @@ export function getOrchestrationDispatch(run: OrchestrationRun): DispatchContext
       // SC-WP-3A: an explicit plan+item run carries its validated item; a
       // plan-only or default run stays item-less.
       planItemId: run.planItemId ?? null,
-      source: mode,
+      source,
     },
   );
   runDispatches.set(run, dispatch);

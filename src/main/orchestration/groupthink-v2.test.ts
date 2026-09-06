@@ -24,8 +24,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   planArtifactHash, planArtifactMatchesRun, preparePlanBaselineForResume,
-  runSerial, runParallel,
+  runSerial, runParallel, getOrchestrationDispatch,
 } from './groupthink-v2';
+import { buildDispatchTurnContext } from '../git-checkpoints/dispatch-context';
 import { parallelSynthesisPrompt, serialLeadPrompt, writebackClause } from './groupthink-v2-prompts';
 import { Agent } from '../../shared/types';
 import { DashboardClient, OrchestrationRun, OrchestrationRunContext } from './types';
@@ -217,6 +218,20 @@ function planArtifact(run: OrchestrationRun, overrides: { intentId?: string; pla
     `---\n\n# Delivered plan\n`;
 }
 
+test('T7: a plan-less "none" run maps its dispatch stamp source to explicit-none', async () => {
+  const noneRun = makeRun({
+    runId: 'none-dispatch', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation',
+  });
+  const deps = {
+    getAgent: () => ({ workspaceId: 'ws-1', planId: 'live-plan-changed' }),
+    resolveCapability: async () => ({ repoRoot: 'C:\repo' }) as any,
+  };
+  const ctx = await buildDispatchTurnContext(deps, 'worker', getOrchestrationDispatch(noneRun));
+  assert.deepEqual(ctx?.planStamp, {
+    planId: null, planItemId: null, source: 'explicit-none',
+  });
+});
 test('legacy fresh-file and anchored HTML writeback clauses remain byte-identical', () => {
   const legacyPath = '/tmp/legacy-plan.md';
   assert.equal(writebackClause(legacyPath), `write the plan file to ${legacyPath}`);

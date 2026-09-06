@@ -58,6 +58,20 @@ function frozenPlanPath(
   return target;
 }
 
+function libraryDeliberationPath(
+  workspaceRoot: string,
+  runId: string,
+  pathType: PathType,
+  date: string,
+): string {
+  const libRoot = path.resolve(workspaceStateDir(workspaceRoot, pathType), 'library');
+  const target = path.resolve(libRoot, 'deliberations', `${date}-groupthink-${runId}.md`);
+  if (!isContainedPath(libRoot, target)) {
+    throw httpErr(409, 'Derived deliberation target escapes the library folder');
+  }
+  return target;
+}
+
 function planOutputKind(
   workspaceRoot: string,
   registeredPath: string,
@@ -70,6 +84,10 @@ function planOutputKind(
   return path.basename(planPath).toLowerCase() === 'plan.md' && isContainedPath(plansHome, planPath)
     ? 'folder-deliberation'
     : 'registered-surface';
+}
+
+export function orchestrationArtifactKind(run: OrchestrationRun): 'plan' | 'deliberation' {
+  return run.planOutputKind === 'library-deliberation' ? 'deliberation' : 'plan';
 }
 
 export function assertGroupthinkProvider(role: 'lead_provider' | 'reviewer_provider', value: string | undefined): void {
@@ -128,6 +146,7 @@ export class OrchestrationService extends EventEmitter {
         JSON.stringify({
           runId: run.runId, mode: run.mode, reason: 'dashboard_restarted',
           topic: run.topic, planPath: run.planPath,
+          planId: run.planId ?? null, artifactKind: orchestrationArtifactKind(run),
           resume_hint: { tool: 'run_orchestration', name: 'groupthink', params: { resumeRunId: run.runId } },
         }, null, 2));
     }
@@ -152,6 +171,23 @@ export class OrchestrationService extends EventEmitter {
       Object.assign(req, parseLegacyGroupthinkCommand(req.legacyCommand), {
         workspaceId: req.workspaceId, supervisorId: req.supervisorId, name: req.name,
       });
+    }
+
+    const hasPlan = req.planId !== undefined && req.planId !== null;
+    const hasIntent = req.planningIntentId !== undefined && req.planningIntentId !== null;
+    if (hasPlan !== hasIntent) {
+      throw httpErr(400, 'planId and planningIntentId must be provided together, or both omitted');
+    }
+    if (!hasPlan && req.sectionAnchor !== undefined) {
+      throw httpErr(400, 'sectionAnchor requires planId and planningIntentId');
+    }
+    if (hasPlan) {
+      if (typeof req.planId !== 'string' || req.planId.trim() === '') {
+        throw httpErr(400, 'planId must be a non-empty string');
+      }
+      if (typeof req.planningIntentId !== 'string' || !isPlanningIntentId(req.planningIntentId)) {
+        throw httpErr(400, 'planningIntentId must match int_[0-9a-f]{8}');
+      }
     }
 
     let run: OrchestrationRun;
@@ -185,45 +221,72 @@ export class OrchestrationService extends EventEmitter {
       assertGroupthinkProvider('reviewer_provider', req.reviewerProvider);
       const ws = getWorkspace(req.workspaceId);
       if (!ws) throw httpErr(404, 'Workspace not found');
-      if (!req.planId || !req.planningIntentId) {
-        throw httpErr(400, 'New orchestration launches require both planId and planningIntentId');
-      }
-      if (!isPlanningIntentId(req.planningIntentId)) {
-        throw httpErr(400, 'planningIntentId must match int_[0-9a-f]{8}');
-      }
-      const resolved = resolveActivePlanRef(req.workspaceId, req.planId, req.planningIntentId);
-      // Resolve the registered plan path once. Folder-native plans freeze a
-      // per-run deliberation target; registered HTML surfaces keep their own
-      // path. Every downstream consumer uses that frozen output contract.
-      if (!resolved.plan.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
-      const planRel = resolved.plan.path;
       const prov = getOrchestrationProviderSettingsCached(ws.path).groupthink;
       const runId = uuidv4().slice(0, 8);
-      const outputKind = planOutputKind(ws.path, planRel, ws.pathType);
-      run = {
-        runId,
-        name: 'groupthink',
-        mode: req.mode === 'parallel' ? 'parallel' : 'serial',
-        status: 'starting',
-        workspaceId: req.workspaceId,
-        supervisorId: req.supervisorId,
-        topic: req.topic || 'Research and plan a feature.',
-        planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId, runId, outputKind),
-        planId: resolved.planId,
-        planArtifactId: resolved.plan.artifactId ?? null,
-        planOutputKind: outputKind,
-        planningIntentId: req.planningIntentId,
-        sectionAnchor: req.sectionAnchor,
-        leadProvider: req.leadProvider || prov.defaultLeadProvider,
-        reviewerProvider: req.reviewerProvider || prov.defaultReviewerProvider,
-        turnTimeoutMs: req.turnTimeoutMs && req.turnTimeoutMs > 0 ? req.turnTimeoutMs : 600000,
-        leadId: req.resumeLeadId,
-        reviewerId: req.resumeReviewerId,
-        lastRelayedTs: {},
-        startedAt: nowIso(),
-        updatedAt: nowIso(),
-      };
-      run.planBaselineHash = planArtifactHash(run.planPath);
+      const startedAt = nowIso();
+      const date = startedAt.slice(0, 10);
+      if (!hasPlan) {
+        const planPath = libraryDeliberationPath(ws.path, runId, ws.pathType, date);
+        fs.mkdirSync(path.dirname(planPath), { recursive: true });
+        run = {
+          runId,
+          name: 'groupthink',
+          mode: req.mode === 'parallel' ? 'parallel' : 'serial',
+          status: 'starting',
+          workspaceId: req.workspaceId,
+          supervisorId: req.supervisorId,
+          topic: req.topic || 'Research and plan a feature.',
+          planPath,
+          planId: undefined,
+          planArtifactId: null,
+          planItemId: null,
+          planOutputKind: 'library-deliberation',
+          planningIntentId: null,
+          planBindingMode: 'none',
+          sectionAnchor: undefined,
+          leadProvider: req.leadProvider || prov.defaultLeadProvider,
+          reviewerProvider: req.reviewerProvider || prov.defaultReviewerProvider,
+          turnTimeoutMs: req.turnTimeoutMs && req.turnTimeoutMs > 0 ? req.turnTimeoutMs : 600000,
+          leadId: req.resumeLeadId,
+          reviewerId: req.resumeReviewerId,
+          lastRelayedTs: {},
+          startedAt,
+          updatedAt: startedAt,
+        };
+        run.planBaselineHash = planArtifactHash(run.planPath);
+      } else {
+        const resolved = resolveActivePlanRef(req.workspaceId, req.planId as string, req.planningIntentId as string);
+        // Resolve the registered plan path once. Folder-native plans freeze a
+        // per-run deliberation target; registered HTML surfaces keep their own
+        // path. Every downstream consumer uses that frozen output contract.
+        if (!resolved.plan.path) throw httpErr(409, 'Requested plan is not available for orchestration launch');
+        const planRel = resolved.plan.path;
+        const outputKind = planOutputKind(ws.path, planRel, ws.pathType);
+        run = {
+          runId,
+          name: 'groupthink',
+          mode: req.mode === 'parallel' ? 'parallel' : 'serial',
+          status: 'starting',
+          workspaceId: req.workspaceId,
+          supervisorId: req.supervisorId,
+          topic: req.topic || 'Research and plan a feature.',
+          planPath: frozenPlanPath(ws.path, planRel, req.planningIntentId as string, runId, outputKind),
+          planId: resolved.planId,
+          planArtifactId: resolved.plan.artifactId ?? null,
+          planOutputKind: outputKind,
+          planningIntentId: req.planningIntentId as string,
+          sectionAnchor: req.sectionAnchor,
+          leadProvider: req.leadProvider || prov.defaultLeadProvider,
+          reviewerProvider: req.reviewerProvider || prov.defaultReviewerProvider,
+          turnTimeoutMs: req.turnTimeoutMs && req.turnTimeoutMs > 0 ? req.turnTimeoutMs : 600000,
+          leadId: req.resumeLeadId,
+          reviewerId: req.resumeReviewerId,
+          lastRelayedTs: {},
+          startedAt,
+          updatedAt: startedAt,
+        };
+        run.planBaselineHash = planArtifactHash(run.planPath);
+      }
     }
     insertOrchestration(run);            // upsert
     void this.execute(run, !!req.keepAgents);
@@ -241,7 +304,10 @@ export class OrchestrationService extends EventEmitter {
     void this.cleanupMembers(run);
     void this.relay(runId, run.supervisorId,
       `[DASHBOARD EVENT] orchestration.groupthink.aborted\n` +
-      JSON.stringify({ runId, topic: run.topic, planPath: run.planPath }, null, 2));
+      JSON.stringify({
+        runId, topic: run.topic, planPath: run.planPath,
+        planId: run.planId ?? null, artifactKind: orchestrationArtifactKind(run),
+      }, null, 2));
     return { ok: true };
   }
 
@@ -261,17 +327,21 @@ export class OrchestrationService extends EventEmitter {
       },
       emit: (kind, payload) => insertOrchestrationEvent({ runId: run.runId, ts: nowIso(), kind, payload }),
     };
-    ctx.emit('started', { mode: run.mode, topic: run.topic });
+    const artifactKind = orchestrationArtifactKind(run);
+    ctx.emit('started', {
+      mode: run.mode, topic: run.topic,
+      planId: run.planId ?? null, artifactKind,
+    });
     try {
       if (run.mode === 'serial') await this.runners.serial(this.client, ctx);
       else await this.runners.parallel(this.client, ctx);
       run.status = 'complete'; run.endedAt = nowIso(); run.updatedAt = nowIso();
       updateOrchestration(run);
-      // Legacy fresh-file stamping remains limited to non-rail runs.
+      // Legacy fresh-file and plan-less deliberation stamping remains limited to non-rail runs.
       if (!run.planId) this.stampPlanMembers(run);
-      ctx.emit('complete', { planPath: run.planPath });
+      ctx.emit('complete', { planPath: run.planPath, planId: run.planId ?? null, artifactKind });
       await this.relay(run.runId, run.supervisorId,
-        `[DASHBOARD EVENT] groupthink.complete (mode=${run.mode}): Plan at ${run.planPath}. runId=${run.runId}`);
+        `[DASHBOARD EVENT] groupthink.complete (mode=${run.mode}): ${artifactKind === 'deliberation' ? 'Deliberation' : 'Plan'} at ${run.planPath}. runId=${run.runId}`);
       if (!keepAgents) await this.cleanupMembers(run);
     } catch (err: any) {
       if (controller.signal.aborted) return;   // abort() already handled delivery
@@ -286,6 +356,7 @@ export class OrchestrationService extends EventEmitter {
               : msg.includes('ready for relay') ? 'receiver_not_ready'
               : msg.includes('no plan file') ? 'no_plan_written' : 'timeout',
         topic: run.topic, planPath: run.planPath, message: msg,
+        planId: run.planId ?? null, artifactKind,
         planners: [
           run.leadId ? { role: run.mode === 'serial' ? 'lead' : 'synthesizer', id: run.leadId } : null,
           run.reviewerId ? { role: run.mode === 'serial' ? 'reviewer' : 'peer', id: run.reviewerId } : null,
