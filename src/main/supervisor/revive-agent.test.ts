@@ -34,6 +34,7 @@ import { AgentSupervisor, buildRevivalWakeMessage } from './index';
 import { WindowsRunner } from './windows-runner';
 import { makeAgent } from './test-helpers/fake-bridge-deps';
 import { agentCapabilities } from '../security/agent-capabilities';
+import { __setWslEnabledForTest } from '../wsl-enabled';
 import type { Agent } from '../../shared/types';
 import type { GateAction, GateResolution } from './ownership';
 
@@ -67,7 +68,7 @@ function patchDb(workspacePath: string | null, agents: Agent[], events: Array<{ 
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent',
     'addFileActivity', 'updateAgentResumeSessionId', 'getTeamMembership',
     'getAgentTemplate', 'getFileActivities', 'insertAgentSession',
-    'getCurrentBrick', 'getContinuationAttempt', 'incrementRestartCount',
+    'getCurrentBrick', 'getContinuationAttempt', 'incrementRestartCount', 'listTurnRecords',
   ];
   const orig: Record<string, unknown> = {};
   for (const k of keys) orig[k] = db[k];
@@ -96,6 +97,7 @@ function patchDb(workspacePath: string | null, agents: Agent[], events: Array<{ 
   db.getCurrentBrick = () => null;
   db.getContinuationAttempt = () => null;
   db.incrementRestartCount = () => {};
+  db.listTurnRecords = () => [];
   patchApplyStatusTransition(db);
 
   return () => { for (const k of keys) db[k] = orig[k]; };
@@ -161,6 +163,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>, opts: { workspaceE
   const events: Array<{ id: string; type: string; payload: string }> = [];
   const restoreDb = patchDb(opts.workspaceExists === false ? null : workspacePath, agents, events);
   const restoreRunner = patchRunner();
+  __setWslEnabledForTest(true);
   agentCapabilities.clear();
   const supervisor = makeSupervisor();
   setGate(supervisor, fakeGate('proceed'));
@@ -168,6 +171,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>, opts: { workspaceE
   try {
     await fn({ supervisor, agents, events, workspacePath });
   } finally {
+    __setWslEnabledForTest(null);
     restoreRunner();
     restoreDb();
     fs.rmSync(workspacePath, { recursive: true, force: true });
@@ -389,7 +393,7 @@ test('agent deleted between stop and relaunch → revive-relaunch-failed (500), 
   assert.ok(!h.events.some(e => e.type === 'revived'), `'revived' is NOT recorded on a failed relaunch`);
 }));
 
-test('manual restartAgent on a vanishing agent still no-ops silently', () => withHarness(async (h) => {
+test('manual restartAgent on a vanishing agent rejects the missing post-stop tail', () => withHarness(async (h) => {
   const agent = terminalWorker(h.workspacePath, { status: 'idle' });
   h.agents.push(agent);
   (h.supervisor as unknown as { stopAgentLocked: unknown }).stopAgentLocked = async () => {
@@ -397,8 +401,10 @@ test('manual restartAgent on a vanishing agent still no-ops silently', () => wit
     if (i >= 0) h.agents.splice(i, 1);
     return { outcome: 'stopped' };
   };
-  // Must not throw (manual restart swallows a missing-agent tail).
-  await h.supervisor.restartAgent(agent.id);
+  await assert.rejects(
+    h.supervisor.restartAgent(agent.id),
+    /resume-after-stop: agent agent-1 gone after stop/,
+  );
 }));
 
 // ── successor guard (supervisor targets only) ────────────────────────────────────
