@@ -88,12 +88,10 @@ function detailNames(wd: string): string[] {
   try { return fs.readdirSync(full(wd, DETAILS_REL)).sort(); } catch { return []; }
 }
 
-/** A well-formed active capsule (mirrors io-validate.test.ts). */
+/** A well-formed post-WP-1 active capsule (mirrors io-validate.test.ts). */
 function ACTIVE(id: string, over: Record<string, string> = {}): string {
   const f: Record<string, string> = {
-    status: 'active', date: '2026-07-28', owner: 'super',
-    consequence: 'things break silently', state: 'constraint X holds',
-    'open-loop': 'finish Y', 'read-if': 'before editing the schema',
+    'read-if': 'before editing the schema',
     detail: `memory/details/${id}.md`, ...over,
   };
   const lines = [`## ${id}: Title`];
@@ -101,6 +99,9 @@ function ACTIVE(id: string, over: Record<string, string> = {}): string {
   return lines.join('\n');
 }
 function idx(...blocks: string[]): string { return `${MARKER}\n\n${blocks.join('\n\n')}\n`; }
+function BODY(id: string, text: string): string {
+  return `<!-- memory-disposal:v1\nkind: open-loop\n-->\n\n# ${id}\n${text}\n`;
+}
 
 const KEEP = 'mb-2026-07-28-keep';
 const OBSOLETE = 'mb-2026-07-28-obsolete';
@@ -111,8 +112,8 @@ interface Archive { indexText: string; details: Record<string, string>; }
  *  files present, plus the matching archive. Returns the archive + live index. */
 function seedLive(wd: string): { archive: Archive; liveIndex: string } {
   const liveIndex = idx(ACTIVE(KEEP), ACTIVE(OBSOLETE));
-  const keepBody = `# ${KEEP}\nold keep body\n`;
-  const obsoleteBody = `# ${OBSOLETE}\nclosed obsolete body\n`;
+  const keepBody = BODY(KEEP, 'old keep body');
+  const obsoleteBody = BODY(OBSOLETE, 'closed obsolete body');
   writeAt(wd, INDEX_REL, liveIndex);
   writeAt(wd, `${DETAILS_REL}${KEEP}.md`, keepBody);
   writeAt(wd, `${DETAILS_REL}${OBSOLETE}.md`, obsoleteBody);
@@ -124,7 +125,7 @@ function seedLive(wd: string): { archive: Archive; liveIndex: string } {
 function proposal(): { indexSource: string; detailFiles: Array<{ relPath: string; content: string }> } {
   return {
     indexSource: idx(ACTIVE(KEEP)),
-    detailFiles: [{ relPath: `${DETAILS_REL}${KEEP}.md`, content: `# ${KEEP}\nnew keep body\n` }],
+    detailFiles: [{ relPath: `${DETAILS_REL}${KEEP}.md`, content: BODY(KEEP, 'new keep body') }],
   };
 }
 
