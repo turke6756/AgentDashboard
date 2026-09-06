@@ -173,7 +173,7 @@ test('WP-6 provider agy: unavailable plans-read mount is an explicit limitation'
   // this assertion with a silent skip when adding future providers.
   assert.equal(
     AGY_DASHBOARD_MCP_LIMITATION,
-    'Agy has no Lares-controlled per-launch MCP mount; plans-read is unavailable to Agy worker/researcher lanes.',
+    'Antigravity dashboard MCP is unavailable: as last verified with Agy 1.1.26, env values in mcp_config.json are literal (a token cannot be kept out of the file), the workspace .agents/mcp_config.json does not load, and there is no per-launch carrier. ALL dashboard MCP tools are unavailable to Agy lanes until a per-agent carrier is designed (tracked as a follow-up).',
   );
 });
 
