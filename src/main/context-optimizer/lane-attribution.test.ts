@@ -73,7 +73,6 @@ const grants = buildToolsetLaneGrants();
 check('grant topology: exclusive toolsets map to their single lane', () => {
   assert.equal(exclusiveLaneForToolset('orchestration', grants), 'supervisor');
   assert.equal(exclusiveLaneForToolset('plans', grants), 'supervisor');
-  assert.equal(exclusiveLaneForToolset('plans-read', grants), 'worker');
   assert.equal(exclusiveLaneForToolset('browser', grants), 'researcher');
   // WP-F (P5) made observability-analytics supervisor-exclusive so an analytics
   // call could be inferred to supervisor. That toolset is now RETIRED and granted
@@ -84,10 +83,11 @@ check('grant topology: exclusive toolsets map to their single lane', () => {
 });
 
 check('grant topology: multi-lane toolsets are NOT exclusive (gating invariant)', () => {
-  // comms / observability-core / browser-present are granted to >1 lane → no inference.
+  // comms / observability-core / browser-present / plans-read are granted to >1 lane → no inference.
   assert.equal(exclusiveLaneForToolset('comms', grants), null);
   assert.equal(exclusiveLaneForToolset('observability-core', grants), null);
   assert.equal(exclusiveLaneForToolset('browser-present', grants), null);
+  assert.equal(exclusiveLaneForToolset('plans-read', grants), null);
   // WP-F: the pre-split `observability` union is granted to no lane → not exclusive.
   assert.equal(exclusiveLaneForToolset('observability', grants), null);
 });
