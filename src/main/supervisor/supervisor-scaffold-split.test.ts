@@ -13,6 +13,7 @@ import {
   SUPERVISOR_AGENT_MD_V34,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
+  SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
   WORKER_CODEX_CONFIG_TOML,
 } from '../../shared/constants';
 import { AgentSupervisor } from './index';
@@ -69,7 +70,8 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
   assert.ok(Object.keys(files).length > 0, `${name} child map must not be empty`);
   for (const [rel, file] of Object.entries(files)) {
     const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
-    assert.equal(file.version, isInstructions ? 4 : 1, `${rel} must carry its expected scaffold version`);
+    const isClaudeSettings = rel === '.lares/supervisor/claude/.claude/settings.json';
+    assert.equal(file.version, isInstructions ? 4 : isClaudeSettings ? 2 : 1, `${rel} must carry its expected scaffold version`);
     if (isInstructions) {
       assert.deepEqual(
         file.previousHashes,
@@ -80,6 +82,12 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
         },
         `${rel} must retain the superseded child instruction hashes`,
       );
+    } else if (isClaudeSettings) {
+      assert.deepEqual(file.previousHashes, {
+        1: digestText(SUPERVISOR_CLAUDE_SETTINGS_JSON_V4
+          .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+          .join('${CLAUDE_PROJECT_DIR}/../../scripts/')),
+      }, `${rel} must retain the pre-subagent child settings hash`);
     } else {
       assert.equal(file.previousHashes, undefined, `${rel} must have no pre-child hash history`);
     }

@@ -4321,6 +4321,15 @@ export class AgentSupervisor extends EventEmitter {
       version: 4,
       previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH },
     },
+    [`.lares/supervisor/claude/.claude/settings.json`]: {
+      content: SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
+      version: 2,
+      previousHashes: {
+        1: sha256Hex(SUPERVISOR_CLAUDE_SETTINGS_JSON_V4
+          .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+          .join('${CLAUDE_PROJECT_DIR}/../../scripts/')),
+      },
+    },
   };
 
   static readonly SUPERVISOR_FILES_CODEX_CHILD = {
@@ -4797,7 +4806,7 @@ export class AgentSupervisor extends EventEmitter {
           // (WORKER_CLAUDE_SETTINGS_JSON, workspace-independent), so hash it as the
           // v1 previousHash → a pristine v1 grok carrier upgrades silently (no .bak).
           version: 2,
-          previousHashes: { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON) },
+          previousHashes: { 1: sha256Hex(WORKER_CLAUDE_SETTINGS_JSON_V8) },
         },
       };
       providerCreated = this.writeScaffoldMap(workDir, grokFiles, pathType);

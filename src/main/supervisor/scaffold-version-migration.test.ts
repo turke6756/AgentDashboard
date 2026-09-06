@@ -275,6 +275,7 @@ import {
   WORKER_CLAUDE_SETTINGS_JSON_V6,
   WORKER_CLAUDE_SETTINGS_JSON_V7,
   WORKER_CLAUDE_SETTINGS_JSON_V8,
+  workerGrokSettingsJson,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
 } from '../../shared/constants';
@@ -481,6 +482,18 @@ function makeSupervisor(): { supervisor: SupervisorTestSurface; cleanup: () => v
   };
   const supervisor = raw as unknown as SupervisorTestSurface;
   return { supervisor, cleanup: restoreDb };
+}
+
+interface ProductionSupervisorTestSurface {
+  ensureSupervisorScaffold(workDir: string, provider: string, pathType: string): void;
+  ensureWorkerScaffold(workDir: string, provider: string, pathType: string): void;
+}
+
+function makeProductionSupervisor(): { supervisor: ProductionSupervisorTestSurface; cleanup: () => void } {
+  const restoreDb = patchDb();
+  const raw = new AgentSupervisor();
+  (raw as unknown as { writeAgentRegistry: () => void }).writeAgentRegistry = () => {};
+  return { supervisor: raw as unknown as ProductionSupervisorTestSurface, cleanup: restoreDb };
 }
 
 function scriptPath(workDir: string): string {
@@ -750,6 +763,27 @@ test('2e0c. pristine v10 script silently upgrades to v11 via previousHashes[10]'
     fs.writeFileSync(
       sidecarPath(workDir),
       JSON.stringify({ 'scripts/dashboard-status.mjs': 10 }, null, 2) + '\n',
+      'utf-8',
+    );
+    supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
+    assert.equal(fs.readFileSync(scriptPath(workDir), 'utf-8'), DASHBOARD_STATUS_SCRIPT_MJS);
+    assert.equal(listBackups(workDir).length, 0);
+    assert.equal(readSidecar(workDir)['scripts/dashboard-status.mjs'], 12);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('2e0d. pristine reconstructed v11 script silently upgrades to v12 via previousHashes[11]', () => {
+  const workDir = mktmp('scaffold-known-v11');
+  const { supervisor, cleanup } = makeSupervisor();
+  try {
+    fs.mkdirSync(path.dirname(scriptPath(workDir)), { recursive: true });
+    fs.writeFileSync(scriptPath(workDir), reconstructV11Script(), 'utf-8');
+    fs.writeFileSync(
+      sidecarPath(workDir),
+      JSON.stringify({ 'scripts/dashboard-status.mjs': 11 }, null, 2) + '\n',
       'utf-8',
     );
     supervisor.ensureWorkerScaffold(workDir, 'claude', 'windows');
@@ -6924,6 +6958,58 @@ test('WP3. subagent hook scaffold matrix advances cumulatively and migrates pris
       cleanup();
       rmrf(workDir);
     }
+  }
+});
+
+test('WP3 review. production Claude child settings v1 silently migrates to v2 with subagent hooks', () => {
+  const workDir = mktmp('wp3-child-supervisor-settings');
+  const { supervisor, cleanup } = makeProductionSupervisor();
+  const childSettings = SUPERVISOR_CLAUDE_SETTINGS_JSON_V4
+    .split('${CLAUDE_PROJECT_DIR}/../scripts/')
+    .join('${CLAUDE_PROJECT_DIR}/../../scripts/');
+  const rel = '.lares/supervisor/claude/.claude/settings.json';
+  const sidecarKey = 'supervisor/claude/.claude/settings.json';
+  try {
+    const target = path.join(workDir, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, childSettings, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [sidecarKey]: 1 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureSupervisorScaffold(workDir, 'claude', 'windows');
+
+    const upgraded = fs.readFileSync(target, 'utf-8');
+    const hooks = JSON.parse(upgraded).hooks;
+    assert.ok(hooks.SubagentStart);
+    assert.ok(hooks.SubagentStop);
+    assert.equal(readSidecar(workDir)[sidecarKey], 2);
+    assert.equal(fs.readdirSync(path.dirname(target)).filter((name) => name.startsWith('settings.json.bak.')).length, 0);
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('WP3 review. pristine grok v1 carrier derived from Claude v8 silently migrates', () => {
+  const workDir = mktmp('wp3-grok-settings-v1');
+  const { supervisor, cleanup } = makeProductionSupervisor();
+  const rel = '.lares/workers/grok/.claude/settings.json';
+  const sidecarKey = 'workers/grok/.claude/settings.json';
+  try {
+    const target = path.join(workDir, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, WORKER_CLAUDE_SETTINGS_JSON_V8, 'utf-8');
+    fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [sidecarKey]: 1 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureWorkerScaffold(workDir, 'grok', 'windows');
+
+    assert.equal(fs.readFileSync(target, 'utf-8'), workerGrokSettingsJson(workDir.replace(/\\/g, '/')));
+    assert.equal(readSidecar(workDir)[sidecarKey], 2);
+    assert.equal(fs.readdirSync(path.dirname(target)).filter((name) => name.startsWith('settings.json.bak.')).length, 0);
+  } finally {
+    cleanup();
+    rmrf(workDir);
   }
 });
 
