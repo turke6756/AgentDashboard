@@ -22,3 +22,14 @@ test('duplicate paths select highest generation then id and diagnose ids and pat
   const f=fixture(); t.after(f.close); const rel='.lares/library/cleared/duplicate.md'; upsertLibraryDocument(f.store,row('alpha',rel,'same',{index_generation:2})); upsertLibraryDocument(f.store,row('zulu',rel,'same',{index_generation:2})); const warnings:string[]=[];
   const rows=await listLibraryShelf(f.workspace,f.store,{inventory:inventory(f.workspace,[],[['duplicate.md','same']]),readFile:async()=>Buffer.from('same'),warn:(message)=>warnings.push(message)}); assert.equal(rows[0].id,'zulu'); assert.match(warnings[0],/alpha/); assert.match(warnings[0],/zulu/); assert.match(warnings[0],/duplicate\.md/);
 });
+test('win32 join, duplicate grouping, and report ownership use one case-folded POSIX key', async (t) => {
+  if (process.platform !== 'win32') { t.skip('win32 case-folding contract'); return; }
+  const f=fixture(); t.after(f.close); upsertLibraryDocument(f.store,row('alpha','.LARES\\LIBRARY\\CLEARED\\REPORT.MD','same',{index_generation:1})); upsertLibraryDocument(f.store,row('zulu','.lares/library/cleared/report.md','same',{index_generation:2})); const warnings:string[]=[];
+  const rows=await listLibraryShelf(f.workspace,f.store,{inventory:inventory(f.workspace,[],[['RePoRt.Md','same']]),readFile:async()=>Buffer.from('same'),warn:(message)=>warnings.push(message)});
+  assert.deepEqual(rows.map((item)=>item.id),['zulu']); assert.equal(rows[0].shelf_status,'ready'); assert.match(warnings[0],/alpha/); assert.match(warnings[0],/zulu/);
+});
+test('unknown index statuses are errors and never query-ready', async (t) => {
+  const f=fixture(); t.after(f.close); upsertLibraryDocument(f.store,row('future-report','.lares/library/cleared/future.md','same',{status:'future' as any})); upsertLibraryDocument(f.store,row('future-user','.lares/library/sources/future.md','same',{status:'future' as any}));
+  const rows=await listLibraryShelf(f.workspace,f.store,{inventory:inventory(f.workspace,[],[['future.md','same']]),readFile:async()=>Buffer.from('same')});
+  assert.equal(rows.find((item)=>item.id==='future-report')?.shelf_status,'error'); assert.equal(rows.find((item)=>item.id==='future-user')?.shelf_status,'error');
+});

@@ -187,6 +187,10 @@ test('path-keyed lookup preserves duplicates and path deletion cascades chunks a
       });
     }
     assert.deepEqual(listLibraryDocumentsByRelPaths(store, ['.lares/library/cleared/report.md']).map((row) => row.id), ['duplicate-high', 'duplicate-low']);
+    if (process.platform === 'win32') {
+      const fold = (value: string) => value.replace(/\\/g, '/').toLowerCase();
+      assert.deepEqual(listLibraryDocumentsByRelPaths(store, ['.LARES\\LIBRARY\\CLEARED\\REPORT.MD'], fold).map((row) => row.id), ['duplicate-high', 'duplicate-low']);
+    }
     assert.equal(deleteLibraryDocumentsByRelPaths(store, ['.lares/library/cleared/report.md']), 2);
     assert.deepEqual(listLibraryDocuments(store, { include_untrusted: true }).map((row) => row.id), ['keep']);
     assert.deepEqual(listLibraryChunks(store, { include_untrusted: true }).map((row) => row.id), ['chunk-keep']);

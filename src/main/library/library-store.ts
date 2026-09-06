@@ -307,13 +307,19 @@ export function getLibraryDocument(store: LibraryStore, id: string): LibraryDocu
   return store.database.prepare(`SELECT * FROM library_documents WHERE id = ?`).get(id) as LibraryDocumentRow | undefined;
 }
 
-export function listLibraryDocumentsByRelPaths(store: LibraryStore, relPaths: readonly string[]): LibraryDocumentRow[] {
-  const paths = [...new Set(relPaths)];
+export function listLibraryDocumentsByRelPaths(store: LibraryStore, relPaths: readonly string[], normalizeKey?: (value: string) => string): LibraryDocumentRow[] {
+  const paths = [...new Set(normalizeKey ? relPaths.map(normalizeKey) : relPaths)];
   if (paths.length === 0) return [];
-  const placeholders = paths.map(() => '?').join(',');
-  return store.database.prepare(
-    `SELECT * FROM library_documents WHERE source_rel_path IN (${placeholders}) ORDER BY source_rel_path, index_generation DESC, id DESC`,
-  ).all(...paths) as LibraryDocumentRow[];
+  if (!normalizeKey) {
+    const placeholders = paths.map(() => '?').join(',');
+    return store.database.prepare(
+      `SELECT * FROM library_documents WHERE source_rel_path IN (${placeholders}) ORDER BY source_rel_path, index_generation DESC, id DESC`,
+    ).all(...paths) as LibraryDocumentRow[];
+  }
+  const wanted = new Set(paths);
+  return (store.database.prepare(
+    `SELECT * FROM library_documents ORDER BY source_rel_path, index_generation DESC, id DESC`,
+  ).all() as LibraryDocumentRow[]).filter((row) => wanted.has(normalizeKey(row.source_rel_path)));
 }
 
 export function deleteLibraryDocumentsByRelPaths(store: LibraryStore, relPaths: readonly string[]): number {
