@@ -297,6 +297,13 @@ const TOOLSET_REGISTRY = {
       handleToolCall: mod.handleMigrationToolCall,
     };
   },
+  'library-read': () => {
+    const mod = require('./mcp-tools-library');
+    return {
+      getToolDefinitions: mod.getLibraryToolDefinitions,
+      handleToolCall: mod.handleLibraryToolCall,
+    };
+  },
 };
 
 let grantedModules;

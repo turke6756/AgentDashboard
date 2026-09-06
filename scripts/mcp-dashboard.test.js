@@ -19,6 +19,7 @@ const toolsetModulePaths = [
   './mcp-tools-checkpoints',
   './mcp-tools-memory',
   './mcp-tools-migration',
+  './mcp-tools-library',
 ];
 
 function clearProxyModules() {
@@ -174,7 +175,7 @@ test('every retired analytics tool is unreachable under EVERY grant that could h
     'observability-analytics',          // the retired name itself
     'observability,observability-core,observability-analytics',
     'orchestration,comms,observability-core,plans,browser-present',      // supervisor
-    'comms,observability-core,browser-present,plans-read,memory,checkpoints-read', // worker
+    'comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read', // worker
   ];
   for (const grant of grants) {
     const proxy = loadProxy(grant);
@@ -208,7 +209,7 @@ test('SUPERVISOR grant keeps its operational surface after the analytics retirem
 });
 
 test('WORKER grant keeps operational observability and the exact current read surfaces', async () => {
-  const proxy = loadProxy('comms,observability-core,browser-present,plans-read,memory,checkpoints-read');
+  const proxy = loadProxy('comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read');
   const names = namesOf(proxy.getToolDefinitions());
   assert.ok(names.includes('list_agents'), 'worker keeps operational observability (list_agents)');
   assert.ok(names.includes('read_agent_chat'), 'worker keeps operational observability (read_agent_chat)');
@@ -571,6 +572,15 @@ test('32. production observability registration exposes and dispatches defer_con
     route: '/api/supervisor/continuation-deferral',
     body: { reason: 'finish review', retry_after_minutes: 12 },
   }]);
+});
+
+test('33. production library-read registry exposes and dispatches both Library proxy tools', async () => {
+  const proxy = loadProxy('library-read');
+  assert.deepStrictEqual(namesOf(proxy.getToolDefinitions()), ['list_workspace_library', 'query_workspace_library'],
+    'REACHABILITY:mcp-dashboard:library-read');
+  const api = capturingApi({ documents: [] });
+  await proxy.handleToolCall('list_workspace_library', {}, api);
+  assert.strictEqual(api.calls[0].route, '/api/library/list');
 });
 
 (async () => {
