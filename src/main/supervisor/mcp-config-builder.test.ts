@@ -55,7 +55,7 @@ test('toolsetsForLane: supervisor gets orchestration/comms/observability-core/pl
   // WP-G2.3 appended `checkpoints` (supervisor-lane-only recovery toolset).
   // WP-D (Memory & Lessons v2) appended `memory` (recall_memory; both lanes).
   // WP-F2 (Memory & Lessons v2) appended `migration` (supervisor-lane-only).
-  assert.equal(toolsetsForLane('supervisor'), 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration');
+  assert.equal(toolsetsForLane('supervisor'), 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration,library-read');
 });
 
 test('toolsetsForLane: the full `plans` grant is supervisor-ONLY (not worker/researcher/legacy)', () => {
@@ -88,7 +88,7 @@ test('toolsetsForLane: worker gets comms,observability-core,browser-present + pl
   // GT-A WP-A4: `plans-read` appended.
   // WP-F (P5): `observability` → `observability-core`; the analytics half is dropped.
   // WP-D (Memory & Lessons v2): `memory` appended (recall_memory; both lanes).
-  assert.equal(toolsetsForLane('worker'), 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read');
+  assert.equal(toolsetsForLane('worker'), 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read');
 });
 
 test('observability-core is supervisor+worker; the retired observability-analytics is granted to NO lane', () => {
@@ -129,7 +129,14 @@ test('toolsetsForLane: supervisor + worker get the open-only browser-present gra
 });
 
 test('toolsetsForLane: researcher gets the full browser, NOT the open-only browser-present', () => {
-  assert.equal(toolsetsForLane('researcher'), 'browser,plans-read');
+  assert.equal(toolsetsForLane('researcher'), 'browser,plans-read,library-read');
+});
+
+test('toolsetsForLane: library-read is granted to every supported role lane', () => {
+  for (const lane of ['supervisor', 'worker', 'researcher'] as const) {
+    assert.ok(toolsetsForLane(lane).split(',').includes('library-read'), `${lane} must include library-read`);
+  }
+  assert.ok(!toolsetsForLane('legacy').split(',').includes('library-read'));
 });
 
 // WP-6 per-provider evidence. These tests enter the real config builders used
