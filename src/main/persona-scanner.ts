@@ -244,7 +244,7 @@ export function applyPersonaLaneToLaunchInput(
   // supervisor-tier MCP toolset. researcher/worker already render as cards, so
   // they keep their existing flag mapping.
   if (declared === 'supervisor') input.privilegeLane = 'supervisor';
-  else if (declared === 'researcher') { input.isResearcher = true; input.isSupervised = true; input.provider = 'claude'; }
+  else if (declared === 'researcher') { input.isResearcher = true; input.isSupervised = true; }
   else if (declared === 'worker') input.isWorker = true;
 }
 
