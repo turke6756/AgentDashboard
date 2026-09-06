@@ -362,6 +362,7 @@ const TESTS = [
   // Lares rebrand — one-time .dashboard → .lares state-dir migration.
   'dist/main/main/workspace-state-dir.test.js',
   'dist/main/main/library/library-migration.test.js',
+  'dist/main/main/library/library-store.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
   'dist/main/main/supervisor/supervisor-persona-capability-parity.test.js',
@@ -834,6 +835,7 @@ for (const file of testsToRun) {
   const nativeElectronTest =
     file.endsWith('/agy-session-reader.test.js') ||
     file.endsWith('/database.recovery-operation-insert.test.js') ||
+    file.endsWith('/library-store.test.js') ||
     file.endsWith('/supervisor-peer-provider.test.js')
   const compiledRoot = process.env.MAIN_TEST_COMPILED_ROOT
   const runnableFile = compiledRoot && file.startsWith('dist/main/')

@@ -102,12 +102,8 @@ experiments/
 /.dashboard/library/sources/
 /.lares/library/derived/
 /.dashboard/library/derived/
-/.lares/library/library.db
-/.lares/library/library.db-wal
-/.lares/library/library.db-shm
-/.dashboard/library/library.db
-/.dashboard/library/library.db-wal
-/.dashboard/library/library.db-shm
+/.lares/library/library.db*
+/.dashboard/library/library.db*
 # <<< agentdashboard-research-store <<<
 
 # MCP config — generated per app launch, embeds a live API bearer token.

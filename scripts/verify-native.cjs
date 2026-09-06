@@ -87,11 +87,26 @@ async function main() {
     db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     db.prepare('INSERT INTO t (v) VALUES (?)').run('lares-sqlite-ok');
     const row = db.prepare('SELECT v FROM t WHERE id = 1').get();
+    let ftsRow;
+    try {
+      db.exec('CREATE VIRTUAL TABLE fts_probe USING fts5(content)');
+      db.prepare('INSERT INTO fts_probe(content) VALUES (?)').run('workspace library sentinel');
+      ftsRow = db.prepare(
+        `SELECT content, bm25(fts_probe) AS rank FROM fts_probe WHERE fts_probe MATCH ?`,
+      ).get('library');
+    } catch (err) {
+      fail('better-sqlite3 FTS5', `create/insert/MATCH/bm25() failed: ${err && err.message}`);
+    }
     db.close();
     if (row && row.v === 'lares-sqlite-ok') {
       pass('better-sqlite3', 'in-memory create/insert/select round trip');
     } else {
       fail('better-sqlite3', `round trip returned ${JSON.stringify(row)}`);
+    }
+    if (ftsRow && ftsRow.content === 'workspace library sentinel' && Number.isFinite(ftsRow.rank)) {
+      pass('better-sqlite3 FTS5', 'create/insert/MATCH/bm25() round trip');
+    } else if (ftsRow) {
+      fail('better-sqlite3 FTS5', `round trip returned ${JSON.stringify(ftsRow)}`);
     }
   } catch (err) {
     fail('better-sqlite3', `${err && err.message}`);
