@@ -225,7 +225,7 @@ function inspectRegistered(
   const allowed = [
     `${stateName}/proposals`,
     `${stateName}/proposals/supporting`,
-    `${stateName}/research/cleared`,
+    `${stateName}/library/cleared`,
     `${stateName}/plans/legacy`,
   ];
   if (!allowed.some((root) => safe === root || safe.startsWith(`${root}/`))) return null;

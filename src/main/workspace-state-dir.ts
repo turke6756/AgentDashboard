@@ -23,6 +23,7 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { LARES_DIR_NAME, LEGACY_LARES_DIR_NAME } from '../shared/constants';
 import { isWslEnabled } from './wsl-enabled';
+import { migrateWorkspaceLibrary } from './library/library-migration';
 
 export interface StateDirResolution {
   /** Folder name in use for this workspace this session: '.lares' or '.dashboard'. */
@@ -119,6 +120,14 @@ export function migrateWorkspaceStateDir(workspaceRoot: string, pathType: string
     // Existence probing itself failed (permissions, dead UNC mount). Default
     // to the live name — construction will surface the real error later.
     console.warn(`[state-dir] Could not probe state dir in ${workspaceRoot}:`, err);
+  }
+
+  if (pathType !== 'wsl') {
+    try {
+      migrateWorkspaceLibrary(joinFor(workspaceRoot, dirName, pathType));
+    } catch (err) {
+      console.warn(`[state-dir] Could not migrate research/ to library/ in ${workspaceRoot}:`, err);
+    }
   }
 
   resolvedDirNames.set(key, dirName);

@@ -85,7 +85,7 @@ function fallbackScopeEligible(displayPath: string): boolean {
   const internalSegments = [
     '.lares/supervisor/',
     '.lares/workers/',
-    '.lares/research/scratch/',
+    '.lares/library/scratch/',
     '.lares/plans/',
     '.claude/skills/',
     '.agents/skills/',

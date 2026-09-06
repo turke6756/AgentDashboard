@@ -41,25 +41,25 @@ test('research-store sentinel block present exactly once (idempotent)', () => {
 test('inbox/ ignored, cleared/ + README trackable (both state-dir spellings)', () => {
   if (isGitRepo()) {
     // Live `.lares` spelling.
-    assert.ok(isIgnored('.lares/research/inbox/topic/2026-06-14T120000-x.md'),
+    assert.ok(isIgnored('.lares/library/inbox/topic/2026-06-14T120000-x.md'),
       'inbox/ artifacts must be git-ignored (.lares)');
-    assert.ok(!isIgnored('.lares/research/cleared/topic/2026-06-14T120000-x.md'),
+    assert.ok(!isIgnored('.lares/library/cleared/topic/2026-06-14T120000-x.md'),
       'cleared/ artifacts must be trackable (.lares)');
-    assert.ok(!isIgnored('.lares/research/README.md'),
+    assert.ok(!isIgnored('.lares/library/README.md'),
       'research README must be trackable (.lares)');
     // Legacy `.dashboard` spelling — unmigrated / rename-blocked clones.
-    assert.ok(isIgnored('.dashboard/research/inbox/topic/2026-06-14T120000-x.md'),
+    assert.ok(isIgnored('.dashboard/library/inbox/topic/2026-06-14T120000-x.md'),
       'inbox/ artifacts must be git-ignored (.dashboard legacy)');
-    assert.ok(!isIgnored('.dashboard/research/cleared/topic/2026-06-14T120000-x.md'),
+    assert.ok(!isIgnored('.dashboard/library/cleared/topic/2026-06-14T120000-x.md'),
       'cleared/ artifacts must be trackable (.dashboard legacy)');
-    assert.ok(!isIgnored('.dashboard/research/README.md'),
+    assert.ok(!isIgnored('.dashboard/library/README.md'),
       'research README must be trackable (.dashboard legacy)');
   } else {
     // Fallback: the inbox rules exist and no rule ignores cleared/.
-    assert.match(gitignore, /^\/\.lares\/research\/inbox\/$/m, 'inbox/ ignore rule present (.lares)');
-    assert.match(gitignore, /^\/\.dashboard\/research\/inbox\/$/m, 'inbox/ ignore rule present (.dashboard legacy)');
-    assert.ok(!/\/\.lares\/research\/cleared\//.test(gitignore), 'no rule ignores cleared/ (.lares)');
-    assert.ok(!/\/\.dashboard\/research\/cleared\//.test(gitignore), 'no rule ignores cleared/ (.dashboard legacy)');
+    assert.match(gitignore, /^\/\.lares\/library\/inbox\/$/m, 'inbox/ ignore rule present (.lares)');
+    assert.match(gitignore, /^\/\.dashboard\/library\/inbox\/$/m, 'inbox/ ignore rule present (.dashboard legacy)');
+    assert.ok(!/\/\.lares\/library\/cleared\//.test(gitignore), 'no rule ignores cleared/ (.lares)');
+    assert.ok(!/\/\.dashboard\/library\/cleared\//.test(gitignore), 'no rule ignores cleared/ (.dashboard legacy)');
   }
 });
 

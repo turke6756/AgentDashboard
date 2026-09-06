@@ -195,7 +195,7 @@ export function shouldDirectSpawn(p: DirectSpawnParams): boolean {
  *  - WebSearch / WebFetch / Read / Grep / Glob / Task / Skill are Claude
  *    built-ins (Task spawns ephemeral in-process subagents, NOT dashboard agents).
  *  - Write is offered with a Claude PreToolUse(Write) guard that denies paths
- *    outside .lares/research/inbox/ (RESEARCH_WRITE_GUARD_MJS).
+ *    outside .lares/library/inbox/ (RESEARCH_WRITE_GUARD_MJS).
  *  - mcp__agent-dashboard__browser_* are the dashboard browser tools, which
  *    arrive via the injected `browser` MCP toolset (toolsetsForLane).
  *

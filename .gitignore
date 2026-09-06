@@ -53,6 +53,7 @@ experiments/
 # were resurrecting the folder after the .lares rename).
 /.dashboard/*
 !/.dashboard/research/
+!/.dashboard/library/
 !/.dashboard/plans/
 .dashboard/.scaffold-versions.json
 .dashboard/workers/
@@ -91,12 +92,22 @@ experiments/
 /.dashboard/plans/*/plan.json.wtmp-*
 
 # >>> agentdashboard-research-store >>>
-# WP-G — research store: inbox/ holds raw, untrusted, web-derived artifacts and
+# Library inbox/ holds raw, untrusted, web-derived artifacts and
 # must never be committed; cleared/ (reviewed) stays trackable. (Case A — no
 # blanket /.lares/* ignore is in effect, so a single inbox/ rule suffices.
 # Legacy `.dashboard` twin kept for unmigrated clones.)
-/.lares/research/inbox/
-/.dashboard/research/inbox/
+/.lares/library/inbox/
+/.dashboard/library/inbox/
+/.lares/library/sources/
+/.dashboard/library/sources/
+/.lares/library/derived/
+/.dashboard/library/derived/
+/.lares/library/library.db
+/.lares/library/library.db-wal
+/.lares/library/library.db-shm
+/.dashboard/library/library.db
+/.dashboard/library/library.db-wal
+/.dashboard/library/library.db-shm
 # <<< agentdashboard-research-store <<<
 
 # MCP config — generated per app launch, embeds a live API bearer token.
@@ -137,8 +148,8 @@ experiments/
 /reachability-mutations/
 /.lares/reachability-mutations/
 /.dashboard/reachability-mutations/
-/.lares/research/scratch/
-/.dashboard/research/scratch/
+/.lares/library/scratch/
+/.dashboard/library/scratch/
 /.lares/scratch/
 /.dashboard/scratch/
 /.lares/supervisor/scratch/

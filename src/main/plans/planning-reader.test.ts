@@ -432,7 +432,7 @@ test('source proposal manifest fallback rejects paths outside the flat proposals
   for (const [index, sourceProposalRel] of [
     '../proposals/safe.md',
     '.lares/proposals/supporting/safe.md',
-    '.lares/research/cleared/safe.md',
+    '.lares/library/cleared/safe.md',
     'C:\\outside\\safe.md',
   ].entries()) {
     makePlanFolder(root, `sku-source-reject-${index}`, { sourceProposalRel });

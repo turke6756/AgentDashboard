@@ -48,10 +48,10 @@ function writePayload(filePath, content) {
 }
 
 const WS = '/tmp/ws';
-const INBOX = `${WS}/.lares/research/inbox`;
-// Legacy spelling — exercises the guard's `.dashboard/research/` fallback marker
+const INBOX = `${WS}/.lares/library/inbox`;
+// Legacy state-dir spelling — exercises the guard's `.dashboard/library/` fallback marker
 // (rename-blocked sessions still write there).
-const LEGACY_INBOX = `${WS}/.dashboard/research/inbox`;
+const LEGACY_INBOX = `${WS}/.dashboard/library/inbox`;
 const VALID_ID = 'r-2026-06-14-abc123';
 const VALID_PATH = `${INBOX}/${VALID_ID}.md`;
 
@@ -103,7 +103,7 @@ test('flat id-matched artifact in inbox/ is allowed', () => {
 test('write outside the research store is blocked by the Claude consistency hook', () => {
   assertBlocked(
     runGuard(writePayload(`${WS}/src/foo.ts`, 'export const x = 1;\n')),
-    /intended for \.lares\/research\/inbox\/ \(path is outside the research store\)/,
+    /intended for \.lares\/library\/inbox\/ \(path is outside the library\)/,
   );
 });
 
@@ -147,18 +147,18 @@ test('trust: cleared in inbox is blocked with the WP-F pointer', () => {
   );
 });
 
-test('write under research/ but outside inbox/ is blocked', () => {
-  const clearedPath = `${WS}/.lares/research/cleared/my-topic/2026-06-14T120000-findings.md`;
+test('write under library/ but outside inbox/ is blocked', () => {
+  const clearedPath = `${WS}/.lares/library/cleared/my-topic/2026-06-14T120000-findings.md`;
   assertBlocked(
     runGuard(writePayload(clearedPath, artifact())),
-    /researcher Write should target \.lares\/research\/inbox\//,
+    /researcher Write should target \.lares\/library\/inbox\//,
   );
 });
 
-test('write directly under research/ root is blocked (outside inbox)', () => {
+test('write directly under library/ root is blocked (outside inbox)', () => {
   assertBlocked(
-    runGuard(writePayload(`${WS}/.lares/research/notes.md`, artifact())),
-    /researcher Write should target \.lares\/research\/inbox\//,
+    runGuard(writePayload(`${WS}/.lares/library/notes.md`, artifact())),
+    /researcher Write should target \.lares\/library\/inbox\//,
   );
 });
 
@@ -177,20 +177,20 @@ test('flat filename stem must equal the unquoted frontmatter id', () => {
 });
 
 test('Windows-style backslash path is normalized and validated', () => {
-  const winPath = `C:\\ws\\.lares\\research\\inbox\\${VALID_ID}.md`;
+  const winPath = `C:\\ws\\.lares\\library\\inbox\\${VALID_ID}.md`;
   assertAllowed(runGuard(writePayload(winPath, artifact())));
 });
 
-// ── Legacy `.dashboard/research/` marker (rename-blocked fallback session) ──
+// ── Legacy `.dashboard/library/` marker (rename-blocked fallback session) ──
 
 test('valid artifact in the LEGACY .dashboard inbox is still allowed', () => {
   assertAllowed(runGuard(writePayload(`${LEGACY_INBOX}/${VALID_ID}.md`, artifact())));
 });
 
-test('legacy .dashboard research/ write outside inbox/ is still blocked', () => {
+test('legacy .dashboard library/ write outside inbox/ is still blocked', () => {
   assertBlocked(
-    runGuard(writePayload(`${WS}/.dashboard/research/notes.md`, artifact())),
-    /researcher Write should target \.lares\/research\/inbox\//,
+    runGuard(writePayload(`${WS}/.dashboard/library/notes.md`, artifact())),
+    /researcher Write should target \.lares\/library\/inbox\//,
   );
 });
 

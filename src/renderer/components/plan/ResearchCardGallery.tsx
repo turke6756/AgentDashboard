@@ -107,7 +107,7 @@ export default function ResearchCardGallery(): React.ReactElement {
       setReports([...loadedReports].sort(compareReports));
     } catch {
       setReports([]);
-      setError('Could not load research reports from this workspace.');
+      setError('Could not load Library research reports from this workspace.');
     }
   }, [workspace]);
 
@@ -127,7 +127,7 @@ export default function ResearchCardGallery(): React.ReactElement {
     >
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/10 px-4">
         <Icons.BookOpenText className="h-4 w-4 text-accent-blue" />
-        <h2 id="plans-research-title" className="text-[13px] font-semibold text-gray-200">Research</h2>
+        <h2 id="plans-research-title" className="text-[13px] font-semibold text-gray-200">Library research</h2>
         <button
           type="button"
           onClick={() => void load()}
@@ -142,7 +142,7 @@ export default function ResearchCardGallery(): React.ReactElement {
         <div className="flex min-h-24 flex-1 items-center justify-center p-6 text-[12px] text-gray-500">Loading research…</div>
       ) : reports.length === 0 ? (
         <div className="flex min-h-24 flex-1 items-center justify-center p-6 text-[12px] text-gray-500">
-          {workspace ? 'No research reports yet.' : 'Select a workspace to view research.'}
+          {workspace ? 'No Library research reports yet.' : 'Select a workspace to view Library research.'}
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto overflow-y-hidden p-4 scrollbar-thin" data-testid="research-card-row">

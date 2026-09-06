@@ -79,7 +79,7 @@ idea → proposal → plan folder → work packages → dispatch → gate → co
 | Plan folders | `.lares/plans/<date>-<slug>-<hex>/` | One folder per plan. |
 | Plan contents | `plan.json`, `plan.md`, `ARC.md` | Plus `deliberations/`, `research/`, `supplements/`. |
 | Work packages | `supplements/<date>-work-packages.md` | Frontmatter `kind: work-packages`. |
-| Research | `.lares/research/inbox/` | **Untrusted tier.** `cleared/` is reviewed. |
+| Research | `.lares/library/inbox/` | **Untrusted tier.** `cleared/` is reviewed. |
 | Legacy plans | `plans/*.html` at workspace root | Distinct, older, HTML-based. |
 
 **Two identities, and they are not interchangeable.** A plan has a portable

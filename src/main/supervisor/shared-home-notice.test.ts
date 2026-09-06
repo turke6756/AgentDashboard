@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
+import { RESEARCH_STORE_README_MD } from '../../shared/constants';
 
 const MARKER = 'REACHABILITY:shared-home-notice-unreferenced';
 const BANNED_RESEARCHER_WORDS = /\b(?:cage|sandbox|sandboxed|contained|confined|isolated)\b/i;
@@ -78,11 +79,14 @@ test('production launch_agent result does not emit the researcher notice for a w
 });
 
 test('live posture files distinguish the surviving working directory from the deleted HOME redirect', () => {
-  const files = ['SECURITY.md', '.lares/supervisor/CLAUDE.md', '.lares/research/README.md', 'CLAUDE.md', 'AGENTS.md'];
-  for (const relative of files) {
-    const prose = fs.readFileSync(path.join(ROOT, relative), 'utf8');
-    assert.match(prose, /\.lares\/researcher\/<provider>\//, `${MARKER} ${relative} must name the surviving provider working directory`);
-    assert.match(prose, /\.lares\/agent-homes\/<agent-id>\//, `${MARKER} ${relative} must name the deleted per-agent HOME redirect`);
-    assert.doesNotMatch(prose, /Codex (?:uses|has).*PreToolUse.*deny/i, `${MARKER} ${relative} repeats the false Codex-deny claim`);
+  const proseByName = new Map([
+    ...['SECURITY.md', '.lares/supervisor/CLAUDE.md', 'CLAUDE.md', 'AGENTS.md']
+      .map((relative) => [relative, fs.readFileSync(path.join(ROOT, relative), 'utf8')] as const),
+    ['Library README scaffold', RESEARCH_STORE_README_MD] as const,
+  ]);
+  for (const [name, prose] of proseByName) {
+    assert.match(prose, /\.lares\/researcher\/<provider>\//, `${MARKER} ${name} must name the surviving provider working directory`);
+    assert.match(prose, /\.lares\/agent-homes\/<agent-id>\//, `${MARKER} ${name} must name the deleted per-agent HOME redirect`);
+    assert.doesNotMatch(prose, /Codex (?:uses|has).*PreToolUse.*deny/i, `${MARKER} ${name} repeats the false Codex-deny claim`);
   }
 });

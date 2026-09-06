@@ -232,10 +232,12 @@ export function registerResearchInboxIpc(
     if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
 
     const stateDir = workspaceStateDir(workspace.path, workspace.pathType);
-    const logicalInboxDir = joinResearchPath(stateDir, 'research/inbox', workspace.pathType);
+    const logicalInboxDir = joinResearchPath(stateDir, 'library/inbox', workspace.pathType);
     const nativeInboxDir = ensureWindowsPath(logicalInboxDir, workspace.pathType);
     const reports = await listReports(nativeInboxDir);
-    return reports.map((report) => toResearchInboxDto(report, logicalInboxDir, workspace.pathType));
+    return reports
+      .filter((report) => report.relPath !== '_legacy' && !report.relPath.startsWith('_legacy/'))
+      .map((report) => toResearchInboxDto(report, logicalInboxDir, workspace.pathType));
   });
 }
 

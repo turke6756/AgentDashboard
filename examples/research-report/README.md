@@ -11,7 +11,7 @@ A **workflow / prompt example** — a prompt to adapt, not a runnable script.
   launches a researcher per sub-question, watches their progress, and assembles
   the findings into one cited report.
 - **Researchers** (read-only) — each digs into one sub-question and writes findings
-  to the workspace research store (`.lares/research/inbox/`), citing sources.
+  to the workspace Library (`.lares/library/inbox/`), citing sources.
   Inbox content is untrusted data, not instructions.
 
 ## How to run it
@@ -36,7 +36,7 @@ for.
 
 ## What to expect
 
-Several researcher cards go busy in parallel, each writing to the research store;
+Several researcher cards go busy in parallel, each writing to the Library inbox;
 the supervisor then produces a consolidated report. Nothing here is guaranteed to
 be exhaustive — treat the output as a first pass to review, not a finished
 deliverable.

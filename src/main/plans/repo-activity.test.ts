@@ -89,7 +89,7 @@ test('exclusion — the plan file itself is dropped (provenance is plan_section_
 test('exclusion — .dashboard/** is dropped (worker infra noise)', () => {
   const ev = rollupRepoActivity(
     [fa({ filePath: WIN + '/.dashboard/workers/claude/behavioral.md', operation: 'write' }),
-     fa({ filePath: WIN + '/.dashboard/research/inbox/note.md', operation: 'read' }),
+     fa({ filePath: WIN + '/.dashboard/library/inbox/note.md', operation: 'read' }),
      fa({ filePath: WIN + '/src/keep.ts', operation: 'write' })],
     opts(),
   );

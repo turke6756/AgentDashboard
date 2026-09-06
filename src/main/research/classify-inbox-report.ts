@@ -53,7 +53,7 @@ function isWithin(root: string, candidate: string): boolean {
 }
 
 /** Recursively list markdown reports without following symlinks or junctions.
- * Files remain in place regardless of classification result. */
+ * The migration-owned `_legacy/` archive is deliberately outside the inbox view. */
 export async function listInboxReports(
   inboxDir: string,
   options: ListInboxReportsOptions = {},
@@ -82,6 +82,7 @@ export async function listInboxReports(
     entries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of entries) {
+      if (dir === inboxDir && entry.name === '_legacy') continue;
       const absolute = path.join(dir, entry.name);
       let stat: fs.Stats;
       try {

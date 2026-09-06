@@ -1,7 +1,7 @@
 // skill-provisioning.ts — the ONE source of the lane/provider skill roots a
 // `remember`-authored lesson (and the `remember` skill itself) is provisioned to
 // (Memory & Lessons v2 WP-F1). The location set is WP-R's verified verdict
-// (.lares/research/inbox/codex-agents-skills-discovery/2026-07-28.md): the
+// (.lares/library/inbox/codex-agents-skills-discovery/2026-07-28.md): the
 // PER-CWD set — Claude + Codex, supervisor + worker — because the shared
 // workspace-root `.agents/skills/` only works when the workspace root is a git
 // repo, so it is NOT relied on. Codex uses `.agents/skills/` (its discovery

@@ -361,6 +361,7 @@ const TESTS = [
   'dist/main/main/scaffold-writer.test.js',
   // Lares rebrand — one-time .dashboard → .lares state-dir migration.
   'dist/main/main/workspace-state-dir.test.js',
+  'dist/main/main/library/library-migration.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
   'dist/main/main/supervisor/supervisor-persona-capability-parity.test.js',
@@ -474,6 +475,7 @@ const TESTS = [
   'dist/main/main/browser/reader-mode.test.js',
   'dist/main/main/research/frontmatter.test.js',
   'scripts/research-write-guard.test.js',
+  'scripts/no-legacy-research-path.test.js',
   // Shared PreToolUse git-discard guard — pure-predicate decision table
   // (~60 cases) + spawn harness (deny shape, exit codes, fail-OPEN).
   'scripts/guard-git-discard.test.js',
@@ -837,9 +839,13 @@ for (const file of testsToRun) {
   const runnableFile = compiledRoot && file.startsWith('dist/main/')
     ? path.resolve(compiledRoot, file.slice('dist/main/'.length))
     : file
+  const testEnv = { ...process.env }
+  if (compiledRoot && file === 'scripts/research-write-guard.test.js') {
+    testEnv.RESEARCH_CONSTANTS_MODULE = path.resolve(compiledRoot, 'shared/constants.js')
+  }
   const r = spawnSync(nativeElectronTest ? electronRuntime : process.execPath, [runnableFile], {
     stdio: 'inherit',
-    env: nativeElectronTest ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
+    env: nativeElectronTest ? { ...testEnv, ELECTRON_RUN_AS_NODE: '1' } : testEnv,
   })
   if (r.status !== 0) {
     failed = file
