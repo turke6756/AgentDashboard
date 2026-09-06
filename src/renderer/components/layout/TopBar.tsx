@@ -81,7 +81,6 @@ export default function TopBar() {
       { label: 'Reset Panel Layout', onClick: resetLayout },
       { label: '', divider: true },
       { label: 'Reload UI', onClick: () => window.location.reload() },
-      { label: 'Library', onClick: () => openToolTab('library', 'Library') },
     ],
     // Observability tools. Later work packages append items here — keep each as a
     // one-line `openToolTab(...)` entry so the menu stays trivially extendable.
@@ -168,14 +167,6 @@ export default function TopBar() {
 
       {/* Right cluster — sits left of the native caption buttons (env inset). */}
       <div className="flex items-center gap-0.5 pr-1 app-no-drag">
-        <button
-          onClick={() => openToolTab('library', 'Library')}
-          title="Open Workspace Library"
-          aria-label="Open Workspace Library"
-          className="h-7 px-2 flex items-center gap-1 rounded-sm text-gray-400 hover:bg-white/5 hover:text-gray-200 transition-colors"
-        >
-          <Icons.Library className="w-3.5 h-3.5" /><span>Library</span>
-        </button>
         <ActivityShield />
         <button
           onClick={toggleTheme}

@@ -54,7 +54,7 @@ function DetachedViewPlaceholder({ label }: { label: string }) {
 }
 
 export default function MainContent() {
-  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, plansOpen, activityOpen, openTabs, detachedViews } = useDashboardStore(
+  const { workspaces, selectedWorkspaceId, fileViewerOpen, browserOpen, plansOpen, activityOpen, openTabs, activeTabId, detachedViews } = useDashboardStore(
     useShallow((s) => ({
       workspaces: s.workspaces,
       selectedWorkspaceId: s.selectedWorkspaceId,
@@ -63,6 +63,7 @@ export default function MainContent() {
       plansOpen: s.plansOpen,
       activityOpen: s.activityOpen,
       openTabs: s.openTabs,
+      activeTabId: s.activeTabId,
       detachedViews: s.detachedViews,
     })),
   );
@@ -70,6 +71,7 @@ export default function MainContent() {
   const showBrowser = useDashboardStore((s) => s.showBrowser);
   const showDashboard = useDashboardStore((s) => s.showDashboard);
   const showActivity = useDashboardStore((s) => s.showActivity);
+  const openToolTab = useDashboardStore((s) => s.openToolTab);
   const browserPaneAttention = useBrowserStore((s) => s.paneAttention);
   const [showLaunch, setShowLaunch] = useState(false);
 
@@ -185,6 +187,9 @@ export default function MainContent() {
   const dashboardActive = !fileViewerOpen && !browserOpen && !plansOpen && !activityOpen;
   const plansActive = plansOpen && !fileViewerOpen && !browserOpen;
   const activityActive = activityOpen && !fileViewerOpen && !browserOpen && !plansOpen;
+  const libraryActive = openTabs.some(
+    (tab) => tab.id === activeTabId && tab.kind === 'tool' && tab.toolId === 'library',
+  );
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
@@ -268,6 +273,17 @@ export default function MainContent() {
             >
               <Icons.History className="w-4 h-4 shrink-0" />
               {!toolbarCompact && 'Activity'}
+            </button>
+            <button
+              data-testid="view-btn-library"
+              onClick={() => openToolTab('library', 'Library')}
+              aria-label="Open Workspace Library"
+              aria-pressed={libraryActive}
+              className={`ui-btn ui-btn-outline flex-1 whitespace-nowrap px-3 py-1.5 text-[13px] font-medium ${libraryActive ? 'ui-btn-success is-active' : ''}`}
+              title="Open Workspace Library"
+            >
+              <Icons.Library className="w-4 h-4 shrink-0" />
+              {!toolbarCompact && 'Library'}
             </button>
             <button
               onClick={() => window.api.workspaces.openInVSCode(workspace.id)}
