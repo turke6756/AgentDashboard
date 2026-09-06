@@ -100,7 +100,8 @@ function assertPlanRefFailure(response: Response, status: number, code: string):
   const checkpointPlanIds: Array<string | undefined> = [];
   const dbKeys = [
     'getWorkspace', 'getPlan', 'getPlanByWorkspaceArtifactId', 'getSupervisorAgent',
-    'getAgent', 'listPlanWorkPackagesOrdered', 'upsertSupervisorFocus', 'deleteSupervisorFocus',
+    'getAgent', 'listPlanWorkPackagesOrdered', 'readPlanGateProgressEvidence',
+    'upsertSupervisorFocus', 'deleteSupervisorFocus',
   ];
   const originals = new Map<string, unknown>(dbKeys.map((key) => [key, db[key]]));
   const originalPlanFolders = planIpc.listPromotedPlanFolders;
@@ -116,6 +117,11 @@ function assertPlanRefFailure(response: Response, status: number, code: string):
   db.getSupervisorAgent = () => supervisorAgent;
   db.getAgent = (id: string) => id === supervisorId ? supervisorAgent : null;
   db.listPlanWorkPackagesOrdered = () => [];
+  db.readPlanGateProgressEvidence = () => ({
+    highWater: { rowCount: 0, maxRowId: 0, maxDecidedAt: 0 },
+    overrideCount: 0,
+    byPackage: {},
+  });
   db.upsertSupervisorFocus = (input: { planId: string }) => { focused.push(input.planId); return input; };
   db.deleteSupervisorFocus = (_supervisor: string, planId: string) => { unfocused.push(planId); };
   planIpc.listPromotedPlanFolders = () => ({ plans: [], warnings: [] });
