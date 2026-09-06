@@ -1036,11 +1036,38 @@ export const SUPERVISOR_AGENT_MD_V33 = SUPERVISOR_AGENT_MD_V32.replace(
 );
 const LEGACY_LIBRARY_LARES_PREFIX = `${['.lares', 'research'].join('/')}/`;
 const LEGACY_LIBRARY_DASHBOARD_PREFIX = `${['.dashboard', 'research'].join('/')}/`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V33
+export const SUPERVISOR_AGENT_MD_V34 = SUPERVISOR_AGENT_MD_V33
   .split(LEGACY_LIBRARY_LARES_PREFIX).join('.lares/library/');
+export const LIBRARY_GUIDANCE_ALL_LANES = `## Workspace Library
+
+The library is a folder; you may still open a file in it. The tools exist for
+the case where reading the whole file is the wrong move: a long manual, a shelf
+of reports, or a question that spans several documents. When the human says
+"search my library" or "I think the manual is in the library", call
+\`list_workspace_library\` to confirm it is there, then
+\`query_workspace_library\` with the feature or term, and answer from the
+passages.`;
+export const LIBRARY_GUIDANCE_SUPERVISOR_RESEARCHER = `Before starting a writing or
+research task, list the library. If a report or manual bears on the task, query
+it rather than re-researching; deep research already done is reusable now.`;
+export const LIBRARY_GUIDANCE_WORKER = `Use the library when the human asks, or when the
+task is documentation rather than code.`;
+export const LIBRARY_GUIDANCE_CITATION = `Each claim taken from a passage carries its
+returned \`citation\` exactly. A claim that cannot be attached to a returned
+passage is not grounded; say so.`;
+export const SUPERVISOR_AGENT_MD = `${SUPERVISOR_AGENT_MD_V34.trimEnd()}
+
+${LIBRARY_GUIDANCE_ALL_LANES}
+
+${LIBRARY_GUIDANCE_SUPERVISOR_RESEARCHER}
+
+${LIBRARY_GUIDANCE_CITATION}
+`;
 export const SUPERVISOR_AGENT_MD_CHILD_V1 = SUPERVISOR_AGENT_MD_V32
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD_V2 = SUPERVISOR_AGENT_MD_V33
+  .split('./memory/').join('../memory/');
+export const SUPERVISOR_AGENT_MD_CHILD_V3 = SUPERVISOR_AGENT_MD_V34
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD = SUPERVISOR_AGENT_MD
   .split('./memory/').join('../memory/');
@@ -1833,8 +1860,16 @@ export const WORKER_CLAUDE_MD_V17 = WORKER_CLAUDE_MD_V16.replace(
   WORKER_CLAUDE_MD_V17_RECORD_READING_ANCHOR,
   `${WORKER_CLAUDE_MD_V17_RECORD_READING_SECTION}\n\n${WORKER_CLAUDE_MD_V17_RECORD_READING_ANCHOR}`,
 );
-export const WORKER_CLAUDE_MD = WORKER_CLAUDE_MD_V17
+export const WORKER_CLAUDE_MD_V18 = WORKER_CLAUDE_MD_V17
   .split(LEGACY_LIBRARY_LARES_PREFIX).join('.lares/library/');
+export const WORKER_CLAUDE_MD = `${WORKER_CLAUDE_MD_V18.trimEnd()}
+
+${LIBRARY_GUIDANCE_ALL_LANES}
+
+${LIBRARY_GUIDANCE_WORKER}
+
+${LIBRARY_GUIDANCE_CITATION}
+`;
 
 /** Seed content for the shared worker behavioral memory, written write-if-absent
  *  to <workspace>/.lares/workers/claude/behavioral.md on first Claude worker
@@ -2048,6 +2083,13 @@ export const WORKER_CODEX_AGENTS_MD_V9 = WORKER_CLAUDE_MD_V16
 
 /** Frozen v10 Codex worker instructions, derived from the frozen worker v17 body. */
 export const WORKER_CODEX_AGENTS_MD_V10 = WORKER_CLAUDE_MD_V17
+  .split('.lares/workers/claude/').join('.lares/workers/codex/')
+  .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
+  .join('an interactive approval prompt or `(y/n)` confirmation, ')
+  .split('`WORKER_CLAUDE_MD` constant').join('`WORKER_CODEX_AGENTS_MD` constant');
+
+/** Frozen v11 Codex worker instructions, derived from the frozen worker v18 body. */
+export const WORKER_CODEX_AGENTS_MD_V11 = WORKER_CLAUDE_MD_V18
   .split('.lares/workers/claude/').join('.lares/workers/codex/')
   .split('`AskUserQuestion`,\nplan-mode approval prompts, `(y/n)` confirmations, ')
   .join('an interactive approval prompt or `(y/n)` confirmation, ')
@@ -5516,8 +5558,16 @@ export const RESEARCHER_AGENT_MD_V8 = RESEARCHER_AGENT_MD_V7.replace(
   RESEARCHER_AGENT_MD_V8_PLAN_STATE_ANCHOR,
   `${RESEARCHER_AGENT_MD_V8_PLAN_STATE}\n${RESEARCHER_AGENT_MD_V8_PLAN_STATE_ANCHOR}`,
 );
-export const RESEARCHER_AGENT_MD = RESEARCHER_AGENT_MD_V8
+export const RESEARCHER_AGENT_MD_V9 = RESEARCHER_AGENT_MD_V8
   .split(LEGACY_LIBRARY_LARES_PREFIX).join('.lares/library/');
+export const RESEARCHER_AGENT_MD = `${RESEARCHER_AGENT_MD_V9.trimEnd()}
+
+${LIBRARY_GUIDANCE_ALL_LANES}
+
+${LIBRARY_GUIDANCE_SUPERVISOR_RESEARCHER}
+
+${LIBRARY_GUIDANCE_CITATION}
+`;
 
 /** Researcher persona settings — .lares/researcher/claude/.claude/settings.json.
  *  Mirrors WORKER_CLAUDE_SETTINGS_JSON's memory/compaction posture AND its
