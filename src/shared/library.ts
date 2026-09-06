@@ -19,7 +19,8 @@ export type LibraryDocumentStatus =
   | 'ready'
   | 'error';
 
-export type ShelfStatus = 'pending' | 'stale' | 'indexing' | 'ready' | 'error';
+export const SHELF_STATUSES = ['pending', 'stale', 'indexing', 'ready', 'error'] as const;
+export type ShelfStatus = typeof SHELF_STATUSES[number];
 
 export interface ShelfRow {
   id: string;

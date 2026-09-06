@@ -778,15 +778,6 @@ const api: IpcApi = withoutRetiredSaveApi({
   getAgentPlanBadgeSummary: (workspaceId: string) => Promise<Record<string, AgentPlanBadge>>;
 }).getAgentPlanBadgeSummary = (workspaceId) => ipcRenderer.invoke('agents:planBadgeSummary', workspaceId);
 
-// WP-10b: read-only research-inbox projection. The shared IpcApi declaration is
-// intentionally untouched by this split package; renderer call sites narrow the
-// additive member locally.
-(api as IpcApi & {
-  research: { listInboxReports: (workspaceId: string) => Promise<unknown> };
-}).research = {
-  listInboxReports: (workspaceId) => ipcRenderer.invoke('research:list-inbox-reports', workspaceId),
-};
-
 (api as IpcApi & {
   library: {
     ingest: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;

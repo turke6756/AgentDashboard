@@ -375,6 +375,8 @@ const TESTS = [
   'dist/main/main/library/library-report-sources.test.js',
   'dist/main/main/library/library-shelf.test.js',
   'dist/main/main/library/library-ipc.test.js',
+  // The retired research inbox IPC/preload transport suites are intentionally absent;
+  // classify-inbox-report remains covered as a library primitive.
   'dist/main/main/library/library-rescan.test.js',
   'dist/main/main/library/library-chunker.test.js',
   'dist/main/main/library/pdf-extractor.test.js',
