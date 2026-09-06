@@ -11,7 +11,7 @@ let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
 beforeEach(() => {
-  useDashboardStore.setState({ workspaces: [], selectedWorkspaceId: null });
+  useDashboardStore.setState({ workspaces: [], selectedWorkspaceId: null, openTabs: [], activeTabId: null });
 });
 
 afterEach(() => {
@@ -33,7 +33,7 @@ describe('PlansPane shell', () => {
     expect(container.textContent).not.toMatch(/historic|history|legacy/i);
   });
 
-  it('defaults to Proposals and switches only the gallery region to Research', () => {
+  it('keeps Proposals visible and opens Research as a filtered Library tool tab', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -44,8 +44,10 @@ describe('PlansPane shell', () => {
     expect(container.querySelector('[data-testid="plans-promoted-region"]')).not.toBeNull();
 
     act(() => container!.querySelector<HTMLElement>('[data-testid="plans-tab-research"]')!.click());
-    expect(container.querySelector('[data-testid="plans-proposals-region"]')).toBeNull();
-    expect(container.querySelector('[data-testid="plans-research-region"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="plans-proposals-region"]')).not.toBeNull();
+    const libraryTab = useDashboardStore.getState().openTabs.find((tab) => tab.toolId === 'library');
+    expect(libraryTab?.params).toEqual({ type: 'research' });
+    expect(useDashboardStore.getState().activeTabId).toBe(libraryTab?.id);
     expect(container.querySelector('[data-testid="plans-promoted-region"]')).not.toBeNull();
 
     act(() => container!.querySelector<HTMLElement>('[data-testid="plans-tab-proposals"]')!.click());
