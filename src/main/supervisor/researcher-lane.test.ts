@@ -9,6 +9,7 @@ import {
   RESEARCHER_CODEX_AGENTS_MD_V4,
   RESEARCHER_CODEX_AGENTS_MD_V5_HASH,
   RESEARCHER_CODEX_AGENTS_MD_V6_HASH,
+  RESEARCHER_CODEX_AGENTS_MD_V7_HASH,
   resolveResearcherLaunch,
   resolveResearcherClaudeLaunchDetails,
   resolveResearcherWorkingDirectory,
@@ -116,9 +117,9 @@ test('Agy identity remains outside its version-migrated skill map', () => {
   }
 });
 
-test('Codex AGENTS.md advances to v7 with cumulative hashes for v1 through v6', () => {
+test('Codex AGENTS.md advances to v8 with cumulative hashes for v1 through v7', () => {
   const entry = AgentSupervisor.RESEARCHER_FILES_CODEX['.lares/researcher/codex/AGENTS.md'];
-  assert.equal(entry.version, 7);
+  assert.equal(entry.version, 8);
   assert.deepEqual(entry.previousHashes, {
     1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1),
     2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2),
@@ -126,6 +127,7 @@ test('Codex AGENTS.md advances to v7 with cumulative hashes for v1 through v6', 
     4: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V4),
     5: RESEARCHER_CODEX_AGENTS_MD_V5_HASH,
     6: RESEARCHER_CODEX_AGENTS_MD_V6_HASH,
+    7: RESEARCHER_CODEX_AGENTS_MD_V7_HASH,
   });
 });
 
