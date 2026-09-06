@@ -145,12 +145,18 @@ test('rename failure: session continues on .dashboard, nothing is deleted', () =
 
 // ── Fresh + already-migrated workspaces ──────────────────────────────
 
-test('fresh workspace (neither dir): resolves .lares, creates nothing', () => {
+test('fresh workspace (neither dir): resolves .lares and creates the Library skeleton', () => {
   const root = freshRoot('fresh');
   const res = migrateWorkspaceStateDir(root);
   assert.equal(res.dirName, LARES_DIR_NAME);
   assert.equal(res.migrated, false);
-  assert.equal(fs.existsSync(path.join(root, LARES_DIR_NAME)), false, 'resolver must not create the dir');
+  for (const rel of ['inbox', 'cleared', 'sources', 'derived']) {
+    assert.equal(
+      fs.existsSync(path.join(root, LARES_DIR_NAME, 'library', rel)),
+      true,
+      `resolver must create library/${rel}`,
+    );
+  }
   assert.equal(fs.existsSync(path.join(root, LEGACY_LARES_DIR_NAME)), false);
 });
 
