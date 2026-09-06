@@ -99,7 +99,8 @@ let focusedPlansStub: Array<Record<string, unknown>> = [];
 let lastFocusUpsert: Record<string, unknown> | null = null;
 db.getSupervisorFocusedPlans = (_supervisorId: string, _limit?: number) => focusedPlansStub;
 db.upsertSupervisorFocus = (input: Record<string, unknown>) => { lastFocusUpsert = input; return { ...input }; };
-db.getPlan = (id: string) => (id === 'plan-1' ? { id: 'plan-1', workspaceId: 'ws-1', deletedAt: null } : null);
+const PLAN_ID = '11111111-1111-4111-8111-111111111111';
+db.getPlan = (id: string) => (id === PLAN_ID ? { id: PLAN_ID, workspaceId: 'ws-1', path: 'plans/a.html', deletedAt: null } : null);
 db.listOrchestrationRuns = () => [];
 db.getLiveRailAgentForPlan = () => null;
 function focusUpserted(): Record<string, unknown> | null { return lastFocusUpsert; }
@@ -584,7 +585,7 @@ test('OPTIONS preflight advertises X-Workspace-Id / X-Supervisor-Id / X-Project-
 test('P1 context: asserted supervisor gets the `plans` block (subscriptions), header-less callers do not', () =>
   withServer(async (port) => {
     focusedPlansStub = [
-      { planId: 'plan-1', path: 'plans/a.html', slug: 'a', format: 'html', focusedAt: 't0', lastAttendedAt: 't1', notes: null },
+      { planId: PLAN_ID, path: 'plans/a.html', slug: 'a', format: 'html', focusedAt: 't0', lastAttendedAt: 't1', notes: null },
     ];
     const asserted = await request(port, 'GET', '/api/supervisor/context', { ...WS_HDR, 'X-Supervisor-Id': 'sup-1' });
     assert.equal(asserted.status, 200);
@@ -605,10 +606,10 @@ test('P1 auto-subscribe: a plan-bound launch_agent by an asserted supervisor ups
     lastFocusUpsert = null;
     const res = await request(port, 'POST', '/api/agents',
       { ...WS_HDR, 'X-Supervisor-Id': 'sup-1', 'Content-Type': 'application/json' },
-      JSON.stringify({ title: 'w1', plan_id: 'plan-1' }));
+      JSON.stringify({ title: 'w1', plan_id: PLAN_ID }));
     assert.equal(res.status, 200);
     assert.equal(focusUpserted()?.supervisorId, 'sup-1');
-    assert.equal(focusUpserted()?.planId, 'plan-1');
+    assert.equal(focusUpserted()?.planId, PLAN_ID);
   }));
 
 test('P1 auto-subscribe: a launch_agent with NO plan binding upserts nothing', () =>
@@ -623,17 +624,17 @@ test('P1 auto-subscribe: a launch_agent with NO plan binding upserts nothing', (
 
 test('P1 auto-subscribe: run_orchestration with a plan_id upserts for the dispatching supervisor', async () => {
   lastFocusUpsert = null;
-  const stubOrchestration = { start_run: () => ({ runId: 'run-1' }) } as unknown as ConstructorParameters<typeof ApiServer>[2];
+  const stubOrchestration = { start_run: () => ({ runId: 'run-1', planId: PLAN_ID }) } as unknown as ConstructorParameters<typeof ApiServer>[2];
   const server = new ApiServer(stubSupervisor, 0, stubOrchestration, '127.0.0.1');
   const port = await server.start();
   try {
     const res = await request(port, 'POST', '/api/orchestrations',
       { ...WS_HDR, 'X-Supervisor-Id': 'sup-1', 'Content-Type': 'application/json' },
-      JSON.stringify({ name: 'groupthink', params: { workspaceId: 'ws-1', supervisorId: 'sup-1', planId: 'plan-1' } }));
+      JSON.stringify({ name: 'groupthink', params: { workspaceId: 'ws-1', supervisorId: 'sup-1', planId: PLAN_ID } }));
     assert.equal(res.status, 200);
     assert.equal(JSON.parse(res.body).runId, 'run-1');
     assert.equal(focusUpserted()?.supervisorId, 'sup-1');
-    assert.equal(focusUpserted()?.planId, 'plan-1');
+    assert.equal(focusUpserted()?.planId, PLAN_ID);
   } finally { server.stop(); }
 });
 
