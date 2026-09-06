@@ -8,6 +8,7 @@ import { makePathOps } from './paths';
 import { TokenEstimator } from './token-estimator';
 import type { FileReader } from './context-overhead-analyzer';
 import type { OverheadSource } from '../../shared/types';
+import { MEMORY_FRAMING_PREAMBLE } from '../../shared/memory-index-core';
 
 // NOTE: `extractClaudeImports` moved to the shared `claude-import-resolver`
 // module (base plan §3.2); its unit tests live in `claude-import-resolver.test.ts`.
@@ -75,6 +76,7 @@ test('SKILL.md splits into skill-header (baseline) + skill-body (scenario) sourc
     'estimate is clearly larger than the tiny YAML header block above it.',
     'More body text to make the body substantially bigger than the header.',
   ].join('\n');
+  const expectedInjectText = ${MEMORY_FRAMING_PREAMBLE}\n\n${projectedIndex};
   const files: Record<string, string> = { [skillPath]: content };
   const reader: FileReader = {
     read(p) { const c = files[p]; return c !== undefined ? { content: c, bytes: c.length } : null; },
@@ -125,7 +127,7 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
     '- read-if: always',
     '- detail: memory/details/mb-2026-08-20-live.md',
   ].join('\r\n');
-  const expectedInjectText = [
+  const projectedIndex = [
     '# Supervisor memory index',
     '',
     '<!-- disclosure-format: v2 -->',
@@ -134,6 +136,7 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
     '- read-if: always',
     '- detail: memory/details/mb-2026-08-20-live.md',
   ].join('\n');
+  const expectedInjectText = ${MEMORY_FRAMING_PREAMBLE}\n\n${projectedIndex};
   const files: Record<string, string> = { [memPath]: content };
   const reader: FileReader = {
     read(p) { const c = files[p]; return c !== undefined ? { content: c, bytes: c.length } : null; },
@@ -153,7 +156,7 @@ test('MEMORY.md costs the projected resident injection + keeps the full body on 
   assert.equal(index!.disclosureTier, 'resident', 'the index tier is resident');
   assert.equal(body!.disclosureTier, 'on-demand', 'the body tier is on-demand');
   assert.equal(index!.estimate.tokens, expectedInjectText.length,
-    'the resident row estimates the normalized partial projection with invalid blocks removed');
+    'the resident row estimates the framed, normalized partial projection with invalid blocks removed');
   assert.ok(index!.estimate.tokens > 0, 'the injected index has a non-zero resident cost');
   assert.ok(body!.estimate.tokens > 0, 'the on-demand body carries its measured size');
   assert.equal(body!.estimate.chars, content.length, 'the body row still measures the full on-demand file');
