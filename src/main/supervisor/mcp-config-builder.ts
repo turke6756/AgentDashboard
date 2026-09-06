@@ -81,7 +81,7 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // is capability distribution, not route-level role enforcement: archive's
       // route records an asserted supervisor as optional provenance, while
       // recorded human migration approval separately gates every whole-bundle operation.
-      return 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration,library-read';
+      return 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration';
     case 'worker':
       // QW1 (context-optimizer §3): `notebooks` removed — 0 notebook tool
       // invocations corpus-wide in the 546-file worker matrix. This is a rent
@@ -100,13 +100,13 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // identical before and after.
       // WP-D: the worker lane also gets `memory` (recall_memory) — both lanes
       // fetch active or archived capsule detail whenever it becomes relevant.
-      return 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read';
+      return 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read';
     case 'researcher':
       // Researchers can be plan-bound too. Keep the full browser surface and
       // add only the read-only plan ladder; no plan-write/full `plans` grant.
       // Claude and Codex mount this provider-neutral grant in their launch
       // paths. Agy cannot currently mount it (AGY_DASHBOARD_MCP_LIMITATION).
-      return 'browser,plans-read,library-read';
+      return 'browser,plans-read';
     case 'legacy':
     default:
       return '';

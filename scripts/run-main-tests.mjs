@@ -367,10 +367,6 @@ const TESTS = [
   'dist/main/main/library/pdf-extractor.test.js',
   'dist/main/main/library/docx-extractor.test.js',
   'dist/main/main/library/library-ingest.test.js',
-  'dist/main/main/library/library-citation.test.js',
-  'dist/main/main/library/library-query.test.js',
-  'dist/main/main/library/library-query-integration.test.js',
-  'scripts/mcp-tools-library.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
   'dist/main/main/supervisor/supervisor-persona-capability-parity.test.js',
@@ -844,8 +840,6 @@ for (const file of testsToRun) {
     file.endsWith('/agy-session-reader.test.js') ||
     file.endsWith('/database.recovery-operation-insert.test.js') ||
     file.endsWith('/library-store.test.js') ||
-    file.endsWith('/library-query.test.js') ||
-    file.endsWith('/library-query-integration.test.js') ||
     file.endsWith('/pdf-extractor.test.js') ||
     file.endsWith('/library-ingest.test.js') ||
     file.endsWith('/supervisor-peer-provider.test.js')

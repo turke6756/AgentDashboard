@@ -68,9 +68,6 @@
           "mcp-tools-plans.js",
           "mcp-tools-notebooks.js",
           "mcp-tools-checkpoints.js",
-          "mcp-tools-library.js",
-          "mcp-tools-memory.js",
-          "mcp-tools-migration.js",
           "mcp-browser-tools.js",
           "mcp-browser-present-tools.js"
         ]

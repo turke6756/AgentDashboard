@@ -1,13 +1,12 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type { LibraryIngestRequest, LibraryProgressEvent } from '../../shared/library';
 import { createLibraryIngestor } from './library-ingest';
-import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, type QueryLibraryArgs } from './library-store';
+import { closeLibraryStore, listLibraryDocuments, openLibraryStore } from './library-store';
 
 export const LIBRARY_CHANNELS = {
   ingest: 'library:ingest',
   rescan: 'library:rescan',
   list: 'library:list-documents',
-  query: 'library:query',
   progress: 'library:progress',
 } as const;
 
@@ -52,10 +51,6 @@ export function registerLibraryIpc(
   ipc.handle(LIBRARY_CHANNELS.list, (_event, workspaceId: string, includeUntrusted = false) => withStore(
     workspaceId,
     (_root, store) => listLibraryDocuments(store, { include_untrusted: includeUntrusted }),
-  ));
-  ipc.handle(LIBRARY_CHANNELS.query, (_event, workspaceId: string, args: QueryLibraryArgs) => withStore(
-    workspaceId,
-    (_root, store) => queryLibrary(store, args),
   ));
 }
 

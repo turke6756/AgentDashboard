@@ -115,8 +115,6 @@ import { buildPlanProgressProjection } from './plans/plan-progress-projection';
 import { parsePlanManifest, type PlanManifest } from './plans/plan-manifest';
 import { resolvePlanRef } from './plans/resolve-plan-ref';
 import { gateLandedWorkPackage } from './plans/gate-landed-service';
-import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, type QueryLibraryArgs } from './library/library-store';
-import { toolsetsForLane } from './supervisor/mcp-config-builder';
 import { implementPlan, SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE } from './plans/plan-implement';
 import { markPlanReady } from './plans/plan-lifecycle';
 import type { GateLandedWorkPackageArgs } from '../shared/types';
@@ -311,66 +309,7 @@ const API_ERROR_CODES = new Set<string>([
   'revive-workspace-gone', 'revive-cwd-gone', 'revive-no-session',
   'revive-unsupported-provider', 'revive-live-successor', 'revive-ownership-blocked',
   'revive-ownership-unverified', 'revive-stop-failed', 'revive-relaunch-failed',
-  'library-read-grant-required',
 ]);
-
-export interface LibraryRouteRequest {
-  method: string;
-  path: string;
-  request: http.IncomingMessage;
-  capability?: CapabilityClaim;
-}
-
-export interface LibraryRouteResult {
-  matched: true;
-  value: unknown;
-}
-
-/** Production Library HTTP seam used by the MCP proxy. Undefined means no route matched. */
-export async function registerLibraryRoutes(input: LibraryRouteRequest): Promise<LibraryRouteResult | undefined> {
-  if (input.path !== '/api/library/list' && input.path !== '/api/library/query') return undefined;
-  const claim = input.capability;
-  const grants = claim ? toolsetsForLane(claim.privilegeLane).split(',') : [];
-  if (!claim || !grants.includes('library-read')) {
-    throw Object.assign(new Error('Library routes require the library-read grant'), {
-      statusCode: 403,
-      code: 'library-read-grant-required',
-    });
-  }
-  const workspace = getWorkspace(claim.workspaceId);
-  if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
-  const store = openLibraryStore(workspace.path);
-  try {
-    if (input.path === '/api/library/list' && input.method === 'POST') {
-      const body = JSON.parse(await readBody(input.request)) as {
-        include_untrusted?: boolean;
-        types?: string[];
-        topics?: string[];
-      };
-      const documents = listLibraryDocuments(store, body)
-        .filter((document) => !body.types?.length || body.types.includes(document.type))
-        .map((document) => ({
-          id: document.id,
-          title: document.title,
-          type: document.type,
-          created: document.created,
-          topics: JSON.parse(document.topics_json) as string[],
-          trust: document.trust,
-          summary: document.summary,
-          ...(document.page_count === null ? {} : { pages: document.page_count }),
-        }))
-        .filter((document) => !body.topics?.length || body.topics.every((topic) => document.topics.includes(topic)));
-      return { matched: true, value: { documents } };
-    }
-    if (input.path === '/api/library/query' && input.method === 'POST') {
-      const body = JSON.parse(await readBody(input.request)) as QueryLibraryArgs;
-      return { matched: true, value: queryLibrary(store, body) };
-    }
-    throw Object.assign(new Error('Method not allowed'), { statusCode: 405, code: 'method-not-allowed' });
-  } finally {
-    closeLibraryStore(store);
-  }
-}
 
 /** Strip absolute paths out of an error message before it crosses the API
  *  boundary. A failed overhead scan can surface an unreadable-file error whose
@@ -1113,11 +1052,6 @@ export class ApiServer {
     capability: CapabilityClaim | undefined,
   ): Promise<any> {
     const path = url.pathname;
-
-    if (path === '/api/library/list' || path === '/api/library/query') {
-      const libraryRoute = await registerLibraryRoutes({ method, path, request: req, capability });
-      if (libraryRoute) return libraryRoute.value;
-    }
     const allowWorkerRead = method === 'GET'
       && (path === '/api/checkpoints' || /^\/api\/checkpoints\/[^/]+\/diff$/.test(path));
     const { workspaceId, agentId } = this.authorizeCheckpoint(req, capability, url, allowWorkerRead);
