@@ -26,6 +26,8 @@ const PLAN = {
   id: 'plan-1', workspaceId: 'ws-1', path: 'plans/auth.md', slug: 'auth', format: 'md',
   runState: null, mtimeMs: 1, sizeBytes: 1, createdAt: 't', updatedAt: 't', deletedAt: null,
 };
+const SELF_PLAN_ID = '11111111-2222-4333-8444-555555555555';
+const UNKNOWN_PLAN_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const FOCUS_ROW = {
   supervisorId: 'sup-1', planId: 'plan-1', focusedAt: 't0', lastAttendedAt: 't0',
   notes: null, plan: PLAN,
@@ -39,7 +41,9 @@ function resetCaptures(): void { lastGetFocus = null; lastUpsert = null; lastDel
 function installDefaultStubs(): void {
   db.getAgent = (id: string) => (id === 'sup-1' ? { id: 'sup-1', workspaceId: 'ws-1', isSupervisor: true } : null);
   db.getWorkspace = (id: string) => (id === 'ws-1' ? { id: 'ws-1', title: 'WS', path: 'C:/ws-1', pathType: 'windows' } : null);
-  db.getPlan = (id: string) => (id === 'plan-1' ? PLAN : null);
+  db.getPlan = (id: string) => id === 'plan-1'
+    ? PLAN
+    : id === SELF_PLAN_ID ? { ...PLAN, id: SELF_PLAN_ID } : null;
   db.getSupervisorFocus = (filters: any) => { lastGetFocus = filters; return [FOCUS_ROW]; };
   db.upsertSupervisorFocus = (input: any) => { lastUpsert = input; return { ...FOCUS_ROW, ...input }; };
   db.deleteSupervisorFocus = (supervisorId: string, planId: string) => { lastDelete = { supervisorId, planId }; };
@@ -250,10 +254,10 @@ test('R1: focus routes function with NO X-Supervisor-Id header', () =>
 test('POST /self derives the supervisor from X-Supervisor-Id (no body supervisor_id)', () =>
   withServer(async (port) => {
     const res = await request(port, 'POST', '/api/supervisor-focus/self', SUP_JSON,
-      JSON.stringify({ plan_id: 'plan-1', notes: 'mine' }));
+      JSON.stringify({ plan_id: SELF_PLAN_ID, notes: 'mine' }));
     assert.equal(res.status, 200);
     assert.equal(upserted().supervisorId, 'sup-1', 'subscriber taken from identity, not body');
-    assert.equal(upserted().planId, 'plan-1');
+    assert.equal(upserted().planId, SELF_PLAN_ID);
     assert.equal(upserted().notes, 'mine');
   }));
 
@@ -276,17 +280,17 @@ test('POST /self missing plan_id → 400', () =>
 test('POST /self unknown plan → 404', () =>
   withServer(async (port) => {
     const res = await request(port, 'POST', '/api/supervisor-focus/self', SUP_JSON,
-      JSON.stringify({ plan_id: 'phantom' }));
+      JSON.stringify({ plan_id: UNKNOWN_PLAN_ID }));
     assert.equal(res.status, 404);
     assert.equal(upserted(), null);
   }));
 
 test('DELETE /self/:plan derives the supervisor from identity (never treats "self" as an id)', () =>
   withServer(async (port) => {
-    const res = await request(port, 'DELETE', '/api/supervisor-focus/self/plan-1', SUP_HDR);
+    const res = await request(port, 'DELETE', `/api/supervisor-focus/self/${SELF_PLAN_ID}`, SUP_HDR);
     assert.equal(res.status, 200);
     assert.equal(JSON.parse(res.body).ok, true);
-    assert.deepEqual(deleted(), { supervisorId: 'sup-1', planId: 'plan-1' });
+    assert.deepEqual(deleted(), { supervisorId: 'sup-1', planId: SELF_PLAN_ID });
   }));
 
 test('DELETE /self/:plan with NO X-Supervisor-Id → 403 not-a-supervisor, no delete', () =>
