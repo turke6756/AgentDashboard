@@ -45,7 +45,7 @@ beforeEach(() => {
       stop: vi.fn(async () => ({ items: [] })),
     },
   };
-  useDashboardStore.setState({ agents: [], selectedAgentId: null } as any);
+  useDashboardStore.setState({ agents: [], selectedAgentId: null, workspaces: [], wslEnabled: true } as any);
 });
 
 afterEach(() => {
@@ -55,6 +55,24 @@ afterEach(() => {
 });
 
 describe('AgentCard dashboard MCP delivery badge', () => {
+  it('disables the WSL fork action with an explanatory tooltip while WSL is off', async () => {
+    useDashboardStore.setState({
+      wslEnabled: false,
+      workspaces: [{ id: 'ws', pathType: 'wsl' } as any],
+    });
+    await render(agent({ provider: 'claude', resumeSessionId: 'session-1', workingDirectory: '/home/test' }));
+    await act(async () => {
+      container.querySelector<HTMLElement>('.agent-card')!.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }),
+      );
+    });
+    const fork = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Fork Agent'))!;
+    expect(fork.disabled).toBe(true);
+    expect(fork.title).toBe('WSL is disabled in Lares');
+    expect(fork.textContent).toContain('(WSL off)');
+  });
+
   it('shows a persistent MCP OFF warning alongside launching status when delivery degraded', async () => {
     const message = 'Codex is launching without dashboard tools. Install the official Windows build.';
     await render(agent({ dashboardMcpStatus: 'degraded', dashboardMcpMessage: message }));
@@ -72,6 +90,7 @@ describe('AgentCard dashboard MCP delivery badge', () => {
     });
     expect(mcpBadge()).toBeNull();
   });
+
   it('shows no badge for an available Grok worker', async () => {
     await render(agent({ provider: 'grok', command: 'grok', dashboardMcpStatus: 'available' }));
     expect(mcpBadge()).toBeNull();
@@ -90,5 +109,4 @@ describe('AgentCard dashboard MCP delivery badge', () => {
     expect(mcpBadge()).toBeTruthy();
     expect(mcpBadge()?.getAttribute('title')).toBe(message);
   });
-
 });

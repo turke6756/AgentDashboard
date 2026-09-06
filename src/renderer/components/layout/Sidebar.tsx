@@ -176,7 +176,6 @@ export default function Sidebar({ width }: SidebarProps) {
   const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
   const checkHealth = useDashboardStore((s) => s.checkHealth);
   const setWslEnabled = useDashboardStore((s) => s.setWslEnabled);
-  const shutdownWsl = useDashboardStore((s) => s.shutdownWsl);
   const [showCreate, setShowCreate] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; wsId: string } | null>(null);
@@ -235,15 +234,21 @@ export default function Sidebar({ width }: SidebarProps) {
           : wslState === 'unknown'
             ? 'text-gray-500'
             : 'text-accent-red';
-  const wslToggleTitle = wslEnabled && liveWslAgentCount > 0
-    ? `Turning WSL off will not stop ${liveWslAgentCount} live WSL agent${liveWslAgentCount === 1 ? '' : 's'}.`
-    : (wslEnabled ? 'Turn WSL off' : 'Turn WSL on');
+  const wslToggleTitle = wslEnabled
+    ? (liveWslAgentCount > 0
+      ? `Turn WSL off and stop ${liveWslAgentCount} running WSL agent${liveWslAgentCount === 1 ? '' : 's'}`
+      : 'Turn WSL off and shut WSL down')
+    : 'Turn WSL on';
 
-  const handleShutdownWsl = async () => {
-    if (wslEnabled || liveWslAgentCount > 0) return;
-    if (!window.confirm('Shut down WSL now? This runs wsl.exe --shutdown.')) return;
-    try { await shutdownWsl(); }
-    catch (err) { window.alert(err instanceof Error ? err.message : String(err)); }
+  const handleWslToggle = async () => {
+    const next = !wslEnabled;
+    if (!next && liveWslAgentCount > 0) {
+      const confirmed = window.confirm(
+        `Turn WSL off? This will stop ${liveWslAgentCount} running WSL agent(s) and shut WSL down.`,
+      );
+      if (!confirmed) return;
+    }
+    await setWslEnabled(next);
   };
 
   const handleTreeExpandedChange = useCallback((dirPath: string, expanded: boolean) => {
@@ -761,7 +766,7 @@ export default function Sidebar({ width }: SidebarProps) {
                 role="switch"
                 aria-checked={wslEnabled}
                 aria-label={wslEnabled ? 'Turn WSL off' : 'Turn WSL on'}
-                onClick={() => void setWslEnabled(!wslEnabled)}
+                onClick={() => void handleWslToggle()}
                 className={`relative inline-flex w-7 h-4 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue ${wslEnabled ? 'bg-accent-green' : 'bg-gray-500'}`}
                 title={wslToggleTitle}
               >
@@ -778,18 +783,6 @@ export default function Sidebar({ width }: SidebarProps) {
               >
                 <Icons.RefreshCw className={`w-3.5 h-3.5 ${healthChecking ? 'animate-spin' : ''}`} />
               </button>
-              {!wslEnabled && (
-                <button
-                  type="button"
-                  onClick={() => void handleShutdownWsl()}
-                  disabled={liveWslAgentCount > 0}
-                  className="p-1 rounded text-gray-500 hover:text-accent-red hover:bg-white/5 transition-colors disabled:opacity-30"
-                  title={liveWslAgentCount > 0 ? 'Stop all live WSL agents before shutting WSL down' : 'Shut down WSL now'}
-                  aria-label="Shut down WSL now"
-                >
-                  <Icons.Power className="w-3.5 h-3.5" />
-                </button>
-              )}
             </div>
           </>
         ) : (

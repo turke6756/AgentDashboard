@@ -55,6 +55,7 @@ const TESTS = [
   'dist/main/main/wsl-enabled.test.js',
   'dist/main/main/wsl-bridge-enabled.test.js',
   'dist/main/main/wsl-enabled-ipc.test.js',
+  'dist/main/main/supervisor/wsl-spawn-gate.test.js',
   'dist/main/main/supervisor/codex-sid-recovery-on-chat-read.test.js',
   'dist/main/main/supervisor/session-log-dispatcher.test.js',
   // WP3/WP8 (hook-absence-resilience) — turn-evidence tracker + send-outcome copy.

@@ -122,6 +122,10 @@ export default function AgentCard({
   const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
   const deleteAgent = useDashboardStore((s) => s.deleteAgent);
   const forkAgent = useDashboardStore((s) => s.forkAgent);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
+  const isWslAgent = useDashboardStore((s) =>
+    s.workspaces.some((workspace) => workspace.id === agent.workspaceId && workspace.pathType === 'wsl'));
+  const wslLaunchBlocked = isWslAgent && !wslEnabled;
   const queryAgent = useDashboardStore((s) => s.queryAgent);
   const activityPage = useDashboardStore((s) => s.activityPage);
   const showActivity = useDashboardStore((s) => s.showActivity);
@@ -260,6 +264,7 @@ export default function AgentCard({
   const [forkError, setForkError] = useState<string | null>(null);
 
   const handleFork = async () => {
+    if (wslLaunchBlocked) return;
     setContextMenu(null);
     setForking(true);
     setForkError(null);
@@ -569,10 +574,11 @@ export default function AgentCard({
           </div>
           <button
             onClick={handleFork}
-            disabled={!agent.resumeSessionId || (agent.provider || 'claude') !== 'claude'}
+            disabled={wslLaunchBlocked || !agent.resumeSessionId || (agent.provider || 'claude') !== 'claude'}
             className="ui-menu-item"
+            title={wslLaunchBlocked ? 'WSL is disabled in Lares' : undefined}
           >
-            Fork Agent {(agent.provider || 'claude') !== 'claude' ? '(Claude only)' : !agent.resumeSessionId ? '(no session)' : ''}
+            Fork Agent {wslLaunchBlocked ? '(WSL off)' : (agent.provider || 'claude') !== 'claude' ? '(Claude only)' : !agent.resumeSessionId ? '(no session)' : ''}
           </button>
           <button
             onClick={handleToggleSupervised}

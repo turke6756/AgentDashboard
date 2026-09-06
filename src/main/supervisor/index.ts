@@ -266,6 +266,7 @@ import {
 // the canonical home is ./mcp-config-builder.
 export { toolsetsForLane, buildDashboardMcpConfigArg, buildCodexMcpConfigArgs, laneUsesStrictMcp, redactMcpToken };
 import { tmuxListSessions, tmuxSendInput, tmuxSendSubmit, tmuxReadStatusOptions, shQuote, getPassiveWslStatus, tmuxKillSession } from '../wsl-bridge';
+import { assertWslEnabled, isWslEnabled, WSL_DISABLED_MESSAGE } from '../wsl-enabled';
 import { encodeAgyWindowsBody, getWindowsSubmitSequence } from './send-input-encoders';
 import { HookSpoolTailer, resolveSpoolReadPath, canonicalSpoolKey } from './hook-spool-tailer';
 // Single source of truth for "where does this provider CLI live on Windows".
@@ -2567,6 +2568,8 @@ export class AgentSupervisor extends EventEmitter {
    *  agents at their pre-quit status (not 'done') so reconcile() respawns
    *  them with --continue at next startup. */
   private shuttingDown = false;
+  /** Suppress duplicate crash signals from producing a WSL-disabled warning storm. */
+  private readonly wslDisabledAutoRestartLogged = new Set<string>();
 
   // Event bridge — supervisor notification, cooldown, queue, drain state lives here.
   private bridge: EventBridge;
@@ -3551,6 +3554,10 @@ export class AgentSupervisor extends EventEmitter {
     // inside an already-scaffolded lane directory.
     let workDir = workspace.path;
     const pathType = detectPathType(workDir);
+    // The renderer IPC has an earlier, friendlier launch-only refusal. This
+    // supervisor admission gate also covers HTTP/MCP/orchestration callers and
+    // runs before WSL scaffolding or an agent row can be created.
+    if (pathType === 'wsl') assertWslEnabled();
     // Convert UNC WSL paths (\\wsl.localhost\...) to Linux paths (/home/...)
     if (pathType === 'wsl' && workDir.startsWith('\\\\')) {
       workDir = uncToWslPath(workDir);
@@ -6553,6 +6560,9 @@ export class AgentSupervisor extends EventEmitter {
     // epoch invalidates any prior-epoch sidecar; drop it.
     this.reclaimTerminalCheckpoint(agent.logPath);
 
+    // Final launch choke point for restart, fork, revive, continuation,
+    // reconcile, orchestration, and every API/MCP launch-class route.
+    assertWslEnabled();
     const runner = new WslRunner(agent.tmuxSessionName);
     this.wslRunners.set(agent.id, runner);
 
@@ -7098,6 +7108,14 @@ export class AgentSupervisor extends EventEmitter {
     // handlers + the StatusMonitor statusChanged listener): never respawn an
     // agent the shutdown drain just exited.
     if (this.shuttingDown) return;
+    if (detectPathType(agent.workingDirectory) === 'wsl' && !isWslEnabled()) {
+      if (!this.wslDisabledAutoRestartLogged.has(agent.id)) {
+        this.wslDisabledAutoRestartLogged.add(agent.id);
+        console.warn(`[lifecycle] auto-restart disabled for WSL agent ${agent.id}: ${WSL_DISABLED_MESSAGE}`);
+      }
+      return;
+    }
+    this.wslDisabledAutoRestartLogged.delete(agent.id);
     if (agent.restartCount >= 5) {
       addEvent(agent.id, 'restart_limit_reached');
       return;
@@ -7155,6 +7173,10 @@ export class AgentSupervisor extends EventEmitter {
 
     const workspace = getWorkspace(source.workspaceId);
     if (!workspace) throw new Error('Workspace not found');
+    const pathType = detectPathType(source.workingDirectory);
+    // Refuse before intent discovery or createAgent so a denied fork cannot
+    // touch the turn record or leave a launching row.
+    if (pathType === 'wsl') assertWslEnabled();
 
     // Resolve before creating or launching anything. The default is frozen from
     // the source agent's persisted binding; no turn-record lookup participates.
@@ -7167,7 +7189,6 @@ export class AgentSupervisor extends EventEmitter {
     const logPath = path.join(this.logsDir, `${uuidv4().substring(0, 8)}.log`);
 
     let tmuxSessionName: string | null = null;
-    const pathType = detectPathType(source.workingDirectory);
     if (pathType === 'wsl') {
       const slug = (source.title + ' fork').toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20);
       tmuxSessionName = `${TMUX_SESSION_PREFIX}${slug}__${uuidv4().substring(0, 8)}`;
@@ -7944,6 +7965,8 @@ export class AgentSupervisor extends EventEmitter {
    *  and the relaunch and kill the fresh runner. Note this now resolves AFTER
    *  the relaunch attempt rather than at the `restarting` flip. */
   async restartAgent(agentId: string): Promise<void> {
+    const agent = getAgent(agentId);
+    if (agent && detectPathType(agent.workingDirectory) === 'wsl') assertWslEnabled();
     return this.withLifecycleLock(agentId, () => this.restartAgentLocked(agentId));
   }
 
@@ -7956,8 +7979,7 @@ export class AgentSupervisor extends EventEmitter {
    *
    * Unlike the old inline tail (which returned quietly on a missing agent), this
    * THROWS on a missing agent or launch failure (after emitting 'crashed'), so a
-   * failed revival can never be reported as success. Manual restart wraps the
-   * call in `.catch(() => {})` to preserve its swallow-on-failure behavior.
+   * failed revival or restart can never be reported as success.
    */
   private async resumeAgentAfterStopLocked(agentId: string): Promise<void> {
     const agent = getAgent(agentId);
@@ -7991,10 +8013,9 @@ export class AgentSupervisor extends EventEmitter {
   private async restartAgentLocked(agentId: string): Promise<void> {
     // `restart` is the stop reason: the badge suppresses it, so a restarted
     // agent never renders "Stopped by …" for the stop half of its own restart.
-    // Manual restart SWALLOWS a failed tail (incl. a missing agent) — behavior
-    // preserved from the old inline body.
+    // Relaunch failures propagate to the IPC/API/MCP caller with their message.
     await this.stopAgentLocked(agentId, { reason: 'restart' });
-    await this.resumeAgentAfterStopLocked(agentId).catch(() => {});
+    await this.resumeAgentAfterStopLocked(agentId);
   }
 
   /**
@@ -8057,6 +8078,7 @@ export class AgentSupervisor extends EventEmitter {
       if (this.hasRunner(agentId)) throw revErr('revive-runner-live', 409);         // separate early guard only
       const ws = getWorkspace(agent.workspaceId);
       if (!ws) throw revErr('revive-workspace-gone', 410);
+      if (detectPathType(agent.workingDirectory) === 'wsl') assertWslEnabled();
       if (!fs.existsSync(agent.workingDirectory)) throw revErr('revive-cwd-gone', 410);
       this.assertResumable(agent);                                                   // WP3.2
       // Freeze before the ownership gate/stop/relaunch sequence. The default is

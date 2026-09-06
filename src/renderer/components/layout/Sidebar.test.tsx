@@ -32,6 +32,7 @@ beforeEach(() => {
   setWslEnabled = vi.fn(async (enabled: boolean) => { wslEnabledSetting = enabled; });
   getWslEnabled = vi.fn(async () => wslEnabledSetting);
   healthCheck = vi.fn(async () => health(wslEnabledSetting));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
@@ -68,10 +69,11 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root?.unmount());
   container.remove();
+  vi.restoreAllMocks();
 });
 
 describe('Sidebar workspace options', () => {
-  it('toggles WSL off and dims WSL workspace rows with an explanatory title', async () => {
+  it('confirms stopping live agents and shutting WSL down before toggling off', async () => {
     useDashboardStore.setState({
       workspaces: [{
         id: 'wsl-workspace',
@@ -95,10 +97,13 @@ describe('Sidebar workspace options', () => {
     const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
     expect(toggle.getAttribute('aria-label')).toBe('Turn WSL off');
     expect(container.textContent).toContain('WSL running');
-    expect(toggle.title).toContain('will not stop 1 live WSL agent');
+    expect(toggle.title).toContain('stop 1 running WSL agent');
 
     await act(async () => { toggle.click(); });
 
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Turn WSL off? This will stop 1 running WSL agent(s) and shut WSL down.',
+    );
     expect(setWslEnabled).toHaveBeenCalledWith(false);
     expect(container.textContent).toContain('WSL off');
     expect(toggle.getAttribute('aria-checked')).toBe('false');
@@ -106,7 +111,34 @@ describe('Sidebar workspace options', () => {
       .find((button) => button.textContent?.includes('Linux Workspace'))!;
     expect(workspaceButton.className).toContain('opacity-40');
     expect(workspaceButton.title).toBe('WSL is disabled  turn it on in the status bar');
-    expect(container.querySelector<HTMLButtonElement>('[aria-label="Shut down WSL now"]')?.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Shut down WSL now"]')).toBeNull();
+  });
+
+  it('leaves the switch on when the live-agent shutdown confirmation is cancelled', async () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    useDashboardStore.setState({
+      workspaces: [{
+        id: 'wsl-workspace', title: 'Linux Workspace', path: '/home/test/project', pathType: 'wsl',
+        description: '', defaultCommand: '', createdAt: '', updatedAt: '', lastOpenedAt: null,
+      }],
+      selectedWorkspaceId: 'wsl-workspace',
+      workspaceHeat: { 'wsl-workspace': { activeCount: 2, workingCount: 2, waitingCount: 0 } },
+      wslEnabled: true,
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Sidebar width={280} />);
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    await act(async () => { toggle.click(); });
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Turn WSL off? This will stop 2 running WSL agent(s) and shut WSL down.',
+    );
+    expect(setWslEnabled).not.toHaveBeenCalled();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(useDashboardStore.getState().wslEnabled).toBe(true);
   });
 
   it('turns WSL back on, adopts persisted state, and refreshes health', async () => {

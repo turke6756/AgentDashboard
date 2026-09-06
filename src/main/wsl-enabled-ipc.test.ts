@@ -38,9 +38,11 @@ let resetWslProcessDeps: (() => void) | null = null;
     const setting = require('./wsl-enabled') as typeof import('./wsl-enabled');
     const wslBridge = require('./wsl-bridge') as typeof import('./wsl-bridge');
     let shutdownCalls = 0;
+    const rawWslArgs: string[][] = [];
     wslBridge.__setWslProcessDepsForTest({
       execFile: ((file: string, args: string[], _opts: unknown, callback: (...args: any[]) => void) => {
         shutdownCalls++;
+        rawWslArgs.push(args);
         assert.equal(file, 'wsl.exe');
         assert.deepEqual(args, ['--shutdown']);
         callback(null, '', '');
@@ -54,7 +56,11 @@ let resetWslProcessDeps: (() => void) | null = null;
     (database as any).getAllAgents = () => [];
 
     let launchCalls = 0;
-    const supervisor = new Proxy({ launchAgent: () => { launchCalls++; } }, { get: (target, key) => (target as any)[key] ?? noop });
+    const stoppedAgentIds: string[] = [];
+    const supervisor = new Proxy({
+      launchAgent: () => { launchCalls++; },
+      stopAgent: async (id: string) => { stoppedAgentIds.push(id); },
+    }, { get: (target, key) => (target as any)[key] ?? noop });
     const windowProxy = new Proxy({}, { get: () => noop });
     const { registerIpcHandlers } = require('./ipc-handlers') as typeof import('./ipc-handlers');
     registerIpcHandlers(supervisor as any, windowProxy as any, {} as any);
@@ -66,16 +72,18 @@ let resetWslProcessDeps: (() => void) | null = null;
     const shutdown = handlers.get('system:shutdown-wsl');
     assert.ok(getEnabled && setEnabled && launch && shutdown, 'production registration exposes WSL setting, shutdown, and launch gate');
     assert.equal(await getEnabled!({}), true);
+    (database as any).getAllAgents = () => [{ id: 'live-wsl', workspaceId: 'wsl-ws', status: 'working' }];
     await setEnabled!({}, false);
     assert.equal(await getEnabled!({}), false);
+    assert.deepEqual(stoppedAgentIds, ['live-wsl'], 'disable uses the supervisor normal stop path');
+    assert.equal(shutdownCalls, 1, 'disable shuts WSL down after live agents stop');
     assert.throws(() => launch!({}, { workspaceId: 'wsl-ws' }), /WSL is disabled in Lares/);
     assert.equal(launchCalls, 0, 'disabled WSL launch never reaches the supervisor');
-    (database as any).getAllAgents = () => [{ workspaceId: 'wsl-ws', status: 'working' }];
-    await assert.rejects(() => shutdown!({}), /still live/);
-    assert.equal(shutdownCalls, 0, 'live agents block wsl.exe --shutdown');
+    await setEnabled!({}, true);
     (database as any).getAllAgents = () => [];
-    await shutdown!({});
-    assert.equal(shutdownCalls, 1);
+    await setEnabled!({}, false);
+    assert.equal(shutdownCalls, 2, 'disable with no live WSL agents shuts down immediately');
+    assert.deepEqual(rawWslArgs, [['--shutdown'], ['--shutdown']], 'disable uses raw wsl.exe --shutdown, never gated wslExec');
     await exposedApi.system.getWslEnabled();
     await exposedApi.system.setWslEnabled(true);
     await exposedApi.system.shutdownWsl();
@@ -84,7 +92,7 @@ let resetWslProcessDeps: (() => void) | null = null;
       ['system:set-wsl-enabled', true],
       ['system:shutdown-wsl'],
     ]);
-    console.log('wsl-enabled-ipc: 9/9 passed');
+    console.log('wsl-enabled-ipc: 12/12 passed');
     console.log('REACHABILITY:wsl-enabled-toggle real IPC registration and launch gate entered');
   } finally {
     const setting = require('./wsl-enabled') as typeof import('./wsl-enabled');

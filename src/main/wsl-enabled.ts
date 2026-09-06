@@ -36,7 +36,12 @@ export function setWslEnabled(enabled: boolean): void {
 }
 
 export function assertWslEnabled(): void {
-  if (!isWslEnabled()) throw new Error(WSL_DISABLED_MESSAGE);
+  if (!isWslEnabled()) {
+    throw Object.assign(new Error(WSL_DISABLED_MESSAGE), {
+      code: 'wsl-disabled',
+      statusCode: 409,
+    });
+  }
 }
 
 /** Test-only storage seam. Null restores production userData resolution. */

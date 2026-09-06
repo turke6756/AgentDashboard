@@ -65,6 +65,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   const setDetailPane = useDashboardStore((s) => s.setDetailPane);
   const togglePanelCollapsed = useDashboardStore((s) => s.togglePanelCollapsed);
   const usageLimits = useDashboardStore((s) => s.usageLimits);
+  const wslEnabled = useDashboardStore((s) => s.wslEnabled);
   const [contextCount, setContextCount] = useState(0);
   const [productsCount, setProductsCount] = useState(0);
   const [showMeta, setShowMeta] = useState(false);
@@ -80,6 +81,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   const agent = agents.find((a) => a.id === selectedAgentId);
   const workspace = agent ? workspaces.find((w) => w.id === agent.workspaceId) : null;
   const pathType: PathType = workspace?.pathType || 'windows';
+  const wslLaunchBlocked = pathType === 'wsl' && !wslEnabled;
 
   useEffect(() => {
     setRestartPending(false);
@@ -194,6 +196,7 @@ export default function DetailPanel({ width }: DetailPanelProps) {
   const emphasizeStop = stopNeedsAttention(agent.status, stopPending);
 
   const restartAgent = () => {
+    if (wslLaunchBlocked) return;
     setRestartPending(true);
     void window.api.agents.restart(agent.id).catch(() => setRestartPending(false));
   };
@@ -350,10 +353,11 @@ export default function DetailPanel({ width }: DetailPanelProps) {
         </button>
         <button
           onClick={restartAgent}
+          disabled={wslLaunchBlocked}
           className={`ui-btn ui-btn-ghost min-w-0 flex-1 px-2 py-2 text-[12px] font-bold ${
             emphasizeRestart ? 'text-accent-yellow' : 'text-gray-500'
           }`}
-          title="Restart"
+          title={wslLaunchBlocked ? 'WSL is disabled in Lares' : 'Restart'}
         >
           <Zap size={13} className="shrink-0" />
           <span className="truncate">Restart</span>

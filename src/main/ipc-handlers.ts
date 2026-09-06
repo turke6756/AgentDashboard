@@ -85,6 +85,48 @@ import { resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
 import { registerGitignoreSuggestionIpc } from './git/exhaust-exclusions';
 
+const WSL_DISABLE_STOP_WAIT_MS = 10_000;
+
+export async function disableWslAndShutdown(deps: {
+  agents: Array<{ id: string; workspaceId: string; status: string }>;
+  workspaces: Array<{ id: string; pathType: PathType }>;
+  stopAgent: (id: string) => Promise<unknown>;
+  shutdown: () => Promise<void>;
+  stopWaitMs?: number;
+}): Promise<void> {
+  const wslWorkspaceIds = new Set(
+    deps.workspaces.filter((workspace) => workspace.pathType === 'wsl').map((workspace) => workspace.id),
+  );
+  const live = deps.agents.filter((agent) =>
+    wslWorkspaceIds.has(agent.workspaceId) && agent.status !== 'done' && agent.status !== 'crashed');
+
+  if (live.length > 0) {
+    const stops = Promise.allSettled(live.map((agent) => deps.stopAgent(agent.id)));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), deps.stopWaitMs ?? WSL_DISABLE_STOP_WAIT_MS);
+    });
+    const outcome = await Promise.race([stops, timeout]);
+    if (timer) clearTimeout(timer);
+    if (outcome === 'timeout') {
+      console.warn(`[wsl] timed out waiting for ${live.length} WSL agent(s) to stop; shutting WSL down`);
+    } else {
+      for (const result of outcome) {
+        if (result.status === 'rejected') console.warn('[wsl] failed to stop a WSL agent before shutdown:', result.reason);
+      }
+    }
+  }
+
+  try {
+    // shutdownWsl is intentionally the raw child_process route, not gated wslExec.
+    await deps.shutdown();
+  } catch (err) {
+    // Turning the switch off is authoritative even if Windows reports a
+    // shutdown failure. Never reject this IPC promise into the renderer.
+    console.error('[wsl] wsl.exe --shutdown failed after disabling WSL:', err);
+  }
+}
+
 // Managed temp dir for clipboard-bitmap pastes. Dropped OS files inject their
 // OWN on-disk path (converted) and never land here — only screenshots do.
 const PASTED_IMAGE_DIR = path.join(app.getPath('temp'), 'lares-pasted-images');
@@ -825,10 +867,18 @@ export function registerIpcHandlers(
   );
 
   ipcMain.handle('system:get-wsl-enabled', () => isWslEnabled());
-  ipcMain.handle('system:set-wsl-enabled', (_e, enabled: boolean) => {
+  ipcMain.handle('system:set-wsl-enabled', async (_e, enabled: boolean) => {
     if (typeof enabled !== 'boolean') return;
     setWslEnabled(enabled);
     forcePrerequisiteRecheck();
+    if (!enabled) {
+      await disableWslAndShutdown({
+        agents: getAllAgents(),
+        workspaces: getWorkspaces(),
+        stopAgent: (id) => supervisor.stopAgent(id, { reason: 'supervisor' }),
+        shutdown: shutdownWsl,
+      });
+    }
   });
   ipcMain.handle('system:shutdown-wsl', async () => {
     if (isWslEnabled()) throw new Error('Turn WSL off in Lares before shutting it down.');
