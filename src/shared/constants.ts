@@ -1026,10 +1026,16 @@ existing or newly observed turn touches one, stop and re-scope rather than
 applying stale reversed hunks. You are the serialization. If this proves too
 slow or error-prone in practice, that evidence is what would justify the
 deferred marked-point/panic-restore half of \`prop_296c04e9\`.`;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V31.replace(
+export const SUPERVISOR_AGENT_MD_V32 = SUPERVISOR_AGENT_MD_V31.replace(
   SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR,
   `${SUPERVISOR_AGENT_MD_V32_TURN_HISTORY_ANCHOR}\n\n${SUPERVISOR_AGENT_MD_V32_RECORD_READING_SECTION}`,
 );
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V32.replace(
+  'its own `.lares/supervisor` cwd and the supervisor toolset',
+  'its own per-provider `.lares/supervisor/<provider>` child folder and the supervisor toolset',
+);
+export const SUPERVISOR_AGENT_MD_CHILD_V1 = SUPERVISOR_AGENT_MD_V32
+  .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD = SUPERVISOR_AGENT_MD
   .split('./memory/').join('../memory/');
 

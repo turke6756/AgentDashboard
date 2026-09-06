@@ -45,6 +45,7 @@ const TESTS = [
   'dist/main/main/supervisor/launch-lane-cwd.test.js',
   'dist/main/main/supervisor/supervisor-lane-guard.test.js',
   'dist/main/main/supervisor/supervisor-scaffold-split.test.js',
+  'dist/main/main/supervisor/supervisor-peer-provider.test.js',
   'dist/main/main/supervisor/launch-first-user-message-prefix.test.js',
   'dist/main/main/supervisor/codex-rollout-freshness.test.js',
   'dist/main/main/supervisor/env-sanitize.test.js',
@@ -828,7 +829,8 @@ for (const file of testsToRun) {
   // Node mode; every JS-only main test keeps the faster host-Node path.
   const nativeElectronTest =
     file.endsWith('/agy-session-reader.test.js') ||
-    file.endsWith('/database.recovery-operation-insert.test.js')
+    file.endsWith('/database.recovery-operation-insert.test.js') ||
+    file.endsWith('/supervisor-peer-provider.test.js')
   const compiledRoot = process.env.MAIN_TEST_COMPILED_ROOT
   const runnableFile = compiledRoot && file.startsWith('dist/main/')
     ? path.resolve(compiledRoot, file.slice('dist/main/'.length))

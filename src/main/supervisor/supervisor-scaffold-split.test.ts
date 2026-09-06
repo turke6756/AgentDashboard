@@ -6,6 +6,8 @@ import path from 'node:path';
 import {
   SUPERVISOR_AGENT_MD,
   SUPERVISOR_AGENT_MD_CHILD,
+  SUPERVISOR_AGENT_MD_CHILD_V1,
+  SUPERVISOR_AGENT_MD_V32,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
 } from '../../shared/constants';
@@ -55,11 +57,24 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
+function digestText(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
 function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>): void {
   assert.ok(Object.keys(files).length > 0, `${name} child map must not be empty`);
   for (const [rel, file] of Object.entries(files)) {
-    assert.equal(file.version, 1, `${rel} must begin at scaffold version 1`);
-    assert.equal(file.previousHashes, undefined, `${rel} must have no pre-child hash history`);
+    const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
+    assert.equal(file.version, isInstructions ? 2 : 1, `${rel} must carry its expected scaffold version`);
+    if (isInstructions) {
+      assert.deepEqual(
+        file.previousHashes,
+        { 1: digestText(SUPERVISOR_AGENT_MD_CHILD_V1) },
+        `${rel} must retain the superseded v1 child instructions hash`,
+      );
+    } else {
+      assert.equal(file.previousHashes, undefined, `${rel} must have no pre-child hash history`);
+    }
     assert.equal(file.removed, undefined, `${rel} must not introduce a retired child row`);
     assert.doesNotMatch(
       rel,
@@ -89,6 +104,18 @@ function run(): void {
       statics.LEGACY_SUPERVISOR_FILES_CODEX,
     ];
     assert.ok(legacyMaps.every((files) => Object.keys(files).length > 0), 'LEGACY_* maps remain defined');
+    for (const [files, rel] of [
+      [statics.LEGACY_SUPERVISOR_FILES, '.lares/supervisor/CLAUDE.md'],
+      [statics.LEGACY_SUPERVISOR_FILES_CODEX, '.lares/supervisor/AGENTS.md'],
+    ] as const) {
+      const instructions = files[rel];
+      assert.equal(instructions.version, 33, `${rel} must advance to scaffold version 33`);
+      assert.equal(
+        instructions.previousHashes?.[32],
+        digestText(SUPERVISOR_AGENT_MD_V32),
+        `${rel} must retain the superseded v32 instructions hash`,
+      );
+    }
     assert.equal(
       SUPERVISOR_AGENT_MD_CHILD,
       SUPERVISOR_AGENT_MD.split('./memory/').join('../memory/'),

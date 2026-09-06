@@ -5,6 +5,7 @@ import { useDashboardStore } from '../../stores/dashboard-store';
 import { useBrowserSuspension } from '../browser/useBrowserSuspension';
 
 const PROVIDERS: LaunchableAgentProvider[] = ['claude', 'codex', 'grok', 'agy'];
+const SUPERVISOR_PROVIDERS: LaunchableAgentProvider[] = ['claude', 'codex'];
 const isLaunchableProvider = (provider: string): provider is LaunchableAgentProvider =>
   PROVIDERS.includes(provider as LaunchableAgentProvider);
 
@@ -81,11 +82,13 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
   const isPersona = selectedType.startsWith('persona:');
   const isTemplate = selectedType.startsWith('template:');
   const isEphemeral = selectedType === TYPE_EPHEMERAL;
-  // Supervisor + researcher are Claude-only app-managed lanes: the app owns
-  // their cwd, command, tools, and MCP, so provider/command/working-dir are
-  // hidden and provider is forced to claude.
+  // Supervisor + researcher are app-managed lanes: the app owns their cwd,
+  // command, tools, and MCP. Supervisors expose the supported Claude/Codex
+  // choice; researchers remain Claude-only.
   const appManaged = isSupervisorType || isResearcherType;
-  const showProviderAndCommand = !appManaged;
+  const showProviderPicker = !isResearcherType;
+  const providerOptions = isSupervisorType ? SUPERVISOR_PROVIDERS : PROVIDERS;
+  const showCommand = !appManaged;
   // Working directory is only meaningful where the user actually controls the
   // cwd: templates and the raw ephemeral session. Role lanes + personas derive
   // their cwd from the workspace root in the backend.
@@ -116,7 +119,11 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
     // A supervisor choice is type-scoped — clear it so a stale pick can't leak
     // across agent types (default for every type is unsupervised).
     setSupervisorId(null);
-    if (isSupervisorType || isResearcherType) {
+    if (isResearcherType) {
+      setProvider('claude');
+      return;
+    }
+    if (isSupervisorType) {
       setProvider('claude');
       return;
     }
@@ -236,9 +243,9 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
       };
 
       if (isSupervisorType) {
-        // Supervisor role-lane → .lares/supervisor/, ensureSupervisorScaffold.
+        // Supervisor role-lane → .lares/supervisor/<provider>/, ensureSupervisorScaffold.
         // Multiple supervisors per workspace are allowed (backend no longer blocks).
-        launchInput = { ...base, provider: 'claude', isSupervisor: true, workingDirectory: workspace.path };
+        launchInput = { ...base, provider, isSupervisor: true, workingDirectory: workspace.path };
       } else if (isResearcherType) {
         // Researcher role-lane → .lares/researcher/, ensureResearcherScaffold.
         // App-managed cwd/command/tools/browser-MCP; Claude-only (backend rejects
@@ -419,7 +426,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             )}
             {isSupervisorType && (
               <div className="mt-1 text-[11px] text-gray-500">
-                Runs in .lares/supervisor/ with the supervisor scaffold (Claude only).
+                Runs in .lares/supervisor/{provider}/ with the supervisor scaffold.
               </div>
             )}
             {isResearcherType && (
@@ -539,13 +546,12 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
             </div>
           )}
 
-          {showProviderAndCommand && (
-          <>
           {/* Provider selector */}
+          {showProviderPicker && (
           <div>
             <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Provider</label>
             <div className="flex gap-1">
-              {PROVIDERS.map((p) => {
+              {providerOptions.map((p) => {
                 const meta = PROVIDER_META[p];
                 const isActive = provider === p;
                 return (
@@ -581,7 +587,9 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
               </div>
             )}
           </div>
+          )}
 
+          {showCommand && (
           <div>
             <label className="block text-[11px] text-gray-500 mb-1 uppercase tracking-wider">Command</label>
             <input
@@ -591,7 +599,6 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
               className="ui-input text-sm font-sans"
             />
           </div>
-          </>
           )}
 
           {showSupervisorPicker && (
@@ -633,7 +640,7 @@ export default function AgentLaunchDialog({ workspace, onClose }: Props) {
 
           {/* Save as Template (advanced) — captures the current provider/command/
               role-description as a reusable DB preset. */}
-          {showProviderAndCommand && (
+          {showCommand && (
             showSaveDialog ? (
               <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-gray-700">
                 <input
