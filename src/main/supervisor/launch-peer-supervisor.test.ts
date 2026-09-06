@@ -145,6 +145,21 @@ test('supervisor-peer resolves the Claude child-supervisor cwd (not just the fla
   assert.equal(path.basename(agent.workingDirectory), 'claude');
 }));
 
+test('Codex supervisor-peer uses native-Windows Path A hooks without a profile', () => withHarness(async (h) => {
+  const agent = await h.supervisor.launchAgent(baseInput({
+    launchMode: 'supervisor-peer', provider: 'codex',
+  }));
+  assert.equal(
+    agent.workingDirectory,
+    path.join(h.workspacePath, '.lares', 'supervisor', 'codex'),
+    'the trusted-project hook carrier is resolved from the Codex supervisor cwd',
+  );
+  assert.equal(agent.wantsCodexHooks, true, 'the persisted launch row records hook instrumentation');
+  assert.match(agent.command, /(?:^|\s)--dangerously-bypass-hook-trust(?:\s|$)/);
+  assert.doesNotMatch(agent.command, /(?:^|\s)--profile(?:\s|$)/,
+    'Path A must not merge the CODEX_HOME profile with the project hook carrier');
+}));
+
 test('supervisor-peer forces isSupervisor:true, clears isSupervised/isWorker, no owner edge', () => withHarness(async (h) => {
   const agent = await h.supervisor.launchAgent(baseInput({
     launchMode: 'supervisor-peer',

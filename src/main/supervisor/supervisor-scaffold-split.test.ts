@@ -13,6 +13,7 @@ import {
   SUPERVISOR_AGENT_MD_V34,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
+  WORKER_CODEX_CONFIG_TOML,
 } from '../../shared/constants';
 import { AgentSupervisor } from './index';
 
@@ -159,6 +160,20 @@ function run(): void {
 
     assertChildMap('Claude', statics.SUPERVISOR_FILES_CLAUDE_CHILD);
     assertChildMap('Codex', statics.SUPERVISOR_FILES_CODEX_CHILD);
+    const codexConfigEntry = statics.SUPERVISOR_FILES_CODEX_CHILD[
+      '.lares/supervisor/codex/.codex/config.toml'
+    ];
+    assert.equal(codexConfigEntry.content, WORKER_CODEX_CONFIG_TOML,
+      'the Codex supervisor hook carrier must stay derived from the worker carrier');
+    for (const hook of ['Stop', 'UserPromptSubmit', 'SessionStart', 'PreToolUse']) {
+      assert.ok(codexConfigEntry.content.includes(`[[hooks.${hook}]]`),
+        `the Codex supervisor hook carrier must include ${hook}`);
+    }
+    assert.ok(codexConfigEntry.content.includes('[features]'));
+    assert.ok(codexConfigEntry.content.includes('hooks = true'));
+    assert.ok(codexConfigEntry.content.includes('guard-git-discard.mjs'));
+    assert.ok(codexConfigEntry.content.includes('sandbox_mode = "workspace-write"'));
+    assert.ok(codexConfigEntry.content.includes('writable_roots = [\'${WORKSPACE_ROOT}\']'));
     assert.deepEqual(
       Object.keys(statics.SUPERVISOR_SHARED_PARENT_FILES).sort(),
       [
@@ -199,7 +214,16 @@ function run(): void {
 
     harness.ensureSupervisorScaffold(workDir, 'codex', 'windows');
     const codexAgentsPath = path.join(workDir, '.lares', 'supervisor', 'codex', 'AGENTS.md');
+    const codexConfigPath = path.join(
+      workDir, '.lares', 'supervisor', 'codex', '.codex', 'config.toml',
+    );
     assert.equal(fs.readFileSync(codexAgentsPath, 'utf8'), SUPERVISOR_AGENT_MD_CHILD);
+    const codexConfig = fs.readFileSync(codexConfigPath, 'utf8');
+    assert.equal(codexConfig, WORKER_CODEX_CONFIG_TOML.replace(
+      /\$\{WORKSPACE_ROOT\}/g,
+      workDir.replace(/\\/g, '/'),
+    ));
+    assert.ok(codexConfig.includes(`node "${workDir.replace(/\\/g, '/')}/.lares/scripts/dashboard-status.mjs" working`));
     for (const [filePath, beforeHash] of flatHashes) {
       assert.ok(fs.existsSync(filePath), `Codex pass must not delete flat state: ${filePath}`);
       assert.equal(digest(filePath), beforeHash, `Codex pass must not rewrite flat state: ${filePath}`);

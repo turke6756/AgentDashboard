@@ -1925,17 +1925,16 @@ export function isCodexHookPersona(a: { provider?: AgentProvider; wantsCodexHook
  *  CODEX_HOME `--profile`, injectProfile=false), false when it must still ride the
  *  profile (injectProfile=true).
  *
- *  Native Windows carries them in-cwd for BOTH the worker lane AND codex personas:
- *  the worker cwd (.lares/workers/codex/) and each persona cwd (.lares/agents/
- *  <name>/) both ship a v7 WORKER_CODEX_CONFIG_TOML and are trust-seeded by
+ *  Native Windows carries them in-cwd for workers, supervisors, and Codex personas:
+ *  each lane cwd ships a WORKER_CODEX_CONFIG_TOML-derived carrier and is trust-seeded by
  *  ensureProviderDirTrust, so Codex loads the config directly. WSL is NOT yet
  *  migrated (needs its own probe): WSL workers AND WSL personas still ride the
  *  CODEX_HOME profile, so this is windows-only. Only consulted under
  *  `wantsCodexHooks` (provider === 'codex' already established by the caller). */
 export function shouldUseWorkerCwdCodexHooks(opts: {
-  pathType: string; isWorkerLane: boolean; persona: boolean;
+  pathType: string; isWorkerLane: boolean; isSupervisor?: boolean; persona: boolean;
 }): boolean {
-  return opts.pathType === 'windows' && (opts.isWorkerLane || opts.persona);
+  return opts.pathType === 'windows' && (opts.isWorkerLane || opts.isSupervisor || opts.persona);
 }
 
 /** B2 (HOOK_SYSTEM_DESIGN.md §C) — ensure a hook-instrumented codex command
@@ -1956,8 +1955,8 @@ export function shouldUseWorkerCwdCodexHooks(opts: {
  *     (whichever is missing), immediately after the `codex`/`ccodex` launcher
  *     token so the flags bind to codex itself, ahead of any subcommand like
  *     `resume`.
- *   • injectProfile=false (Path A — native-Windows WORKER lane AND native-Windows
- *     personas): hooks ride the launch cwd's trusted-project `.codex/config.toml`
+ *   • injectProfile=false (Path A — native-Windows worker, supervisor, and persona
+ *     lanes): hooks ride the launch cwd's trusted-project `.codex/config.toml`
  *     (ensureProviderDirTrust marks the cwd trusted; the worker/persona scaffold
  *     writes the v7 config there). Do NOT inject `--profile` — probe 2026-07-28 Run D
  *     proved a profile layer + the project layer MERGE, so every hook
@@ -3637,7 +3636,7 @@ export class AgentSupervisor extends EventEmitter {
     // and dependability; live acceptance on this host observed its deny failing
     // open, so this config seam is not a write boundary or observed enforcement.
     const wantsCodexHooks = provider === 'codex' &&
-      (isWorkerLane || isResearcher || !!resolvedInput.persona);
+      (isWorkerLane || isResearcher || !!resolvedInput.isSupervisor || !!resolvedInput.persona);
     // Resolve the launch command, reconciling explicit input, the workspace's
     // stored default command, and the requested provider. resolveLaunchCommand:
     //  (1) treats a pristine framework default (incl. a legacy ` --chrome`
@@ -3693,11 +3692,11 @@ export class AgentSupervisor extends EventEmitter {
       command = command.replace(/\s+--chrome\b/g, '');
     }
     // Class IV codex hooks. Path A (probe 2026-07-28): a native-Windows codex
-    // launch — WORKER lane OR persona — gets its turn-boundary hooks from its
+    // launch — worker, supervisor, or persona lane — gets its turn-boundary hooks from its
     // own cwd's trusted-project .codex/config.toml (ensureCodexProjectTrust marks
     // the cwd trusted, so Codex loads it). The worker cwd (.lares/workers/codex/)
-    // and each persona cwd (.lares/agents/<name>/) both now ship the v7
-    // WORKER_CODEX_CONFIG_TOML, so neither must ALSO carry `--profile
+    // and the supervisor/persona cwd kits all ship a WORKER_CODEX_CONFIG_TOML-
+    // derived carrier, so none must ALSO carry `--profile
     // dashboard-worker` (Run D: profile + project layers merge → every hook
     // double-fires). The only codex-hook path still on the CODEX_HOME profile is
     // WSL (workers AND personas) — NOT yet migrated, needs its own probe.
@@ -3707,7 +3706,10 @@ export class AgentSupervisor extends EventEmitter {
     // pristine default); if it can't be safely instrumented, mark the agent
     // hook_status='degraded' (set below).
     const useWorkerCwdCodexHooks = shouldUseWorkerCwdCodexHooks({
-      pathType, isWorkerLane, persona: !!resolvedInput.persona,
+      pathType,
+      isWorkerLane,
+      isSupervisor: !!resolvedInput.isSupervisor,
+      persona: !!resolvedInput.persona,
     });
     let codexHookDegraded = false;
     if (wantsCodexHooks) {
@@ -4042,6 +4044,9 @@ export class AgentSupervisor extends EventEmitter {
       if (provider === 'codex' && pathType !== 'windows') this.ensureCodexHookProfile(pathType);
     } else if (resolvedInput.isSupervisor) {
       this.ensureSupervisorScaffold(workDir, provider, pathType);
+      // Native Windows reads the trusted supervisor cwd config (Path A). WSL
+      // remains on the CODEX_HOME profile, matching workers and personas.
+      if (provider === 'codex' && pathType !== 'windows') this.ensureCodexHookProfile(pathType);
     } else if (isResearcher) {
       // Researcher role-lane (STEP 5): scaffold .lares/researcher/<provider>/;
       // Claude gets its native persona/settings files and Codex gets AGENTS.md
@@ -4303,6 +4308,14 @@ export class AgentSupervisor extends EventEmitter {
       version: 4,
       previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH },
     },
+    // Native-Windows Codex loads hooks only from the trusted launch cwd. Keep
+    // this byte-for-byte derived from the worker carrier so Stop/submit/start
+    // status hooks and the PreToolUse git-discard guard cannot drift by lane.
+    // `${WORKSPACE_ROOT}` is materialized by ensureSupervisorScaffold.
+    [`.lares/supervisor/codex/.codex/config.toml`]: {
+      content: WORKER_CODEX_CONFIG_TOML,
+      version: 1,
+    },
   };
 
   /** Class IV — workspace-shared hook script. Written on first supervised
@@ -4492,6 +4505,15 @@ export class AgentSupervisor extends EventEmitter {
     return writeSharedScaffoldMap(workDir, files, pathType, { logPrefix: '[supervisor]' });
   }
 
+  /** Materialize the shared Codex hook carrier for a concrete workspace. Both
+   *  worker and supervisor kits call this seam so path rendering cannot drift. */
+  private materializeCodexHookConfig(template: string, workDir: string, pathType: string): string {
+    const posixWorkspaceRoot = pathType === 'wsl'
+      ? windowsToWslPath(workDir)
+      : workDir.replace(/\\/g, '/');
+    return template.replace(/\$\{WORKSPACE_ROOT\}/g, posixWorkspaceRoot);
+  }
+
   /** Create the full .lares/supervisor/ scaffold in a workspace.
    *  Only writes files that don't already exist — never overwrites user edits. */
   private ensureSupervisorScaffold(workDir: string, provider: AgentProvider, pathType: string): void {
@@ -4502,11 +4524,19 @@ export class AgentSupervisor extends EventEmitter {
     );
     // Provision only the launched provider's child kit. The other child stays
     // absent until that provider is actually launched in this workspace.
-    const childFiles = provider === 'claude'
+    const childTemplates: Record<string, ScaffoldFile> = provider === 'claude'
       ? AgentSupervisor.SUPERVISOR_FILES_CLAUDE_CHILD
       : provider === 'codex'
         ? AgentSupervisor.SUPERVISOR_FILES_CODEX_CHILD
         : {};
+    const childFiles = provider === 'codex'
+      ? Object.fromEntries(Object.entries(childTemplates).map(([rel, file]) => [
+          rel,
+          rel === '.lares/supervisor/codex/.codex/config.toml'
+            ? { ...file, content: this.materializeCodexHookConfig(file.content, workDir, pathType) }
+            : file,
+        ]))
+      : childTemplates;
     const childCreated = this.writeScaffoldMap(workDir, childFiles, pathType);
     // MEMORY.md is seed-once (NOT in SUPERVISOR_FILES) so an edited copy is
     // never clobbered. On workspaces scaffolded before this change the sidecar
@@ -4576,9 +4606,10 @@ export class AgentSupervisor extends EventEmitter {
       const posixWorkspaceRoot = pathType === 'wsl'
         ? windowsToWslPath(workDir)
         : workDir.replace(/\\/g, '/');
-      const codexConfig = WORKER_CODEX_CONFIG_TOML.replace(
-        /\$\{WORKSPACE_ROOT\}/g,
-        posixWorkspaceRoot,
+      const codexConfig = this.materializeCodexHookConfig(
+        WORKER_CODEX_CONFIG_TOML,
+        workDir,
+        pathType,
       );
       // v1/v2/v3/v4/v5/v6 content with the same materialized workspace root, so an
       // old workspace's on-disk file hashes match and upgrade silently. v1 = Stop
