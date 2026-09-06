@@ -90,6 +90,7 @@ export default function ResearchCardGallery(): React.ReactElement {
   );
   const openTab = useDashboardStore((state) => state.openTab);
   const showFileViewer = useDashboardStore((state) => state.showFileViewer);
+  const openToolTab = useDashboardStore((state) => state.openToolTab);
   const [reports, setReports] = useState<ResearchInboxReport[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -128,6 +129,13 @@ export default function ResearchCardGallery(): React.ReactElement {
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/10 px-4">
         <Icons.BookOpenText className="h-4 w-4 text-accent-blue" />
         <h2 id="plans-research-title" className="text-[13px] font-semibold text-gray-200">Library research</h2>
+        <button
+          type="button"
+          onClick={() => openToolTab('library', 'Library', { params: { type: 'research' } })}
+          className="rounded px-2 py-1 text-[11px] text-accent-blue hover:bg-white/10"
+        >
+          Open Library
+        </button>
         <button
           type="button"
           onClick={() => void load()}

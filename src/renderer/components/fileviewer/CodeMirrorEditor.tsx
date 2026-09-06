@@ -46,6 +46,24 @@ const focusHighlightField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+const setLibraryHighlights = StateEffect.define<Array<{ from: number; to: number; id: string; kind: 'exact' | 'similar' }>>();
+const libraryHighlightField = StateField.define<DecorationSet>({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const effect of tr.effects) {
+      if (!effect.is(setLibraryHighlights)) continue;
+      const ordered = [...effect.value].sort((left, right) => left.from - right.from || left.to - right.to || (left.kind === 'similar' ? -1 : 1));
+      next = Decoration.set(ordered.map((highlight) => Decoration.mark({
+        class: highlight.kind === 'exact' ? 'cm-library-highlight-exact' : 'cm-library-highlight-similar',
+        attributes: { 'data-library-highlight-id': highlight.id, 'data-library-highlight-kind': highlight.kind },
+      }).range(highlight.from, highlight.to)), true);
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
 const editorTheme = EditorView.theme({
   '&': {
     height: '100%',
@@ -86,6 +104,8 @@ const editorTheme = EditorView.theme({
     borderLeftColor: '#66ccff',
     borderLeftWidth: '2px',
   },
+  '.cm-library-highlight-similar': { backgroundColor: 'rgba(139, 92, 246, 0.28)' },
+  '.cm-library-highlight-exact': { backgroundColor: 'rgba(245, 158, 11, 0.48)' },
 });
 
 export default function CodeMirrorEditor({
@@ -130,6 +150,7 @@ export default function CodeMirrorEditor({
       EditorView.lineWrapping,
       editorTheme,
       focusHighlightField,
+      libraryHighlightField,
       keymap.of([
         {
           key: 'Mod-s',
@@ -225,6 +246,18 @@ export default function CodeMirrorEditor({
       const view = viewRef.current;
       if (!view) return;
       const doc = view.state.doc;
+      if (focusRange.highlights) {
+        const resolved = focusRange.highlights.flatMap((highlight) => {
+          if (highlight.start.line < 1 || highlight.end.line < highlight.start.line || highlight.end.line > doc.lines) return [];
+          const startLine = doc.line(highlight.start.line);
+          const endLine = doc.line(highlight.end.line);
+          if (highlight.start.utf16_column > startLine.length || highlight.end.utf16_column > endLine.length) return [];
+          const from = startLine.from + highlight.start.utf16_column;
+          const to = endLine.from + highlight.end.utf16_column;
+          return to > from ? [{ from, to, id: highlight.id, kind: highlight.kind }] : [];
+        });
+        view.dispatch({ effects: setLibraryHighlights.of(resolved) });
+      }
       const start = Math.max(1, Math.min(doc.lines, focusRange.lineStart));
       const end = Math.max(start, Math.min(doc.lines, focusRange.lineEnd));
       const from = doc.line(start).from;
@@ -232,10 +265,12 @@ export default function CodeMirrorEditor({
       view.dispatch({
         effects: [EditorView.scrollIntoView(from, { y: 'center' }), setFocusHighlight.of({ from, to })],
       });
-      clearTimer = window.setTimeout(() => {
-        const v = viewRef.current;
-        if (v) v.dispatch({ effects: setFocusHighlight.of(null) });
-      }, 2500);
+      if (!focusRange.highlights) {
+        clearTimer = window.setTimeout(() => {
+          const v = viewRef.current;
+          if (v) v.dispatch({ effects: setFocusHighlight.of(null) });
+        }, 2500);
+      }
     });
     return () => {
       cancelAnimationFrame(raf);

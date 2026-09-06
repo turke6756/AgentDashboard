@@ -792,12 +792,16 @@ const api: IpcApi = withoutRetiredSaveApi({
     ingest: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
     rescan: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
     listDocuments: (workspaceId: string, includeUntrusted?: boolean) => Promise<unknown>;
+    query: (workspaceId: string, args: unknown) => Promise<unknown>;
+    saveNote: (workspaceId: string, input: { query: string; chunk_ids: string[] }) => Promise<unknown>;
     onProgress: (callback: (event: import('../shared/library').LibraryProgressEvent) => void) => () => void;
   };
 }).library = {
   ingest: (request) => ipcRenderer.invoke('library:ingest', request),
   rescan: (request) => ipcRenderer.invoke('library:rescan', request),
   listDocuments: (workspaceId, includeUntrusted) => ipcRenderer.invoke('library:list-documents', workspaceId, includeUntrusted),
+  query: (workspaceId, args) => ipcRenderer.invoke('library:query', workspaceId, args),
+  saveNote: (workspaceId, input) => ipcRenderer.invoke('library:save-note', workspaceId, input),
   onProgress: (callback) => {
     const listener = (_event: unknown, progress: import('../shared/library').LibraryProgressEvent) => callback(progress);
     ipcRenderer.on('library:progress', listener);

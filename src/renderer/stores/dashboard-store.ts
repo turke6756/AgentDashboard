@@ -40,6 +40,31 @@ export interface TabFocusRange {
   mode?: 'source';
   reason?: string;
   nonce: number;
+  documentHash?: string;
+  selectedHighlightId?: string;
+  highlights?: TabTextHighlight[];
+}
+
+export interface TabTextHighlight {
+  id: string;
+  kind: 'exact' | 'similar';
+  start: { line: number; utf16_column: number };
+  end: { line: number; utf16_column: number };
+}
+
+export interface PdfLibraryHighlight {
+  id: string;
+  kind: 'exact' | 'similar';
+  pageIndex: number;
+  selector: { exact: string; prefix: string; suffix: string };
+}
+
+export interface TabPdfFocusRequest {
+  pageIndex: number;
+  documentHash: string;
+  selectedHighlightId?: string;
+  highlights: PdfLibraryHighlight[];
+  nonce: number;
 }
 
 // Renderer-side extension of FileTab: `color` is an optional per-tab visual
@@ -64,6 +89,7 @@ export type PlanNavOutcome =
 export type ColoredFileTab = FileTab & {
   color?: string;
   focusRange?: TabFocusRange;
+  pdfFocus?: TabPdfFocusRequest;
   navigationRequest?: PlanDocumentNavigationRequest;
 };
 
@@ -487,7 +513,7 @@ interface DashboardState {
   addTeamMessage: (message: TeamMessage) => void;
 
   // Tab actions
-  openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string, workspaceId?: string, focusRange?: TabFocusRange) => void;
+  openTab: (filePath: string, rootDirectory: string, pathType: PathType, agentId?: string, workspaceId?: string, focusRange?: TabFocusRange, pdfFocus?: TabPdfFocusRequest) => void;
   openDirectoryTab: (rootDirectory: string, pathType: PathType, workspaceId?: string) => void;
   openToolTab: (toolId: string, label: string, opts?: { workspaceId?: string; params?: Record<string, string> }) => void;
   openPlanTab: (
@@ -650,7 +676,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   activityOpen: false,
   tabEditState: {},
 
-  openTab: (filePath, rootDirectory, pathType, agentId?, workspaceId?, focusRange?) => {
+  openTab: (filePath, rootDirectory, pathType, agentId?, workspaceId?, focusRange?, pdfFocus?) => {
     const { openTabs, selectedWorkspaceId } = get();
     const ws = workspaceId ?? selectedWorkspaceId ?? undefined;
     // Check if tab already exists for this file+root combo
@@ -660,12 +686,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (existing) {
       // WP4: a repeat click carrying a fresh focusRange re-scrolls/re-highlights the
       // already-open tab (nonce forces the CodeMirror effect to re-run).
-      if (focusRange) {
+      if (focusRange || pdfFocus) {
         set((state) => ({
           activeTabId: existing.id,
           fileViewerOpen: true,
           browserOpen: false,
-          openTabs: state.openTabs.map((t) => (t.id === existing.id ? { ...t, focusRange } : t)),
+          openTabs: state.openTabs.map((t) => (t.id === existing.id ? {
+            ...t,
+            ...(focusRange ? { focusRange } : {}),
+            ...(pdfFocus ? { pdfFocus } : {}),
+          } : t)),
         }));
       } else {
         set({ activeTabId: existing.id });
@@ -686,6 +716,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       workspaceId: ws,
       label,
       focusRange,
+      pdfFocus,
     };
     set((state) => ({
       openTabs: [...state.openTabs, tab],

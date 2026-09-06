@@ -3,6 +3,7 @@ import ProposalCardGallery from './ProposalCardGallery';
 import PromotedPlansList from './PromotedPlansList';
 import ResearchCardGallery from './ResearchCardGallery';
 import { usePlansPaneState } from './plans-pane-state';
+import { useDashboardStore } from '../../stores/dashboard-store';
 
 /** First-class Plans center pane. WP-UX-B/C populate the two reserved regions. */
 export default function PlansPane(): React.ReactElement {
@@ -10,7 +11,11 @@ export default function PlansPane(): React.ReactElement {
   const setExpandedProposalId = usePlansPaneState((state) => state.setExpandedProposalId);
   const [galleryTab, setGalleryTab] = useState<'proposals' | 'research'>('proposals');
   const selectTab = (tab: 'proposals' | 'research'): void => {
-    if (tab === 'research') setExpandedProposalId(null);
+    if (tab === 'research') {
+      setExpandedProposalId(null);
+      useDashboardStore.getState().openToolTab('library', 'Library', { params: { type: 'research' } });
+      return;
+    }
     setGalleryTab(tab);
   };
   return (

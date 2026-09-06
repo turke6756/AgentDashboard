@@ -27,6 +27,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as Icons from 'lucide-react';
 import type { PathType, SelectionComment } from '../../../shared/types';
+import type { TabPdfFocusRequest } from '../../stores/dashboard-store';
 
 // Backing-pixel budget + fit-width math live in lib/pdf/pdf-metrics.ts so the
 // WASM raster path and the pdf.js text/fallback path apply them identically
@@ -42,8 +43,9 @@ export { boundedPdfDevicePixelRatio, fitPageWidth, MAX_PDF_BACKING_PIXELS, MAX_P
 
 import { pdfiumEngine } from '../../lib/pdf/pdfium-engine';
 import { openPdfTextModel, type PdfTextModel } from '../../lib/pdf/pdf-text-model';
-import PdfPageSlot from './PdfPageSlot';
+import PdfPageSlot, { type PdfQueryHighlight } from './PdfPageSlot';
 import PdfJsFallbackRenderer from './PdfJsFallbackRenderer';
+import { resolveLibraryPdfSelector } from '../../lib/pdf/pdf-comment-anchors';
 
 // ── Phase 3: capture → persist → render → send ───────────────────────────────
 import type { PdfRect, PxRect } from '../../../shared/pdf-annotations';
@@ -72,6 +74,7 @@ interface Props {
   tabId?: string;
   workspaceId?: string;
   rootDirectory?: string;
+  focusRequest?: TabPdfFocusRequest;
 }
 
 // Zoom is relative to fit-width; 100 % == fit-width. Clamp 25 %–500 % (plan 2.3).
@@ -116,7 +119,7 @@ interface DomRect { x: number; y: number; width: number; height: number }
 
 const FLASH_MS = 1400;
 
-function PdfRendererSession({ filePath, pathType, workspaceId, rootDirectory }: Props) {
+function PdfRendererSession({ filePath, pathType, workspaceId, rootDirectory, focusRequest }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' });
   const [pageMeta, setPageMeta] = useState<Map<number, PageMeta>>(new Map());
@@ -124,7 +127,36 @@ function PdfRendererSession({ filePath, pathType, workspaceId, rootDirectory }: 
   const [scale, setScale] = useState(1);
   const [activePages, setActivePages] = useState<Set<number>>(new Set());
   const [topPage, setTopPage] = useState(0);
+  const [queryHighlights, setQueryHighlights] = useState<Map<number, PdfQueryHighlight[]>>(new Map());
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+  useEffect(() => {
+    if (!focusRequest || load.kind !== 'ready') return;
+    let cancelled = false;
+    setActivePages((current) => new Set(current).add(focusRequest.pageIndex));
+    setTopPage(focusRequest.pageIndex);
+    requestAnimationFrame(() => slotEls.current.get(focusRequest.pageIndex)?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+    if (focusRequest.highlights.length === 0) {
+      setQueryHighlights(new Map());
+      return;
+    }
+    void Promise.all(focusRequest.highlights.map(async (highlight) => {
+      const page = await load.textModel.getPageText(highlight.pageIndex);
+      const resolved = resolveLibraryPdfSelector(page, highlight.selector);
+      return resolved.status === 'exact' ? { highlight, rects: resolved.rects } : null;
+    })).then((resolved) => {
+      if (cancelled) return;
+      const byPage = new Map<number, PdfQueryHighlight[]>();
+      for (const item of resolved) {
+        if (!item) continue;
+        const values = byPage.get(item.highlight.pageIndex) ?? [];
+        values.push({ id: item.highlight.id, kind: item.highlight.kind, rects: item.rects });
+        byPage.set(item.highlight.pageIndex, values);
+      }
+      setQueryHighlights(byPage);
+    }).catch(() => { if (!cancelled) setQueryHighlights(new Map()); });
+    return () => { cancelled = true; };
+  }, [focusRequest?.nonce, load]);
 
   // ── Open the PDFium document + the paint-disabled pdf.js text model ─────────
   useEffect(() => {
@@ -566,7 +598,7 @@ function PdfRendererSession({ filePath, pathType, workspaceId, rootDirectory }: 
   }, [workspaceId, pending, filePath]);
 
   if (load.kind === 'fallback') {
-    return <PdfJsFallbackRenderer filePath={filePath} pathType={pathType} />;
+    return <PdfJsFallbackRenderer filePath={filePath} pathType={pathType} focusRequest={focusRequest} />;
   }
 
   const pageCount = load.kind === 'ready' ? load.pageCount : 0;
@@ -682,6 +714,7 @@ function PdfRendererSession({ filePath, pathType, workspaceId, rootDirectory }: 
                   // the transient nav cue; the open card is a sticky one, and it
                   // must not fade out from under a card the reader is still on.
                   flashCommentId={flashId ?? openCardId}
+                  queryHighlights={queryHighlights.get(pageIndex)}
                 />
               );
             })}

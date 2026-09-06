@@ -5,6 +5,7 @@ import { useThemeStore } from '../../stores/theme-store';
 import appIcon from '../../../../assets/icon.png';
 import { LARES_RELEASES_URL } from '../../../shared/constants';
 import ActivityShield from '../activity/ActivityShield';
+import LibraryPane from '../library/LibraryPane';
 
 // The spanning top chrome for the frameless window. The window is
 // titleBarStyle:'hidden' + titleBarOverlay, so the native min/max/close buttons
@@ -46,6 +47,7 @@ export default function TopBar() {
   const resetLayout = useDashboardStore((s) => s.resetLayout);
   const loadWorkspaces = useDashboardStore((s) => s.loadWorkspaces);
   const openToolTab = useDashboardStore((s) => s.openToolTab);
+  const activeLibraryTab = useDashboardStore((s) => s.openTabs.find((tab) => tab.id === s.activeTabId && tab.kind === 'tool' && tab.toolId === 'library'));
   const openPrerequisitesDialog = useDashboardStore((s) => s.openPrerequisitesDialog);
   const { theme, toggleTheme } = useThemeStore();
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -79,6 +81,7 @@ export default function TopBar() {
       { label: 'Reset Panel Layout', onClick: resetLayout },
       { label: '', divider: true },
       { label: 'Reload UI', onClick: () => window.location.reload() },
+      { label: 'Library', onClick: () => openToolTab('library', 'Library') },
     ],
     // Observability tools. Later work packages append items here — keep each as a
     // one-line `openToolTab(...)` entry so the menu stays trivially extendable.
@@ -165,6 +168,14 @@ export default function TopBar() {
 
       {/* Right cluster — sits left of the native caption buttons (env inset). */}
       <div className="flex items-center gap-0.5 pr-1 app-no-drag">
+        <button
+          onClick={() => openToolTab('library', 'Library')}
+          title="Open Workspace Library"
+          aria-label="Open Workspace Library"
+          className="h-7 px-2 flex items-center gap-1 rounded-sm text-gray-400 hover:bg-white/5 hover:text-gray-200 transition-colors"
+        >
+          <Icons.Library className="w-3.5 h-3.5" /><span>Library</span>
+        </button>
         <ActivityShield />
         <button
           onClick={toggleTheme}
@@ -181,6 +192,11 @@ export default function TopBar() {
       </div>
 
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
+      {activeLibraryTab && (
+        <div className="fixed inset-x-0 bottom-0 top-8 z-40 app-no-drag">
+          <LibraryPane initialType={activeLibraryTab.params?.type === 'research' ? 'research' : undefined} />
+        </div>
+      )}
     </div>
   );
 }

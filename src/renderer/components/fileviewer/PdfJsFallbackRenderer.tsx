@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { Document, Page, pdfjs } from 'react-pdf';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import * as Icons from 'lucide-react';
+import type { TabPdfFocusRequest } from '../../stores/dashboard-store';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -65,6 +66,7 @@ type PdfLoadingTaskWithWorker = {
 interface Props {
   filePath: string;
   pathType: 'windows' | 'wsl';
+  focusRequest?: TabPdfFocusRequest;
 }
 
 function nowMs(): number {
@@ -204,7 +206,7 @@ function TimedPdfPage({
   );
 }
 
-function PdfRendererSession({ filePath, pathType }: Props) {
+function PdfRendererSession({ filePath, pathType, focusRequest }: Props) {
   const src = `media://file/${encodeURIComponent(filePath)}`;
   const documentStartedAt = useRef(nowMs());
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -219,6 +221,12 @@ function PdfRendererSession({ filePath, pathType }: Props) {
   const [pageMetrics, setPageMetrics] = useState<PageMetrics | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [preparedPage, setPreparedPage] = useState<PreparedPage | null>(null);
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    setPageNumber(focusRequest.pageIndex + 1);
+    requestAnimationFrame(() => viewerRef.current?.scrollIntoView({ block: 'start' }));
+  }, [focusRequest?.nonce]);
 
   useEffect(() => {
     emitPdfTelemetry(filePath, 'document-load-start', { workerSrc: pdfjs.GlobalWorkerOptions.workerSrc });

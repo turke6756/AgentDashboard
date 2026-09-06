@@ -114,7 +114,8 @@ vi.mock('../selection/FileCommentGutter', () => ({
 vi.mock('./FileContentRenderer', () => ({ default: () => null }));
 vi.mock('./CodeMirrorEditor', () => ({ default: () => null }));
 vi.mock('./ImageRenderer', () => ({ default: () => null }));
-vi.mock('./PdfRenderer', () => ({ default: () => null }));
+const pdfRendererSpy = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+vi.mock('./PdfRenderer', () => ({ default: (props: Record<string, unknown>) => { pdfRendererSpy.props = props; return null; } }));
 vi.mock('./GeoTiffRenderer', () => ({ default: () => null }));
 vi.mock('./ShapefileRenderer', () => ({ default: () => null }));
 vi.mock('./GeoPackageRenderer', () => ({ default: () => null }));
@@ -206,6 +207,15 @@ beforeEach(() => {
 
 afterEach(() => {
   useDashboardStore.setState({ openTabs: [], activeTabId: null, tabEditState: {} });
+});
+
+it('routes PDF focus only to PdfRenderer', async () => {
+  const pdfFocus = { pageIndex: 2, documentHash: 'hash', nonce: 9, highlights: [] };
+  useDashboardStore.setState({ openTabs: [{ id: TAB, filePath: 'C:/ws/manual.pdf', rootDirectory: 'C:/ws', pathType: 'windows', label: 'manual.pdf', workspaceId: 'ws1', pdfFocus }] as never, tabEditState: {} });
+  const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host);
+  await act(async () => root.render(<FileContentArea tabId={TAB} filePath="C:/ws/manual.pdf" pathType="windows" />));
+  expect(pdfRendererSpy.props?.focusRequest).toEqual(pdfFocus);
+  act(() => root.unmount()); host.remove();
 });
 
 /** Make a live edit the way Crepe reports one: the (debounced-in-prod)

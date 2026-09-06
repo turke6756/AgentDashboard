@@ -36,10 +36,11 @@ vi.mock('./PdfPageSlot', async () => {
   };
 });
 
+const fallbackMock = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 vi.mock('./PdfJsFallbackRenderer', async () => {
   const ReactModule = await import('react');
   return {
-    default: () => ReactModule.createElement('div', { 'data-testid': 'pdfjs-fallback' }, 'fallback'),
+    default: (props: Record<string, unknown>) => { fallbackMock.props = props; return ReactModule.createElement('div', { 'data-testid': 'pdfjs-fallback' }, 'fallback'); },
   };
 });
 
@@ -172,6 +173,20 @@ describe('PdfRenderer orchestrator', () => {
 
     expect(container.querySelector('[data-testid="pdfjs-fallback"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid^="slot-"]').length).toBe(0);
+  });
+
+  it('activates an off-screen requested physical page and preserves the request in fallback', async () => {
+    engineMock.openDocument.mockResolvedValue({ docId: 7, pageCount: 3, sizes: new Map() });
+    textModelMock.open.mockResolvedValue(makeTextModel());
+    const focusRequest = { pageIndex: 2, documentHash: 'hash', nonce: 4, highlights: [] };
+    await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\paper.pdf" pathType="windows" focusRequest={focusRequest} />));
+    await flush();
+    expect(slotMock.props.some((props) => props.pageIndex === 2 && props.active === true)).toBe(true);
+
+    engineMock.openDocument.mockRejectedValue(new Error('fallback'));
+    await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\other.pdf" pathType="windows" focusRequest={focusRequest} />));
+    await flush();
+    expect(fallbackMock.props?.focusRequest).toEqual(focusRequest);
   });
 
   it('the toolbar Open-externally control routes to the system viewer', async () => {

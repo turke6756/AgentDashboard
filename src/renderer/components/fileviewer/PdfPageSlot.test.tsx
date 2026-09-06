@@ -14,7 +14,7 @@ import type { PdfSelectionAnchorV1 } from '../../../shared/pdf-annotations';
 const engineMock = vi.hoisted(() => ({ renderPage: vi.fn() }));
 vi.mock('../../lib/pdf/pdfium-engine', () => ({ pdfiumEngine: engineMock }));
 
-import PdfPageSlot, { PdfTextLayer, PdfOverlayLayer } from './PdfPageSlot';
+import PdfPageSlot, { PdfTextLayer, PdfOverlayLayer, PdfQueryOverlayLayer } from './PdfPageSlot';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -112,6 +112,20 @@ describe('PdfOverlayLayer (read-only projection, plan 2.4 z2)', () => {
       root.render(<PdfOverlayLayer comments={[elsewhere]} pageIndex={0} cssWidth={400} cssHeight={500} rotation={0} />);
     });
     expect(container.querySelector('[data-testid="pdf-overlay-layer"]')).toBeNull();
+  });
+});
+
+describe('PdfQueryOverlayLayer', () => {
+  it('paints violet before amber, remains pointer-transparent, and creates no pins', () => {
+    act(() => root.render(<PdfQueryOverlayLayer cssWidth={500} cssHeight={600} rotation={0} highlights={[
+      { id: 'exact', kind: 'exact', rects: [{ x: .1, y: .1, width: .2, height: .05 }] },
+      { id: 'similar', kind: 'similar', rects: [{ x: .1, y: .1, width: .2, height: .05 }] },
+    ]} />));
+    const layer = container.querySelector('[data-testid="pdf-query-overlay-layer"]') as HTMLElement;
+    expect(layer.style.pointerEvents).toBe('none');
+    const kinds = Array.from(layer.children).map((node) => node.getAttribute('data-kind'));
+    expect(kinds).toEqual(['similar', 'exact']);
+    expect(container.querySelector('[data-testid^="pdf-overlay-pin-"]')).toBeNull();
   });
 });
 

@@ -133,3 +133,17 @@ describe('chat file-link resolution — prefer files the agent actually touched 
     expect(tab.filePath).toBe('D:\\elsewhere\\index.ts');
   });
 });
+
+describe('Library reader focus requests', () => {
+  it('preserves and replaces complete text and PDF focus requests on an existing tab', () => {
+    const firstText = { lineStart: 2, lineEnd: 3, nonce: 1, documentHash: 'hash', highlights: [] };
+    const firstPdf = { pageIndex: 4, nonce: 1, documentHash: 'hash', highlights: [] };
+    useDashboardStore.getState().openTab('C:\\repo\\manual.pdf', workspace.path, 'windows', undefined, workspace.id, firstText, firstPdf);
+    const nextPdf = { ...firstPdf, pageIndex: 7, nonce: 2 };
+    useDashboardStore.getState().openTab('C:\\repo\\manual.pdf', workspace.path, 'windows', undefined, workspace.id, undefined, nextPdf);
+    const [tab] = useDashboardStore.getState().openTabs;
+    expect(tab.focusRange).toEqual(firstText);
+    expect(tab.pdfFocus).toEqual(nextPdf);
+    expect(useDashboardStore.getState().activeTabId).toBe(tab.id);
+  });
+});

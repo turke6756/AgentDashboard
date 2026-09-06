@@ -62,6 +62,13 @@ export interface PdfPageSlotProps {
   onRegion?: (pageIndex: number, rect: PdfRect, pxRect: PxRect) => void;
   onPinClick?: (comment: SelectionComment) => void;
   flashCommentId?: string | null;
+  queryHighlights?: PdfQueryHighlight[];
+}
+
+export interface PdfQueryHighlight {
+  id: string;
+  kind: 'exact' | 'similar';
+  rects: PdfRect[];
 }
 
 type RasterState =
@@ -74,7 +81,7 @@ export default function PdfPageSlot(props: PdfPageSlotProps) {
   const {
     docId, pageIndex, rotation, reservedAspect, cssWidth, rasterCssWidth, dpr,
     active, textModel, comments, onPageError, onOpenExternally, registerRef,
-    regionMode = false, onRegion, onPinClick, flashCommentId,
+    regionMode = false, onRegion, onPinClick, flashCommentId, queryHighlights = [],
   } = props;
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -151,6 +158,9 @@ export default function PdfPageSlot(props: PdfPageSlotProps) {
           style={{ width: cssWidth, height: displayHeight, zIndex: 0 }}
         />
       )}
+      {active && queryHighlights.length > 0 && (
+        <PdfQueryOverlayLayer highlights={queryHighlights} cssWidth={cssWidth} cssHeight={displayHeight} rotation={rotation} />
+      )}
 
       {active && raster.kind === 'rendering' && (
         <div className="absolute inset-0 flex items-center justify-center" style={{ zIndex: 0 }}>
@@ -198,6 +208,18 @@ export default function PdfPageSlot(props: PdfPageSlotProps) {
           onRegion={onRegion}
         />
       )}
+    </div>
+  );
+}
+
+export function PdfQueryOverlayLayer({ highlights, cssWidth, cssHeight, rotation }: { highlights: PdfQueryHighlight[]; cssWidth: number; cssHeight: number; rotation: number }) {
+  const ordered = [...highlights].sort((left, right) => left.kind === right.kind ? 0 : left.kind === 'similar' ? -1 : 1);
+  return (
+    <div data-testid="pdf-query-overlay-layer" className="absolute inset-0" style={{ zIndex: 3, pointerEvents: 'none' }}>
+      {ordered.flatMap((highlight) => highlight.rects.map((rect, index) => {
+        const projected = projectNormalizedPdfRect(rect, { width: cssWidth, height: cssHeight }, rotation);
+        return <div key={`${highlight.id}:${index}`} data-testid={`pdf-query-highlight-${highlight.id}`} data-kind={highlight.kind} className={`absolute ${highlight.kind === 'exact' ? 'bg-amber-300/45' : 'bg-violet-400/25'}`} style={{ left: projected.x, top: projected.y, width: projected.width, height: projected.height }} />;
+      }))}
     </div>
   );
 }

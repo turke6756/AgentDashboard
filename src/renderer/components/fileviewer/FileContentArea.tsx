@@ -35,6 +35,7 @@ export default function FileContentArea({ tabId, filePath, pathType }: Props) {
   const enterSourceMode = useDashboardStore((state) => state.enterSourceMode);
   // WP4: a pending "open at source span" request carried on the tab.
   const focusRange = useDashboardStore((state) => state.openTabs.find((t) => t.id === tabId)?.focusRange);
+  const pdfFocus = useDashboardStore((state) => state.openTabs.find((t) => t.id === tabId)?.pdfFocus);
   // Identity the PDF reader threads through for the Phase-3 comment seam.
   const pdfWorkspaceId = useDashboardStore((state) => state.openTabs.find((t) => t.id === tabId)?.workspaceId);
   const pdfRootDirectory = useDashboardStore((state) => state.openTabs.find((t) => t.id === tabId)?.rootDirectory);
@@ -173,6 +174,7 @@ export default function FileContentArea({ tabId, filePath, pathType }: Props) {
         tabId={tabId}
         workspaceId={pdfWorkspaceId}
         rootDirectory={pdfRootDirectory}
+        focusRequest={pdfFocus}
       />
     );
   }

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import {
   type LibraryChunkLocatorV1,
   type LibraryDocumentType,
@@ -63,6 +64,19 @@ export interface LibraryChunkRow {
 export interface LibraryStore {
   readonly database: Database.Database;
   readonly databasePath: string;
+}
+
+export interface SaveLibraryNoteInput {
+  query: string;
+  chunk_ids: string[];
+}
+
+export interface LibraryNoteRow {
+  id: string;
+  document_id: null;
+  content: string;
+  created: string;
+  updated: string;
 }
 
 export interface LibraryReadOptions {
@@ -326,6 +340,24 @@ export function replaceLibraryChunks(store: LibraryStore, documentId: string, ch
 
 export function closeLibraryStore(store: LibraryStore): void {
   store.database.close();
+}
+
+export function saveLibraryNote(store: LibraryStore, input: SaveLibraryNoteInput): LibraryNoteRow {
+  const chunkIds = [...new Set(input.chunk_ids.filter((id) => typeof id === 'string' && id.length > 0))];
+  if (chunkIds.length === 0) throw new TypeError('A Library note needs at least one passage');
+  const placeholders = chunkIds.map(() => '?').join(',');
+  const found = store.database.prepare(`SELECT id FROM library_chunks WHERE id IN (${placeholders})`).all(...chunkIds) as Array<{ id: string }>;
+  if (found.length !== chunkIds.length) throw new Error('One or more Library passages are stale');
+  const now = new Date().toISOString();
+  const row: LibraryNoteRow = {
+    id: crypto.randomUUID(),
+    document_id: null,
+    content: JSON.stringify({ query: input.query, chunk_ids: chunkIds }),
+    created: now,
+    updated: now,
+  };
+  store.database.prepare(`INSERT INTO library_notes (id, document_id, content, created, updated) VALUES (?, ?, ?, ?, ?)`).run(row.id, row.document_id, row.content, row.created, row.updated);
+  return row;
 }
 
 export function listLibraryDocuments(
