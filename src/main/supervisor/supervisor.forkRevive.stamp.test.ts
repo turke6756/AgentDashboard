@@ -43,7 +43,7 @@ function patchDatabase(workspacePath: string, agents: Agent[]) {
   const keys = [
     'getAgent', 'getWorkspace', 'getAgentsByWorkspace', 'createAgent',
     'updateAgentResumeSessionId', 'addEvent', 'getPlan', 'planItemInPlan',
-    'listTurnRecords', 'getSaveIntent',
+    'listTurnRecords', 'getSaveIntent', 'reconcilePlanDispatchAttempts',
   ];
   const original: Record<string, unknown> = {};
   for (const key of keys) original[key] = db[key];
@@ -81,6 +81,7 @@ function patchDatabase(workspacePath: string, agents: Agent[]) {
   db.getSaveIntent = (id: string) => id === 'svi-carried' ? {
     id, kind: 'task', executionRunId: null, planId: 'plan-a', planItemId: 'item-carried',
   } : null;
+  db.reconcilePlanDispatchAttempts = () => ({ reconciledAttemptIds: [], diagnostics: [] });
 
   return () => { for (const key of keys) db[key] = original[key]; };
 }
@@ -112,7 +113,7 @@ test('fork copies source.planId and freezes fork-carry; explicit none clears onl
     assert.ok(carriedPending?.dispatch, 'fork wake retains dispatch metadata');
     source.planId = 'latest-turn-must-not-win';
     assert.deepEqual(await stampOf(carried, carriedPending.dispatch), {
-      planId: 'plan-a', planItemId: null, source: 'fork-carry',
+      planId: 'plan-a', planItemId: 'item-carried', source: 'fork-carry',
     });
 
     const cleared = await supervisor.forkAgent(source.id, {
@@ -144,7 +145,7 @@ test('revive freezes carry/explicit/none, validates explicit items (SC-WP-3A), a
     assert.ok(carried?.dispatch);
     agent.planId = 'changed-after-staging';
     assert.deepEqual(await stampOf(agent, carried.dispatch), {
-      planId: 'plan-a', planItemId: null, source: 'revive-carry',
+      planId: 'plan-a', planItemId: 'item-carried', source: 'revive-carry',
     });
 
     await supervisor.reviveAgent(agent.id, {
@@ -210,7 +211,7 @@ test('revive freezes carry/explicit/none, validates explicit items (SC-WP-3A), a
       .maybeDeliverInitialUserPrompt(agent.id, 'idle');
     assert.equal(deliveredDispatch, staged.dispatch, 'delivery receives the exact frozen dispatch object');
     assert.deepEqual(await stampOf(agent, deliveredDispatch!), {
-      planId: 'plan-delivery', planItemId: null, source: 'revive-carry',
+      planId: 'plan-a', planItemId: 'item-carried', source: 'revive-carry',
     });
   } finally {
     restore();
