@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   buildConsolidatedPayload,
   buildEventPayload,
+  buildScheduledFiringPayload,
   SupervisorEvent,
 } from './event-payload-builder';
 
@@ -32,6 +33,14 @@ function baseStatusEvent(overrides: Partial<SupervisorEvent> = {}): SupervisorEv
     ...overrides,
   };
 }
+
+test('scheduled firing payload preserves the original message bytes', () => {
+  const message = '  keep leading space\r\nkeep trailing space  ';
+  assert.equal(
+    buildScheduledFiringPayload(message),
+    '[DASHBOARD EVENT] Scheduled message\n\n  keep leading space\r\nkeep trailing space  ',
+  );
+});
 
 test('formatLogTail strips CSI/SGR escapes from each line', () => {
   // Real Claude Code-style colored output: green prompt prefix, bold body.

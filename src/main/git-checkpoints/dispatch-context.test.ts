@@ -147,6 +147,37 @@ test('explicit dispatch.taskLabel is the brief the coordinator will prefer (prec
 });
 
 // ── Runner ───────────────────────────────────────────────────────────────────
+test('scheduled firing is planless and bypasses every default plan resolver', async () => {
+  let activeDefaultCalls = 0;
+  let ownerFocusCalls = 0;
+  let planGateCalls = 0;
+  const deps: DispatchDeps = {
+    ...makeDeps({
+      worker: { workspaceId: 'ws1', planId: 'plan_agent', ownerAgentId: 'sup' },
+      sup: { workspaceId: 'ws1', planId: 'plan_owner' },
+    }),
+    resolveActivePlanDefault: () => { activeDefaultCalls += 1; return 'plan_active'; },
+    resolveOwnerFocusPlan: () => { ownerFocusCalls += 1; return 'plan_focus'; },
+    planImplementGate: () => {
+      planGateCalls += 1;
+      return { isStructured: true, hasActiveExecutionRun: false };
+    },
+  };
+  const ctx = await buildDispatchTurnContext(deps, 'worker', {
+    origin: 'scheduled-firing',
+    ownerAgentId: 'sup',
+  });
+  assert.ok(ctx);
+  assert.deepEqual(ctx!.planStamp, {
+    planId: null,
+    planItemId: null,
+    source: 'explicit-none',
+  });
+  assert.equal(activeDefaultCalls, 0, 'scheduled turns never consult the agent-default rail');
+  assert.equal(ownerFocusCalls, 0, 'scheduled turns never promote through owner focus');
+  assert.equal(planGateCalls, 0, 'a planless stamp has no structured-plan gate');
+});
+
 (async () => {
   let passed = 0, failed = 0;
   for (const t of tests) {

@@ -1,6 +1,7 @@
 import type { Agent, AgentStatus, ContextStats, FileActivity } from '../../shared/types';
 import { hasSupervisorPrivilege } from '../../shared/types';
 import type { ChatEventBatch } from '../../shared/session-events';
+import type { NotificationRoute } from '../../shared/schedule-types';
 import type { StatusChangedEvent } from './status-events';
 import type { ForceWorkingOpts, WaitingKind } from './status-monitor';
 import {
@@ -77,6 +78,11 @@ export interface EventBridgeDeps {
    *  request only the live session so retained renewal generations cannot be
    *  presented as current work. Empty results (or errors) omit the section. */
   getFileActivities(agentId: string, currentOnly: boolean): FileActivity[];
+}
+
+export interface ScheduledNotificationResolution {
+  route: NotificationRoute;
+  subscriberAgentId: string | null;
 }
 
 // P2-03: 'waiting' is a trigger status so the supervisor gets a notification
@@ -169,6 +175,28 @@ export class EventBridge {
       return null; // owned + muted + recipient is the explicit owner → drop
     }
     return recipient;
+  }
+
+  /** Resolve the existing owner route, adding a transient route only when the
+   * target's explicit-owner notification is muted. */
+  resolveScheduledNotificationRoute(input: { targetAgentId: string }): ScheduledNotificationResolution {
+    const target = this.deps.getAgent(input.targetAgentId);
+    if (!target) return { route: 'unavailable', subscriberAgentId: null };
+
+    const ordinaryRecipient = this.ownerRecipientComponent(target);
+    if (ordinaryRecipient) return { route: 'ordinary', subscriberAgentId: null };
+
+    const mutedRecipient = this.deps.getOwnerForWorker(target);
+    if (
+      target.notifyOwner === false
+      && target.ownerAgentId
+      && mutedRecipient?.id === target.ownerAgentId
+      && !['done', 'crashed'].includes(mutedRecipient.status)
+      && hasSupervisorPrivilege(mutedRecipient)
+    ) {
+      return { route: 'subscription', subscriberAgentId: mutedRecipient.id };
+    }
+    return { route: 'unavailable', subscriberAgentId: null };
   }
 
   /** Watchdog-class events bypass the notifyOwner member mute (see

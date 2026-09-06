@@ -1976,6 +1976,38 @@ async function WP7_hooksUnavailableFallsThroughToTranscript(): Promise<void> {
   console.log('  WP7 ✓ hooksUnavailable falls through to transcript status routing; healthy still skips');
 }
 
+async function scheduledNotificationRoutes(): Promise<void> {
+  const f = makeFakeBridgeDeps();
+  const supervisor = makeAgent('schedule-sup', {
+    isSupervisor: true, isSupervised: false, status: 'idle',
+  });
+  const ordinary = makeAgent('schedule-ordinary', {
+    ownerAgentId: supervisor.id, notifyOwner: true, status: 'idle',
+  });
+  const muted = makeAgent('schedule-muted', {
+    ownerAgentId: supervisor.id, notifyOwner: false, status: 'idle',
+  });
+  const unavailable = makeAgent('schedule-unavailable', {
+    isSupervised: false, ownerAgentId: null, notifyOwner: false, status: 'idle',
+  });
+  for (const agent of [supervisor, ordinary, muted, unavailable]) f.agents.set(agent.id, agent);
+  const bridge = new EventBridge(f.deps);
+
+  assert.deepEqual(bridge.resolveScheduledNotificationRoute({ targetAgentId: ordinary.id }), {
+    route: 'ordinary', subscriberAgentId: null,
+  });
+  assert.deepEqual(bridge.resolveScheduledNotificationRoute({ targetAgentId: muted.id }), {
+    route: 'subscription', subscriberAgentId: supervisor.id,
+  });
+  assert.deepEqual(bridge.resolveScheduledNotificationRoute({ targetAgentId: unavailable.id }), {
+    route: 'unavailable', subscriberAgentId: null,
+  });
+  assert.deepEqual(bridge.resolveScheduledNotificationRoute({ targetAgentId: 'missing' }), {
+    route: 'unavailable', subscriberAgentId: null,
+  });
+  console.log('  CRON route resolution uses ordinary, subscription, and unavailable');
+}
+
 async function main(): Promise<void> {
   console.log('event-bridge.test: running BR-01..BR-20 + BUG-18 + BUG-22 + BUG-41 + TS-subscriptions');
   await BR_01_happyPath();
@@ -2001,6 +2033,7 @@ async function main(): Promise<void> {
   await onChatEvents_codexTurnComplete();
   await onChatEvents_dispatchTable();
   await WP7_hooksUnavailableFallsThroughToTranscript();
+  await scheduledNotificationRoutes();
   await onChatEvents_initialLoadSuppressesForceCalls();
   await onChatEvents_secondBatchIsNotInitialLoad();
   await BR_11a_deliverDefersWhileUserTyping();

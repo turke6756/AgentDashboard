@@ -21,7 +21,7 @@ export type { ResolvedPlanStamp } from '../../shared/commit-candidates';
 
 /** Where a send originated. Human terminals are owner-less; orchestration/api sends
  *  carry an owning supervisor (derived server-side, never trusted from the body). */
-export type DispatchOrigin = 'orchestration' | 'human-terminal' | 'api';
+export type DispatchOrigin = 'orchestration' | 'human-terminal' | 'api' | 'scheduled-firing';
 
 /** The caller-supplied dispatch context. Note the DELIBERATE absence of
  *  `ownerBrickGeneration` — it is derived server-side (see module header). */
@@ -32,6 +32,8 @@ export interface DispatchContext {
   ownerAgentId?: string | null;
   taskLabel?: string | null;
   sessionId?: string | null;
+  /** Present only for a scheduler-authored send; never treated as a plan id. */
+  scheduleId?: string | null;
   /** Untrusted wire-level request. Its shape deliberately has no `source` field. */
   requestedPlanBinding?: RequestedPlanBinding;
 }
@@ -420,7 +422,13 @@ export async function buildDispatchTurnContext(
   const trustedIntentStamp = (dispatch as DispatchContext & TrustedIntentCarrier)[TRUSTED_INTENT_STAMP];
   const resolution = trustedStamp
     ? { ok: true as const, stamp: trustedStamp }
-    : resolveRequestedPlanBinding(deps, agent, dispatch.requestedPlanBinding);
+    : dispatch.origin === 'scheduled-firing'
+      ? gateResolvedStamp(deps, {
+          planId: null,
+          planItemId: null,
+          source: 'explicit-none',
+        })
+      : resolveRequestedPlanBinding(deps, agent, dispatch.requestedPlanBinding);
   // Boundary code rejects invalid explicit bindings before enqueue. Keep this
   // builder non-throwing/fail-open if a legacy caller bypasses that boundary.
   if (!resolution.ok) return null;

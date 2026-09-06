@@ -149,6 +149,9 @@ import { contextGaugeRoleKeyOf, resolveContextGaugeCap } from '../context-gauge/
 import { getApiToken } from '../security/api-auth';
 import { agentCapabilities } from '../security/agent-capabilities';
 import { EventBridge, EventBridgeDeps } from './event-bridge';
+import { buildScheduledFiringPayload } from './event-payload-builder';
+import type { ScheduledDeliveryResult, ScheduledFiring } from '../scheduler/agent-scheduler';
+import { wakeScheduledFiring, type StagedFiring } from '../scheduler/waker';
 import { TeamMessageDeliveryEngine } from './team-delivery';
 import { WindowsRunner } from './windows-runner';
 import { WslRunner, WslLaunchDiagnostics } from './wsl-runner';
@@ -2714,6 +2717,7 @@ export class AgentSupervisor extends EventEmitter {
   // risk of duplicating or reordering launch instructions. Entries expire
   // after INITIAL_USER_PROMPT_TTL_MS and are cleared on agent stop/delete.
   private pendingInitialPrompts = new PendingInitialPromptMap();
+  private stagedScheduledFirings = new Map<string, StagedFiring>();
   private pendingContinuationOrientations = new Map<string, PendingContinuationOrientation>();
 
   // Context-brick Inc 4 — brick handed to the in-flight continuation launch.
@@ -2760,9 +2764,16 @@ export class AgentSupervisor extends EventEmitter {
 
   private readonly readEnvironment: EnvironmentReader;
   private readonly devDiscoveryFile: string;
+  private readonly scheduledGetAgent: (agentId: string) => Agent | null;
 
-  constructor(deps: { readEnv?: EnvironmentReader; devDiscoveryFile?: string; now?: () => number } = {}) {
+  constructor(deps: {
+    readEnv?: EnvironmentReader;
+    devDiscoveryFile?: string;
+    now?: () => number;
+    scheduledGetAgent?: (agentId: string) => Agent | null;
+  } = {}) {
     super();
+    this.scheduledGetAgent = deps.scheduledGetAgent ?? getAgent;
     this.subagentDelegations = new SubagentDelegationTracker(deps.now ?? Date.now, SUBAGENT_ORPHAN_MS);
     this.readEnvironment = deps.readEnv ?? ((name) => process.env[name]);
     const appData = process.env.APPDATA || path.join(process.env.HOME || '', '.config');
@@ -2902,7 +2913,10 @@ export class AgentSupervisor extends EventEmitter {
     // so this listener is the single choke-point for delivering a pending
     // initial user prompt on the first input-accepting transition.
     this.on('statusChanged', (data: StatusChangedEvent | undefined) => {
-      if (data) this.maybeDeliverInitialUserPrompt(data.agentId, data.status);
+      if (data) {
+        this.maybeDeliverInitialUserPrompt(data.agentId, data.status);
+        this.maybeDeliverScheduledFiring(data.agentId, data.status);
+      }
     });
 
     // Typed session-event reader — single source of truth for JSONL tailing.
@@ -8215,8 +8229,13 @@ export class AgentSupervisor extends EventEmitter {
       if (opts.message) queued = true;
 
       // 5) shared post-stop tail; a throw means NO relaunch → do not report success
+      const scheduledGeneration = this.stagedScheduledFirings.get(agentId)?.generation ?? null;
       try { await this.resumeAgentAfterStopLocked(agentId); }
-      catch { if (queued) this.pendingInitialPrompts.delete(agentId); throw revErr('revive-relaunch-failed', 500); }
+      catch {
+        if (queued) this.pendingInitialPrompts.delete(agentId);
+        if (scheduledGeneration !== null) this.clearStagedScheduledFiring(agentId, scheduledGeneration);
+        throw revErr('revive-relaunch-failed', 500);
+      }
 
       addEvent(agentId, 'revived', JSON.stringify({ force: !!opts.force, queued, gate: gate.action }));
       return { revived: true, queued };
@@ -8564,6 +8583,104 @@ export class AgentSupervisor extends EventEmitter {
 
   hasRunner(agentId: string): boolean {
     return this.windowsRunners.has(agentId) || this.wslRunners.has(agentId);
+  }
+
+  private clearStagedScheduledFiring(agentId: string, generation: number): void {
+    if (this.stagedScheduledFirings.get(agentId)?.generation === generation) {
+      this.stagedScheduledFirings.delete(agentId);
+    }
+  }
+
+  /** Scheduler delivery entry. Terminal agents stage before revival; live
+   * agents synchronously claim the existing send operation without queueing. */
+  deliverScheduledFiring(
+    firing: ScheduledFiring,
+  ): ScheduledDeliveryResult | Promise<ScheduledDeliveryResult> {
+    const agent = this.scheduledGetAgent(firing.agentId);
+    if (agent && (agent.status === 'done' || agent.status === 'crashed')) {
+      return wakeScheduledFiring(firing, {
+        getAgent: (agentId) => this.scheduledGetAgent(agentId),
+        stage: (agentId, staged) => { this.stagedScheduledFirings.set(agentId, staged); },
+        clearGeneration: (agentId, generation) => this.clearStagedScheduledFiring(agentId, generation),
+        reviveAgent: (agentId) => this.reviveAgent(agentId, {}),
+      });
+    }
+
+    if (
+      !agent
+      || agent.status !== 'idle'
+      || !this.hasRunner(firing.agentId)
+      || this.pendingInitialPrompts.has(firing.agentId)
+      || this.isInputInFlight(firing.agentId)
+    ) {
+      return { disposition: 'held' };
+    }
+
+    const notification = this.bridge.resolveScheduledNotificationRoute({ targetAgentId: firing.agentId });
+    let route = notification.route;
+    let subscribedAgentId: string | null = null;
+    if (route === 'subscription' && notification.subscriberAgentId) {
+      const registered = this.bridge.registerTransientTurnSubscription({
+        targetAgentId: firing.agentId,
+        subscriberAgentId: notification.subscriberAgentId,
+      });
+      if (registered.registered) subscribedAgentId = notification.subscriberAgentId;
+      else route = 'unavailable';
+    }
+
+    firing.markDelivering(route);
+    const cancelSubscription = (): void => {
+      if (subscribedAgentId) {
+        this.bridge.cancelTransientTurnSubscriptionsForPair(firing.agentId, subscribedAgentId);
+      }
+    };
+    const failedOutcome = (): SendOutcome => ({
+      disposition: 'failed',
+      agentId: firing.agentId,
+      delivered: false,
+      reason: 'delivery-failed',
+      completedAt: Date.now(),
+    });
+
+    let delivery: Promise<SendOutcome>;
+    try {
+      delivery = this.sendInputWithOutcome(
+        firing.agentId,
+        buildScheduledFiringPayload(firing.text),
+        {},
+        { origin: 'scheduled-firing', scheduleId: firing.scheduleId },
+      );
+    } catch {
+      cancelSubscription();
+      return Promise.resolve({ disposition: 'sent', outcome: failedOutcome() });
+    }
+    return Promise.resolve(delivery).then(
+      (outcome) => {
+        if (outcome.disposition !== 'confirmed') cancelSubscription();
+        return { disposition: 'sent' as const, outcome };
+      },
+      () => {
+        cancelSubscription();
+        return { disposition: 'sent' as const, outcome: failedOutcome() };
+      },
+    );
+  }
+
+  /** Release one held/reviving generation after initial-prompt arbitration. */
+  maybeDeliverScheduledFiring(agentId: string, _status: AgentStatus): void {
+    const staged = this.stagedScheduledFirings.get(agentId);
+    if (!staged || !this.hasRunner(agentId)) return;
+    const agent = this.scheduledGetAgent(agentId);
+    if (!agent || agent.status === 'done' || agent.status === 'crashed') return;
+
+    const result = this.deliverScheduledFiring(staged);
+    if (!(result instanceof Promise) && result.disposition === 'held') return;
+    this.clearStagedScheduledFiring(agentId, staged.generation);
+    if (result instanceof Promise) {
+      void result.then(staged.onOutcome);
+    } else {
+      staged.onOutcome(result);
+    }
   }
 
   /** WP-P2 (plans/selection-to-agent-primitive-plan.md §7) — deliver a

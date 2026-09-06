@@ -19,6 +19,11 @@ const CHAT_FULL_TAIL_CHARS = 3000;
 const FILES_TOUCHED_MAX_ENTRIES = 10;
 const CONSOLIDATED_HINT_MAX_CHARS = 80;
 
+/** Frame a user-authored scheduled message without normalizing its bytes. */
+export function buildScheduledFiringPayload(message: string): string {
+  return `[DASHBOARD EVENT] Scheduled message\n\n${message}`;
+}
+
 // Team events are not currently emitted. If Teams reintroduces them, restore
 // the type tag (e.g. 'team_created' | 'team_loop_detected') and the matching
 // payload branches in buildEventPayload.
