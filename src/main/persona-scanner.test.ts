@@ -340,7 +340,7 @@ test('applyPersonaLaneToLaunchInput maps each declared lane onto launch flags', 
   applyPersonaLaneToLaunchInput(res, ws, 'windows');
   assert.equal(res.isResearcher, true);
   assert.equal(res.isSupervised, true);
-  assert.equal(res.provider, 'claude', 'researcher lane forces provider=claude');
+  assert.equal(res.provider, 'codex', 'researcher lane preserves the selected provider');
 
   const wrk: any = { persona: 'p-wrk' };
   applyPersonaLaneToLaunchInput(wrk, ws, 'windows');
