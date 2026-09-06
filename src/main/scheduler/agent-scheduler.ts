@@ -8,7 +8,7 @@ import type {
   ScheduleSummary,
 } from '../../shared/schedule-types';
 import { AgentScheduleStore } from './agent-schedule-store';
-import { computeNextFireAt, evaluateUntilBoundary } from './recurrence';
+import { computeNextFireAt, evaluateUntilBoundary, firstFutureDailySlot } from './recurrence';
 
 export type ScheduledDeliveryResult =
   | { disposition: 'held' }
@@ -45,6 +45,7 @@ interface PendingOccurrence {
   liveness: FiringHistoryRow['liveness'];
   notificationRoute: NotificationRoute | null;
   cancellationRequestedAt: number | null;
+  dispatching: boolean;
   finalized: boolean;
 }
 
@@ -63,34 +64,10 @@ function stoppingRuleEqual(a: AgentSchedule['stopping'], b: AgentSchedule['stopp
   return a.kind === 'until' && b.kind === 'until' && a.endAtEpochMs === b.endAtEpochMs;
 }
 
-function firstDailySlot(now: number, atMinuteOfDay: number): number {
-  const current = new Date(now);
-  for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
-    const year = current.getFullYear();
-    const month = current.getMonth();
-    const day = current.getDate() + dayOffset;
-    const start = new Date(year, month, day, 0, 0, 0, 0).getTime();
-    const end = new Date(year, month, day + 1, 0, 0, 0, 0).getTime();
-    for (let epochMs = start; epochMs < end; epochMs += 60_000) {
-      const local = new Date(epochMs);
-      if (
-        local.getFullYear() === new Date(start).getFullYear() &&
-        local.getMonth() === new Date(start).getMonth() &&
-        local.getDate() === new Date(start).getDate() &&
-        local.getHours() * 60 + local.getMinutes() >= atMinuteOfDay &&
-        epochMs > now
-      ) {
-        return epochMs;
-      }
-    }
-  }
-  throw new RangeError('could not resolve daily schedule');
-}
-
 function initialNextFireAt(schedule: AgentSchedule, now: number): number {
   return schedule.recurrence.kind === 'interval'
     ? now + schedule.recurrence.everyMs
-    : firstDailySlot(now, schedule.recurrence.atMinuteOfDay);
+    : firstFutureDailySlot(now, schedule.recurrence.atMinuteOfDay);
 }
 
 export class AgentScheduler {
@@ -100,6 +77,7 @@ export class AgentScheduler {
   private readonly runtimeByAgent = new Map<string, RuntimeState>();
   private readonly generationByAgent = new Map<string, number>();
   private readonly pendingByAgent = new Map<string, PendingOccurrence>();
+  private readonly inFlightByAgent = new Map<string, Promise<void>>();
   private intervalHandle: unknown = null;
 
   constructor(private readonly options: AgentSchedulerOptions) {
@@ -123,7 +101,7 @@ export class AgentScheduler {
     const before = this.options.store.get(agentId);
     const schedule = this.options.store.set(agentId, dto);
     if (before) this.bumpGenerationAndCancel(agentId);
-    else this.generationByAgent.set(agentId, 1);
+    else this.generationByAgent.set(agentId, (this.generationByAgent.get(agentId) ?? 0) + 1);
     const stoppingReplaced = before ? !stoppingRuleEqual(before.stopping, schedule.stopping) : true;
     const now = this.now();
 
@@ -164,8 +142,9 @@ export class AgentScheduler {
 
   clearSchedule(agentId: string): boolean {
     this.bumpGenerationAndCancel(agentId);
+    this.pendingByAgent.delete(agentId);
+    this.inFlightByAgent.delete(agentId);
     this.runtimeByAgent.delete(agentId);
-    this.generationByAgent.delete(agentId);
     return this.options.store.clear(agentId);
   }
 
@@ -179,7 +158,10 @@ export class AgentScheduler {
       if (!schedule.enabled || schedule.lifecycle !== 'active' || schedule.nextFireAt === null || schedule.nextFireAt > now) continue;
       const runtime = this.runtimeByAgent.get(schedule.agentId) ?? { kind: 'idle' as const };
       if (runtime.kind === 'idle') this.claim(schedule, now);
-      else this.collapse(schedule, runtime, now);
+      else {
+        runtime.generation = this.generationByAgent.get(schedule.agentId) ?? runtime.generation;
+        this.collapse(schedule, runtime, now);
+      }
     }
   }
 
@@ -209,6 +191,7 @@ export class AgentScheduler {
       liveness: 'idle',
       notificationRoute: null,
       cancellationRequestedAt: null,
+      dispatching: false,
       finalized: false,
     };
     this.pendingByAgent.set(schedule.agentId, pending);
@@ -262,7 +245,8 @@ export class AgentScheduler {
   }
 
   private dispatch(pending: PendingOccurrence): void {
-    if (pending.finalized) return;
+    if (pending.finalized || pending.dispatching || this.inFlightByAgent.has(pending.agentId)) return;
+    pending.dispatching = true;
     const firing: ScheduledFiring = {
       agentId: pending.agentId,
       scheduleId: pending.scheduleId,
@@ -277,15 +261,26 @@ export class AgentScheduler {
     try {
       result = this.options.deliver(firing);
     } catch {
+      pending.dispatching = false;
       this.finalize(pending, { failed: 'delivery-failed' }, this.now());
       return;
     }
     if (result instanceof Promise || (typeof result === 'object' && result !== null && 'then' in result)) {
-      void Promise.resolve(result).then(
-        (resolved) => this.handleDeliveryResult(pending, resolved),
-        () => this.finalize(pending, { failed: 'delivery-failed' }, this.now()),
-      );
+      const inFlight = Promise.resolve(result)
+        .then(
+          (resolved) => this.handleDeliveryResult(pending, resolved),
+          () => this.finalize(pending, { failed: 'delivery-failed' }, this.now()),
+        )
+        .finally(() => {
+          if (this.inFlightByAgent.get(pending.agentId) === inFlight) {
+            this.inFlightByAgent.delete(pending.agentId);
+          }
+        });
+      this.inFlightByAgent.set(pending.agentId, inFlight);
+      pending.dispatching = false;
+      void inFlight;
     } else {
+      pending.dispatching = false;
       this.handleDeliveryResult(pending, result);
     }
   }
@@ -294,7 +289,7 @@ export class AgentScheduler {
     if (pending.finalized) return;
     if (result.disposition === 'held') {
       const runtime = this.runtimeByAgent.get(pending.agentId);
-      if (runtime?.kind !== 'reviving') {
+      if (this.isCurrentPending(pending) && runtime?.kind !== 'reviving') {
         if (pending.heldAt === null) pending.heldAt = this.now();
         pending.liveness = 'held';
         this.runtimeByAgent.set(pending.agentId, {
@@ -321,22 +316,26 @@ export class AgentScheduler {
     if (pending.heldAt === null) pending.heldAt = now;
     pending.revivedAt = now;
     pending.liveness = 'revived';
-    this.runtimeByAgent.set(pending.agentId, {
-      kind: 'reviving', dueAt: pending.dueAt, collapsedCount: pending.collapsedCount, generation: pending.generation,
-    });
+    if (this.isCurrentPending(pending)) {
+      this.runtimeByAgent.set(pending.agentId, {
+        kind: 'reviving', dueAt: pending.dueAt, collapsedCount: pending.collapsedCount, generation: pending.generation,
+      });
+    }
   }
 
   private markDelivering(pending: PendingOccurrence, route: NotificationRoute | null = null): void {
     if (pending.finalized) return;
     if (pending.firedAt === null) pending.firedAt = this.now();
     if (route !== null) pending.notificationRoute = route;
-    this.runtimeByAgent.set(pending.agentId, {
-      kind: 'delivering',
-      dueAt: pending.dueAt,
-      collapsedCount: pending.collapsedCount,
-      generation: pending.generation,
-      cancellationRequestedAt: pending.cancellationRequestedAt,
-    });
+    if (this.isCurrentPending(pending)) {
+      this.runtimeByAgent.set(pending.agentId, {
+        kind: 'delivering',
+        dueAt: pending.dueAt,
+        collapsedCount: pending.collapsedCount,
+        generation: pending.generation,
+        cancellationRequestedAt: pending.cancellationRequestedAt,
+      });
+    }
   }
 
   private finalize(
@@ -364,7 +363,13 @@ export class AgentScheduler {
     });
 
     const currentGeneration = this.generationByAgent.get(pending.agentId);
-    if (currentGeneration === pending.generation) {
+    const currentPending = this.pendingByAgent.get(pending.agentId);
+    const currentSchedule = this.options.store.get(pending.agentId);
+    if (
+      currentGeneration === pending.generation &&
+      currentPending === pending &&
+      currentSchedule?.id === pending.scheduleId
+    ) {
       this.options.store.mutate(pending.agentId, (schedule) => {
         schedule.lastOutcome = outcome;
         schedule.lastNotificationRoute = pending.notificationRoute;
@@ -375,15 +380,23 @@ export class AgentScheduler {
       });
       this.runtimeByAgent.set(pending.agentId, { kind: 'idle' });
       this.pendingByAgent.delete(pending.agentId);
-    } else if (this.pendingByAgent.get(pending.agentId) === pending) {
+    } else if (currentPending === pending) {
       this.pendingByAgent.delete(pending.agentId);
       this.runtimeByAgent.set(pending.agentId, { kind: 'idle' });
     }
   }
 
   private bumpGenerationAndCancel(agentId: string): void {
+    const runtime = this.runtimeByAgent.get(agentId);
+    if (runtime?.kind !== 'delivering') this.cancelPending(agentId);
     this.generationByAgent.set(agentId, (this.generationByAgent.get(agentId) ?? 0) + 1);
-    this.cancelPending(agentId);
+    if (runtime?.kind === 'delivering') this.cancelPending(agentId);
+  }
+
+  private isCurrentPending(pending: PendingOccurrence): boolean {
+    return this.pendingByAgent.get(pending.agentId) === pending &&
+      this.generationByAgent.get(pending.agentId) === pending.generation &&
+      this.options.store.get(pending.agentId)?.id === pending.scheduleId;
   }
 
   private cancelPending(agentId: string): void {

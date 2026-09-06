@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { computeNextFireAt, evaluateUntilBoundary } from './recurrence';
+import { computeNextFireAt, evaluateUntilBoundary, firstFutureDailySlot } from './recurrence';
 
 type TestCase = { name: string; run: () => void };
 
@@ -14,7 +14,7 @@ test('interval advances from the prior slot', () => {
 });
 
 test('REACHABILITY:cron-recurrence late wake skips every missed slot after one due occurrence', () => {
-  assert.equal(computeNextFireAt({ kind: 'interval', everyMs: 60_000 }, 100_000, 400_000), 460_000);
+  assert.equal(computeNextFireAt({ kind: 'interval', everyMs: 60_000 }, 123_000, 400_000), 423_000);
 });
 
 test('until boundary is inclusive and exhausts when the next slot crosses it', () => {
@@ -53,6 +53,30 @@ function runDstChild(): void {
     [2026, 10, 1, 1, 30],
   );
   assert.equal(fall.getTimezoneOffset(), 420, 'fall-back overlap must choose the first occurrence');
+
+  const beforeSpringGap = new Date(2026, 2, 8, 1, 0).getTime();
+  const springInitial = new Date(firstFutureDailySlot(beforeSpringGap, 150));
+  assert.deepEqual(
+    [springInitial.getFullYear(), springInitial.getMonth(), springInitial.getDate(), springInitial.getHours(), springInitial.getMinutes()],
+    [2026, 2, 8, 3, 0],
+  );
+  const afterSpringGap = new Date(2026, 2, 8, 3, 1).getTime();
+  const springTomorrow = new Date(firstFutureDailySlot(afterSpringGap, 150));
+  assert.deepEqual(
+    [springTomorrow.getFullYear(), springTomorrow.getMonth(), springTomorrow.getDate(), springTomorrow.getHours(), springTomorrow.getMinutes()],
+    [2026, 2, 9, 2, 30],
+  );
+
+  const beforeFallFirst = new Date(2026, 10, 1, 1, 0).getTime();
+  const fallInitial = new Date(firstFutureDailySlot(beforeFallFirst, 90));
+  assert.equal(fallInitial.getTimezoneOffset(), 420, 'initial overlap slot must choose the first occurrence');
+  const afterFallFirst = Date.UTC(2026, 10, 1, 9, 0);
+  const fallTomorrow = new Date(firstFutureDailySlot(afterFallFirst, 90));
+  assert.deepEqual(
+    [fallTomorrow.getFullYear(), fallTomorrow.getMonth(), fallTomorrow.getDate(), fallTomorrow.getHours(), fallTomorrow.getMinutes()],
+    [2026, 10, 2, 1, 30],
+    'arming after the first overlap occurrence must not choose the repeated slot',
+  );
 }
 
 if (process.argv.includes('--dst-child')) {

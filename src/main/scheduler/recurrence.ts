@@ -6,7 +6,7 @@ function nextLocalDate(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 12);
 }
 
-function resolveLocalDailySlot(date: Date, atMinuteOfDay: number): number {
+export function resolveLocalDailySlot(date: Date, atMinuteOfDay: number): number {
   const year = date.getFullYear();
   const month = date.getMonth();
   const day = date.getDate();
@@ -51,6 +51,12 @@ export function computeNextFireAt(
     nextFireAt = resolveLocalDailySlot(localDate, recurrence.atMinuteOfDay);
   }
   return nextFireAt;
+}
+
+export function firstFutureDailySlot(nowEpochMs: number, atMinuteOfDay: number): number {
+  const todaySlot = resolveLocalDailySlot(new Date(nowEpochMs), atMinuteOfDay);
+  if (todaySlot > nowEpochMs) return todaySlot;
+  return computeNextFireAt({ kind: 'daily', atMinuteOfDay }, todaySlot, nowEpochMs);
 }
 
 export interface UntilBoundaryResult {

@@ -162,12 +162,13 @@ export class AgentScheduleStore {
         throw new ScheduleValidationError('count-invalid');
       }
     }
-    if (dto.stopping.kind === 'until' && dto.stopping.endAtEpochMs < this.now() && !sameStopping) {
-      throw new ScheduleValidationError('end-in-past');
+    if (dto.stopping.kind === 'until') {
+      if (!Number.isFinite(dto.stopping.endAtEpochMs) || (dto.stopping.endAtEpochMs < this.now() && !sameStopping)) {
+        throw new ScheduleValidationError('end-in-past');
+      }
     }
     if (!existing && dto.revision !== null) throw new ScheduleValidationError('revision-conflict');
     if (existing && dto.revision === null) throw new ScheduleValidationError('schedule-exists');
     if (existing && dto.revision !== existing.revision) throw new ScheduleValidationError('revision-conflict');
   }
 }
-

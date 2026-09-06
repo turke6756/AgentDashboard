@@ -52,12 +52,23 @@ function confirmed(agentId: string, completedAt: number): ScheduledDeliveryResul
   return { disposition: 'sent', outcome };
 }
 
+function unconfirmed(agentId: string, completedAt: number): ScheduledDeliveryResult {
+  const outcome: SendOutcome = {
+    disposition: 'delivered-unconfirmed',
+    agentId,
+    delivered: true,
+    completedAt,
+  };
+  return { disposition: 'sent', outcome };
+}
+
 function harness(deliver: (firing: ScheduledFiring) => ScheduledDeliveryResult | Promise<ScheduledDeliveryResult>) {
   const clock = new FakeClock();
+  let scheduleId = 0;
   const store = new AgentScheduleStore({
     agentExists: (agentId) => agentId === 'agent-1',
     now: () => clock.now,
-    createId: () => 'schedule-1',
+    createId: () => `schedule-${++scheduleId}`,
   });
   const scheduler = new AgentScheduler({
     store,
@@ -82,6 +93,8 @@ test('store enforces validation codes, one schedule per agent, revisions, and di
   expectCode(() => store.set('agent-1', manualDto({ recurrence: { kind: 'daily', atMinuteOfDay: 1440 } })), 'minute-invalid');
   expectCode(() => store.set('agent-1', manualDto({ stopping: { kind: 'count', remaining: 0 } })), 'count-invalid');
   expectCode(() => store.set('agent-1', manualDto({ stopping: { kind: 'until', endAtEpochMs: clock.now - 1 } })), 'end-in-past');
+  expectCode(() => store.set('agent-1', manualDto({ stopping: { kind: 'until', endAtEpochMs: Number.NaN } })), 'end-in-past');
+  expectCode(() => store.set('agent-1', manualDto({ stopping: { kind: 'until', endAtEpochMs: Number.POSITIVE_INFINITY } })), 'end-in-past');
   const created = store.set('agent-1', manualDto());
   assert.equal(created.revision, 1);
   expectCode(() => store.set('agent-1', manualDto()), 'schedule-exists');
@@ -130,6 +143,17 @@ test('REACHABILITY:cron-scheduler collapse advances nextFireAt and does not re-c
   assert.equal(h.scheduler.history('agent-1').filter((row) => row.outcome === 'collapsed').length, 1);
 });
 
+test('late held backlog collapses once and advances to the first future anchored interval slot', () => {
+  const h = harness(() => ({ disposition: 'held' }));
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  h.clock.advance(5 * 60_000 + 17_000);
+  h.scheduler.tick();
+  assert.equal(h.scheduler.history('agent-1').filter((row) => row.outcome === 'collapsed').length, 1);
+  assert.equal(h.scheduler.getSchedule('agent-1')?.nextFireAt, 1_420_000);
+});
+
 test('count is a due-occurrence budget including collapse, while the held final occurrence still delivers', () => {
   let calls = 0;
   const h = harness((firing) => (++calls === 1 ? { disposition: 'held' } : confirmed(firing.agentId, h.clock.now)));
@@ -175,6 +199,31 @@ test('until exhausts immediately when its first recurrence would cross the bound
   assert.equal(h.scheduler.getSchedule('agent-1')?.nextFireAt, null);
 });
 
+test('count schedule cannot re-enable after its remaining budget reaches zero', () => {
+  const h = harness((firing) => confirmed(firing.agentId, h.clock.now));
+  h.scheduler.setSchedule('agent-1', manualDto({ stopping: { kind: 'count', remaining: 1 } }));
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  let schedule = h.scheduler.getSchedule('agent-1')!;
+  assert.equal(schedule.lifecycle, 'exhausted');
+  h.scheduler.setSchedule('agent-1', manualDto({ enabled: false, revision: schedule.revision, stopping: { kind: 'count', remaining: 0 } }));
+  schedule = h.scheduler.getSchedule('agent-1')!;
+  h.scheduler.setSchedule('agent-1', manualDto({ revision: schedule.revision, stopping: { kind: 'count', remaining: 0 } }));
+  assert.equal(h.scheduler.getSchedule('agent-1')?.lifecycle, 'exhausted');
+  assert.equal(h.scheduler.getSchedule('agent-1')?.nextFireAt, null);
+});
+
+test('daily arming chooses the next requested local clock slot, not the next later minute today', () => {
+  const h = harness((firing) => confirmed(firing.agentId, h.clock.now));
+  h.clock.now = new Date(2026, 0, 15, 15, 0, 0, 0).getTime();
+  h.scheduler.setSchedule('agent-1', manualDto({ recurrence: { kind: 'daily', atMinuteOfDay: 9 * 60 } }));
+  const next = new Date(h.scheduler.getSchedule('agent-1')!.nextFireAt!);
+  assert.deepEqual(
+    [next.getFullYear(), next.getMonth(), next.getDate(), next.getHours(), next.getMinutes()],
+    [2026, 0, 16, 9, 0],
+  );
+});
+
 test('pause, re-enable, and edit invalidate held generations and recompute recurrence', () => {
   const seenGenerations: number[] = [];
   const h = harness((firing) => { seenGenerations.push(firing.generation); return { disposition: 'held' }; });
@@ -195,6 +244,21 @@ test('pause, re-enable, and edit invalidate held generations and recompute recur
   h.scheduler.setSchedule('agent-1', manualDto({ message: 'new bytes', revision: schedule.revision }));
   assert.equal(h.scheduler.history('agent-1').at(-1)?.outcome, 'cancelled');
   assert.equal(h.scheduler.getSchedule('agent-1')?.nextFireAt, h.clock.now + 60_000);
+});
+
+test('editing a held occurrence records cancelled as the current last outcome', () => {
+  let calls = 0;
+  const h = harness((firing) => (++calls === 1 ? unconfirmed(firing.agentId, h.clock.now) : { disposition: 'held' }));
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  assert.equal(h.scheduler.summaries()[0]?.badgeState, 'warn');
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  const schedule = h.scheduler.getSchedule('agent-1')!;
+  h.scheduler.setSchedule('agent-1', manualDto({ message: 'edited', revision: schedule.revision }));
+  assert.equal(h.scheduler.getSchedule('agent-1')?.lastOutcome, 'cancelled');
+  assert.equal(h.scheduler.summaries()[0]?.badgeState, 'active');
 });
 
 test('held and reviving cancel immediately; delivering records cancellation and stale completion only finalizes its row', async () => {
@@ -242,6 +306,99 @@ test('held and reviving cancel immediately; delivering records cancellation and 
   assert.equal(h.scheduler.getSchedule('agent-1')?.message, 'current generation');
   assert.equal(h.scheduler.getSchedule('agent-1')?.fireCount, fireCountBeforeEdit);
   assert.notEqual(h.scheduler.getSchedule('agent-1')?.lastOutcome, 'confirmed');
+});
+
+test('clear and recreate keeps generation monotonic and stale completion cannot mutate the replacement schedule', async () => {
+  const generations: number[] = [];
+  let resolveOld!: (result: ScheduledDeliveryResult) => void;
+  const h = harness((firing) => {
+    generations.push(firing.generation);
+    firing.markDelivering('ordinary');
+    if (generations.length === 1) return new Promise((resolve) => { resolveOld = resolve; });
+    return { disposition: 'held' };
+  });
+
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  assert.equal(h.scheduler.clearSchedule('agent-1'), true);
+  h.scheduler.setSchedule('agent-1', manualDto({ message: 'replacement' }));
+
+  resolveOld(confirmed('agent-1', h.clock.now + 1));
+  await Promise.resolve();
+  assert.equal(h.scheduler.getSchedule('agent-1')?.fireCount, 0);
+  assert.equal(h.scheduler.getSchedule('agent-1')?.lastOutcome, null);
+
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  assert.deepEqual(generations, [1, 3]);
+  assert.equal(h.scheduler.summaries()[0]?.badgeState, 'held');
+});
+
+test('post-edit collapse does not rewrite the old delivering occurrence collapse count', async () => {
+  let resolveDelivery!: (result: ScheduledDeliveryResult) => void;
+  const h = harness((firing) => {
+    firing.markDelivering('ordinary');
+    return new Promise((resolve) => { resolveDelivery = resolve; });
+  });
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  let schedule = h.scheduler.getSchedule('agent-1')!;
+  h.scheduler.setSchedule('agent-1', manualDto({ message: 'new generation', revision: schedule.revision }));
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  resolveDelivery(confirmed('agent-1', h.clock.now));
+  await Promise.resolve();
+  const oldRow = h.scheduler.history('agent-1').find((row) => row.occurrenceSeq === 1)!;
+  assert.equal(oldRow.collapsedCount, 0);
+});
+
+test('releaseHeld does not dispatch the same pending occurrence while delivery is in flight', async () => {
+  let calls = 0;
+  let resolveRelease!: (result: ScheduledDeliveryResult) => void;
+  const h = harness(() => {
+    calls += 1;
+    if (calls === 1) return { disposition: 'held' };
+    return new Promise((resolve) => { resolveRelease = resolve; });
+  });
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  h.scheduler.releaseHeld('agent-1');
+  h.scheduler.releaseHeld('agent-1');
+  assert.equal(calls, 2);
+  resolveRelease(confirmed('agent-1', h.clock.now));
+  await Promise.resolve();
+  assert.equal(h.scheduler.getSchedule('agent-1')?.fireCount, 1);
+});
+
+test('dispose orphans a delivering occurrence and its completion cannot affect a recycled agent id', async () => {
+  const generations: number[] = [];
+  let oldFiring!: ScheduledFiring;
+  let resolveOld!: (result: ScheduledDeliveryResult) => void;
+  const h = harness((firing) => {
+    generations.push(firing.generation);
+    firing.markDelivering('ordinary');
+    if (generations.length === 1) {
+      oldFiring = firing;
+      return new Promise((resolve) => { resolveOld = resolve; });
+    }
+    return { disposition: 'held' };
+  });
+  h.scheduler.setSchedule('agent-1', manualDto());
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  h.scheduler.disposeForAgent('agent-1');
+  h.scheduler.setSchedule('agent-1', manualDto({ message: 'recycled agent' }));
+  oldFiring.markReviving();
+  resolveOld(confirmed('agent-1', h.clock.now));
+  await Promise.resolve();
+  h.clock.advance(60_000);
+  h.scheduler.tick();
+  assert.deepEqual(generations, [1, 3]);
+  assert.equal(h.scheduler.getSchedule('agent-1')?.fireCount, 0);
+  assert.equal(h.scheduler.summaries()[0]?.badgeState, 'held');
 });
 
 test('history is a 50-row ring and collapsed rows are compact finalized occurrences', () => {
