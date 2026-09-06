@@ -163,7 +163,10 @@ function rawInsertPlan(over: Record<string, unknown> = {}): void {
 test('a proposal round-trips through insert / get / list', () => {
   const p = makeProposal({ id: 'prop-rt', path: '.lares/proposals/rt.md', artifactId: 'prop_abc' });
   dbm.insertProposalRecord(p);
-  assert.deepEqual(dbm.getProposalByWorkspacePath('ws-1', '.lares/proposals/rt.md'), p);
+  assert.deepEqual(
+    dbm.getProposalByWorkspacePath('ws-1', '.lares/proposals/rt.md'),
+    { ...p, authorDisplayName: null, authorExists: false },
+  );
   assert.deepEqual(dbm.getProposalByWorkspacePath('ws-1', '.lares/proposals/none.md'), null);
   assert.ok(dbm.listProposalsByWorkspace('ws-1').some((r) => r.id === 'prop-rt'));
 });
