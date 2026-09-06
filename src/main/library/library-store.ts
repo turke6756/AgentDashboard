@@ -15,6 +15,7 @@ import {
 import { ANCHOR_CONTEXT_CHARS } from '../../shared/anchor-constants';
 import { CHUNKER_VERSION, TOKENIZER_VERSION, type LibraryChunk } from './library-chunker';
 import { formatLibraryCitation } from './library-citation';
+import { decodeLibraryEmbedding, embedLibraryTextSync, LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 
 export const LIBRARY_SCHEMA_VERSION = 1;
 export const LIBRARY_CHUNKER_VERSION = CHUNKER_VERSION;
@@ -92,6 +93,8 @@ export interface QueryLibraryArgs {
   limit?: number;
   include_untrusted?: boolean;
   highlight_doc_id?: string;
+  /** Internal/test seam for callers that already obtained the offline query vector. */
+  query_embedding?: Float32Array;
 }
 
 export interface LibraryChunkMatch {
@@ -153,6 +156,12 @@ interface KeywordRow {
   locator_json: string;
   rank: number;
   marked: string;
+}
+
+interface SemanticRow extends Omit<KeywordRow, 'rank' | 'marked'> {
+  embedding: Buffer;
+  ordinal: number;
+  score: number;
 }
 
 const MIGRATORS: ReadonlyArray<(database: Database.Database) => void> = [
@@ -523,34 +532,119 @@ function keywordRows(store: LibraryStore, args: QueryLibraryArgs, before: string
   `).all(...values.slice(-2), ...values.slice(0, -2)) as KeywordRow[];
 }
 
+function semanticRows(store: LibraryStore, args: QueryLibraryArgs, queryEmbedding: Float32Array): SemanticRow[] {
+  if (queryEmbedding.length !== LIBRARY_EMBEDDING_DIMENSIONS) {
+    throw new TypeError(`Expected ${LIBRARY_EMBEDDING_DIMENSIONS} query embedding dimensions`);
+  }
+  const clauses = [`d.status = 'ready'`, `c.embedding IS NOT NULL`];
+  const values: unknown[] = [];
+  if (!args.include_untrusted) clauses.push(`d.trust <> 'untrusted'`);
+  if (args.doc_ids?.length) {
+    clauses.push(`d.id IN (${args.doc_ids.map(() => '?').join(',')})`);
+    values.push(...args.doc_ids);
+  }
+  if (args.types?.length) {
+    clauses.push(`d.type IN (${args.types.map(() => '?').join(',')})`);
+    values.push(...args.types);
+  }
+  if (args.topics?.length) {
+    for (const topic of args.topics) {
+      clauses.push(`EXISTS (SELECT 1 FROM json_each(d.topics_json) WHERE value = ?)`);
+      values.push(topic);
+    }
+  }
+  const rows = store.database.prepare(`
+    SELECT c.id AS chunk_id, c.ordinal, c.embedding, d.id AS doc_id,
+      d.source_hash AS document_hash, d.title, d.type, d.trust,
+      d.source_rel_path, d.reader_rel_path, c.content, c.locator_json
+    FROM library_chunks c JOIN library_documents d ON d.id = c.document_id
+    WHERE ${clauses.join(' AND ')}
+  `).all(...values) as SemanticRow[];
+  for (const row of rows) {
+    const vector = decodeLibraryEmbedding(row.embedding);
+    let dot = 0;
+    let queryNorm = 0;
+    let rowNorm = 0;
+    for (let index = 0; index < vector.length; index += 1) {
+      dot += queryEmbedding[index] * vector[index];
+      queryNorm += queryEmbedding[index] ** 2;
+      rowNorm += vector[index] ** 2;
+    }
+    row.score = queryNorm && rowNorm ? dot / Math.sqrt(queryNorm * rowNorm) : 0;
+  }
+  return rows.sort((a, b) => b.score - a.score || a.doc_id.localeCompare(b.doc_id) || a.ordinal - b.ordinal).slice(0, 50);
+}
+
+function projectPassage(row: Pick<KeywordRow, 'content'>, locator: LibraryChunkLocatorV1): LibraryTextSourceRange | LibraryPdfSourceRange {
+  if (locator.kind === 'pdf') {
+    return { page_index: locator.page_index, selector: locator.quote };
+  }
+  return {
+    start: locator.start,
+    end: locator.end,
+    canonical_char_start: locator.canonical_char_start,
+    canonical_char_end: locator.canonical_char_end,
+  };
+}
+
 /** FTS5 keyword retrieval shared by the pane IPC and the agent-facing HTTP projection. */
 export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): LibraryQueryResult {
   const mode = args.mode ?? 'hybrid';
   const query = args.query.trim();
   const result: LibraryQueryResult = { query: args.query, mode, excerpts: [] };
-  if (!query || mode === 'semantic') return result;
-  const [before, after] = markerPair(store);
-  const rows = keywordRows(store, { ...args, query }, before, after);
+  if (!query) return result;
+  const [before, after] = mode === 'semantic' ? ['', ''] : markerPair(store);
+  const ftsQuery = mode === 'hybrid' ? `"${query.replace(/"/g, '""')}"` : query;
+  const keyword = mode === 'semantic' ? [] : keywordRows(store, { ...args, query: ftsQuery }, before, after).slice(0, 50);
+  const queryEmbedding = mode === 'keyword' ? undefined : args.query_embedding ?? embedLibraryTextSync(query);
+  const semantic = queryEmbedding ? semanticRows(store, args, queryEmbedding) : [];
+  const keywordRanks = new Map(keyword.map((row, index) => [row.chunk_id, index + 1]));
+  const semanticRanks = new Map(semantic.map((row, index) => [row.chunk_id, index + 1]));
+  const byId = new Map<string, KeywordRow | SemanticRow>();
+  for (const row of keyword) byId.set(row.chunk_id, row);
+  for (const row of semantic) byId.set(row.chunk_id, row);
+  const rows = [...byId.values()].sort((a, b) => {
+    const fused = (id: string) => (keywordRanks.has(id) ? 1 / (60 + keywordRanks.get(id)!) : 0)
+      + (semanticRanks.has(id) ? 1 / (60 + semanticRanks.get(id)!) : 0);
+    return fused(b.chunk_id) - fused(a.chunk_id)
+      || (keywordRanks.get(a.chunk_id) ?? Number.MAX_SAFE_INTEGER) - (keywordRanks.get(b.chunk_id) ?? Number.MAX_SAFE_INTEGER)
+      || (semanticRanks.get(a.chunk_id) ?? Number.MAX_SAFE_INTEGER) - (semanticRanks.get(b.chunk_id) ?? Number.MAX_SAFE_INTEGER)
+      || a.doc_id.localeCompare(b.doc_id);
+  });
   const acceptedIntervals: Array<{ docId: string; scope: string; start: number; end: number }> = [];
   const highlightSpans: LibraryHighlightSpan[] = [];
   const highlightKeys = new Set<string>();
   const highlightRow = args.highlight_doc_id ? rows.find((row) => row.doc_id === args.highlight_doc_id) : undefined;
 
+  for (const row of keyword) {
+    if (args.highlight_doc_id !== row.doc_id) continue;
+    const locator = JSON.parse(row.locator_json) as LibraryChunkLocatorV1;
+    for (const match of parseMarkedContent(row.marked, before, after)) {
+      const source = projectMatch(row, locator, match);
+      const key = JSON.stringify(source);
+      if (!highlightKeys.has(key)) {
+        highlightKeys.add(key);
+        highlightSpans.push({ id: `${row.chunk_id}:exact:${match.chunk_char_start}:${match.chunk_char_end}`, kind: 'exact', chunk_id: row.chunk_id, source });
+      }
+    }
+  }
+  for (const row of semantic) {
+    if (args.highlight_doc_id !== row.doc_id) continue;
+    const locator = JSON.parse(row.locator_json) as LibraryChunkLocatorV1;
+    const source = projectPassage(row, locator);
+    const key = JSON.stringify(source);
+    if (!highlightKeys.has(key)) {
+      highlightKeys.add(key);
+      highlightSpans.push({ id: `${row.chunk_id}:similar`, kind: 'similar', chunk_id: row.chunk_id, source });
+    }
+  }
+
   for (let rankIndex = 0; rankIndex < rows.length; rankIndex += 1) {
     const row = rows[rankIndex];
     const locator = JSON.parse(row.locator_json) as LibraryChunkLocatorV1;
     if (!validateChunkLocator(locator)) throw new Error(`Invalid persisted locator for chunk ${row.chunk_id}`);
-    const matches = parseMarkedContent(row.marked, before, after);
-    if (args.highlight_doc_id === row.doc_id) {
-      for (const match of matches) {
-        const source = projectMatch(row, locator, match);
-        const key = JSON.stringify(source);
-        if (!highlightKeys.has(key)) {
-          highlightKeys.add(key);
-          highlightSpans.push({ id: `${row.chunk_id}:exact:${match.chunk_char_start}:${match.chunk_char_end}`, kind: 'exact', chunk_id: row.chunk_id, source });
-        }
-      }
-    }
+    const keywordRow = keyword.find((candidate) => candidate.chunk_id === row.chunk_id);
+    const matches = keywordRow ? parseMarkedContent(keywordRow.marked, before, after) : [];
     const interval = candidateInterval(locator);
     if (acceptedIntervals.some((other) => other.docId === row.doc_id && other.scope === interval.scope && rangesOverlap(other, interval))) continue;
     acceptedIntervals.push({ docId: row.doc_id, ...interval });
@@ -567,8 +661,14 @@ export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): Libra
       citation: formatLibraryCitation({ title: row.title, type: row.type, source_rel_path: row.source_rel_path, locator }),
       locator,
       keyword_matches: matches,
-      similar_passage: null,
-      scores: { keyword_rank: rankIndex + 1, semantic_rank: null, semantic_score: null, fused_score: 1 / (60 + rankIndex + 1) },
+      similar_passage: semanticRanks.has(row.chunk_id) ? { kind: 'similar', chunk_char_start: 0, chunk_char_end: row.content.length } : null,
+      scores: {
+        keyword_rank: keywordRanks.get(row.chunk_id) ?? null,
+        semantic_rank: semanticRanks.get(row.chunk_id) ?? null,
+        semantic_score: semantic.find((candidate) => candidate.chunk_id === row.chunk_id)?.score ?? null,
+        fused_score: (keywordRanks.has(row.chunk_id) ? 1 / (60 + keywordRanks.get(row.chunk_id)!) : 0)
+          + (semanticRanks.has(row.chunk_id) ? 1 / (60 + semanticRanks.get(row.chunk_id)!) : 0),
+      },
     });
   }
   result.excerpts = result.excerpts.slice(0, Math.max(0, Math.min(args.limit ?? 20, 50)));

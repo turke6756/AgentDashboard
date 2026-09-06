@@ -79,6 +79,33 @@ async function main() {
     fail('arch', `expected x64, got ${process.arch} (Lares packages Windows x64 only)`);
   }
 
+  // -- Bundled offline embedding model ------------------------------------
+  log('\n[embedder] bundled offline model');
+  const modelRelative = path.join('assets', 'models', 'Xenova', 'all-MiniLM-L6-v2');
+  const modelRoot = packageRoot
+    ? path.join(resourcesRoot, modelRelative)
+    : path.join(repoRoot, modelRelative);
+  const requiredModelFiles = [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    path.join('onnx', 'model_quantized.onnx'),
+  ];
+  const missingModelFiles = requiredModelFiles.filter((file) => !fs.existsSync(path.join(modelRoot, file)));
+  let dimensions = null;
+  try {
+    dimensions = JSON.parse(fs.readFileSync(path.join(modelRoot, 'config.json'), 'utf8')).hidden_size;
+  } catch (err) {
+    fail('library embedder model', `config read failed: ${err && err.message}`);
+  }
+  if (missingModelFiles.length) {
+    fail('library embedder model', `missing ${missingModelFiles.join(', ')} under ${modelRoot}`);
+  } else if (dimensions !== 384) {
+    fail('library embedder model', `expected 384 dimensions, config reports ${JSON.stringify(dimensions)}`);
+  } else {
+    pass('library embedder model', `offline files present; dimensions=384; root=${modelRoot}`);
+  }
+
   // -- 2. better-sqlite3 round trip ---------------------------------------
   log('\n[2] better-sqlite3');
   try {

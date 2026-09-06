@@ -11,6 +11,7 @@ import type {
 import { CHUNKER_VERSION, TOKENIZER_VERSION, chunkDocument } from './library-chunker';
 import { extractDocx } from './docx-extractor';
 import { extractPdf } from './pdf-extractor';
+import { embedLibraryTexts, encodeLibraryEmbedding } from './library-embedder';
 import {
   getLibraryDocument,
   replaceLibraryChunks,
@@ -38,6 +39,7 @@ export interface LibraryIngestDependencies {
   workspaceRoot: string;
   store: LibraryStore;
   publish?: (event: LibraryProgressEvent) => void;
+  embedTexts?: typeof embedLibraryTexts;
 }
 
 function inferType(filePath: string): LibraryDocumentType {
@@ -137,6 +139,13 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       replaceLibraryChunks(deps.store, id, chunks);
       setLibraryDocumentStatus(deps.store, id, 'embedding');
       publish(id, 'embedding');
+      const embedded = await (deps.embedTexts ?? embedLibraryTexts)(chunks.map((chunk) => chunk.content));
+      deps.store.database.transaction(() => {
+        const update = deps.store.database.prepare(`UPDATE library_chunks SET embedding = ? WHERE id = ?`);
+        for (let index = 0; index < chunks.length; index += 1) {
+          update.run(encodeLibraryEmbedding(embedded.vectors[index]), chunks[index].id);
+        }
+      })();
       setLibraryDocumentStatus(deps.store, id, 'ready');
       publish(id, 'ready');
       return { document: { ...base, status: 'ready' }, reused: false, chunk_ids: chunks.map((chunk) => chunk.id) };

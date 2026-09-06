@@ -370,6 +370,8 @@ const TESTS = [
   'dist/main/main/library/library-citation.test.js',
   'dist/main/main/library/library-query.test.js',
   'dist/main/main/library/library-query-integration.test.js',
+  'dist/main/main/library/library-embedder.test.js',
+  'dist/main/main/library/library-hybrid.test.js',
   'scripts/mcp-tools-library.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
@@ -846,6 +848,8 @@ for (const file of testsToRun) {
     file.endsWith('/library-store.test.js') ||
     file.endsWith('/library-query.test.js') ||
     file.endsWith('/library-query-integration.test.js') ||
+    file.endsWith('/library-embedder.test.js') ||
+    file.endsWith('/library-hybrid.test.js') ||
     file.endsWith('/pdf-extractor.test.js') ||
     file.endsWith('/library-ingest.test.js') ||
     file.endsWith('/supervisor-peer-provider.test.js')

@@ -1,0 +1,22 @@
+[
+  { "id": "database-index", "passage": "A covering database index can answer a lookup without reading the underlying table rows.", "query": "How can a database avoid scanning the table for every lookup?" },
+  { "id": "circuit-breaker", "passage": "A circuit breaker stops repeated calls to an unhealthy remote service and retries after a cooling period.", "query": "How do we prevent cascading failures when a downstream API is unavailable?" },
+  { "id": "pdf-ocr", "passage": "Optical character recognition is required when a scanned PDF page contains pixels but no selectable text.", "query": "Why can I not copy words from this image-only document?" },
+  { "id": "cache-eviction", "passage": "Least recently used eviction removes the cache entry that has gone unused for the longest time.", "query": "Which cached item should be discarded when memory is full?" },
+  { "id": "transaction", "passage": "A database transaction commits a group of writes atomically or rolls all of them back together.", "query": "What makes a group of database writes atomic with commit or rollback?" },
+  { "id": "rate-limit", "passage": "A token bucket rate limiter permits short bursts while enforcing a sustained request rate.", "query": "How do I allow traffic spikes without accepting unlimited API calls?" },
+  { "id": "encryption", "passage": "Envelope encryption protects data with a short-lived key that is itself encrypted by a master key.", "query": "How should a system protect many data keys with one root secret?" },
+  { "id": "blue-green", "passage": "Blue-green deployment sends production traffic to a new environment after it has passed health checks.", "query": "How can a release switch instantly to a fully tested replacement environment?" },
+  { "id": "dead-letter", "passage": "A dead-letter queue isolates messages that repeatedly fail processing so healthy work can continue.", "query": "Where should poison messages go after all delivery attempts fail?" },
+  { "id": "backpressure", "passage": "Backpressure makes a fast producer slow down when a downstream consumer cannot keep up.", "query": "Which flow-control mechanism slows a producer when its consumer cannot keep up?" },
+  { "id": "idempotency", "passage": "An idempotency key lets a server recognize a retried request and avoid performing the operation twice.", "query": "How can payment retries avoid creating duplicate charges?" },
+  { "id": "vector-clock", "passage": "Vector clocks record causal history so distributed replicas can distinguish concurrent updates from ordered ones.", "query": "How can replicas tell whether two edits happened independently?" },
+  { "id": "bloom-filter", "passage": "A Bloom filter cheaply proves an item is definitely absent, though a positive result can be false.", "query": "Which compact membership test proves absence but can return a false positive?" },
+  { "id": "content-hash", "passage": "Content-addressed storage names an object with a digest of its bytes, making identical content share an identity.", "query": "How can files receive stable identifiers determined only by their contents?" },
+  { "id": "lease", "passage": "A distributed lease grants temporary ownership and must be renewed before its expiration time.", "query": "Which expiring ownership grant must a distributed worker renew?" },
+  { "id": "write-ahead-log", "passage": "A write-ahead log records changes durably before modified database pages are written in place.", "query": "How does a database recover committed changes after a sudden crash?" },
+  { "id": "consistent-hash", "passage": "Consistent hashing moves only a small fraction of keys when a server joins or leaves the cluster.", "query": "How can a cache cluster resize without remapping nearly every key?" },
+  { "id": "debounce", "passage": "Debouncing waits for a quiet interval before running work, combining a burst of rapid input events.", "query": "How can search wait until the user pauses typing instead of firing on every keystroke?" },
+  { "id": "optimistic-lock", "passage": "Optimistic concurrency rejects an update when the stored version changed after it was read.", "query": "How can an editor detect that somebody else saved a newer revision?" },
+  { "id": "graceful-shutdown", "passage": "Graceful shutdown stops accepting new work, drains in-flight requests, and then exits the process.", "query": "How should a service terminate without abandoning requests it already accepted?" }
+]
