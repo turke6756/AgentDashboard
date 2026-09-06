@@ -52,6 +52,13 @@ export interface LibraryProgressEvent {
   error_reason?: string;
 }
 
+export interface LibraryShelfChangedEvent {
+  type: 'library:shelf-changed';
+  workspace_id: string;
+}
+
+export type LibraryBroadcastEvent = LibraryProgressEvent | LibraryShelfChangedEvent;
+
 export interface LibraryIngestRequest {
   workspace_id: string;
   source_path: string;

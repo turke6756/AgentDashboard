@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { LibraryProgressEvent, LibraryRescanResult, ShelfRow } from '../../../shared/library';
+import type { LibraryProgressEvent, LibraryRescanResult, LibraryShelfChangedEvent, ShelfRow } from '../../../shared/library';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import LibraryAddFiles from './LibraryAddFiles';
 import LibraryFilters, { EMPTY_LIBRARY_FILTERS, type LibraryFilterState } from './LibraryFilters';
@@ -15,6 +15,7 @@ type LibraryApi = {
   rescan: (workspaceId: string) => Promise<LibraryRescanResult>;
   saveNote: (workspaceId: string, request: { query: string; chunk_ids: string[] }) => Promise<unknown>;
   onProgress: (callback: (event: LibraryProgressEvent) => void) => () => void;
+  onShelfChanged: (callback: (event: LibraryShelfChangedEvent) => void) => () => void;
 };
 
 function libraryApi(): LibraryApi { return (window.api as typeof window.api & { library: LibraryApi }).library; }
@@ -35,6 +36,9 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
     setDocuments(await libraryApi().listShelf(workspaceId));
   }, [workspaceId]);
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => libraryApi().onShelfChanged((event) => {
+    if (event.workspace_id === workspaceId) void reload();
+  }), [reload, workspaceId]);
   useEffect(() => libraryApi().onProgress((event) => {
     if (event.workspace_id !== workspaceId) return;
     setDocuments((current) => current.map((document) => document.id === event.document_id ? { ...document, status: event.status, shelf_status: event.status === 'ready' || event.status === 'error' ? event.status : 'indexing', error_reason: event.error_reason ?? null } : document));

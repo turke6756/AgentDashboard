@@ -787,6 +787,7 @@ const api: IpcApi = withoutRetiredSaveApi({
     query: (workspaceId: string, args: unknown) => Promise<unknown>;
     saveNote: (workspaceId: string, input: { query: string; chunk_ids: string[] }) => Promise<unknown>;
     onProgress: (callback: (event: import('../shared/library').LibraryProgressEvent) => void) => () => void;
+    onShelfChanged: (callback: (event: import('../shared/library').LibraryShelfChangedEvent) => void) => () => void;
   };
 }).library = {
   ingest: (request) => ipcRenderer.invoke('library:ingest', request),
@@ -796,7 +797,16 @@ const api: IpcApi = withoutRetiredSaveApi({
   query: (workspaceId, args) => ipcRenderer.invoke('library:query', workspaceId, args),
   saveNote: (workspaceId, input) => ipcRenderer.invoke('library:save-note', workspaceId, input),
   onProgress: (callback) => {
-    const listener = (_event: unknown, progress: import('../shared/library').LibraryProgressEvent) => callback(progress);
+    const listener = (_event: unknown, progress: import('../shared/library').LibraryBroadcastEvent) => {
+      if (!('type' in progress)) callback(progress);
+    };
+    ipcRenderer.on('library:progress', listener);
+    return () => ipcRenderer.removeListener('library:progress', listener);
+  },
+  onShelfChanged: (callback) => {
+    const listener = (_event: unknown, event: import('../shared/library').LibraryBroadcastEvent) => {
+      if ('type' in event && event.type === 'library:shelf-changed') callback(event);
+    };
     ipcRenderer.on('library:progress', listener);
     return () => ipcRenderer.removeListener('library:progress', listener);
   },

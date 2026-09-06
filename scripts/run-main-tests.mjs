@@ -378,6 +378,7 @@ const TESTS = [
   // The retired research inbox IPC/preload transport suites are intentionally absent;
   // classify-inbox-report remains covered as a library primitive.
   'dist/main/main/library/library-rescan.test.js',
+  'dist/main/main/library/library-report-watcher.test.js',
   'dist/main/main/library/library-chunker.test.js',
   'dist/main/main/library/pdf-extractor.test.js',
   'dist/main/main/library/docx-extractor.test.js',
@@ -864,6 +865,7 @@ for (const file of testsToRun) {
     file.endsWith('/library-shelf.test.js') ||
     file.endsWith('/library-ipc.test.js') ||
     file.endsWith('/library-rescan.test.js') ||
+    file.endsWith('/library-report-watcher.test.js') ||
     file.endsWith('/library-query.test.js') ||
     file.endsWith('/library-query-integration.test.js') ||
     file.endsWith('/library-embedder.test.js') ||

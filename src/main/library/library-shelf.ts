@@ -34,6 +34,9 @@ async function fileHash(file: LibraryReportFile, readFile: (filePath: string) =>
   const hash = crypto.createHash('sha256').update(await readFile(file.abs_path)).digest('hex'); hashCache.set(key, { size: file.size, mtimeMs: file.mtimeMs, hash }); return hash;
 }
 export function invalidateLibraryShelfHash(filePath: string): void { hashCache.delete(canonical(filePath)); }
+export function invalidateLibraryShelfHashes(filePaths: Iterable<string>): void {
+  for (const filePath of filePaths) invalidateLibraryShelfHash(filePath);
+}
 function statusFor(row: LibraryDocumentRow | undefined, diskSize: number, hash?: string): ShelfStatus {
   if (!row) return 'pending'; if (row.size !== diskSize || hash !== row.source_hash) return 'stale';
   if (INDEXING_STATUSES.has(row.status as LibraryDocumentStatus)) return 'indexing'; if (row.status === 'error') return 'error'; if (row.status === 'ready') return 'ready'; return 'error';

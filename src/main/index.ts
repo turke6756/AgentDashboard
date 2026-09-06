@@ -57,6 +57,7 @@ import { disposeKernelClient } from './jupyter-kernel-client';
 import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
 import { startPlansWatcher, PlansWatcher } from './plans-watcher';
 import { startProposalsWatcher, type ProposalsWatcher } from './proposals-watcher';
+import { startLibraryReportWatcher, type LibraryReportWatcher } from './library/library-report-watcher';
 import { runProposalScan } from './proposal-scan';
 import {
   BadgeInvalidationCoordinator,
@@ -358,6 +359,7 @@ let wsServer: WsServer | null = null;
 let apiServer: ApiServer | null = null;
 let activeDevDiscoveryFile: string | null = null;
 let proposalsWatcher: ProposalsWatcher | null = null;
+let libraryReportWatcher: LibraryReportWatcher | null = null;
 let badgeInvalidationCoordinator: BadgeInvalidationCoordinator<ReturnType<typeof setTimeout>> | null = null;
 let orchestration: OrchestrationService | null = null;
 let browserManager: BrowserManager | null = null;
@@ -880,6 +882,7 @@ app.whenReady().then(async () => {
       }
     }
     proposalsWatcher = await startProposalsWatcher({ notifyPlanBadgesInvalidated });
+    libraryReportWatcher = await startLibraryReportWatcher();
 
     // Boot lifecycle op, deliberately OUTSIDE initDatabase (which runs more than
     // once in some processes/tests). An 'open' continuation attempt is owned by
@@ -1492,6 +1495,7 @@ async function shutdownApp(): Promise<void> {
   drainCompleted = true;
   apiServer?.stop();
   proposalsWatcher?.stop();
+  libraryReportWatcher?.stop();
   wsServer?.stop();
   disposeKernelClient();
   void shutdownJupyterServer();

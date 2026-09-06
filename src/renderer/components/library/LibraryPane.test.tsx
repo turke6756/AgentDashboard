@@ -23,8 +23,9 @@ const shelfRow = (id: string, shelf_status: ShelfRow['shelf_status'], trust: She
 
 function installLibraryApi(rows: ShelfRow[], query = vi.fn().mockResolvedValue({ excerpts: [] })) {
   const listShelf = vi.fn().mockResolvedValue(rows);
-  Object.assign(window, { api: { library: { listShelf, query, ingest: vi.fn(), rescan: vi.fn(), saveNote: vi.fn(), onProgress: vi.fn().mockReturnValue(() => undefined) }, files: { getPathForFile: vi.fn() } } });
-  return { listShelf, query };
+  let shelfChanged: ((event: { type: 'library:shelf-changed'; workspace_id: string }) => void) | undefined;
+  Object.assign(window, { api: { library: { listShelf, query, ingest: vi.fn(), rescan: vi.fn(), saveNote: vi.fn(), onProgress: vi.fn().mockReturnValue(() => undefined), onShelfChanged: vi.fn((callback) => { shelfChanged = callback; return () => undefined; }) }, files: { getPathForFile: vi.fn() } } });
+  return { listShelf, query, emitShelfChanged: (workspaceId = 'ws') => shelfChanged?.({ type: 'library:shelf-changed', workspace_id: workspaceId }) };
 }
 
 async function renderPane(): Promise<HTMLDivElement> {
@@ -52,6 +53,7 @@ describe('LibraryPane rescan', () => {
         rescan,
         saveNote: vi.fn(),
         onProgress: vi.fn().mockReturnValue(() => undefined),
+        onShelfChanged: vi.fn().mockReturnValue(() => undefined),
       },
       files: { getPathForFile: vi.fn() },
     } });
@@ -85,6 +87,16 @@ describe('openLibraryResult production seam', () => {
 });
 
 describe('LibraryPane shelf', () => {
+  it('reloads only for shelf changes in the selected workspace', async () => {
+    const api = installLibraryApi([shelfRow('report', 'pending', 'untrusted')]);
+    await renderPane();
+    expect(api.listShelf).toHaveBeenCalledTimes(1);
+    await act(async () => { api.emitShelfChanged(); await Promise.resolve(); });
+    expect(api.listShelf).toHaveBeenCalledTimes(2);
+    await act(async () => { api.emitShelfChanged('other-workspace'); await Promise.resolve(); });
+    expect(api.listShelf).toHaveBeenCalledTimes(2);
+  });
+
   it('loads list-shelf and renders every derived state with an explicit untrusted badge', async () => {
     const { listShelf } = installLibraryApi([
       shelfRow('pending', 'pending', 'untrusted'), shelfRow('stale', 'stale', 'untrusted'),

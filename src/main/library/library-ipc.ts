@@ -1,5 +1,5 @@
 import type { IpcMainInvokeEvent } from 'electron';
-import type { LibraryIngestRequest, LibraryProgressEvent } from '../../shared/library';
+import type { LibraryBroadcastEvent, LibraryIngestRequest, LibraryShelfChangedEvent } from '../../shared/library';
 import { createLibraryIngestor } from './library-ingest';
 import { rescanLibraryReports } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, saveLibraryNote, type QueryLibraryArgs, type SaveLibraryNoteInput } from './library-store';
@@ -13,7 +13,21 @@ export const LIBRARY_CHANNELS = {
   query: 'library:query',
   saveNote: 'library:save-note',
   progress: 'library:progress',
+  shelfChanged: 'library:shelf-changed',
 } as const;
+
+let productionBroadcaster: ((event: LibraryBroadcastEvent) => void) | null = null;
+const pendingShelfChanges = new Set<string>();
+
+export function publishLibraryBroadcast(event: LibraryBroadcastEvent): void {
+  if (productionBroadcaster) productionBroadcaster(event);
+  else if ('type' in event && event.type === LIBRARY_CHANNELS.shelfChanged) pendingShelfChanges.add(event.workspace_id);
+}
+
+export function emitShelfChanged(workspaceId: string): void {
+  const event: LibraryShelfChangedEvent = { type: LIBRARY_CHANNELS.shelfChanged, workspace_id: workspaceId };
+  publishLibraryBroadcast(event);
+}
 
 export interface LibraryWorkspace {
   id: string;
@@ -27,9 +41,15 @@ export interface LibraryIpcLike {
 export function registerLibraryIpc(
   ipc: LibraryIpcLike,
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
-  sendProgress: (event: LibraryProgressEvent) => void,
+  sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
 ): void {
+  const requireWorkspaceId = (workspaceId: unknown): string => {
+    if (typeof workspaceId !== 'string' || workspaceId.trim().length === 0) {
+      throw new TypeError('workspaceId must be a non-empty string');
+    }
+    return workspaceId;
+  };
   const withStore = async <T>(workspaceId: string, work: (root: string, store: ReturnType<typeof openLibraryStore>) => Promise<T> | T) => {
     const workspace = resolveWorkspace(workspaceId);
     if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
@@ -54,7 +74,7 @@ export function registerLibraryIpc(
   );
   ipc.handle(LIBRARY_CHANNELS.ingest, ingest);
   ipc.handle(LIBRARY_CHANNELS.rescan, (_event, workspaceId: string) => withStore(
-    workspaceId,
+    requireWorkspaceId(workspaceId),
     (workspaceRoot, store) => runRescan({
       workspaceRoot,
       store,
@@ -66,7 +86,7 @@ export function registerLibraryIpc(
     (_root, store) => listLibraryDocuments(store, { include_untrusted: includeUntrusted }),
   ));
   ipc.handle(LIBRARY_CHANNELS.listShelf, (_event, workspaceId: string) => withStore(
-    workspaceId,
+    requireWorkspaceId(workspaceId),
     (workspaceRoot, store) => listLibraryShelf(workspaceRoot, store),
   ));
   ipc.handle(LIBRARY_CHANNELS.query, (_event, workspaceId: string, args: QueryLibraryArgs) => withStore(
@@ -83,8 +103,11 @@ export function registerLibraryIpc(
 export function registerProductionLibraryIpc(
   ipc: LibraryIpcLike,
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
-  sendProgress: (event: LibraryProgressEvent) => void,
+  sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
 ): void {
+  productionBroadcaster = sendProgress;
+  for (const workspaceId of pendingShelfChanges) sendProgress({ type: LIBRARY_CHANNELS.shelfChanged, workspace_id: workspaceId });
+  pendingShelfChanges.clear();
   registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan);
 }
