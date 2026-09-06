@@ -12,6 +12,7 @@ import path from 'node:path'
 
 const TESTS = [
   'dist/main/main/scheduler/recurrence.test.js',
+  'dist/main/main/scheduler/agent-scheduler.test.js',
   'scripts/dev-instance.test.mjs',
   'scripts/mcp-dashboard-dev-target.test.js',
   'dist/main/main/dev-instance.test.js',
