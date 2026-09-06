@@ -7,12 +7,15 @@ import {
   RESEARCHER_CODEX_AGENTS_MD_V2,
   RESEARCHER_CODEX_AGENTS_MD_V3_HASH,
   RESEARCHER_CODEX_AGENTS_MD_V4,
+  RESEARCHER_CODEX_AGENTS_MD_V5_HASH,
+  RESEARCHER_CODEX_AGENTS_MD_V6_HASH,
   resolveResearcherLaunch,
   resolveResearcherClaudeLaunchDetails,
   resolveResearcherWorkingDirectory,
   researcherScaffoldContent,
   researcherScaffoldPaths,
   sha256Hex,
+  WRITE_RESEARCH_REPORT_SKILL_MD_V1_HASH,
 } from './index';
 import { RESEARCHER_CLAUDE_MODEL, WORKER_CODEX_AGENTS_MD } from '../../shared/constants';
 
@@ -62,7 +65,7 @@ test('Codex researcher scaffold is AGENTS.md-only and states that launch has no 
   assert.ok(!researcherScaffoldPaths('codex').includes('.claude/settings.json'));
   const content = researcherScaffoldContent('codex');
   assert.match(content, /workspace researcher/);
-  assert.match(content, /\.lares\/research\/inbox/);
+  assert.match(content, /\.lares\/library\/inbox/);
   assert.match(content, /Do not edit project code, run builds, run tests/);
   assert.match(content, /instructions, not an enforced tool boundary/);
   assert.match(content, /currently load no tool-restriction hook/);
@@ -104,8 +107,8 @@ test('Agy identity remains outside its version-migrated skill map', () => {
   assert.equal(Object.keys(agy).length, 5);
   for (const [rel, entry] of Object.entries(agy)) {
     if (rel.endsWith('/research-report/SKILL.md')) {
-      assert.equal(entry.version, 1, 'shared research-report skill remains at its unchanged v1 body');
-      assert.equal(entry.previousHashes, undefined);
+      assert.equal(entry.version, 2, 'shared research-report skill advances to its Library v2 body');
+      assert.deepEqual(entry.previousHashes, { 1: WRITE_RESEARCH_REPORT_SKILL_MD_V1_HASH });
       continue;
     }
     assert.ok(entry.version >= 2, 'Agy portable skills must use their shared migrated versions');
@@ -113,14 +116,16 @@ test('Agy identity remains outside its version-migrated skill map', () => {
   }
 });
 
-test('Codex AGENTS.md advances to v5 with cumulative hashes for v1 through v4', () => {
+test('Codex AGENTS.md advances to v7 with cumulative hashes for v1 through v6', () => {
   const entry = AgentSupervisor.RESEARCHER_FILES_CODEX['.lares/researcher/codex/AGENTS.md'];
-  assert.equal(entry.version, 5);
+  assert.equal(entry.version, 7);
   assert.deepEqual(entry.previousHashes, {
     1: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V1),
     2: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V2),
     3: RESEARCHER_CODEX_AGENTS_MD_V3_HASH,
     4: sha256Hex(RESEARCHER_CODEX_AGENTS_MD_V4),
+    5: RESEARCHER_CODEX_AGENTS_MD_V5_HASH,
+    6: RESEARCHER_CODEX_AGENTS_MD_V6_HASH,
   });
 });
 
