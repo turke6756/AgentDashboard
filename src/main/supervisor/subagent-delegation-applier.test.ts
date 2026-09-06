@@ -91,8 +91,10 @@ function makeEnv(status: AgentStatus = 'working'): Env {
   (supervisor as unknown as { writeAgentRegistry: () => void }).writeAgentRegistry = () => {};
   const apply = (event: Partial<ParsedHookEvent>, transport: HookTransport = 'http'): string =>
     supervisor.applyHookStatusEvent(agent.id, { ts: c.now(), state: 'active', ...event } as ParsedHookEvent, transport);
-  const tick = (): void =>
-    (supervisor as unknown as { monitorSubagentDelegations: () => void }).monitorSubagentDelegations();
+  const tick = (): void => {
+    const monitor = (supervisor as unknown as { monitor: { emit: (event: string) => boolean } }).monitor;
+    monitor.emit('tick');
+  };
   return { supervisor, agent, audit, clock: c, apply, tick, cleanup: () => restoreDb() };
 }
 
@@ -206,6 +208,9 @@ test('a duplicate delegation record is suppressed and a stop-before-start start 
 
 test('the zero-in-flight watchdog drains a deferred Stop after SUBAGENT_ORPHAN_MS and emits no orphan event', () => {
   const env = makeEnv('working');
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.join(' ')); };
   try {
     env.apply(startRec('s', 'c', 1));
     env.apply(parentStop(2));
@@ -222,7 +227,11 @@ test('the zero-in-flight watchdog drains a deferred Stop after SUBAGENT_ORPHAN_M
     assert.equal(idle[0].source, 'hook-stop');
     assert.equal(env.agent.status, 'idle');
     assert.equal(env.audit.filter((r) => r.type === 'subagent_orphaned').length, 0, 'no subagent_orphaned event type exists');
-  } finally { env.cleanup(); }
+    assert.equal(warnings.filter((w) => w.includes('watchdog expiry')).length, 1, 'a pure zero-in-flight expiry warns');
+    const state = (env.supervisor as unknown as { subagentDelegations: { getState: (id: string) => unknown } })
+      .subagentDelegations.getState('w-1');
+    assert.equal(state, undefined, 'the drained epoch is retired');
+  } finally { console.warn = origWarn; env.cleanup(); }
 });
 
 test('a running child past SUBAGENT_ORPHAN_MS expires into the same drain with one warning', () => {
@@ -265,6 +274,30 @@ test('a waiting parent keeps waiting, discards the deferred Stop, and never drai
   } finally { env.cleanup(); }
 });
 
+test('waiting preserves a deferred Stop; after an answer, a never-stopping child expires and drains through monitor tick', () => {
+  const env = makeEnv('working');
+  try {
+    env.apply(startRec('s', 'orphan', 1));
+    env.apply(parentStop(2));
+    env.apply({ state: 'waiting', hookEventName: 'Notification', notificationType: 'permission_prompt', waitingExcerpt: 'Need input', ts: 3 });
+    assert.equal(env.agent.status, 'waiting');
+    const deleg = (env.supervisor as unknown as {
+      subagentDelegations: { getState: (id: string) => { deferredParentStop?: unknown } | undefined };
+    }).subagentDelegations;
+    assert.notEqual(deleg.getState('w-1')?.deferredParentStop, undefined, 'waiting does not discard the deferred Stop early');
+
+    env.apply({ state: 'working', hookEventName: 'UserPromptSubmit', source: 'hook-start', sessionId: 's', ts: 4 });
+    assert.equal(env.agent.status, 'working');
+    env.clock.advance(SUBAGENT_ORPHAN_MS);
+    env.tick();
+    assert.equal(idleChanges(env.audit).length, 0, 'child expiry first arms the zero-count watchdog');
+    env.clock.advance(SUBAGENT_ORPHAN_MS);
+    env.tick();
+    assert.equal(env.agent.status, 'idle');
+    assert.equal(idleChanges(env.audit).length, 1);
+  } finally { env.cleanup(); }
+});
+
 test('a new child start clears zeroInFlightAt so a resumed delegating turn is not spuriously drained', () => {
   const env = makeEnv('working');
   try {
@@ -279,10 +312,28 @@ test('a new child start clears zeroInFlightAt so a resumed delegating turn is no
   } finally { env.cleanup(); }
 });
 
+test('a new child start keeps the deferred Stop so multiple orphaned children still drain the parent', () => {
+  const env = makeEnv('working');
+  try {
+    env.apply(startRec('s', 'a', 1));
+    env.apply(parentStop(2));
+    env.apply(startRec('s', 'b', 3));
+    env.clock.advance(SUBAGENT_ORPHAN_MS);
+    env.tick();
+    assert.equal(env.agent.status, 'working');
+    env.clock.advance(SUBAGENT_ORPHAN_MS);
+    env.tick();
+    assert.equal(env.agent.status, 'idle', 'the original deferred Stop survives the second start and drains');
+  } finally { env.cleanup(); }
+});
+
 // ── D3: same-session prompt keeps children; different-session rotates ──
 
 test('a same-session UserPromptSubmit keeps live children; a different-session one rotates the epoch', () => {
   const env = makeEnv('working');
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.join(' ')); };
   const inFlight = (): number => (env.supervisor as unknown as {
     subagentDelegations: { inFlightCount: (id: string) => number };
   }).subagentDelegations.inFlightCount('w-1');
@@ -296,7 +347,23 @@ test('a same-session UserPromptSubmit keeps live children; a different-session o
     // A different session id rotates the epoch and clears children.
     env.apply({ state: 'working', hookEventName: 'UserPromptSubmit', source: 'hook-start', sessionId: 's2', ts: 13 });
     assert.equal(inFlight(), 0, 'a different-session prompt rotates the epoch');
-  } finally { env.cleanup(); }
+    assert.equal(warnings.filter((w) => w.includes('rotated parent epoch')).length, 1);
+  } finally { console.warn = origWarn; env.cleanup(); }
+});
+
+test('a late old-session Start is ignored with a distinct disposition and warning', () => {
+  const env = makeEnv('working');
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.join(' ')); };
+  try {
+    env.apply({ state: 'working', hookEventName: 'UserPromptSubmit', source: 'hook-start', sessionId: 'old', ts: 10 });
+    env.apply({ state: 'working', hookEventName: 'UserPromptSubmit', source: 'hook-start', sessionId: 'current', ts: 11 });
+    assert.equal(env.apply(startRec('old', 'late', 12)), 'wrong-session');
+    const deleg = (env.supervisor as unknown as { subagentDelegations: { inFlightCount: (id: string) => number } }).subagentDelegations;
+    assert.equal(deleg.inFlightCount('w-1'), 0);
+    assert.equal(warnings.filter((w) => w.includes('non-current session=old')).length, 1);
+  } finally { console.warn = origWarn; env.cleanup(); }
 });
 
 // ── D8 hard gate: restart reconciliation cannot strand a working parent ──
@@ -346,6 +413,21 @@ test('restart reconciliation does not re-arm a parent that already has live corr
     env.tick();
     assert.equal(idleChanges(env.audit).length, 0, 'a genuinely delegating parent must not be drained by reconciliation');
     assert.equal(env.agent.status, 'working');
+  } finally { env.cleanup(); }
+});
+
+test('a live ordinary hook after restart disarms the reconciliation fallback', async () => {
+  const env = makeEnv('working');
+  try {
+    (env.supervisor as unknown as { windowsRunners: Map<string, unknown> }).windowsRunners.set('w-1', {});
+    const deleg = (env.supervisor as unknown as { subagentDelegations: { getState: (id: string) => unknown } }).subagentDelegations;
+    await env.supervisor.reconcile();
+    assert.notEqual(deleg.getState('w-1'), undefined);
+    assert.equal(env.apply({ state: 'working', hookEventName: 'UserPromptSubmit', source: 'hook-start', sessionId: 'live', ts: 10 }), 'applied');
+    env.clock.advance(SUBAGENT_ORPHAN_MS * 2);
+    env.tick();
+    assert.equal(env.agent.status, 'working');
+    assert.equal(idleChanges(env.audit).length, 0, 'a live hook proves the future Stop seam is reachable');
   } finally { env.cleanup(); }
 });
 

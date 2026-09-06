@@ -21,7 +21,7 @@ export interface SubagentDelegationState {
 }
 
 export interface TrackerMutation {
-  disposition: 'applied' | 'duplicate' | 'stale';
+  disposition: 'applied' | 'duplicate' | 'stale' | 'wrong-session';
   inFlightCount: number;
 }
 
@@ -76,6 +76,7 @@ export class SubagentDelegationTracker {
 
   start(agentId: string, sessionId: string, subagentId: string, hookTs: number): TrackerMutation {
     const state = this.ensureState(agentId, sessionId);
+    if (!state) return { disposition: 'wrong-session', inFlightCount: this.inFlightCount(agentId) };
     const key = this.childKey(sessionId, subagentId);
     const existing = state.children.get(key);
     const disposition = this.compare(existing, hookTs, 'running');
@@ -86,9 +87,8 @@ export class SubagentDelegationTracker {
       hookTs,
       startedAt: this.now(),
     });
-    // New delegation is authoritative evidence that an inferred turn-end must
-    // not drain. This also clears the restart-reconciliation fallback.
-    state.deferredParentStop = undefined;
+    // A new delegation invalidates only the zero-count timer. The suppressed
+    // parent Stop remains the fallback for the still-open parent turn.
     state.zeroInFlightAt = undefined;
     return { disposition, inFlightCount: this.inFlightCount(agentId) };
   }
@@ -101,6 +101,7 @@ export class SubagentDelegationTracker {
     waiting: boolean,
   ): TrackerMutation {
     const state = this.ensureState(agentId, sessionId);
+    if (!state) return { disposition: 'wrong-session', inFlightCount: this.inFlightCount(agentId) };
     const key = this.childKey(sessionId, subagentId);
     const existing = state.children.get(key);
     const disposition = this.compare(existing, hookTs, 'stopped');
@@ -134,8 +135,21 @@ export class SubagentDelegationTracker {
   noteWaiting(agentId: string): void {
     const state = this.states.get(agentId);
     if (!state) return;
-    state.deferredParentStop = undefined;
     state.zeroInFlightAt = undefined;
+  }
+
+  /** A live ordinary hook proves the post-restart runner can deliver its own
+   * eventual Stop, so the synthetic reconciliation fallback is no longer needed. */
+  disarmRestartReconciliation(agentId: string): boolean {
+    const state = this.states.get(agentId);
+    if (
+      state?.parentSessionId === ''
+      && state.deferredParentStop?.source === 'subagent-restart-reconciliation'
+    ) {
+      this.states.delete(agentId);
+      return true;
+    }
+    return false;
   }
 
   /** Arm a bounded fallback for a persisted working row whose pre-restart
@@ -155,10 +169,7 @@ export class SubagentDelegationTracker {
   sweep(agentId: string, waiting: boolean): DelegationSweepResult {
     const state = this.states.get(agentId);
     if (!state) return { expiredChildIds: [] };
-    if (waiting) {
-      this.noteWaiting(agentId);
-      return { expiredChildIds: [], parentSessionId: state.parentSessionId };
-    }
+    if (waiting) this.noteWaiting(agentId);
 
     const now = this.now();
     const before = this.inFlightCount(agentId);
@@ -173,7 +184,7 @@ export class SubagentDelegationTracker {
       expiredChildIds.push(key.slice(key.indexOf(':') + 1));
       oldestExpiredAgeMs = Math.max(oldestExpiredAgeMs ?? 0, age);
     }
-    if (expiredChildIds.length > 0) this.afterCountReduction(state, before, false, now);
+    if (expiredChildIds.length > 0) this.afterCountReduction(state, before, waiting, now);
 
     let drain: DeferredParentStop | undefined;
     if (
@@ -183,8 +194,9 @@ export class SubagentDelegationTracker {
       && now - state.zeroInFlightAt >= this.orphanMs
     ) {
       drain = state.deferredParentStop;
-      state.deferredParentStop = undefined;
-      state.zeroInFlightAt = undefined;
+      // The watchdog drain is an authoritative end for this correlation epoch.
+      // Retire it so later bookkeeping cannot resurrect tombstoned children.
+      this.states.delete(agentId);
     }
     return { expiredChildIds, oldestExpiredAgeMs, parentSessionId: state.parentSessionId, drain };
   }
@@ -193,7 +205,7 @@ export class SubagentDelegationTracker {
     return { parentSessionId, children: new Map() };
   }
 
-  private ensureState(agentId: string, sessionId: string): SubagentDelegationState {
+  private ensureState(agentId: string, sessionId: string): SubagentDelegationState | undefined {
     let state = this.states.get(agentId);
     if (!state) {
       state = this.newState(sessionId);
@@ -202,6 +214,8 @@ export class SubagentDelegationTracker {
       // First post-restart correlated activity replaces the synthetic fallback.
       state = this.newState(sessionId);
       this.states.set(agentId, state);
+    } else if (state.parentSessionId !== sessionId) {
+      return undefined;
     }
     return state;
   }

@@ -945,7 +945,7 @@ export interface ParsedHookEvent {
   legacy?: boolean;
 }
 
-export type HookApplyResult = 'applied' | 'duplicate' | 'stale' | 'invalid';
+export type HookApplyResult = 'applied' | 'duplicate' | 'stale' | 'wrong-session' | 'invalid';
 
 /** Context-brick Inc 4 — the in-memory brick handed from the relaunch route
  *  to the sysprompt builders. `noteId` = continuation_bricks.id. */
@@ -7223,7 +7223,7 @@ export class AgentSupervisor extends EventEmitter {
   private async autoRestartLocked(agent: Agent): Promise<void> {
     // BUG-09 §3.7 — drop the latch before transitioning to `restarting` so a
     // mid-tool crash does not leave a tool-pending latch alive for 15 min.
-    this.monitor.forgetAgent(agent.id);
+    this.forgetMonitorState(agent.id);
 
     const tAutoRestart = applyStatusTransition(agent.id, 'restarting');
     addEvent(agent.id, 'restarting');
@@ -7945,6 +7945,7 @@ export class AgentSupervisor extends EventEmitter {
     // A terminal agent can no longer produce matching shell/exec/wait results.
     // Retain final stats while terminating its unresolved capture state.
     this.contextStatsMonitor.terminatePendingShellActivity(agentId);
+    this.forgetMonitorState(agentId);
 
     if (!killedRunner && (prior.status === 'done' || prior.status === 'crashed')) {
       // Idempotent no-op: already terminal with no runner to kill. Deliberately
@@ -8025,7 +8026,7 @@ export class AgentSupervisor extends EventEmitter {
     this.turnEvidence.reset(agentId);
     // BUG-09 §3.7 — drop the latch + hold-until entries so a 15-min
     // tool-pending latch can't survive into a future agent record reusing this id.
-    this.monitor.forgetAgent(agentId);
+    this.forgetMonitorState(agentId);
     // BUG-11: drop user-typing timestamp so a reused agent id doesn't
     // inherit a stale "user is typing" gate.
     this.lastUserPtyWriteAt.delete(agentId);
@@ -8033,10 +8034,9 @@ export class AgentSupervisor extends EventEmitter {
     // inherit a stale dedupe registry / ordering watermark / launch stamp.
     this.appliedHookEvents.delete(agentId);
     this.lastAppliedHookTs.delete(agentId);
-    this.subagentDelegations.clear(agentId);
     this.launchStartedAt.delete(agentId);
     this.lastInvalidHookWarnAt.delete(agentId);
-    this.lastSubagentOrphanWarnAt.delete(agentId);
+    this.clearSubagentWarnings(agentId);
     this.releaseSpoolTailer(agentId);
     // WP-P2 — drop any undelivered initial prompt with the agent record.
     this.pendingInitialPrompts.delete(agentId);
@@ -8081,7 +8081,7 @@ export class AgentSupervisor extends EventEmitter {
     // BUG-09 §3.7 — a runner crash mid-tool would otherwise leave a
     // tool-pending latch in place for the full 15-min TTL. Clear it before
     // we transition to `restarting`.
-    this.monitor.forgetAgent(agentId);
+    this.forgetMonitorState(agentId);
     const t = applyStatusTransition(agentId, 'restarting');
     incrementRestartCount(agentId);
     this.emit('statusChanged', { agentId, status: 'restarting', fromStatus: t?.prior, source: 'restart' } satisfies StatusChangedEvent);
@@ -8300,7 +8300,7 @@ export class AgentSupervisor extends EventEmitter {
       // we already hold this agent's lifecycle lock — calling the public
       // stopAgent here would deadlock on ourselves.)
       await this.stopAgentLocked(agentId, { reason: 'restart' });
-      this.monitor.forgetAgent(agentId);
+      this.forgetMonitorState(agentId);
       this.pendingInitialPrompts.delete(agentId);
 
       // Step 3 — the atomic transaction (session mint + generation bump to the
@@ -8936,11 +8936,25 @@ export class AgentSupervisor extends EventEmitter {
             : event.state === 'working' ? 'hook-start' : event.state === 'active' ? 'hook-session-start' : 'hook-stop');
 
     if (
+      !isDelegationEvent
+      && (event.state === 'working' || event.state === 'idle' || event.state === 'waiting' || hookEventName === 'UserPromptSubmit')
+    ) {
+      this.subagentDelegations.disarmRestartReconciliation(agentId);
+    }
+
+    if (
       hookEventName === 'UserPromptSubmit'
       && typeof event.sessionId === 'string'
       && event.sessionId.length > 0
     ) {
-      this.subagentDelegations.notePrompt(agentId, event.sessionId);
+      const prompt = this.subagentDelegations.notePrompt(agentId, event.sessionId);
+      if (prompt.rotated) {
+        this.warnSubagentDelegation(
+          agentId,
+          'epoch-rotation',
+          `[subagent-delegation] rotated parent epoch for ${agentId} session=${event.sessionId}`,
+        );
+      }
     }
 
     if (isDelegationEvent) {
@@ -8953,6 +8967,14 @@ export class AgentSupervisor extends EventEmitter {
             event.ts,
             agent.status === 'waiting',
           );
+      if (mutation.disposition === 'wrong-session') {
+        this.warnSubagentDelegation(
+          agentId,
+          'wrong-session',
+          `[subagent-delegation] ignored ${event.kind} for ${agentId} from non-current session=${event.sessionId}`,
+        );
+        return 'wrong-session';
+      }
       if (mutation.disposition !== 'applied') return mutation.disposition;
       if (event.kind === 'subagent-start' && agent.status === 'idle') {
         this.forceWorkingFromHook(agentId, flipSource);
@@ -9048,23 +9070,45 @@ export class AgentSupervisor extends EventEmitter {
       const agent = getAgent(agentId);
       if (!agent) {
         this.subagentDelegations.clear(agentId);
+        this.clearSubagentWarnings(agentId);
         continue;
       }
       const result = this.subagentDelegations.sweep(agentId, agent.status === 'waiting');
-      if (result.expiredChildIds.length > 0) {
-        const lastWarn = this.lastSubagentOrphanWarnAt.get(agentId) ?? 0;
-        if (now - lastWarn >= 60_000) {
-          this.lastSubagentOrphanWarnAt.set(agentId, now);
-          console.warn(
-            `[subagent-delegation] expired running children for ${agentId} `
-            + `session=${result.parentSessionId ?? ''} children=${result.expiredChildIds.join(',')} `
-            + `oldestAgeMs=${result.oldestExpiredAgeMs ?? 0}`,
-          );
-        }
+      if (result.expiredChildIds.length > 0 || result.drain) {
+        this.warnSubagentDelegation(
+          agentId,
+          'expiry',
+          `[subagent-delegation] watchdog expiry for ${agentId} `
+          + `session=${result.parentSessionId ?? ''} children=${result.expiredChildIds.join(',')} `
+          + `oldestAgeMs=${result.oldestExpiredAgeMs ?? 0}`,
+          now,
+        );
       }
       if (result.drain) {
         this.forceIdleFromHook(agentId, result.drain.source, result.drain.receivedAt);
       }
+    }
+  }
+
+  private warnSubagentDelegation(agentId: string, kind: string, message: string, now = Date.now()): void {
+    const key = `${agentId}:${kind}`;
+    const lastWarn = this.lastSubagentOrphanWarnAt.get(key) ?? 0;
+    if (now - lastWarn < 60_000) return;
+    this.lastSubagentOrphanWarnAt.set(key, now);
+    console.warn(message);
+  }
+
+  /** Status-monitor forget and delegation correlation are one lifecycle unit. */
+  private forgetMonitorState(agentId: string): void {
+    this.monitor.forgetAgent(agentId);
+    this.subagentDelegations.clear(agentId);
+    this.clearSubagentWarnings(agentId);
+  }
+
+  private clearSubagentWarnings(agentId: string): void {
+    const prefix = `${agentId}:`;
+    for (const key of this.lastSubagentOrphanWarnAt.keys()) {
+      if (key.startsWith(prefix)) this.lastSubagentOrphanWarnAt.delete(key);
     }
   }
 

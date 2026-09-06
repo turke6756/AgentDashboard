@@ -11,12 +11,12 @@ function clock(start = 1_000): { now: () => number; advance: (ms: number) => voi
   return { now: () => value, advance: (ms) => { value += ms; } };
 }
 
-test('keys children by session and id, derives count, and makes duplicate start/stop idempotent', () => {
+test('keys children by id within the current session, derives count, and makes duplicate start/stop idempotent', () => {
   const c = clock();
   const tracker = new SubagentDelegationTracker(c.now, SUBAGENT_ORPHAN_MS);
   assert.equal(tracker.start('a', 's1', 'child', 10).disposition, 'applied');
   assert.equal(tracker.start('a', 's1', 'child', 10).disposition, 'duplicate');
-  assert.equal(tracker.start('a', 's2', 'child', 10).disposition, 'applied');
+  assert.equal(tracker.start('a', 's1', 'child-2', 10).disposition, 'applied');
   assert.equal(tracker.inFlightCount('a'), 2);
   assert.equal(tracker.stop('a', 's1', 'child', 11, false).disposition, 'applied');
   assert.equal(tracker.stop('a', 's1', 'child', 11, false).disposition, 'duplicate');
@@ -47,6 +47,15 @@ test('same-session prompt keeps children; different-session prompt rotates the e
   assert.equal(tracker.getState('a')?.children.size, 0);
 });
 
+test('a late delegation from an old session is rejected without changing the current epoch', () => {
+  const tracker = new SubagentDelegationTracker(() => 1, SUBAGENT_ORPHAN_MS);
+  tracker.notePrompt('a', 'old');
+  tracker.notePrompt('a', 'current');
+  assert.equal(tracker.start('a', 'old', 'late-child', 99).disposition, 'wrong-session');
+  assert.equal(tracker.inFlightCount('a'), 0);
+  assert.equal(tracker.getState('a')?.parentSessionId, 'current');
+});
+
 test('final stop holds the deferred parent Stop until the zero-in-flight watchdog', () => {
   const c = clock();
   const tracker = new SubagentDelegationTracker(c.now, SUBAGENT_ORPHAN_MS);
@@ -58,7 +67,7 @@ test('final stop holds the deferred parent Stop until the zero-in-flight watchdo
   assert.equal(tracker.sweep('a', false).drain, undefined);
   c.advance(SUBAGENT_ORPHAN_MS);
   assert.equal(tracker.sweep('a', false).drain?.source, 'hook-stop');
-  assert.equal(tracker.getState('a')?.zeroInFlightAt, undefined);
+  assert.equal(tracker.getState('a'), undefined, 'a watchdog drain retires the epoch');
 });
 
 test('new start, session rotation, and authoritative Stop clear zero-in-flight state without draining', () => {
@@ -74,7 +83,7 @@ test('new start, session rotation, and authoritative Stop clear zero-in-flight s
   arm();
   tracker.start('a', 's', 'c2', c.now() + 3);
   assert.equal(tracker.getState('a')?.zeroInFlightAt, undefined);
-  assert.equal(tracker.getState('a')?.deferredParentStop, undefined);
+  assert.equal(tracker.getState('a')?.deferredParentStop?.source, 'hook-stop');
 
   tracker.clear('a');
   arm();
@@ -99,6 +108,42 @@ test('waiting outranks inferred idle and discards a deferred Stop', () => {
   assert.equal(tracker.getState('a')?.zeroInFlightAt, undefined);
   c.advance(SUBAGENT_ORPHAN_MS * 2);
   assert.equal(tracker.sweep('a', true).drain, undefined);
+});
+
+test('waiting precedence preserves a deferred Stop until the final child actually stops', () => {
+  const c = clock();
+  const tracker = new SubagentDelegationTracker(c.now, SUBAGENT_ORPHAN_MS);
+  tracker.start('a', 's', 'c', 1);
+  tracker.deferParentStop('a', { hookTs: 2, receivedAt: c.now(), source: 'hook-stop' });
+  tracker.noteWaiting('a');
+  assert.equal(tracker.getState('a')?.deferredParentStop?.source, 'hook-stop');
+  tracker.stop('a', 's', 'c', 3, true);
+  assert.equal(tracker.getState('a')?.deferredParentStop, undefined);
+  assert.equal(tracker.getState('a')?.zeroInFlightAt, undefined);
+});
+
+test('running-child expiry still runs while waiting and discards the deferred Stop at final expiry', () => {
+  const c = clock();
+  const tracker = new SubagentDelegationTracker(c.now, SUBAGENT_ORPHAN_MS);
+  tracker.start('a', 's', 'orphan', 1);
+  tracker.deferParentStop('a', { hookTs: 2, receivedAt: c.now(), source: 'hook-stop' });
+  c.advance(SUBAGENT_ORPHAN_MS);
+  const result = tracker.sweep('a', true);
+  assert.deepEqual(result.expiredChildIds, ['orphan']);
+  assert.equal(tracker.inFlightCount('a'), 0);
+  assert.equal(tracker.getState('a')?.deferredParentStop, undefined);
+  assert.equal(tracker.getState('a')?.zeroInFlightAt, undefined);
+});
+
+test('a live ordinary hook can disarm only the synthetic restart fallback', () => {
+  const tracker = new SubagentDelegationTracker(() => 1, SUBAGENT_ORPHAN_MS);
+  tracker.reconcileRestart('a');
+  assert.equal(tracker.disarmRestartReconciliation('a'), true);
+  assert.equal(tracker.getState('a'), undefined);
+
+  tracker.start('a', 's', 'c', 1);
+  assert.equal(tracker.disarmRestartReconciliation('a'), false);
+  assert.equal(tracker.inFlightCount('a'), 1);
 });
 
 test('running child expiry enters the same zero-in-flight drain', () => {
