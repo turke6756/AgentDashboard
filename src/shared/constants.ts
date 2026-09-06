@@ -3945,7 +3945,7 @@ Orchestrations now run **in-process inside the dashboard** and are controlled th
 
 ## MCP tools
 
-- **run_orchestration** — Start a run (detached). Returns \`{ runId }\` synchronously. Args: \`name\`, \`workspace_id\`, \`supervisor_id\`, plus orchestration params (\`topic\`, \`plan_id\`, \`planning_intent_id\`, \`section_anchor\`, \`mode\`, \`lead_provider\`, \`reviewer_provider\`, \`turn_timeout_ms\`). Resume with \`resume_run_id\` (preferred) or \`legacy_command\` (paste a whole old \`node scripts/groupthink-v2.js …\` line).
+- **run_orchestration** — Start a run (detached). Returns \`{ runId }\` synchronously. Args: \`name\`, \`workspace_id\`, \`supervisor_id\`, plus orchestration params (\`topic\`, \`plan_id\`, \`planning_intent_id\`, \`section_anchor\`, \`mode\`, \`lead_provider\`, \`reviewer_provider\`, \`turn_timeout_ms\`). Provide \`plan_id\` and \`planning_intent_id\` together for a plan-bound run, or omit both for a plan-less deliberation. Resume with \`resume_run_id\` (preferred) or \`legacy_command\` (paste a whole old \`node scripts/groupthink-v2.js …\` line).
 - **get_orchestration_run** — Pull current status/progress for a \`run_id\` (status, turn/round, members, last error).
 - **abort_orchestration** — Abort a run by \`run_id\`; cleans up member agents and emits \`orchestration.groupthink.aborted\`.
 
@@ -3953,7 +3953,7 @@ Orchestrations now run **in-process inside the dashboard** and are controlled th
 
 | Name | How to run | Purpose |
 |---|---|---|
-| \`groupthink\` | \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})\` | Cross-provider deliberation that writes a worker-ready plan. \`mode:'serial'\` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes plan) or \`mode:'parallel'\` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes plan). |
+| \`groupthink\` | \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})\` | Cross-provider deliberation that writes a worker-ready plan artifact or a standalone deliberation. \`mode:'serial'\` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes the artifact) or \`mode:'parallel'\` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes the artifact). |
 
 **Legacy resume.** Older plans/\`.runs\` may carry a \`node scripts/groupthink-v2.js … --resume-lead-id=… --resume-reviewer-id=…\` resume_hint. Don't run that script — pass the whole line through \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, legacy_command:"<the whole old line>"})\`. The dashboard parses it into structured resume params and runs the in-process runner. (\`scripts/groupthink-v2.js\` still exists only as a thin compat shim that forwards to this same tool.)
 
@@ -3971,7 +3971,7 @@ The user will name one (e.g., "run a GroupThink on X") or describe a goal that m
 
 Every run needs a \`workspace_id\` and a \`supervisor_id\`. You are the supervisor: use \`list_agents\` to find your own agent record (the supervisor for this workspace) and read its \`id\` (→ \`supervisor_id\`) and \`workspaceId\` (→ \`workspace_id\`). If exactly one active supervisor for the current workspace isn't identifiable, stop and report the ambiguity.
 
-Every new launch also needs \`plan_id\` and \`planning_intent_id\`. \`plan_id\` accepts either the registered plan row UUID or the portable plan artifact id (\`plan_<8hex>\`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan \`int_<8hex>\` value for \`planning_intent_id\`; the plan's path is derived from the resolved plan row and is not a launch parameter.
+A new launch may be plan-bound or plan-less. For a plan-bound run, provide both \`plan_id\` and \`planning_intent_id\`; providing only one is rejected. \`plan_id\` accepts either the registered plan row UUID or the portable plan artifact id (\`plan_<8hex>\`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan \`int_<8hex>\` value for \`planning_intent_id\`; the plan's path is derived from the resolved plan row and is not a launch parameter. For a plan-less deliberation, omit both fields; its artifact is written under \`.lares/library/deliberations/\`.
 
 Before constructing the call, use \`get_my_context\` and read both \`orchestrationProviderDefaults.groupthink\` and \`availableProviders\`. Resolve each desired slot from an explicit run override, otherwise its workspace default, otherwise the built-in default (lead \`claude\`, reviewer \`codex\`). An omitted \`lead_provider\` or \`reviewer_provider\` inherits the workspace default; pass the argument only to override that default.
 
@@ -3988,7 +3988,7 @@ Before constructing the call, use \`get_my_context\` and read both \`orchestrati
 > \`unavailable\`, do not launch and report the reasons. Same-provider pairs remain valid. No
 > persisted fallback order exists in v5; when one is introduced, it governs substitute ranking.
 
-Fill in required + useful optional params. Omit provider args to inherit the workspace defaults; include either only for an intentional override, e.g.:
+Fill in required + useful optional params. Omit provider args to inherit the workspace defaults; include either only for an intentional override. Plan-bound example:
 
 \`\`\`
 run_orchestration({
@@ -4003,6 +4003,18 @@ run_orchestration({
 })
 \`\`\`
 
+Plan-less example (both plan fields omitted):
+
+\`\`\`
+run_orchestration({
+  name: 'groupthink',
+  workspace_id: '<ws-id>',
+  supervisor_id: '<sup-id>',
+  topic: 'Evaluate the X migration options',
+  mode: 'serial',
+})
+\`\`\`
+
 Show the user the desired pair, each preference source (explicit, workspace default, or built-in), any availability-driven substitute and reason, and the complete effective pair alongside the constructed call. Confirm before launching anything that will burn tokens. Don't autonomously launch. The effective lead and reviewer may be the same provider.
 
 ### 4. Launch (detached) and return to idle
@@ -4013,7 +4025,7 @@ Show the user the desired pair, each preference source (explicit, workspace defa
 
 When a \`[DASHBOARD EVENT]\` arrives in your chat:
 
-- **\`groupthink.complete\`**: the plan was written (path in the message). Acknowledge; no action unless the user asks.
+- **\`groupthink.complete\`**: the artifact/deliberation written is identified by the path in the message. Acknowledge; no action unless the user asks.
 - **\`orchestration.groupthink.stalled\`**: the payload carries a \`resume_hint\`. Typically \`{tool:'run_orchestration', params:{resumeRunId}}\` — resume with \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, resume_run_id:'<id>'})\`. Decide based on the payload (reason, turns/rounds elapsed, planner ids). When in doubt, escalate to the user.
 - **\`orchestration.groupthink.aborted\`**: the run was aborted (by you, or by a dashboard restart's boot-reconcile, which also emits a resume_hint). Diagnose via \`get_orchestration_run\`, then resume or escalate.
 
@@ -4030,7 +4042,7 @@ Don't \`send_message_to_agent\` to a planner mid-run unless the run is stalled �
 
 ## File-write convention
 
-Orchestrations and the agents they launch should not write to paths under \`.claude/\`. Claude Code's permission system gates edits there even with bypass-permissions on, hanging worker forks at an interactive dialog. Plan markdown and any agent-edited files belong outside \`.claude/\` — typically under \`plans/\` or the workspace root.
+Orchestrations and the agents they launch should not write to paths under \`.claude/\`. Claude Code's permission system gates edits there even with bypass-permissions on, hanging worker forks at an interactive dialog. Plan markdown, standalone deliberations, and any agent-edited files belong outside \`.claude/\` — typically under \`plans/\`, \`.lares/library/deliberations/\`, or the workspace root.
 
 ## Constraints
 

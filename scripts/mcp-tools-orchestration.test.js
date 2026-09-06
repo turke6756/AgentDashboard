@@ -3,6 +3,7 @@
 // Run via: node scripts/mcp-tools-orchestration.test.js
 
 const assert = require('assert');
+const Ajv = require('ajv');
 const { getOrchestrationToolDefinitions, handleOrchestrationToolCall } = require('./mcp-tools-orchestration');
 
 const tests = [];
@@ -36,6 +37,26 @@ test('launch_agent provider enum includes agy', () => {
 test('launch_agent provider enum excludes discontinued gemini', () => {
   const launch = getOrchestrationToolDefinitions().find((tool) => tool.name === 'launch_agent');
   assert.ok(!launch.inputSchema.properties.provider.enum.includes('gemini'));
+});
+
+test('run_orchestration schema accepts both plan refs or neither and rejects singletons', () => {
+  const run = getOrchestrationToolDefinitions().find((tool) => tool.name === 'run_orchestration');
+  assert.ok(run, 'the real run_orchestration tool definition must exist');
+  const validate = new Ajv({ allErrors: true }).compile(run.inputSchema);
+  const base = { name: 'groupthink', workspace_id: 'ws-1', supervisor_id: 'sup-1' };
+  const cases = [
+    ['plan-bound pair', { ...base, plan_id: 'plan_1234abcd', planning_intent_id: 'int_1234abcd' }, true],
+    ['plan-less fresh', base, true],
+    ['plan-less resume', { ...base, resume_run_id: 'run-1' }, true],
+    ['plan only', { ...base, plan_id: 'plan_1234abcd' }, false],
+    ['intent only', { ...base, planning_intent_id: 'int_1234abcd' }, false],
+    ['resume with plan only', { ...base, resume_run_id: 'run-1', plan_id: 'plan_1234abcd' }, false],
+  ];
+  for (const [label, value, expected] of cases) {
+    assert.strictEqual(validate(value), expected, `${label}: ${JSON.stringify(validate.errors)}`);
+  }
+  assert.match(run.inputSchema.properties.plan_id.description, /both plan_id and planning_intent_id[\s\S]*omit both/);
+  assert.match(run.inputSchema.properties.planning_intent_id.description, /both plan_id and planning_intent_id[\s\S]*omit both/);
 });
 
 test('rail launch submits args.prompt verbatim', async () => {

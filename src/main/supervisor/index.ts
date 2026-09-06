@@ -1070,6 +1070,10 @@ export const SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH = '68073f75aa4b4b32a5531
  *  previousHashes for silent pristine v5→v6 upgrade. */
 export const SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH = '3dc7c9f69327d8a05fd013352c91ce53dea85b68a64f1d0cf519dbffe3fc6f37';
 
+/** SHA-256 hex of the v6 `.lares/supervisor/.claude/skills/run-orchestration/SKILL.md`
+ *  (plan-bound-only playbook). v7 adds the plan-less deliberation contract. */
+export const SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH = '9cfd68c5ec607399222a9bafb81d547e2a1ef16eb962bafb5d9565f3ec1453d0';
+
 /** SHA-256 hex of the v2 `create-persona/SKILL.md` (shipped into the supervisor,
  *  worker, and researcher lanes). v3 drops `get_context_stats` from the
  *  orchestration-capability table row — that tool was deleted in the
@@ -4218,8 +4222,8 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/supervisor/.claude/skills/run-orchestration/SKILL.md`]:              {
       content: SUPERVISOR_RUN_ORCHESTRATION_SKILL,
-      version: 6, // v6 replaces path-based new launches with UUID-or-portable plan_id
-      previousHashes: { 1: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V1_HASH, 2: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V2_HASH, 3: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V3_HASH, 4: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH, 5: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH },
+      version: 7, // v7 supports plan-bound runs and plan-less deliberations
+      previousHashes: { 1: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V1_HASH, 2: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V2_HASH, 3: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V3_HASH, 4: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH, 5: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH, 6: SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH },
     },
     // v3 RETIRES orchestration-spike (EDR hardening, plans/edr-safety-hardening.md
     // P0.1): the skill's detached/hidden launch recipe (`nohup … &`,

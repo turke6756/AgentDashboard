@@ -45,6 +45,21 @@ describe('parseDashboardEvent', () => {
     expect(parsed!.agentName).toBeUndefined();
   });
 
+  it('renders plan-less complete and stalled payloads as label-only events', () => {
+    const payloads = [
+      '[DASHBOARD EVENT] groupthink.complete\n{"runId":"r1","planId":null,"artifactKind":"deliberation"}',
+      '[DASHBOARD EVENT] orchestration.groupthink.stalled\n{"runId":"r1","planId":null,"artifactKind":"deliberation","reason":"no_deliberation_written"}',
+    ];
+    for (const payload of payloads) {
+      const parsed = parseDashboardEvent(payload);
+      expect(parsed).toEqual({
+        label: payload.split('\n', 1)[0].slice('[DASHBOARD EVENT] '.length),
+        agentName: undefined,
+      });
+      expect(JSON.stringify(parsed)).not.toContain('Agent: undefined');
+    }
+  });
+
   it('degrades gracefully on a bare prefix or a malformed Agent: line', () => {
     expect(parseDashboardEvent('[DASHBOARD EVENT]')).toEqual({
       label: 'Dashboard event',

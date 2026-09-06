@@ -44,6 +44,7 @@ import {
   SUPERVISOR_AGENT_MD_V19_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH,
+  SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH,
   LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
   WORKER_CLAUDE_MD_V8_HASH,
@@ -6011,8 +6012,40 @@ const RUN_ORCHESTRATION_V5_AVAILABILITY_RULE = `> Resolve the desired lead and r
 > \`unavailable\`, do not launch and report the reasons. Same-provider pairs remain valid. No
 > persisted fallback order exists in v5; when one is introduced, it governs substitute ranking.`;
 
-function reconstructRunOrchestrationSkillV5(): string {
+function reconstructRunOrchestrationSkillV6(): string {
   return SUPERVISOR_RUN_ORCHESTRATION_SKILL
+    .replace(
+      '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Provide `plan_id` and `planning_intent_id` together for a plan-bound run, or omit both for a plan-less deliberation. Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
+      '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
+    )
+    .replace(
+      "| `groupthink` | `run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})` | Cross-provider deliberation that writes a worker-ready plan artifact or a standalone deliberation. `mode:'serial'` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes the artifact) or `mode:'parallel'` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes the artifact). |",
+      "| `groupthink` | `run_orchestration({name:'groupthink', workspace_id, supervisor_id, topic, plan_id, planning_intent_id, mode})` | Cross-provider deliberation that writes a worker-ready plan. `mode:'serial'` (default — Lead drafts, Reviewer launched with that draft as kickoff, Lead writes plan) or `mode:'parallel'` (3 rounds — both planners draft independently, cross-pollinate, synthesizer writes plan). |",
+    )
+    .replace(
+      "A new launch may be plan-bound or plan-less. For a plan-bound run, provide both `plan_id` and `planning_intent_id`; providing only one is rejected. `plan_id` accepts either the registered plan row UUID or the portable plan artifact id (`plan_<8hex>`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan `int_<8hex>` value for `planning_intent_id`; the plan's path is derived from the resolved plan row and is not a launch parameter. For a plan-less deliberation, omit both fields; its artifact is written under `.lares/library/deliberations/`.",
+      "Every new launch also needs `plan_id` and `planning_intent_id`. `plan_id` accepts either the registered plan row UUID or the portable plan artifact id (`plan_<8hex>`) from the plan's own files. The dashboard resolves either namespace to the registered row before launching. Use the active same-plan `int_<8hex>` value for `planning_intent_id`; the plan's path is derived from the resolved plan row and is not a launch parameter.",
+    )
+    .replace(
+      "Fill in required + useful optional params. Omit provider args to inherit the workspace defaults; include either only for an intentional override. Plan-bound example:",
+      "Fill in required + useful optional params. Omit provider args to inherit the workspace defaults; include either only for an intentional override, e.g.:",
+    )
+    .replace(
+      "\n\nPlan-less example (both plan fields omitted):\n\n```\nrun_orchestration({\n  name: 'groupthink',\n  workspace_id: '<ws-id>',\n  supervisor_id: '<sup-id>',\n  topic: 'Evaluate the X migration options',\n  mode: 'serial',\n})\n```",
+      '',
+    )
+    .replace(
+      '- **`groupthink.complete`**: the artifact/deliberation written is identified by the path in the message. Acknowledge; no action unless the user asks.',
+      '- **`groupthink.complete`**: the plan was written (path in the message). Acknowledge; no action unless the user asks.',
+    )
+    .replace(
+      'Plan markdown, standalone deliberations, and any agent-edited files belong outside `.claude/` — typically under `plans/`, `.lares/library/deliberations/`, or the workspace root.',
+      'Plan markdown and any agent-edited files belong outside `.claude/` — typically under `plans/` or the workspace root.',
+    );
+}
+
+function reconstructRunOrchestrationSkillV5(): string {
+  return reconstructRunOrchestrationSkillV6()
     .replace(
       '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
       '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_path`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
@@ -6053,11 +6086,14 @@ function reconstructRunOrchestrationSkillV4(): string {
     );
 }
 
-test('WP-B5-0. frozen v4 and v5 hashes match both pristine historical bodies', () => {
+test('WP-B5-0. frozen v4, v5, and v6 hashes match the pristine historical bodies', () => {
+  const v6 = reconstructRunOrchestrationSkillV6();
   const v5 = reconstructRunOrchestrationSkillV5();
   const v4 = reconstructRunOrchestrationSkillV4();
+  assert.equal(sha256Hex(v6), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH);
   assert.equal(sha256Hex(v4), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
   assert.equal(sha256Hex(v5), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH);
+  assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH);
   assert.notEqual(sha256Hex(v5), sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL));
   assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
 });
@@ -6080,12 +6116,21 @@ test('WP-B5-1. current skill retains provider preflight and teaches only the two
     'new-launch guidance must not retain the path-based plan target');
   assert.ok(!SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('plans/new-plan.md'),
     'new-launch guidance must not retain the old default path');
+  assert.match(SUPERVISOR_RUN_ORCHESTRATION_SKILL, /Plan-bound example:/);
+  assert.match(SUPERVISOR_RUN_ORCHESTRATION_SKILL, /Plan-less example \(both plan fields omitted\):/);
+  assert.match(SUPERVISOR_RUN_ORCHESTRATION_SKILL, /provide both `plan_id` and `planning_intent_id`; providing only one is rejected/);
+  assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('`.lares/library/deliberations/`'));
+  assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('artifact/deliberation written'));
+  const managed = supFilesMap()['.lares/supervisor/.claude/skills/run-orchestration/SKILL.md'];
+  assert.equal(managed.version, 7);
+  assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6]);
 });
 
-test('WP-B5-2. pristine v4 and v5 run-orchestration skills silently upgrade to v6', () => {
+test('WP-B5-2. pristine v4, v5, and v6 run-orchestration skills silently upgrade to v7', () => {
   for (const [oldVersion, oldBody] of [
     [4, reconstructRunOrchestrationSkillV4()],
     [5, reconstructRunOrchestrationSkillV5()],
+    [6, reconstructRunOrchestrationSkillV6()],
   ] as const) {
     const workDir = mktmp(`run-orchestration-v${oldVersion}`);
     const { supervisor, cleanup } = makeSupervisor();
@@ -6105,7 +6150,7 @@ test('WP-B5-2. pristine v4 and v5 run-orchestration skills silently upgrade to v
       assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_RUN_ORCHESTRATION_SKILL);
       assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0,
         `a pristine v${oldVersion} skill must upgrade without a backup`);
-      assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 6);
+      assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 7);
     } finally {
       cleanup();
       rmrf(workDir);

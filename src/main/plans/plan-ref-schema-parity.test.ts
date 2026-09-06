@@ -89,9 +89,12 @@ class FakeBetterSqlite {
 
 type DatabaseModule = typeof import('../database');
 type ResolverModule = typeof import('./resolve-plan-ref');
-type ToolDefinition = {
-  name: string;
-  inputSchema: { properties: { plan_id?: { pattern?: string; description?: string } } };
+  type ToolDefinition = {
+    name: string;
+    inputSchema: {
+      properties: { plan_id?: { pattern?: string; description?: string } };
+      anyOf?: unknown[];
+    };
 };
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-ref-schema-parity-'));
@@ -176,6 +179,12 @@ void (async () => {
       assert.match(schema?.description ?? '', /registered plan row id \(uuid\)/);
       assert.match(schema?.description ?? '', /portable plan artifact id \(plan_<8hex>\) from the plan's own files/);
     }
+
+    const runSchema = definitions.find((definition) => definition.name === 'run_orchestration')?.inputSchema;
+    assert.deepEqual(runSchema?.anyOf, [
+      { required: ['plan_id', 'planning_intent_id'] },
+      { not: { anyOf: [{ required: ['plan_id'] }, { required: ['planning_intent_id'] }] } },
+    ], 'run_orchestration must require the plan pair or reject either singleton');
   });
 
   test('a ref matching neither namespace is rejected with the settled diagnostic', () => {
