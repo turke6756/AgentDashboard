@@ -375,6 +375,7 @@ const TESTS = [
   'dist/main/main/library/library-report-sources.test.js',
   'dist/main/main/library/library-shelf.test.js',
   'dist/main/main/library/library-ipc.test.js',
+  'dist/main/main/library/library-rescan.test.js',
   'dist/main/main/library/library-chunker.test.js',
   'dist/main/main/library/pdf-extractor.test.js',
   'dist/main/main/library/docx-extractor.test.js',
@@ -860,6 +861,7 @@ for (const file of testsToRun) {
     file.endsWith('/library-store.test.js') ||
     file.endsWith('/library-shelf.test.js') ||
     file.endsWith('/library-ipc.test.js') ||
+    file.endsWith('/library-rescan.test.js') ||
     file.endsWith('/library-query.test.js') ||
     file.endsWith('/library-query-integration.test.js') ||
     file.endsWith('/library-embedder.test.js') ||

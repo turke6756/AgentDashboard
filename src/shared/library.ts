@@ -60,6 +60,13 @@ export interface LibraryIngestRequest {
   type?: LibraryDocumentType;
 }
 
+export interface LibraryRescanResult {
+  scanned: number;
+  ingested: number;
+  skipped: number;
+  failed: number;
+}
+
 export interface LibraryTextQuoteSelector {
   exact: string;
   prefix: string;

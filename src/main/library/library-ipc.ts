@@ -1,6 +1,7 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type { LibraryIngestRequest, LibraryProgressEvent } from '../../shared/library';
 import { createLibraryIngestor } from './library-ingest';
+import { rescanLibraryReports } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, saveLibraryNote, type QueryLibraryArgs, type SaveLibraryNoteInput } from './library-store';
 import { listLibraryShelf } from './library-shelf';
 
@@ -27,6 +28,7 @@ export function registerLibraryIpc(
   ipc: LibraryIpcLike,
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
   sendProgress: (event: LibraryProgressEvent) => void,
+  runRescan: typeof rescanLibraryReports = rescanLibraryReports,
 ): void {
   const withStore = async <T>(workspaceId: string, work: (root: string, store: ReturnType<typeof openLibraryStore>) => Promise<T> | T) => {
     const workspace = resolveWorkspace(workspaceId);
@@ -51,7 +53,14 @@ export function registerLibraryIpc(
     }),
   );
   ipc.handle(LIBRARY_CHANNELS.ingest, ingest);
-  ipc.handle(LIBRARY_CHANNELS.rescan, (event, request: LibraryIngestRequest) => ingest(event, { ...request, trigger: 'rescan' }));
+  ipc.handle(LIBRARY_CHANNELS.rescan, (_event, workspaceId: string) => withStore(
+    workspaceId,
+    (workspaceRoot, store) => runRescan({
+      workspaceRoot,
+      store,
+      publish: (progress) => sendProgress({ ...progress, workspace_id: workspaceId }),
+    }),
+  ));
   ipc.handle(LIBRARY_CHANNELS.list, (_event, workspaceId: string, includeUntrusted = false) => withStore(
     workspaceId,
     (_root, store) => listLibraryDocuments(store, { include_untrusted: includeUntrusted }),
@@ -75,6 +84,7 @@ export function registerProductionLibraryIpc(
   ipc: LibraryIpcLike,
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
   sendProgress: (event: LibraryProgressEvent) => void,
+  runRescan: typeof rescanLibraryReports = rescanLibraryReports,
 ): void {
-  registerLibraryIpc(ipc, resolveWorkspace, sendProgress);
+  registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan);
 }

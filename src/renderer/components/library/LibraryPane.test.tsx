@@ -1,14 +1,38 @@
 // @vitest-environment jsdom
+import React from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workspace } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import { openLibraryResult, type LibraryQueryExcerptView } from './library-result-navigation';
+import LibraryPane from './LibraryPane';
 
 const workspace = { id: 'ws', path: 'C:\\repo', pathType: 'windows' } as Workspace;
 
 beforeEach(() => {
   useDashboardStore.setState({ workspaces: [workspace], selectedWorkspaceId: workspace.id, openTabs: [], activeTabId: null });
   vi.spyOn(Date, 'now').mockReturnValue(42);
+});
+
+describe('LibraryPane rescan', () => {
+  it('calls rescan with only the workspace id and shows returned counts', async () => {
+    const rescan = vi.fn().mockResolvedValue({ scanned: 4, ingested: 2, skipped: 1, failed: 1 });
+    Object.assign(window, { api: {
+      library: {
+        listDocuments: vi.fn().mockResolvedValue([]),
+        query: vi.fn(),
+        ingest: vi.fn(),
+        rescan,
+        saveNote: vi.fn(),
+        onProgress: vi.fn().mockReturnValue(() => undefined),
+      },
+      files: { getPathForFile: vi.fn() },
+    } });
+    render(<LibraryPane />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rescan' }));
+    await waitFor(() => expect(rescan).toHaveBeenCalledWith('ws'));
+    expect((await screen.findByRole('status')).textContent).toBe('Scanned 4; ingested 2; skipped 1; failed 1.');
+  });
 });
 
 describe('openLibraryResult production seam', () => {

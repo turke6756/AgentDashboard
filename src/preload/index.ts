@@ -790,7 +790,7 @@ const api: IpcApi = withoutRetiredSaveApi({
 (api as IpcApi & {
   library: {
     ingest: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
-    rescan: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
+    rescan: (workspaceId: string) => Promise<import('../shared/library').LibraryRescanResult>;
     listDocuments: (workspaceId: string, includeUntrusted?: boolean) => Promise<unknown>;
     listShelf: (workspaceId: string) => Promise<import('../shared/library').ShelfRow[]>;
     query: (workspaceId: string, args: unknown) => Promise<unknown>;
@@ -799,7 +799,7 @@ const api: IpcApi = withoutRetiredSaveApi({
   };
 }).library = {
   ingest: (request) => ipcRenderer.invoke('library:ingest', request),
-  rescan: (request) => ipcRenderer.invoke('library:rescan', request),
+  rescan: (workspaceId) => ipcRenderer.invoke('library:rescan', workspaceId),
   listDocuments: (workspaceId, includeUntrusted) => ipcRenderer.invoke('library:list-documents', workspaceId, includeUntrusted),
   listShelf: (workspaceId) => ipcRenderer.invoke('library:list-shelf', workspaceId),
   query: (workspaceId, args) => ipcRenderer.invoke('library:query', workspaceId, args),

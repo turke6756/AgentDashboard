@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { LibraryProgressEvent } from '../../../shared/library';
+import type { LibraryProgressEvent, LibraryRescanResult } from '../../../shared/library';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import LibraryAddFiles from './LibraryAddFiles';
 import LibraryFilters, { EMPTY_LIBRARY_FILTERS, type LibraryFilterState } from './LibraryFilters';
@@ -12,7 +12,7 @@ type LibraryApi = {
   listDocuments: (workspaceId: string, includeUntrusted?: boolean) => Promise<LibraryDocumentView[]>;
   query: (workspaceId: string, args: Record<string, unknown>) => Promise<{ excerpts: LibraryQueryExcerptView[]; document_highlights?: LibraryDocumentHighlightsView }>;
   ingest: (request: Record<string, unknown>) => Promise<unknown>;
-  rescan: (request: Record<string, unknown>) => Promise<unknown>;
+  rescan: (workspaceId: string) => Promise<LibraryRescanResult>;
   saveNote: (workspaceId: string, request: { query: string; chunk_ids: string[] }) => Promise<unknown>;
   onProgress: (callback: (event: LibraryProgressEvent) => void) => () => void;
 };
@@ -86,7 +86,12 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 bg-surface-0 p-4" data-testid="library-pane">
       <header className="flex items-center justify-between"><h1 className="text-lg font-semibold">Workspace Library</h1><select aria-label="Sort library" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="ui-input"><option value="newest">Newest</option><option value="title">Title</option><option value="type">Type</option></select></header>
-      <LibraryAddFiles onAdd={addFiles} onRescan={async () => { if (workspaceId) await libraryApi().rescan({ workspace_id: workspaceId, source_path: '', trigger: 'rescan' }); await reload(); }} />
+      <LibraryAddFiles onAdd={addFiles} onRescan={async () => {
+        if (!workspaceId) return;
+        const counts = await libraryApi().rescan(workspaceId);
+        setMessage(`Scanned ${counts.scanned}; ingested ${counts.ingested}; skipped ${counts.skipped}; failed ${counts.failed}.`);
+        await reload();
+      }} />
       <LibraryFilters value={filters} onChange={setFilters} />
       <LibraryQueryBox onQuery={runQuery} includeUntrusted={includeUntrusted} onIncludeUntrusted={setIncludeUntrusted} />
       {message && <p role="status" className="text-xs text-amber-400">{message}</p>}

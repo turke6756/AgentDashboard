@@ -26,3 +26,19 @@ test('production library:list-shelf IPC enters the disk-to-index shelf join and 
     id: 'shelf:.lares/library/inbox/new-report.md', trust: 'untrusted', type: 'research', shelf_status: 'pending',
   }], 'REACHABILITY:listLibraryShelf did not return the disk-owned report through production IPC');
 });
+
+test('production library:rescan IPC takes only workspaceId and returns walk counts', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-rescan-ipc-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(workspace, '.lares', 'library', 'inbox'), { recursive: true });
+
+  const handlers = new Map<string, (...args: any[]) => unknown>();
+  registerProductionLibraryIpc(
+    { handle: (channel, listener) => handlers.set(channel, listener) },
+    (workspaceId) => workspaceId === 'workspace-1' ? { id: workspaceId, path: workspace } : null,
+    () => undefined,
+  );
+  const handler = handlers.get(LIBRARY_CHANNELS.rescan);
+  assert.ok(handler);
+  assert.deepEqual(await handler({} as never, 'workspace-1'), { scanned: 0, ingested: 0, skipped: 0, failed: 0 });
+});
