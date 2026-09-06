@@ -4,7 +4,6 @@ import path from 'path';
 import type {
   LibraryDocumentStatus,
   LibraryDocumentType,
-  LibraryHashReuseTrigger,
   LibraryIngestTrigger,
   LibraryProgressEvent,
   LibraryTrust,
@@ -59,29 +58,6 @@ function relativePath(root: string, target: string): string {
   return path.relative(root, target).replace(/\\/g, '/');
 }
 
-function isWithin(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
-
-function reportFolderDefaults(workspaceRoot: string, sourcePath: string): {
-  type: LibraryDocumentType;
-  trust: LibraryTrust;
-} | undefined {
-  const libraryRoot = path.resolve(workspaceRoot, '.lares', 'library');
-  if (isWithin(path.join(libraryRoot, 'inbox'), sourcePath)) {
-    return { type: 'research', trust: 'untrusted' };
-  }
-  if (isWithin(path.join(libraryRoot, 'cleared'), sourcePath)) {
-    return { type: 'research', trust: 'cleared' };
-  }
-  return undefined;
-}
-
-function permitsHashReuse(trigger: LibraryIngestTrigger): trigger is LibraryHashReuseTrigger {
-  return trigger === 'rescan' || trigger === 'report-arrival';
-}
-
 export function createLibraryIngestor(deps: LibraryIngestDependencies) {
   const publish = (id: string, status: LibraryDocumentStatus, error_reason?: string) => {
     deps.publish?.({ document_id: id, status, ...(error_reason ? { error_reason } : {}) });
@@ -94,10 +70,9 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
     const sourceHash = createHash('sha256').update(bytes).digest('hex');
     const id = input.document_id ?? documentId(relativePath(deps.workspaceRoot, absolute));
     const existing = getLibraryDocument(deps.store, id);
-    const folderDefaults = reportFolderDefaults(deps.workspaceRoot, absolute);
     const currentContract = existing?.chunker_version === CHUNKER_VERSION
       && existing?.tokenizer_version === TOKENIZER_VERSION;
-    if (permitsHashReuse(input.trigger) && existing?.source_hash === sourceHash
+    if (input.trigger === 'rescan' && existing?.source_hash === sourceHash
       && existing.status === 'ready' && currentContract) {
       const rows = deps.store.database.prepare(
         `SELECT id FROM library_chunks WHERE document_id = ? ORDER BY ordinal`,
@@ -105,14 +80,14 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       return { document: existing, reused: true, chunk_ids: rows.map((row) => row.id) };
     }
 
-    const type = input.type ?? folderDefaults?.type ?? existing?.type ?? inferType(absolute);
+    const type = input.type ?? existing?.type ?? inferType(absolute);
     const base: LibraryDocumentRow = {
       id,
       type,
       title: path.basename(absolute),
       created: existing?.created ?? new Date(0).toISOString(),
       topics_json: existing?.topics_json ?? '[]',
-      trust: input.trust ?? folderDefaults?.trust ?? existing?.trust ?? 'user-trusted',
+      trust: input.trust ?? existing?.trust ?? 'user-trusted',
       source_rel_path: relativePath(deps.workspaceRoot, absolute),
       reader_rel_path: relativePath(deps.workspaceRoot, absolute),
       source_hash: sourceHash,
