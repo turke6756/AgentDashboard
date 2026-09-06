@@ -78,6 +78,7 @@ function patchDb(workspacePath: string, created: Agent[]): () => void {
     'addFileActivity', 'updateAgentResumeSessionId', 'getTeamMembership',
     'getAgentTemplate', 'getFileActivities', 'insertAgentSession',
     'getCurrentBrick', 'getContinuationAttempt', 'incrementRestartCount',
+    'listTurnRecords', 'updateAgentDashboardMcpStatus',
   ];
   const orig: Record<string, unknown> = {};
   for (const k of keys) orig[k] = db[k];
@@ -106,6 +107,8 @@ function patchDb(workspacePath: string, created: Agent[]): () => void {
   db.getCurrentBrick = () => null;
   db.getContinuationAttempt = () => null;
   db.incrementRestartCount = () => {};
+  db.listTurnRecords = () => [];
+  db.updateAgentDashboardMcpStatus = () => {};
   patchApplyStatusTransition(db);
 
   return () => { for (const k of keys) db[k] = orig[k]; };
