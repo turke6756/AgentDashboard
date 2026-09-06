@@ -787,6 +787,24 @@ const api: IpcApi = withoutRetiredSaveApi({
   listInboxReports: (workspaceId) => ipcRenderer.invoke('research:list-inbox-reports', workspaceId),
 };
 
+(api as IpcApi & {
+  library: {
+    ingest: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
+    rescan: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
+    listDocuments: (workspaceId: string, includeUntrusted?: boolean) => Promise<unknown>;
+    onProgress: (callback: (event: import('../shared/library').LibraryProgressEvent) => void) => () => void;
+  };
+}).library = {
+  ingest: (request) => ipcRenderer.invoke('library:ingest', request),
+  rescan: (request) => ipcRenderer.invoke('library:rescan', request),
+  listDocuments: (workspaceId, includeUntrusted) => ipcRenderer.invoke('library:list-documents', workspaceId, includeUntrusted),
+  onProgress: (callback) => {
+    const listener = (_event: unknown, progress: import('../shared/library').LibraryProgressEvent) => callback(progress);
+    ipcRenderer.on('library:progress', listener);
+    return () => ipcRenderer.removeListener('library:progress', listener);
+  },
+};
+
 // WP-P6C: read-only mission-board transport. The shared IpcApi declaration is
 // intentionally left untouched in this renderer-only package; the board narrows
 // this additive bridge member at its call site.

@@ -84,6 +84,7 @@ import { resolvePlanBindingAtBoundary } from './api-server';
 import { resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
 import { registerGitignoreSuggestionIpc } from './git/exhaust-exclusions';
+import { registerProductionLibraryIpc } from './library/library-ipc';
 
 const WSL_DISABLE_STOP_WAIT_MS = 10_000;
 
@@ -247,6 +248,14 @@ export function registerIpcHandlers(
   detachedWindowDeps: DetachedWindowDeps,
   apiConnectionGate?: ApiConnectionGate,
 ): void {
+  registerProductionLibraryIpc(
+    ipcMain,
+    (workspaceId) => getWorkspace(workspaceId),
+    (event) => {
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send('library:progress', event);
+      broadcastToDetachedViews('library:progress', event);
+    },
+  );
   registerResearchInboxIpc(ipcMain, getWorkspace);
   ipcMain.handle('prove_reachability', (_event, request: ReachabilityProofRequest) =>
     proveReachability(request));

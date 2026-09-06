@@ -10,7 +10,8 @@
 // disagree about line wrapping, so matching happens in a whitespace-collapsed
 // space with an index map back to raw offsets.
 
-export const ANCHOR_CONTEXT_CHARS = 32;
+export { ANCHOR_CONTEXT_CHARS } from '../../../shared/anchor-constants';
+import { ANCHOR_CONTEXT_CHARS } from '../../../shared/anchor-constants';
 
 // ---------------------------------------------------------------------------
 // Whitespace-normalized matching core (pure strings)

@@ -15,6 +15,7 @@ import {
   locateQuoteOnPage,
   reattachPdfAnchor,
   rectsForCharRange,
+  resolveLibraryPdfSelector,
   type LiveDocument,
 } from './pdf-comment-anchors';
 import type { NormalizedPageText, NormalizedTextItem } from './pdf-text-geometry';
@@ -355,5 +356,25 @@ describe('rectsForCharRange — sub-item (run) clipping', () => {
     expect(anchor.pages[0].rects[0].x).toBeCloseTo(0.22);
     expect(anchor.pages[0].rects[0].width).toBeCloseTo(0.08);
     expect(validatePdfSelectionAnchor(anchor).ok).toBe(true);
+  });
+});
+describe('resolveLibraryPdfSelector', () => {
+  it('returns exact geometry and ordered endpoints for a unique quote', () => {
+    const page = buildPage(0, ['alpha', 'beta', 'gamma']);
+    const result = resolveLibraryPdfSelector(page, { exact: 'beta', prefix: 'alpha ', suffix: ' gamma' });
+    expect(result.status).toBe('exact');
+    expect(result.rects).toHaveLength(1);
+    expect(result.start).toEqual({ itemIndex: 1, charOffset: 0 });
+    expect(result.end).toEqual({ itemIndex: 1, charOffset: 4 });
+  });
+
+  it('never paints ambiguous or unresolved quotes', () => {
+    const duplicate = buildPage(0, ['same', 'same']);
+    expect(resolveLibraryPdfSelector(duplicate, { exact: 'same', prefix: '', suffix: '' })).toMatchObject({
+      status: 'ambiguous', rects: [],
+    });
+    expect(resolveLibraryPdfSelector(duplicate, { exact: 'missing', prefix: '', suffix: '' })).toMatchObject({
+      status: 'unresolved', rects: [],
+    });
   });
 });

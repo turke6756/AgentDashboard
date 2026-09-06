@@ -9,6 +9,31 @@ export type LibraryDocumentType =
 export type LibraryTrust = 'untrusted' | 'cleared' | 'user-trusted';
 export type LibraryHighlightKind = 'exact' | 'similar';
 
+export type LibraryIngestTrigger = 'report-arrival' | 'add' | 'drop' | 'rescan';
+export type LibraryDocumentStatus =
+  | 'queued'
+  | 'extracting'
+  | 'chunking'
+  | 'embedding'
+  | 'ready'
+  | 'error';
+
+export interface LibraryProgressEvent {
+  workspace_id?: string;
+  document_id: string;
+  status: LibraryDocumentStatus;
+  error_reason?: string;
+}
+
+export interface LibraryIngestRequest {
+  workspace_id: string;
+  source_path: string;
+  trigger: LibraryIngestTrigger;
+  document_id?: string;
+  trust?: LibraryTrust;
+  type?: LibraryDocumentType;
+}
+
 export interface LibraryTextQuoteSelector {
   exact: string;
   prefix: string;

@@ -363,6 +363,10 @@ const TESTS = [
   'dist/main/main/workspace-state-dir.test.js',
   'dist/main/main/library/library-migration.test.js',
   'dist/main/main/library/library-store.test.js',
+  'dist/main/main/library/library-chunker.test.js',
+  'dist/main/main/library/pdf-extractor.test.js',
+  'dist/main/main/library/docx-extractor.test.js',
+  'dist/main/main/library/library-ingest.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
   'dist/main/main/supervisor/supervisor-persona-capability-parity.test.js',
@@ -836,6 +840,8 @@ for (const file of testsToRun) {
     file.endsWith('/agy-session-reader.test.js') ||
     file.endsWith('/database.recovery-operation-insert.test.js') ||
     file.endsWith('/library-store.test.js') ||
+    file.endsWith('/pdf-extractor.test.js') ||
+    file.endsWith('/library-ingest.test.js') ||
     file.endsWith('/supervisor-peer-provider.test.js')
   const compiledRoot = process.env.MAIN_TEST_COMPILED_ROOT
   const runnableFile = compiledRoot && file.startsWith('dist/main/')

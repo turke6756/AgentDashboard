@@ -24,6 +24,7 @@ import type {
 } from '../../../shared/pdf-annotations';
 import { clampNormalizedRect } from './pdf-text-geometry';
 import type { NormalizedPageText, NormalizedTextItem } from './pdf-text-geometry';
+import type { LibraryTextQuoteSelector } from '../../../shared/library';
 import { ANCHOR_CONTEXT_CHARS, findBestMatch } from '../selection/comment-anchors';
 
 // ── Endpoints (input to capture) ─────────────────────────────────────────────
@@ -83,7 +84,7 @@ function charOffsetOf(page: NormalizedPageText, ep: PdfSelectionEndpoint): numbe
 }
 
 /** Reconstruct a semantic {itemIndex, charOffset} from an absolute char offset. */
-function positionForChar(page: NormalizedPageText, char: number): PdfTextPosition {
+export function positionForChar(page: NormalizedPageText, char: number): PdfTextPosition {
   for (const it of page.items) {
     if (char >= it.charStart && char <= it.charEnd) {
       return { itemIndex: it.itemIndex, charOffset: char - it.charStart };
@@ -319,6 +320,33 @@ export function locateQuoteOnPage(
     ambiguous = !!second && !second.fuzzy;
   }
   return { charStart: match.start, charEnd: match.end, fuzzy: match.fuzzy, ambiguous };
+}
+
+export interface LibraryPdfSelectorResolution {
+  status: 'exact' | 'fuzzy' | 'ambiguous' | 'unresolved';
+  char_start?: number;
+  char_end?: number;
+  start?: PdfTextPosition;
+  end?: PdfTextPosition;
+  rects: PdfRect[];
+}
+
+/** Resolve a main-process PDFium quote only through the established PDF anchor primitives. */
+export function resolveLibraryPdfSelector(
+  page: NormalizedPageText,
+  selector: LibraryTextQuoteSelector,
+): LibraryPdfSelectorResolution {
+  const match = locateQuoteOnPage(page, selector.exact, selector.prefix, selector.suffix);
+  if (!match) return { status: 'unresolved', rects: [] };
+  if (match.ambiguous) return { status: 'ambiguous', rects: [] };
+  return {
+    status: match.fuzzy ? 'fuzzy' : 'exact',
+    char_start: match.charStart,
+    char_end: match.charEnd,
+    start: positionForChar(page, match.charStart),
+    end: positionForChar(page, match.charEnd),
+    rects: rectsForCharRange(page, match.charStart, match.charEnd),
+  };
 }
 
 function resultFromMatch(

@@ -7,10 +7,11 @@ import {
   type LibraryTrust,
   validateChunkLocator,
 } from '../../shared/library';
+import { CHUNKER_VERSION, TOKENIZER_VERSION, type LibraryChunk } from './library-chunker';
 
 export const LIBRARY_SCHEMA_VERSION = 1;
-export const LIBRARY_CHUNKER_VERSION = 'paragraph-window-v1';
-export const LIBRARY_TOKENIZER_VERSION = 'cl100k_base-js-tiktoken-1.0.21';
+export const LIBRARY_CHUNKER_VERSION = CHUNKER_VERSION;
+export const LIBRARY_TOKENIZER_VERSION = TOKENIZER_VERSION;
 
 export class LibrarySchemaTooNewError extends Error {
   readonly code = 'LIBRARY_SCHEMA_TOO_NEW';
@@ -39,6 +40,8 @@ export interface LibraryDocumentRow {
   status: string;
   error_reason: string | null;
   index_generation: number;
+  chunker_version: string;
+  tokenizer_version: string;
 }
 
 export interface LibraryChunkRow {
@@ -184,11 +187,63 @@ export function openLibraryStore(workspaceRoot: string): LibraryStore {
       throw new LibrarySchemaTooNewError(schemaVersion, LIBRARY_SCHEMA_VERSION);
     }
     migrateLibraryStore(database, schemaVersion);
+    const columns = database.prepare(`PRAGMA table_info(library_documents)`).all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has('chunker_version')) {
+      database.exec(`ALTER TABLE library_documents ADD COLUMN chunker_version TEXT NOT NULL DEFAULT '${CHUNKER_VERSION}'`);
+    }
+    if (!names.has('tokenizer_version')) {
+      database.exec(`ALTER TABLE library_documents ADD COLUMN tokenizer_version TEXT NOT NULL DEFAULT '${TOKENIZER_VERSION}'`);
+    }
     return { database, databasePath };
   } catch (error) {
     database.close();
     throw error;
   }
+}
+
+export function getLibraryDocument(store: LibraryStore, id: string): LibraryDocumentRow | undefined {
+  return store.database.prepare(`SELECT * FROM library_documents WHERE id = ?`).get(id) as LibraryDocumentRow | undefined;
+}
+
+export function upsertLibraryDocument(store: LibraryStore, row: LibraryDocumentRow): void {
+  store.database.prepare(`
+    INSERT INTO library_documents (
+      id, type, title, created, topics_json, trust, source_rel_path, reader_rel_path,
+      source_hash, size, page_count, provider, agent_id, summary, status, error_reason,
+      index_generation, chunker_version, tokenizer_version
+    ) VALUES (
+      @id, @type, @title, @created, @topics_json, @trust, @source_rel_path, @reader_rel_path,
+      @source_hash, @size, @page_count, @provider, @agent_id, @summary, @status, @error_reason,
+      @index_generation, @chunker_version, @tokenizer_version
+    ) ON CONFLICT(id) DO UPDATE SET
+      type=excluded.type, title=excluded.title, trust=excluded.trust,
+      source_rel_path=excluded.source_rel_path, reader_rel_path=excluded.reader_rel_path,
+      source_hash=excluded.source_hash, size=excluded.size, page_count=excluded.page_count,
+      status=excluded.status, error_reason=excluded.error_reason,
+      index_generation=excluded.index_generation, chunker_version=excluded.chunker_version,
+      tokenizer_version=excluded.tokenizer_version
+  `).run(row);
+}
+
+export function setLibraryDocumentStatus(
+  store: LibraryStore,
+  id: string,
+  status: string,
+  errorReason: string | null = null,
+): void {
+  store.database.prepare(
+    `UPDATE library_documents SET status = ?, error_reason = ? WHERE id = ?`,
+  ).run(status, errorReason, id);
+}
+
+export function replaceLibraryChunks(store: LibraryStore, documentId: string, chunks: LibraryChunk[]): void {
+  store.database.transaction(() => {
+    store.database.prepare(`DELETE FROM library_chunks WHERE document_id = ?`).run(documentId);
+    for (const chunk of chunks) {
+      insertLibraryChunk(store, { ...chunk, embedding: null });
+    }
+  })();
 }
 
 export function closeLibraryStore(store: LibraryStore): void {
