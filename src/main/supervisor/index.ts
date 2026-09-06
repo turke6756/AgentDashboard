@@ -1877,6 +1877,18 @@ export function roleLaneOf(a: {
  *  predicate is the escape that lets a hook-instrumented codex persona ALSO
  *  receive AGENT_ID / DASHBOARD_PORT / DASHBOARD_SPOOL_PATH + the spool tailer.
  *  Re-derivable purely from the persisted row, so launch and reconcile agree. */
+/** True when a path relative to the workspace state root is a launch lane. */
+export function isCanonicalLanePath(relativeLane: readonly string[]): boolean {
+  return (
+    (relativeLane.length === 1 && (relativeLane[0] === 'supervisor' || relativeLane[0] === 'researcher')) ||
+    (relativeLane.length === 2 && relativeLane[0] === 'supervisor' &&
+      (relativeLane[1] === 'claude' || relativeLane[1] === 'codex')) ||
+    (relativeLane.length === 2 && relativeLane[0] === 'workers' &&
+      Object.prototype.hasOwnProperty.call(PROVIDER_COMMANDS, relativeLane[1])) ||
+    (relativeLane.length === 2 && relativeLane[0] === 'agents' && relativeLane[1].length > 0)
+  );
+}
+
 export function isCodexHookPersona(a: { provider?: AgentProvider; wantsCodexHooks?: boolean }): boolean {
   return a.provider === 'codex' && !!a.wantsCodexHooks;
 }
@@ -3749,12 +3761,7 @@ export class AgentSupervisor extends EventEmitter {
           const relativeLane = normCwd.startsWith(normStateRoot + sep)
             ? normCwd.slice(normStateRoot.length + sep.length).split(/[\\/]+/)
             : [];
-          const isCanonicalLane =
-            (relativeLane.length === 1 && (relativeLane[0] === 'supervisor' || relativeLane[0] === 'researcher')) ||
-            (relativeLane.length === 2 && relativeLane[0] === 'workers' &&
-              Object.prototype.hasOwnProperty.call(PROVIDER_COMMANDS, relativeLane[1])) ||
-            (relativeLane.length === 2 && relativeLane[0] === 'agents' && relativeLane[1].length > 0);
-          if (!isCanonicalLane) {
+          if (!isCanonicalLanePath(relativeLane)) {
             throw new Error(
               `Explicit workingDirectory '${explicitAgentCwd}' contains a Lares state-directory segment ` +
               `but is not a canonical lane directory for workspace '${workDir}'`,

@@ -14,9 +14,9 @@
 /** The four verified lesson-skill roots (workspace-relative, trailing slash),
  *  one per lane/provider. WP-R proved preload + invocation for each. */
 export const LESSON_SKILL_ROOTS: readonly string[] = [
-  '.lares/supervisor/.claude/skills/',      // Claude supervisor lane
+  '.lares/supervisor/claude/.claude/skills/', // Claude supervisor lane
   '.lares/workers/claude/.claude/skills/',  // Claude worker lane
-  '.lares/supervisor/.agents/skills/',      // Codex supervisor lane (provider='codex')
+  '.lares/supervisor/codex/.agents/skills/', // Codex supervisor lane
   '.lares/workers/codex/.agents/skills/',   // Codex worker lane
 ];
 

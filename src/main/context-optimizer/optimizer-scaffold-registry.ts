@@ -56,6 +56,12 @@ const REGISTRY_ROWS: ScaffoldRegistryRow[] = [
   // Persona CLAUDE.md (one per native lane). Both state-dir spellings: `.lares`
   // is live; `.dashboard` appears in pre-rename resident targets.
   { constantSymbol: 'SUPERVISOR_AGENT_MD', pathTails: ['/.lares/supervisor/claude.md', '/.dashboard/supervisor/claude.md'] },
+  { constantSymbol: 'SUPERVISOR_AGENT_MD_CHILD', pathTails: [
+    '/.lares/supervisor/claude/claude.md',
+    '/.dashboard/supervisor/claude/claude.md',
+    '/.lares/supervisor/codex/agents.md',
+    '/.dashboard/supervisor/codex/agents.md',
+  ] },
   { constantSymbol: 'WORKER_CLAUDE_MD', pathTails: ['/.lares/workers/claude/claude.md', '/.dashboard/workers/claude/claude.md'] },
   { constantSymbol: 'RESEARCHER_AGENT_MD', pathTails: ['/.lares/researcher/claude.md', '/.dashboard/researcher/claude.md'] },
   // Skill bodies — one tail matches every lane's copy of that skill's SKILL.md.

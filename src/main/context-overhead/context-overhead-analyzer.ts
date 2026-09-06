@@ -59,7 +59,8 @@ interface BuiltinLane {
 // `total`" behavior is preserved exactly by `total = residentTotal + onDemandTotal`.
 
 const BUILTIN_LANES: BuiltinLane[] = [
-  { relDir: '.lares/supervisor', name: 'Supervisor', kind: 'builtin-supervisor', lane: 'supervisor' },
+  { relDir: '.lares/supervisor/claude', name: 'Supervisor (claude)', kind: 'builtin-supervisor', lane: 'supervisor' },
+  { relDir: '.lares/supervisor/codex', name: 'Supervisor (codex)', kind: 'builtin-supervisor', lane: 'supervisor' },
   { relDir: '.lares/researcher', name: 'Researcher', kind: 'builtin-researcher', lane: 'researcher' },
   { relDir: '.lares/workers/claude', name: 'Worker (claude)', kind: 'builtin-worker', lane: 'worker' },
   { relDir: '.lares/workers/codex', name: 'Worker (codex)', kind: 'builtin-worker', lane: 'worker' },

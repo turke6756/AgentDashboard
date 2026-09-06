@@ -45,6 +45,8 @@ import { toolsetsForLane } from '../supervisor/mcp-config-builder';
 export type LaneVerdict = 'supervisor' | 'researcher' | 'worker' | 'legacy' | 'unknown';
 
 const TEMPLATE_TAILS: readonly { tail: string; lane: LaneVerdict }[] = [
+  { tail: '.lares/supervisor/claude', lane: 'supervisor' },
+  { tail: '.lares/supervisor/codex', lane: 'supervisor' },
   { tail: '.lares/supervisor', lane: 'supervisor' },
   { tail: '.lares/researcher', lane: 'researcher' },
   { tail: '.lares/workers/claude', lane: 'worker' },
@@ -52,6 +54,8 @@ const TEMPLATE_TAILS: readonly { tail: string; lane: LaneVerdict }[] = [
   // Legacy `.dashboard/**` template dirs — historical session streams (and
   // rename-failed fallback sessions) permanently carry the old name, so the
   // lane derivation must keep recognizing both. Never used for construction.
+  { tail: '.dashboard/supervisor/claude', lane: 'supervisor' },
+  { tail: '.dashboard/supervisor/codex', lane: 'supervisor' },
   { tail: '.dashboard/supervisor', lane: 'supervisor' },
   { tail: '.dashboard/researcher', lane: 'researcher' },
   { tail: '.dashboard/workers/claude', lane: 'worker' },

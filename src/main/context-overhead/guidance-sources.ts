@@ -43,12 +43,12 @@ export const AGENTS_MD_DOCUMENTED_PROVIDERS: readonly string[] = ['codex'];
 
 /**
  * Derive the provider identifier an agent's lane context runs under. Built-in
- * worker lanes encode the provider in their directory
- * (`.lares/workers/<provider>` / legacy `.dashboard/workers/<provider>`);
- * supervisor/researcher lanes and personas are Claude Code lanes.
+ * worker and supervisor lanes encode the provider in their child directory
+ * (`.lares/{workers,supervisor}/<provider>` and legacy `.dashboard` spellings);
+ * flat supervisor lanes, researcher lanes, and personas are Claude Code lanes.
  */
 export function providerForAgent(agent: { workingDir: string; kind: string }): string {
-  const m = /[\\/](?:\.lares|\.dashboard)[\\/]workers[\\/]([^\\/]+)/i.exec(agent.workingDir);
+  const m = /[\\/](?:\.lares|\.dashboard)[\\/](?:workers|supervisor)[\\/]([^\\/]+)/i.exec(agent.workingDir);
   if (m) return m[1].toLowerCase();
   return 'claude';
 }

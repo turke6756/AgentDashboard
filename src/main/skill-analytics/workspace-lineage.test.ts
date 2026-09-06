@@ -35,6 +35,10 @@ test('fold — strips the researcher template tail', () => {
 test('fold — strips the workers/codex template tail', () => {
   assert.equal(norm(foldLaunchCwdToWorkspaceRoot('C:/a/b/.dashboard/workers/codex')), 'c:/a/b');
 });
+test('fold - strips both supervisor provider-child spellings to the workspace root', () => {
+  assert.equal(norm(foldLaunchCwdToWorkspaceRoot('C:/proj/.lares/supervisor/claude')), 'c:/proj');
+  assert.equal(norm(foldLaunchCwdToWorkspaceRoot('C:/proj/.dashboard/supervisor/codex')), 'c:/proj');
+});
 test('fold — accepts backslash (Windows) launch cwd', () => {
   assert.equal(norm(foldLaunchCwdToWorkspaceRoot('C:\\proj\\.dashboard\\supervisor')), 'c:/proj');
 });

@@ -32,12 +32,14 @@ function target(over: Partial<ResidentTarget> & { sourcePath: string }): Residen
 
 /** Walk up from this compiled test file until src/shared/constants.ts is found. */
 function findRepoRoot(): string {
-  let dir = __dirname;
-  for (let i = 0; i < 12; i++) {
-    if (fs.existsSync(path.join(dir, 'src', 'shared', 'constants.ts'))) return dir;
-    const up = path.dirname(dir);
-    if (up === dir) break;
-    dir = up;
+  for (const start of [__dirname, process.cwd()]) {
+    let dir = start;
+    for (let i = 0; i < 12; i++) {
+      if (fs.existsSync(path.join(dir, 'src', 'shared', 'constants.ts'))) return dir;
+      const up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
   }
   throw new Error('could not locate repo root (src/shared/constants.ts) from ' + __dirname);
 }
@@ -50,6 +52,10 @@ const test = (name: string, fn: () => void) => tests.push({ name, fn });
 // constant; skill bodies list all three lane copies to prove the single tail matches).
 const EXPECTED: Record<string, string[]> = {
   SUPERVISOR_AGENT_MD: ['C:\\Users\\x\\proj\\.dashboard\\supervisor\\CLAUDE.md'],
+  SUPERVISOR_AGENT_MD_CHILD: [
+    'C:\\Users\\x\\proj\\.lares\\supervisor\\claude\\CLAUDE.md',
+    '/p/.dashboard/supervisor/codex/AGENTS.md',
+  ],
   WORKER_CLAUDE_MD: ['/home/x/proj/.dashboard/workers/claude/CLAUDE.md'],
   RESEARCHER_AGENT_MD: ['\\\\wsl.localhost\\Ubuntu\\home\\x\\proj\\.dashboard\\researcher\\CLAUDE.md'],
   SUPERVISOR_RUN_ORCHESTRATION_SKILL: ['/p/.dashboard/supervisor/.claude/skills/run-orchestration/SKILL.md'],

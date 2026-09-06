@@ -68,7 +68,7 @@ export function resolveLaneCwd(options: ResolveLaneCwdOptions): string {
   if (shouldDeriveLane && persona) {
     agentCwd = joinLaunchPath(pathType, effectiveActivityRoot, stateDirName, 'agents', persona);
   } else if (shouldDeriveLane && isSupervisor) {
-    agentCwd = joinLaunchPath(pathType, effectiveActivityRoot, stateDirName, 'supervisor');
+    agentCwd = joinLaunchPath(pathType, effectiveActivityRoot, stateDirName, 'supervisor', provider);
   } else if (shouldDeriveLane && isResearcher) {
     agentCwd = joinLaunchPath(pathType, effectiveActivityRoot, stateDirName, 'researcher', provider);
   } else if (shouldDeriveLane && isWorkerLane) {

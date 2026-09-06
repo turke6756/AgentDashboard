@@ -15,6 +15,9 @@ import {
   providerForAgent,
 } from './guidance-sources';
 import { makePathOps } from './paths';
+import { analyzeOverhead } from './context-overhead-analyzer';
+import { TokenEstimator } from './token-estimator';
+import { lessonTargetRelPaths } from '../memory-index/skill-provisioning';
 import type { GuidanceSource, OverheadSource } from '../../shared/types';
 
 interface TestCase { name: string; run(): void; }
@@ -30,14 +33,47 @@ function probe(existing: string[]): { exists(p: string): boolean } {
 
 // ── provider derivation ───────────────────────────────────────────────────────
 
-test('providerForAgent: worker lanes derive the provider from the workers/<provider> dir', () => {
+test('providerForAgent: worker and supervisor child lanes derive their provider', () => {
   assert.equal(providerForAgent({ workingDir: '/ws/.lares/workers/codex', kind: 'builtin-worker' }), 'codex');
   assert.equal(providerForAgent({ workingDir: '/ws/.lares/workers/claude', kind: 'builtin-worker' }), 'claude');
   // Legacy spelling still resolves (unmigrated workspace).
   assert.equal(providerForAgent({ workingDir: '/ws/.dashboard/workers/codex', kind: 'builtin-worker' }), 'codex');
-  // Supervisor / researcher / persona lanes are Claude Code lanes.
+  assert.equal(providerForAgent({ workingDir: '/ws/.lares/supervisor/codex', kind: 'builtin-supervisor' }), 'codex');
+  assert.equal(providerForAgent({ workingDir: '/ws/.dashboard/supervisor/claude', kind: 'builtin-supervisor' }), 'claude');
+  // Flat supervisor / researcher / persona lanes are Claude Code lanes.
   assert.equal(providerForAgent({ workingDir: '/ws/.lares/supervisor', kind: 'builtin-supervisor' }), 'claude');
   assert.equal(providerForAgent({ workingDir: '/somewhere/else', kind: 'persona' }), 'claude');
+});
+
+test('analyzer enumerates both supervisor provider-child lanes, including legacy fallback', () => {
+  const dirs = new Set(['/ws/.lares/supervisor/claude', '/ws/.dashboard/supervisor/codex']);
+  const model = analyzeOverhead('ws', '/ws', 'wsl', {
+    reader: {
+      read: () => null,
+      exists: (p) => dirs.has(p),
+      listFiles: () => [],
+    },
+    estimator: new TokenEstimator(),
+    mcpInventory: { forLane: () => [] },
+    personas: [],
+    env: {},
+    userHome: '/home/user',
+    managedPolicyPath: null,
+  });
+  const supervisors = model.agents.filter((agent) => agent.kind === 'builtin-supervisor');
+  assert.deepEqual(supervisors.map((agent) => [agent.workingDir, agent.provider]), [
+    ['/ws/.lares/supervisor/claude', 'claude'],
+    ['/ws/.dashboard/supervisor/codex', 'codex'],
+  ]);
+});
+
+test('lesson skill provisioning targets both supervisor provider-child lanes', () => {
+  assert.deepEqual(lessonTargetRelPaths('remember'), [
+    '.lares/supervisor/claude/.claude/skills/remember/SKILL.md',
+    '.lares/workers/claude/.claude/skills/remember/SKILL.md',
+    '.lares/supervisor/codex/.agents/skills/remember/SKILL.md',
+    '.lares/workers/codex/.agents/skills/remember/SKILL.md',
+  ]);
 });
 
 // ── chain fixture: root + mid + below-cwd (the plan's chain test) ─────────────

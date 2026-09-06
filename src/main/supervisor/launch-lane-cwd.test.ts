@@ -6,6 +6,20 @@ import { assertLaneLaunchCwd, resolveLaneCwd } from './launch-lane-cwd';
 const workspaceRoot = path.resolve('C:\\work\\lares-workspace');
 
 for (const provider of ['codex', 'claude'] as const) {
+  test(`plan-bound ${provider} supervisor uses its provider child lane`, () => {
+    const cwd = resolveLaneCwd({
+      workspaceRoot,
+      activityRoot: workspaceRoot,
+      explicitCwd: workspaceRoot,
+      stateDirName: '.lares',
+      pathType: 'windows',
+      provider,
+      isSupervisor: true,
+    });
+
+    assert.equal(cwd, path.join(workspaceRoot, '.lares', 'supervisor', provider));
+  });
+
   test(`plan-bound ${provider} worker without planning worktrees uses its workspace lane`, () => {
     const cwd = resolveLaneCwd({
       workspaceRoot,

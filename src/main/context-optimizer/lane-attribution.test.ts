@@ -20,6 +20,8 @@ const rows: Row[] = [
   // supervisor
   { name: 'supervisor (windows)', dir: 'C:\\Users\\e\\Projects\\App\\.dashboard\\supervisor', expect: 'supervisor' },
   { name: 'supervisor (posix, trailing slash)', dir: '/home/e/App/.dashboard/supervisor/', expect: 'supervisor' },
+  { name: 'supervisor claude child (.lares)', dir: '/home/e/App/.lares/supervisor/claude', expect: 'supervisor' },
+  { name: 'supervisor codex child (.dashboard)', dir: 'C:\\proj\\.dashboard\\supervisor\\codex', expect: 'supervisor' },
   // worker
   { name: 'worker claude (windows)', dir: 'C:\\proj\\.dashboard\\workers\\claude', expect: 'worker' },
   { name: 'worker codex (posix)', dir: '/proj/.dashboard/workers/codex', expect: 'worker' },
