@@ -73,7 +73,7 @@ test('worker grant resolves exactly list_checkpoints and diff_turn', () => {
   const grant = toolsetsForLane('worker');
   assert.equal(
     grant,
-    'comms,observability-core,browser-present,plans-read,memory,checkpoints-read',
+    'comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read',
     'REACHABILITY:wp1-checkpoints-read-grant',
   );
   const scriptsDir = path.resolve(__dirname, '..', '..', '..', 'scripts');

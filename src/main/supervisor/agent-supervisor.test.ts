@@ -1639,8 +1639,8 @@ test('Case R1: Windows researcher launch arg-set (toolset=browser, strict, --too
     // Researcher dashboard toolset, in the inline --mcp-config JSON.
     const mcpIdx = capturedArgs.indexOf('--mcp-config');
     assert.ok(mcpIdx !== -1, 'researcher must get an inline --mcp-config');
-    assert.ok(/"DASHBOARD_MCP_TOOLSETS":"browser,plans-read"/.test(capturedArgs[mcpIdx + 1]),
-      `researcher dashboard toolset must be browser,plans-read; got: ${capturedArgs[mcpIdx + 1]}`);
+    assert.ok(/"DASHBOARD_MCP_TOOLSETS":"browser,plans-read,library-read"/.test(capturedArgs[mcpIdx + 1]),
+      `researcher dashboard toolset must include library-read; got: ${capturedArgs[mcpIdx + 1]}`);
 
     // Native --tools allowlist — has the research/browse tools, NOT Bash/Edit/etc.
     const toolsIdx = capturedArgs.indexOf('--tools');
@@ -1731,8 +1731,8 @@ test('Case R2: WSL researcher launch command (toolset=browser, strict, --tools/-
 
     assert.ok(rendered.includes('--strict-mcp-config'),
       `WSL researcher must be strict; got: ${rendered}`);
-    assert.ok(/"DASHBOARD_MCP_TOOLSETS":"browser,plans-read"/.test(rendered),
-      `WSL researcher dashboard toolset must be browser,plans-read; got: ${rendered}`);
+    assert.ok(/"DASHBOARD_MCP_TOOLSETS":"browser,plans-read,library-read"/.test(rendered),
+      `WSL researcher dashboard toolset must include library-read; got: ${rendered}`);
     assert.ok(rendered.includes("--tools 'WebSearch,WebFetch,Read,Grep,Glob,Task,Skill,Write,mcp__agent-dashboard__browser_*,mcp__claude-in-chrome__*'"),
       `WSL researcher --tools must be the single-quoted allowlist (browser_* primary + claude-in-chrome fallback); got: ${rendered}`);
     assert.ok(rendered.includes("--disallowedTools 'Bash,Edit,MultiEdit,NotebookEdit'"),

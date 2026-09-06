@@ -48,7 +48,7 @@ test('carrier TOML has production-safe paths, ordering, placeholders, and inline
     'args = ["C:/Program Files/Lares/resources/scripts/mcp-dashboard.js"]',
     'startup_timeout_sec = 30',
     'tool_timeout_sec = 6000',
-    'env = { ELECTRON_RUN_AS_NODE = "1", AGENT_DASHBOARD_API_TOKEN = "${AGENT_DASHBOARD_API_TOKEN}", AGENT_DASHBOARD_API_PORT = "${AGENT_DASHBOARD_API_PORT}", AGENT_DASHBOARD_API_HOST = "${AGENT_DASHBOARD_API_HOST}", AGENT_DASHBOARD_SELF_ID = "${AGENT_DASHBOARD_SELF_ID}", AGENT_DASHBOARD_WORKSPACE_ID = "${AGENT_DASHBOARD_WORKSPACE_ID}", DASHBOARD_MCP_TOOLSETS = "comms,observability-core,browser-present,plans-read,memory,checkpoints-read" }',
+    'env = { ELECTRON_RUN_AS_NODE = "1", AGENT_DASHBOARD_API_TOKEN = "${AGENT_DASHBOARD_API_TOKEN}", AGENT_DASHBOARD_API_PORT = "${AGENT_DASHBOARD_API_PORT}", AGENT_DASHBOARD_API_HOST = "${AGENT_DASHBOARD_API_HOST}", AGENT_DASHBOARD_SELF_ID = "${AGENT_DASHBOARD_SELF_ID}", AGENT_DASHBOARD_WORKSPACE_ID = "${AGENT_DASHBOARD_WORKSPACE_ID}", DASHBOARD_MCP_TOOLSETS = "comms,observability-core,browser-present,plans-read,memory,checkpoints-read,library-read" }',
   ]);
   assert.equal(text.includes('command = "node"'), false);
   assert.ok(text.indexOf('tool_timeout_sec') < text.indexOf('env = {'));
