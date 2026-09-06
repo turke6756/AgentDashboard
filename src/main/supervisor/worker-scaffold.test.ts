@@ -418,13 +418,14 @@ test('WP-G: every lane settings.json keeps autoMemoryEnabled: false', () => {
 
 // ── Grok Build worker scaffold (plan §2.6) ───────────────────────────
 //
-// The grok lane rides the claude-compat carrier: a single managed file,
+// The grok lane's hook carrier is the claude-compat managed file
 // .lares/workers/grok/.claude/settings.json. Commit 7 (PowerShell-safe): its
 // content is the GENERATED workerGrokSettingsJson() — absolute .lares/scripts
 // paths materialized at scaffold-write time, no ${CLAUDE_PROJECT_DIR} (grok runs
 // hooks via PowerShell, which does not expand it) — registered under its OWN
 // scaffold key at version 2. Plus a seed-once AGENTS.md identity that is NOT in
-// the managed map. No native .grok/hooks carrier, no remember skill in this scope.
+// the managed map. A native .grok/config.toml may carry MCP configuration, but
+// there is no native .grok/hooks carrier or remember skill in this scope.
 
 function readSidecar(workDir: string): Record<string, number> {
   const p = path.join(workDir, ...SCAFFOLD_SIDECAR_REL.split('/'));
@@ -556,8 +557,14 @@ test('Grok: NO .grok/hooks carrier and NO remember skill in the minimum scope', 
 
     // No native grok hook carrier — grok rides the single claude-compat carrier
     // (two active carriers risk the codex Run-D double-fire).
-    const grokHooksDir = path.join(workDir, '.lares', 'workers', 'grok', '.grok');
-    assert.ok(!fs.existsSync(grokHooksDir), `no .grok carrier must be created; found ${grokHooksDir}`);
+    const grokHooksDir = path.join(workDir, '.lares', 'workers', 'grok', '.grok', 'hooks');
+    assert.ok(!fs.existsSync(grokHooksDir), `no .grok/hooks carrier must be created; found ${grokHooksDir}`);
+    const grokConfigPath = path.join(workDir, '.lares', 'workers', 'grok', '.grok', 'config.toml');
+    if (fs.existsSync(grokConfigPath)) {
+      const grokConfig = fs.readFileSync(grokConfigPath, 'utf-8');
+      assert.ok(!/^\s*\[hooks(?:\.|\])/.test(grokConfig),
+        `grok config.toml must not define a [hooks] table; got:\n${grokConfig}`);
+    }
 
     // No remember skill in this commit (plan §2.5).
     const rememberClaude = path.join(workDir, '.lares', 'workers', 'grok', '.claude', 'skills', 'remember', 'SKILL.md');
