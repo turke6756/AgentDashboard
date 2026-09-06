@@ -14,7 +14,16 @@ export function writebackClause(
   planningIntentId?: string,
   planArtifactId?: string,
   outputKind?: OrchestrationPlanOutputKind | null,
+  runId?: string,
+  topic?: string,
+  date?: string,
 ): string {
+  if (outputKind === 'library-deliberation') {
+    return `write the finalized plan to ${planPath} as a new standalone deliberation document. ` +
+      `Begin the file with this exact frontmatter block (copy it verbatim):\n\n` +
+      `---\norchestration_id: ${runId}\nkind: deliberation\nstatus: active\ndate: ${date}\ntopic: ${JSON.stringify(topic)}\n---\n\n` +
+      `This deliberation is not attached to any plan. Do NOT edit any other document`;
+  }
   if (isFolderPlanOutput(outputKind) && planningIntentId) {
     const date = /(?:^|[\\/])(\d{4}-\d{2}-\d{2})-[^\\/]+$/.exec(planPath)?.[1]
       ?? new Date().toISOString().slice(0, 10);
@@ -44,6 +53,9 @@ export function serialLeadPrompt(
   planningIntentId?: string,
   planArtifactId?: string,
   outputKind?: OrchestrationPlanOutputKind | null,
+  runId?: string,
+  runTopic?: string,
+  date?: string,
 ): string {
   return `You are the Lead Planner in a GroupThink deliberation.
 
@@ -53,7 +65,7 @@ You are working with a Reviewer agent. Each of your assistant turns will be rela
 
 Plan schema when you finalize: file paths, specific edits, clear instructions a worker agent could execute without further questions.
 
-Termination contract: ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind)} ONLY after the Reviewer has explicitly approved the latest draft in their own message. The write ends the orchestration — a premature write terminates the deliberation before consensus.
+Termination contract: ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind, runId, runTopic, date)} ONLY after the Reviewer has explicitly approved the latest draft in their own message. The write ends the orchestration — a premature write terminates the deliberation before consensus.
 
 Begin by producing your first draft of the plan as your next message.`;
 }
@@ -108,6 +120,9 @@ export function parallelSynthesisPrompt(
   planningIntentId?: string,
   planArtifactId?: string,
   outputKind?: OrchestrationPlanOutputKind | null,
+  runId?: string,
+  topic?: string,
+  date?: string,
 ): string {
   return `Here is the other planner's reaction after seeing your initial draft and engaging with the differences:
 
@@ -119,7 +134,7 @@ ${otherR2}
 
 You now have full context: your initial draft, the other planner's initial take, and the other planner's reaction above. Synthesize.
 
-Identify where you both agree. Identify where you disagree and pick the right middle ground with reasoning. ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind).replace(/^write /, 'Write ')}.
+Identify where you both agree. Identify where you disagree and pick the right middle ground with reasoning. ${writebackClause(planPath, sectionAnchor, planningIntentId, planArtifactId, outputKind, runId, topic, date).replace(/^write /, 'Write ')}.
 
 Plan schema: file paths, specific edits, clear instructions a worker agent could execute without further questions. The write ends the orchestration.`;
 }

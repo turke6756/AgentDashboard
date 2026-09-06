@@ -175,9 +175,31 @@ export function planArtifactMatchesRun(run: OrchestrationRun): boolean {
   }
 }
 
+/** True only for a changed standalone deliberation carrying this run's identity. */
+export function libraryDeliberationMatchesRun(run: OrchestrationRun): boolean {
+  if (run.planOutputKind !== 'library-deliberation') return false;
+  const currentHash = planArtifactHash(run.planPath);
+  if (currentHash === null || currentHash === (run.planBaselineHash ?? null)) return false;
+  try {
+    const frontmatter = parseFrontmatter(fs.readFileSync(run.planPath, 'utf8'));
+    return frontmatter?.kind === 'deliberation'
+      && frontmatter?.orchestration_id === run.runId;
+  } catch {
+    return false;
+  }
+}
+
+/** Classify only the controlled diagnostics emitted for a missing/mismatched deliberation. */
+export function isDeliberationMissDiagnostic(msg: string): boolean {
+  return msg.includes('no deliberation file at ')
+    || (msg.includes('deliberation artifact at ') && msg.includes('does not match the run identity'));
+}
+
 /** Resume keeps an already-delivered artifact; otherwise current disk is the new baseline. */
 export function preparePlanBaselineForResume(run: OrchestrationRun): void {
   if (isFolderPlanOutput(run.planOutputKind) && !planArtifactMatchesRun(run)) {
+    run.planBaselineHash = planArtifactHash(run.planPath);
+  } else if (run.planOutputKind === 'library-deliberation' && !libraryDeliberationMatchesRun(run)) {
     run.planBaselineHash = planArtifactHash(run.planPath);
   }
 }
@@ -188,6 +210,7 @@ export function preparePlanBaselineForResume(run: OrchestrationRun): void {
 function planDeliverableReady(_client: DashboardClient, ctx: OrchestrationRunContext): boolean {
   const { run } = ctx;
   if (isFolderPlanOutput(run.planOutputKind)) return planArtifactMatchesRun(run);
+  if (run.planOutputKind === 'library-deliberation') return libraryDeliberationMatchesRun(run);
   if (run.planId && run.sectionAnchor) {
     try {
       return fs.statSync(run.planPath).mtimeMs >= Date.parse(run.startedAt);
@@ -612,7 +635,9 @@ export async function runSerial(client: DashboardClient, ctx: OrchestrationRunCo
   // archive a stale plan only on a genuinely fresh run, never on resume.
   // WP6: never archive a plan-rail surface — it is the EXISTING registered
   // artifact this run edits into, not a leftover to clear.
-  if (!resumeLeadId && !resumeReviewerId && !run.planId) archiveStalePlan(planPath, run.runId);
+  if (!resumeLeadId && !resumeReviewerId && !run.planId && run.planOutputKind !== 'library-deliberation') {
+    archiveStalePlan(planPath, run.runId);
+  }
 
   let lead: Agent;
   let reviewer: Agent | null = null;
@@ -638,6 +663,7 @@ export async function runSerial(client: DashboardClient, ctx: OrchestrationRunCo
       kickoffPrompt: serialLeadPrompt(
         topic, planPath, sectionAnchor, run.planId,
         run.planningIntentId ?? undefined, run.planArtifactId ?? undefined, run.planOutputKind,
+        run.runId, run.topic, run.startedAt.slice(0, 10),
       ),
       ownerAgentId: run.supervisorId,
     });
@@ -717,7 +743,7 @@ export async function runSerial(client: DashboardClient, ctx: OrchestrationRunCo
   }
 
   if (!planWritten && turn >= MAX_TURNS) {
-    throw new Error('STALL: Max turns reached without plan completion.');
+    throw new Error('STALL: Max turns reached without deliverable completion.');
   }
 }
 
@@ -729,7 +755,7 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   // T2 defensive guard: parallel has no resume path, so always archive a stale
   // pre-existing plan before R1 can trip the premature-write existsSync gate.
   // WP6: except for a plan-rail run, whose surface legitimately pre-exists.
-  if (!run.planId) archiveStalePlan(planPath, run.runId);
+  if (!run.planId && run.planOutputKind !== 'library-deliberation') archiveStalePlan(planPath, run.runId);
 
   // R1: both launch with the same prompt; kick off in parallel. The synthesizer
   // is the lead-provider (writes the plan in R3); the peer is the reviewer side.
@@ -806,6 +832,7 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   await sendWorker(client, ctx, synthesizer.id, 'Synthesizer', parallelSynthesisPrompt(
     peerR2.content, planPath, sectionAnchor, run.planId,
     run.planningIntentId ?? undefined, run.planArtifactId ?? undefined, run.planOutputKind,
+    run.runId, run.topic, run.startedAt.slice(0, 10),
   ));
 
   const synthR3 = await waitTurnComplete(client, ctx, synthesizer.id, 'Synthesizer R3', turnTimeoutMs);
@@ -813,7 +840,11 @@ export async function runParallel(client: DashboardClient, ctx: OrchestrationRun
   ctx.persist();
 
   if (!(await waitForDeliverable(client, ctx, PLAN_WRITE_GRACE_MS))) {
-    const what = isFolderPlanOutput(run.planOutputKind) && fs.existsSync(planPath)
+    const what = run.planOutputKind === 'library-deliberation'
+      ? (fs.existsSync(planPath)
+          ? `the deliberation artifact at ${planPath} exists but does not match the run identity`
+          : `no deliberation file at ${planPath}`)
+      : isFolderPlanOutput(run.planOutputKind) && fs.existsSync(planPath)
       ? `the artifact at ${planPath} exists but does not match the run identity`
       : run.planId && sectionAnchor
       ? `no content change in section ${sectionAnchor} of plan ${run.planId}`

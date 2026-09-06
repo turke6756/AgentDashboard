@@ -873,6 +873,26 @@ test('a STALL throw transitions the run to stalled + emits a resume_hint', async
   assert.equal(payload.resume_hint.params.resumeRunId, runId);
 });
 
+test('T12: only controlled deliberation misses map to no_deliberation_written', async () => {
+  const cases = [
+    { message: 'STALL: no deliberation file at C:/tmp/missing.md', reason: 'no_deliberation_written', kind: 'stalled' },
+    {
+      message: 'STALL: the deliberation artifact at C:/tmp/wrong.md exists but does not match the run identity',
+      reason: 'no_deliberation_written', kind: 'stalled',
+    },
+    { message: 'deliberation provider failed unexpectedly', reason: 'timeout', kind: 'error' },
+  ];
+
+  for (const row of cases) {
+    const runner: OrchestrationRunner = async () => { throw new Error(row.message); };
+    const svc = new OrchestrationService(makeClient(), makeDeliver().fn, { serial: runner, parallel: runner });
+    const { runId } = svc.start_run(planlessReq());
+    await waitFor(() => getRun(runId)?.status === row.kind);
+    const payload = eventsFor(runId).find((event) => event.kind === row.kind)?.payload as any;
+    assert.equal(payload.reason, row.reason, row.message);
+  }
+});
+
 test('a non-stall throw transitions the run to error', async () => {
   const runner: OrchestrationRunner = async () => { throw new Error('boom: unexpected'); };
   const { fn } = makeDeliver();

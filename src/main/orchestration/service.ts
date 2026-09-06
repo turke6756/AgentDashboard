@@ -3,7 +3,13 @@ import fs from 'fs';
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { ORCHESTRATIONS } from './catalog';
-import { planArtifactHash, preparePlanBaselineForResume, runSerial, runParallel } from './groupthink-v2';
+import {
+  isDeliberationMissDiagnostic,
+  planArtifactHash,
+  preparePlanBaselineForResume,
+  runSerial,
+  runParallel,
+} from './groupthink-v2';
 import { parseLegacyGroupthinkCommand } from './groupthink-legacy';
 import {
   DashboardClient, RunOrchestrationRequest, OrchestrationRun,
@@ -354,6 +360,7 @@ export class OrchestrationService extends EventEmitter {
         runId: run.runId, mode: run.mode,
         reason: msg.includes('Max turns') ? 'turn_cap_reached'
               : msg.includes('ready for relay') ? 'receiver_not_ready'
+              : isDeliberationMissDiagnostic(msg) ? 'no_deliberation_written'
               : msg.includes('no plan file') ? 'no_plan_written' : 'timeout',
         topic: run.topic, planPath: run.planPath, message: msg,
         planId: run.planId ?? null, artifactKind,

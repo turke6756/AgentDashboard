@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  isDeliberationMissDiagnostic, libraryDeliberationMatchesRun,
   planArtifactHash, planArtifactMatchesRun, preparePlanBaselineForResume,
   runSerial, runParallel, getOrchestrationDispatch,
 } from './groupthink-v2';
@@ -218,6 +219,19 @@ function planArtifact(run: OrchestrationRun, overrides: { intentId?: string; pla
     `---\n\n# Delivered plan\n`;
 }
 
+function libraryArtifact(
+  run: OrchestrationRun,
+  overrides: { runId?: string; includeKind?: boolean } = {},
+): string {
+  return `---\n` +
+    `orchestration_id: ${overrides.runId ?? run.runId}\n` +
+    (overrides.includeKind === false ? '' : `kind: deliberation\n`) +
+    `status: active\n` +
+    `date: 2026-09-06\n` +
+    `topic: ${JSON.stringify(run.topic)}\n` +
+    `---\n\n# Delivered deliberation\n`;
+}
+
 test('T7: a plan-less "none" run maps its dispatch stamp source to explicit-none', async () => {
   const noneRun = makeRun({
     runId: 'none-dispatch', planId: undefined, planBindingMode: 'none',
@@ -232,6 +246,144 @@ test('T7: a plan-less "none" run maps its dispatch stamp source to explicit-none
     planId: null, planItemId: null, source: 'explicit-none',
   });
 });
+
+test('T8: library readiness requires a changed deliberation with this run identity', async () => {
+  const run = makeRun({
+    runId: 'lib-ready', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  try {
+    assert.equal(libraryDeliberationMatchesRun(run), false, 'absent target is not ready');
+
+    fs.writeFileSync(run.planPath, libraryArtifact(run));
+    run.planBaselineHash = planArtifactHash(run.planPath);
+    assert.equal(libraryDeliberationMatchesRun(run), false, 'unchanged baseline is not ready');
+
+    run.planBaselineHash = null;
+    fs.writeFileSync(run.planPath, libraryArtifact(run, { runId: 'wrong-run' }));
+    assert.equal(libraryDeliberationMatchesRun(run), false, 'wrong orchestration_id is not ready');
+
+    fs.writeFileSync(run.planPath, libraryArtifact(run, { includeKind: false }));
+    assert.equal(libraryDeliberationMatchesRun(run), false, 'missing kind is not ready');
+
+    fs.writeFileSync(run.planPath, libraryArtifact(run));
+    assert.equal(libraryDeliberationMatchesRun(run), true, 'matching identity is ready');
+
+    const exercised = makeRun({
+      runId: 'lib-seam', planId: undefined, planBindingMode: 'none',
+      planOutputKind: 'library-deliberation', planBaselineHash: null,
+    });
+    const { client, state } = makeFake({
+      onTurn: (agent) => {
+        if (agent.title.startsWith('Lead') && agent.counter === 1) {
+          fs.writeFileSync(exercised.planPath, libraryArtifact(exercised, { runId: 'wrong-run' }));
+        } else if (agent.title.startsWith('Lead') && agent.counter === 2) {
+          fs.writeFileSync(exercised.planPath, libraryArtifact(exercised));
+        }
+      },
+    });
+    try {
+      await runSerial(client, makeCtx(exercised).ctx);
+      assert.equal(state.launchInputs.length, 2, 'REACHABILITY:groupthink-v2-library-readiness');
+    } finally {
+      rm(exercised.planPath);
+    }
+  } finally {
+    rm(run.planPath);
+  }
+});
+
+test('T9: library resume re-baselines a mismatch but preserves a matching deliverable', () => {
+  const accepted = makeRun({
+    runId: 'lib-resume-ok', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  const invalid = makeRun({
+    runId: 'lib-resume-bad', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  try {
+    fs.writeFileSync(accepted.planPath, libraryArtifact(accepted));
+    preparePlanBaselineForResume(accepted);
+    assert.equal(accepted.planBaselineHash, null, 'matching deliverable is not re-baselined');
+    assert.equal(libraryDeliberationMatchesRun(accepted), true);
+
+    fs.writeFileSync(invalid.planPath, libraryArtifact(invalid, { runId: 'wrong-run' }));
+    preparePlanBaselineForResume(invalid);
+    assert.equal(invalid.planBaselineHash, planArtifactHash(invalid.planPath));
+    assert.equal(libraryDeliberationMatchesRun(invalid), false);
+  } finally {
+    rm(accepted.planPath);
+    rm(invalid.planPath);
+  }
+});
+
+test('T10: serial fresh and parallel restart never archive a library deliberation', async () => {
+  const serialRun = makeRun({
+    runId: 'lib-serial', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  const parallelRun = makeRun({
+    runId: 'lib-parallel', mode: 'parallel', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  fs.writeFileSync(serialRun.planPath, libraryArtifact(serialRun));
+  fs.writeFileSync(parallelRun.planPath, libraryArtifact(parallelRun));
+  const renameSync = fs.renameSync;
+  let archiveCalls = 0;
+  (fs as any).renameSync = () => { archiveCalls++; };
+  try {
+    await runSerial(makeFake().client, makeCtx(serialRun).ctx);
+    await runParallel(makeFake().client, makeCtx(parallelRun).ctx);
+    assert.equal(archiveCalls, 0);
+    assert.equal(serialRun.planBaselineHash, null);
+    assert.equal(parallelRun.planBaselineHash, null);
+    assert.equal(libraryDeliberationMatchesRun(serialRun), true);
+    assert.equal(libraryDeliberationMatchesRun(parallelRun), true);
+  } finally {
+    (fs as any).renameSync = renameSync;
+    rm(serialRun.planPath);
+    rm(parallelRun.planPath);
+  }
+});
+
+test('T11: library writeback prompts carry standalone identity frontmatter', () => {
+  const target = path.join(os.tmpdir(), '2026-09-06-groupthink-libprompt.md');
+  const topic = 'Quoted "topic"';
+  const prompts = [
+    writebackClause(
+      target, undefined, undefined, undefined, 'library-deliberation', 'libprompt', topic, '2026-09-06',
+    ),
+    serialLeadPrompt(
+      topic, target, undefined, undefined, undefined, undefined,
+      'library-deliberation', 'libprompt', topic, '2026-09-06',
+    ),
+    parallelSynthesisPrompt(
+      'Peer response', target, undefined, undefined, undefined, undefined,
+      'library-deliberation', 'libprompt', topic, '2026-09-06',
+    ),
+  ];
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes(target));
+    assert.match(prompt, /orchestration_id: libprompt/);
+    assert.match(prompt, /kind: deliberation/);
+    assert.match(prompt, /status: active/);
+    assert.match(prompt, /date: 2026-09-06/);
+    assert.ok(prompt.includes(`topic: ${JSON.stringify(topic)}`));
+    assert.doesNotMatch(prompt, /(?:^|\n)intent_id:/);
+    assert.doesNotMatch(prompt, /(?:^|\n)plan_artifact_id:/);
+  }
+});
+
+test('T12: deliberation miss classifier accepts only controlled diagnostics', () => {
+  assert.equal(isDeliberationMissDiagnostic('no deliberation file at C:/tmp/run.md'), true);
+  assert.equal(isDeliberationMissDiagnostic(
+    'the deliberation artifact at C:/tmp/run.md exists but does not match the run identity',
+  ), true);
+  assert.equal(isDeliberationMissDiagnostic('deliberation provider timed out'), false);
+  assert.equal(isDeliberationMissDiagnostic('artifact does not match the run identity'), false);
+});
+
 test('legacy fresh-file and anchored HTML writeback clauses remain byte-identical', () => {
   const legacyPath = '/tmp/legacy-plan.md';
   assert.equal(writebackClause(legacyPath), `write the plan file to ${legacyPath}`);
