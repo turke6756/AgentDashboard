@@ -69,6 +69,7 @@ const TOOLSET_SCRIPT_MAP: Record<string, { script: string; fn: string }> = {
   // mirrors ipc-deps.ts TOOLSET_SCRIPT_MAP so the granted-verb surface resolves
   // publish_lessons_batch / replace_memory_bundle / restore_memory_bundle.
   migration: { script: 'mcp-tools-migration.js', fn: 'getMigrationToolDefinitions' },
+  'library-read': { script: 'mcp-tools-library.js', fn: 'getLibraryToolDefinitions' },
 };
 
 /** Repo-root `scripts/` — this file compiles to dist/main/main/supervisor/. */
