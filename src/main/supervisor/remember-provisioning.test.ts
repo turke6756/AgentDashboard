@@ -27,8 +27,8 @@ function test(name: string, fn: () => void): void { tests.push({ name, run: fn }
 
 type ScaffoldMap = Record<string, { content: string; version: number; previousHashes?: Record<number, string> }>;
 const statics = AgentSupervisor as unknown as {
-  SUPERVISOR_FILES: ScaffoldMap;
-  SUPERVISOR_FILES_CODEX: ScaffoldMap;
+  SUPERVISOR_FILES_CLAUDE_CHILD: ScaffoldMap;
+  SUPERVISOR_FILES_CODEX_CHILD: ScaffoldMap;
   WORKER_FILES_CLAUDE: ScaffoldMap;
 };
 
@@ -37,24 +37,24 @@ const [CLAUDE_SUP, CLAUDE_WORKER, CODEX_SUP, CODEX_WORKER] = ROOTS;
 
 test('lessonTargetRelPaths(remember) enumerates exactly the four WP-R roots', () => {
   assert.deepEqual(ROOTS, [
-    '.lares/supervisor/.claude/skills/remember/SKILL.md',
+    '.lares/supervisor/claude/.claude/skills/remember/SKILL.md',
     '.lares/workers/claude/.claude/skills/remember/SKILL.md',
-    '.lares/supervisor/.agents/skills/remember/SKILL.md',
+    '.lares/supervisor/codex/.agents/skills/remember/SKILL.md',
     '.lares/workers/codex/.agents/skills/remember/SKILL.md',
   ]);
 });
 
-test('the Claude-supervisor remember copy is a managed v4 entry in SUPERVISOR_FILES', () => {
-  const e = statics.SUPERVISOR_FILES[CLAUDE_SUP];
-  assert.ok(e, `SUPERVISOR_FILES has ${CLAUDE_SUP}`);
+test('the Claude-supervisor remember copy is a managed v4 child entry', () => {
+  const e = statics.SUPERVISOR_FILES_CLAUDE_CHILD[CLAUDE_SUP];
+  assert.ok(e, `SUPERVISOR_FILES_CLAUDE_CHILD has ${CLAUDE_SUP}`);
   assert.equal(e.content, REMEMBER_SKILL);
   assert.equal(e.version, 4);
   assert.deepEqual(e.previousHashes, { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH });
 });
 
-test('the Codex-supervisor remember copy is a managed v4 entry in SUPERVISOR_FILES_CODEX', () => {
-  const e = statics.SUPERVISOR_FILES_CODEX[CODEX_SUP];
-  assert.ok(e, `SUPERVISOR_FILES_CODEX has ${CODEX_SUP}`);
+test('the Codex-supervisor remember copy is a managed v4 child entry', () => {
+  const e = statics.SUPERVISOR_FILES_CODEX_CHILD[CODEX_SUP];
+  assert.ok(e, `SUPERVISOR_FILES_CODEX_CHILD has ${CODEX_SUP}`);
   assert.equal(e.content, REMEMBER_SKILL);
   assert.equal(e.version, 4);
   assert.deepEqual(e.previousHashes, { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH });
