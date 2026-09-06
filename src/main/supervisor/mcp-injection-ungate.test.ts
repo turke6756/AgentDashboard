@@ -257,8 +257,8 @@ test('production Windows codex launches receive their computed lane MCP toolset'
 
   const cases = [
     { id: 'codex-supervisor', flags: { isSupervisor: true }, toolsets: 'orchestration,comms,observability-core,plans,browser-present,checkpoints,memory,migration', model: null },
-    { id: 'codex-worker', flags: { isSupervised: true }, toolsets: 'comms,observability-core,browser-present,plans-read,memory', model: null },
-    { id: 'codex-researcher', flags: { isResearcher: true }, toolsets: 'browser', model: RESEARCHER_CODEX_MODEL },
+    { id: 'codex-worker', flags: { isSupervised: true }, toolsets: 'comms,observability-core,browser-present,plans-read,memory,checkpoints-read', model: null },
+    { id: 'codex-researcher', flags: { isResearcher: true }, toolsets: 'browser,plans-read', model: RESEARCHER_CODEX_MODEL },
   ] as const;
 
   for (const item of cases) {
@@ -442,7 +442,7 @@ test('production WSL codex researcher preserves MCP bytes on fresh launch and re
     'REACHABILITY:mcp-injection-ungated-unreferenced resume must preserve every fresh-launch MCP value byte');
   assert.match(resumeCommand, /'ccodex' 'resume'/, 'resume rewriter must still place the codex subcommand');
   assert.ok(resumeConfigs.includes('mcp_servers.agent-dashboard.env_vars=["AGENT_DASHBOARD_API_TOKEN"]'));
-  assert.ok(resumeConfigs.includes('mcp_servers.agent-dashboard.env.DASHBOARD_MCP_TOOLSETS="browser"'));
+  assert.ok(resumeConfigs.includes('mcp_servers.agent-dashboard.env.DASHBOARD_MCP_TOOLSETS="browser,plans-read"'));
   assert.equal(resumeCommand.includes(`'\\''`), false, 'resume MCP values must not carry a second shell-quote layer');
   assert.equal(JSON.stringify(resumeConfigs).includes(FIXED_TOKEN), false,
     'F9: token value must not enter WSL codex MCP argv');
@@ -499,7 +499,7 @@ test('Claude worker argv matches the captured f4ca7231 baseline bytes', async ()
   // paths are normalized; the argument order and every config byte are frozen.
   const capturedBaseline = [
     '--dangerously-skip-permissions',
-    '--mcp-config', '{"mcpServers":{"agent-dashboard":{"command":"<EXEC>","args":["<SCRIPT>"],"env":{"AGENT_DASHBOARD_SELF_ID":"claude-worker-baseline","AGENT_DASHBOARD_WORKSPACE_ID":"ws-1","ELECTRON_RUN_AS_NODE":"1","DASHBOARD_MCP_TOOLSETS":"comms,observability-core,browser-present,plans-read,memory","AGENT_DASHBOARD_API_PORT":"24678","AGENT_DASHBOARD_API_TOKEN":"WP3_SECRET_TOKEN_VALUE"}}}}',
+    '--mcp-config', '{"mcpServers":{"agent-dashboard":{"command":"<EXEC>","args":["<SCRIPT>"],"env":{"AGENT_DASHBOARD_SELF_ID":"claude-worker-baseline","AGENT_DASHBOARD_WORKSPACE_ID":"ws-1","ELECTRON_RUN_AS_NODE":"1","DASHBOARD_MCP_TOOLSETS":"comms,observability-core,browser-present,plans-read,memory,checkpoints-read","AGENT_DASHBOARD_API_PORT":"24678","AGENT_DASHBOARD_API_TOKEN":"WP3_SECRET_TOKEN_VALUE"}}}}',
     '--strict-mcp-config',
     '--model', 'claude-opus-4-8',
     '--add-dir', '<WORKDIR>',
