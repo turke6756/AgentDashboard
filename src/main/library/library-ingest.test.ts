@@ -83,6 +83,6 @@ test('production IPC entry registers ingest, rescan, list, and progress-capable 
     () => null,
     () => undefined,
   );
-  assert.deepEqual([...handlers.keys()], ['library:ingest', 'library:rescan', 'library:list-documents'],
+  assert.deepEqual([...handlers.keys()], ['library:ingest', 'library:rescan', 'library:list-documents', 'library:query'],
     'REACHABILITY:registerIpcHandlers:library:ingest');
 });
