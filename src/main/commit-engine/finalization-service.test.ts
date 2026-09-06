@@ -226,13 +226,13 @@ test('ordering: ref is created BEFORE the row insert, and the row is ready', asy
   assert.ok(refIdx >= 0 && insIdx >= 0 && refIdx < insIdx, 'ref write must precede row insert');
 });
 
-test('plan-package create flips the work package to done in the same txn', async () => {
+test('plan-package create leaves the explicit work-package transition to its caller', async () => {
   const store = new FakeStore();
   store.workPackages.set('wp-1', { id: 'wp-1', state: 'executing', updatedAt: 0 });
   const writeRef = makeWriter(store);
   await finalizePackage(planRequest(), { store, writeRef, freeze: fakeFreeze, now: () => 100, newId: () => 'fin-a' });
-  assert.equal(store.workPackages.get('wp-1')?.state, 'done');
-  assert.ok(store.log.some((e) => e.kind === 'flip-done' && e.id === 'wp-1'));
+  assert.equal(store.workPackages.get('wp-1')?.state, 'executing');
+  assert.ok(!store.log.some((e) => e.kind === 'flip-done' && e.id === 'wp-1'));
 });
 
 test('fleet-adhoc create never touches a plan work package', async () => {
@@ -376,7 +376,7 @@ test('identical re-finalize over a downgraded active row re-creates the ref and 
   assert.equal(res.finalization.id, 'fin-1');
   assert.equal(store.rows.get('fin-1')!.boundaryStatus, 'ready');
   assert.equal(store.maxPackageRevision('pkg-1'), 1, 'no new revision on reattach');
-  assert.equal(store.workPackages.get('wp-1')?.state, 'done', 'done restored with the ready boundary');
+  assert.equal(store.workPackages.get('wp-1')?.state, 'executing', 'caller-owned lifecycle state remains unchanged');
 });
 
 test('reattach failure leaves the row unavailable and reports incomplete', async () => {
