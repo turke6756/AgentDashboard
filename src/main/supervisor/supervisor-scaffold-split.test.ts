@@ -7,6 +7,7 @@ import {
   SUPERVISOR_AGENT_MD,
   SUPERVISOR_AGENT_MD_CHILD,
   SUPERVISOR_AGENT_MD_CHILD_V1,
+  SUPERVISOR_AGENT_MD_CHILD_V2,
   SUPERVISOR_AGENT_MD_V32,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
@@ -65,12 +66,15 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
   assert.ok(Object.keys(files).length > 0, `${name} child map must not be empty`);
   for (const [rel, file] of Object.entries(files)) {
     const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
-    assert.equal(file.version, isInstructions ? 2 : 1, `${rel} must carry its expected scaffold version`);
+    assert.equal(file.version, isInstructions ? 3 : 1, `${rel} must carry its expected scaffold version`);
     if (isInstructions) {
       assert.deepEqual(
         file.previousHashes,
-        { 1: digestText(SUPERVISOR_AGENT_MD_CHILD_V1) },
-        `${rel} must retain the superseded v1 child instructions hash`,
+        {
+          1: digestText(SUPERVISOR_AGENT_MD_CHILD_V1),
+          2: digestText(SUPERVISOR_AGENT_MD_CHILD_V2),
+        },
+        `${rel} must retain the superseded child instruction hashes`,
       );
     } else {
       assert.equal(file.previousHashes, undefined, `${rel} must have no pre-child hash history`);
