@@ -33,7 +33,7 @@ beforeEach(() => {
       status: 'ok', relPath: '2026-08-15-vite-stable-version.md',
       filePath: 'C:\\work\\.lares\\research\\inbox\\2026-08-15-vite-stable-version.md',
       artifactId: 'r-2026-08-15-vite-stable', topic: 'Vite stable version',
-      summary: 'Vite remains stable.', provider: 'codex',
+      created: '2026-08-15T12:00:00Z', summary: 'Vite remains stable.', provider: 'codex',
     },
     {
       status: 'malformed', relPath: 'historical/broken.md',
@@ -68,6 +68,28 @@ describe('ResearchCardGallery', () => {
       .toBe('Research artifact rejected: source_urls must be a non-empty list of http(s) URLs');
     expect([...container!.querySelectorAll('[data-testid="research-provider"]')].map((node) => node.textContent))
       .toEqual(['codex', 'unknown']);
+  });
+
+  it('renders valid reports newest-first before malformed reports', async () => {
+    listInboxReports.mockResolvedValue([
+      {
+        status: 'malformed', relPath: '000-legacy.md', filePath: 'C:\\work\\000-legacy.md',
+        reason: 'Missing frontmatter', recovered: { topic: 'Legacy malformed' },
+      },
+      {
+        status: 'ok', relPath: 'older.md', filePath: 'C:\\work\\older.md', artifactId: 'older',
+        topic: 'Older valid', created: '2026-08-01T12:00:00Z', summary: 'Older.',
+      },
+      {
+        status: 'ok', relPath: 'newer.md', filePath: 'C:\\work\\newer.md', artifactId: 'newer',
+        topic: 'Newer valid', created: '2026-09-05T12:00:00Z', summary: 'Newer.',
+      },
+    ]);
+
+    await render();
+
+    expect([...container!.querySelectorAll('article h3')].map((node) => node.textContent))
+      .toEqual(['Newer valid', 'Older valid', 'Legacy malformed']);
   });
 
   it('opens the main-issued raw path through the existing file-viewer state', async () => {

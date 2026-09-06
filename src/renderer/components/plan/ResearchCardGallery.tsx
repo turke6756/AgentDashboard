@@ -12,6 +12,7 @@ type ResearchInboxReport =
     filePath: string;
     artifactId: string;
     topic: string;
+    created: string;
     summary: string;
     provider?: Provider;
   }
@@ -31,6 +32,15 @@ type ResearchInboxReport =
 type ResearchApi = {
   research?: { listInboxReports: (workspaceId: string) => Promise<ResearchInboxReport[]> };
 };
+
+function compareReports(left: ResearchInboxReport, right: ResearchInboxReport): number {
+  if (left.status !== right.status) return left.status === 'ok' ? -1 : 1;
+  if (left.status === 'malformed' || right.status === 'malformed') {
+    return left.relPath.localeCompare(right.relPath);
+  }
+  const byCreated = Date.parse(right.created) - Date.parse(left.created);
+  return byCreated || left.relPath.localeCompare(right.relPath);
+}
 
 function ResearchCard({
   report,
@@ -93,7 +103,8 @@ export default function ResearchCardGallery(): React.ReactElement {
     try {
       const api = window.api as typeof window.api & ResearchApi;
       if (!api.research) throw new Error('research bridge unavailable');
-      setReports(await api.research.listInboxReports(workspace.id));
+      const loadedReports = await api.research.listInboxReports(workspace.id);
+      setReports([...loadedReports].sort(compareReports));
     } catch {
       setReports([]);
       setError('Could not load research reports from this workspace.');

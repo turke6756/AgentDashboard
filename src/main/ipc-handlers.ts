@@ -116,6 +116,7 @@ export type ResearchInboxReportDto =
     filePath: string;
     artifactId: string;
     topic: string;
+    created: string;
     summary: string;
     provider?: 'claude' | 'codex' | 'agy';
   }
@@ -153,9 +154,9 @@ function toResearchInboxDto(
 ): ResearchInboxReportDto {
   const filePath = joinResearchPath(logicalInboxDir, report.relPath, pathType);
   if (report.status === 'ok') {
-    const { id: artifactId, topic, summary, provider } = report.frontmatter;
+    const { id: artifactId, topic, created, summary, provider } = report.frontmatter;
     return {
-      status: 'ok', relPath: report.relPath, filePath, artifactId, topic, summary,
+      status: 'ok', relPath: report.relPath, filePath, artifactId, topic, created, summary,
       ...(provider ? { provider } : {}),
     };
   }

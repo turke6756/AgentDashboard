@@ -73,7 +73,7 @@ import path from 'node:path';
     assert.deepEqual(mapped, [{
       status: 'ok', relPath: 'historical/report.md',
       filePath: path.join(workspaceRoot, '.lares', 'research', 'inbox', 'historical', 'report.md'),
-      artifactId: 'research-duplicate-id', topic: 'Topic', summary: 'Summary',
+      artifactId: 'research-duplicate-id', topic: 'Topic', created: '2026-08-15', summary: 'Summary',
     }]);
     assert.equal('id' in mapped[0], false, 'wire DTO maps id to artifactId');
 
