@@ -39,22 +39,22 @@ import {
   type CandidateReadRequest,
   type CandidateWorkspaceInput,
   type CaptureTurnReader,
-} from '../commit-candidates/candidate-service';
-import { ComposeLockRegistry } from '../commit-candidates/compose-lock-registry';
+} from '../commit-engine/candidate-service';
+import { ComposeLockRegistry } from '../commit-engine/compose-lock-registry';
 import { CheckpointQueue } from '../git-checkpoints/checkpoint-queue';
-import { computeIndexFingerprint } from '../commit-candidates/index-fingerprint';
+import { computeIndexFingerprint } from '../commit-engine/index-fingerprint';
 import {
   readCurrentCommitRepresentation,
   type CommitRepresentation,
   type CommitRepresentationEntry,
-} from '../commit-candidates/commit-representation';
-import { createTurnStampSource, type TurnStampRecordReader } from '../commit-candidates/stamp-projection';
-import type { RunGitBytesLike, RunGitTextLike } from '../commit-candidates/dirty-inventory';
-import type { TurnWitnessReader } from '../commit-candidates/witness-projection';
-import type { CommitPathLinkReader } from '../commit-candidates/protection-read';
-import { parseFinalizationManifest, resolvePinnedSelectionDrift } from '../commit-candidates/pinned-selection-drift';
-import { deriveRepositoryIdentity } from '../commit-candidates/repository-identity';
-import type { CommitCandidateSnapshotRegistry } from '../commit-candidates/snapshot-registry';
+} from '../commit-engine/commit-representation';
+import { createTurnStampSource, type TurnStampRecordReader } from '../commit-engine/stamp-projection';
+import type { RunGitBytesLike, RunGitTextLike } from '../commit-engine/dirty-inventory';
+import type { TurnWitnessReader } from '../commit-engine/witness-projection';
+import type { CommitPathLinkReader } from '../commit-engine/protection-read';
+import { parseFinalizationManifest, resolvePinnedSelectionDrift } from '../commit-engine/pinned-selection-drift';
+import { deriveRepositoryIdentity } from '../commit-engine/repository-identity';
+import type { CommitCandidateSnapshotRegistry } from '../commit-engine/snapshot-registry';
 import type {
   FinalizePlanItemDoneRequest,
   PlanCandidatePreviewRoutes,
@@ -92,10 +92,10 @@ export interface PlanCandidateRoutesDeps {
   readCommitPathLinks?: CommitPathLinkReader;
   listRepoCommitPathLinks?: (repositoryKey: string) => readonly CandidateLedgerLink[];
   readActiveFinalizations?: (repositoryKey: string) => readonly PackageFinalization[];
-  readActivePlanningWorktrees?: import('../commit-candidates/candidate-service').CandidateServiceDeps['readActivePlanningWorktrees'];
-  listSaveIntents?: import('../commit-candidates/candidate-service').CandidateServiceDeps['listSaveIntents'];
-  listNamedSaveSetMembers?: import('../commit-candidates/candidate-service').CandidateServiceDeps['listNamedSaveSetMembers'];
-  getPlan?: import('../commit-candidates/candidate-service').CandidateServiceDeps['getPlan'];
+  readActivePlanningWorktrees?: import('../commit-engine/candidate-service').CandidateServiceDeps['readActivePlanningWorktrees'];
+  listSaveIntents?: import('../commit-engine/candidate-service').CandidateServiceDeps['listSaveIntents'];
+  listNamedSaveSetMembers?: import('../commit-engine/candidate-service').CandidateServiceDeps['listNamedSaveSetMembers'];
+  getPlan?: import('../commit-engine/candidate-service').CandidateServiceDeps['getPlan'];
   getPackageFinalization?: (id: string) => PackageFinalization | null;
   getSaveIntentFinalization?: (id: string) => SaveIntentFinalization | null;
   getPlanWorkPackage?: (id: string) => PlanWorkPackage | null;
@@ -384,7 +384,7 @@ export function createPlanCandidateRoutes(deps: PlanCandidateRoutesDeps): PlanCa
 
   function readFinalization(id: string): {
     finalization: PackageFinalization;
-    saveUnit: import('../commit-candidates/candidate-service').CandidateSaveUnitFinalization;
+    saveUnit: import('../commit-engine/candidate-service').CandidateSaveUnitFinalization;
   } | null {
     const legacy = getPackageFinalization(id);
     if (legacy) {

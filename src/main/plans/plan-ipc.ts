@@ -65,13 +65,13 @@ import {
   finalizePackage,
   type FinalizePackageRequest,
   type FinalizePackageResult,
-} from '../commit-candidates/finalization-service';
-import type { CommitRepresentationEntry } from '../commit-candidates/commit-representation';
+} from '../commit-engine/finalization-service';
+import type { CommitRepresentationEntry } from '../commit-engine/commit-representation';
 import {
   buildCandidate,
   type CandidateBuildContext,
   type CandidateSelectionRequest,
-} from '../commit-candidates/candidate-service';
+} from '../commit-engine/candidate-service';
 import {
   PLAN_PREVIEW_CHANNEL,
   type PlanCandidatePreviewRequest,
@@ -100,7 +100,7 @@ import { projectPlanReview, type PlanReviewProjectionInput } from './plan-review
 import { projectMissionBoardEvidence } from './mission-board-evidence';
 import { projectDurableStampedTrail, projectLiveStampedActivity } from './stamped-evidence-projection';
 import { probeWorkspaceGit } from '../git/git-runtime';
-import { computeBundleCaptureHealth } from '../commit-candidates/capture-health';
+import { computeBundleCaptureHealth } from '../commit-engine/capture-health';
 import { runGit } from '../git-checkpoints/git-command';
 import { observeOverviewSource, parsePlanHumanOverview,
   type OverviewSourceObservation } from './plan-human-overview';

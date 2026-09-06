@@ -83,7 +83,7 @@ import {
 import { resolvePlanBindingAtBoundary } from './api-server';
 import { resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
-import { registerGitignoreSuggestionIpc } from './commit-candidates/exhaust-exclusions';
+import { registerGitignoreSuggestionIpc } from './git/exhaust-exclusions';
 
 // Managed temp dir for clipboard-bitmap pastes. Dropped OS files inject their
 // OWN on-disk path (converted) and never land here — only screenshots do.

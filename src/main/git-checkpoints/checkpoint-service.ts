@@ -102,7 +102,7 @@ import {
 import { CheckpointQueue, type CheckpointPriority, type SkippedDeadline } from './checkpoint-queue';
 import { checkpointRef, recoveryRef, type CheckpointEdge } from './ref-encoding';
 import { deriveRawGitMode } from './raw-git-mode';
-import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { encodeGitPath } from '../commit-engine/dirty-inventory';
 import { resolveCheckpointPathBlob } from './concurrency-policy';
 import {
   checkAfterSnapshot,

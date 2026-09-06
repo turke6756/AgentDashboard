@@ -7,8 +7,8 @@ import test from 'node:test';
 
 import { freezeMembersFromBoundary } from './boundary-filter-replay';
 import { runGit, runGitBytes } from './git-command';
-import { finalizeSaveUnit } from '../commit-candidates/finalization-service';
-import type { CommitRepresentationEntry } from '../commit-candidates/commit-representation';
+import { finalizeSaveUnit } from '../commit-engine/finalization-service';
+import type { CommitRepresentationEntry } from '../commit-engine/commit-representation';
 
 const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const gitBytes = (cwd: string, args: string[], input: Buffer): Buffer => execFileSync('git', args, { cwd, input });

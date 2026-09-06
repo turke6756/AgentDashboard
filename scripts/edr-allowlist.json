@@ -80,16 +80,10 @@
       "owner": "git-native/git-runtime"
     },
     {
-      "file": "src/main/commit-candidates/candidate-validation.ts",
-      "lineContext": "windowsHide: true",
-      "purpose": "PERMANENT Tier-2: hides each repository-local candidate-validation command run in an isolated checkout; execution is bounded by the configured timeout (capped at 60 minutes) and 4 MiB output limit.",
-      "owner": "commit-candidates/candidate-validation"
-    },
-    {
-      "file": "src/main/commit-candidates/dirty-inventory.ts",
+      "file": "src/main/commit-engine/dirty-inventory.ts",
       "lineContext": "windowsHide: true",
       "purpose": "PERMANENT Tier-2: hides the direct resolved-Git child that streams dirty-inventory records; it has no shell, stops after the requested records, and is killed at its timeout/deadline.",
-      "owner": "commit-candidates/dirty-inventory"
+      "owner": "commit-engine/dirty-inventory"
     },
     {
       "file": "src/main/plans/reachability-prover.ts",

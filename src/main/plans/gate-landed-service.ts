@@ -32,7 +32,7 @@ import {
 } from './package-ledger';
 import { resolveLandedFinalizeRequest } from './landed-finalize-enrichment';
 import { finalizePlanItemDone } from './plan-ipc';
-import type { FinalizePackageResult } from '../commit-candidates/finalization-service';
+import type { FinalizePackageResult } from '../commit-engine/finalization-service';
 
 const ACCEPTANCE_GATE = 'supervisor-acceptance';
 const ACCEPTANCE_GATE_REVISION = 1;

@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 
-import { canonicalize } from '../main/commit-candidates/jcs';
+import { canonicalize } from '../main/commit-engine/jcs';
 
 /** Main-owned unit discriminator. Fallback identity is independent of global
  * inventory/protection completeness and never implies a persisted save_intent. */

@@ -155,7 +155,7 @@ const TESTS = [
   // Save-card SC-WP-2H/2J/2K: pin policy/accounting and commit representation.
   'dist/main/main/git-checkpoints/protection-policy.test.js',
   'dist/main/main/git-checkpoints/pin-accounting.test.js',
-  'dist/main/main/commit-candidates/commit-representation.test.js',
+  'dist/main/main/commit-engine/commit-representation.test.js',
   // Terminal-log retention WP-1: reclaimed-marker column — idempotent migration,
   // the WHERE-guarded write (first value preserved, own column only), NULL→null.
   'dist/main/main/log-retention-marker.test.js',
@@ -276,30 +276,31 @@ const TESTS = [
   'dist/main/shared/commit-candidates.export-shape.test.js',
   'dist/main/shared/commit-effect-normalization.test.js',
   'dist/main/main/git-checkpoints/git-command.runGitBytes.test.js',
-  'dist/main/main/commit-candidates/jcs.test.js',
-  'dist/main/main/commit-candidates/repository-identity.test.js',
-  'dist/main/main/commit-candidates/scope-discovery.test.js',
-  'dist/main/main/commit-candidates/dirty-inventory.test.js',
-  'dist/main/main/commit-candidates/dirty-inventory-batch-hash.test.js',
-  'dist/main/main/commit-candidates/snapshot-registry.test.js',
+  'dist/main/main/commit-engine/jcs.test.js',
+  'dist/main/main/commit-engine/repository-identity.test.js',
+  'dist/main/main/commit-engine/scope-discovery.test.js',
+  'dist/main/main/commit-engine/dirty-inventory.test.js',
+  'dist/main/main/commit-engine/dirty-inventory-batch-hash.test.js',
+  'dist/main/main/commit-engine/snapshot-registry.test.js',
   // Main-process OOM hardening WP-H: structural budget/single-flight oracle and
   // the small programmatic hostile real-Git workspace fixture. Keep these ahead
   // of later fail-fast suites so the hardening gate always enters.
-  'dist/main/main/commit-candidates/budget-structural.test.js',
-  'dist/main/main/commit-candidates/hostile-workspace-fixture.test.js',
-  'dist/main/main/commit-candidates/capture-health.test.js',
+  'dist/main/main/commit-engine/budget-structural.test.js',
+  'dist/main/main/commit-engine/hostile-workspace-fixture.test.js',
+  'dist/main/main/commit-engine/capture-health.test.js',
   'dist/main/main/git-checkpoints/live-edge.test.js',
-  'dist/main/main/commit-candidates/witness-projection.test.js',
-  'dist/main/main/commit-candidates/stamp-projection.test.js',
-  'dist/main/main/commit-candidates/component-assembler.test.js',
-  'dist/main/main/commit-candidates/protection-read.test.js',
-  'dist/main/main/commit-candidates/candidate-service.read.test.js',
+  'dist/main/main/commit-engine/witness-projection.test.js',
+  'dist/main/main/commit-engine/stamp-projection.test.js',
+  'dist/main/main/commit-engine/component-assembler.test.js',
+  'dist/main/main/commit-engine/intent-assembler.test.js',
+  'dist/main/main/commit-engine/protection-read.test.js',
+  'dist/main/main/commit-engine/candidate-service.read.test.js',
   'dist/main/main/plans/plan-candidate-routes.test.js',
   // Save-card Stage ③ SC-WP-3C/3G — candidate build pipeline + immutable
   // index-fingerprint snapshot, real finalization service, and the finalize/
   // preview IPC facades (WP-3Z registration).
-  'dist/main/main/commit-candidates/candidate-service.build.test.js',
-  'dist/main/main/commit-candidates/index-fingerprint.test.js',
+  'dist/main/main/commit-engine/candidate-service.build.test.js',
+  'dist/main/main/commit-engine/index-fingerprint.test.js',
   // Researcher sandbox usability rework WP-1: provider redirect facts and the
   // activated-vs-absent support-verdict distinction. Keep ahead of the known
   // foreign finalization-service fail-fast point so this package always enters.
@@ -314,21 +315,22 @@ const TESTS = [
   'dist/main/main/supervisor/log-readers/reader-default-home.test.js',
   // Save-card WP-F2: keep the fallback finalization->sweep composition and the
   // atomic generic save-unit ledger ahead of the known foreign fail-fast point.
-  'dist/main/main/commit-candidates/exhaust-exclusions.test.js',
+  'dist/main/main/git/exhaust-exclusions.test.js',
   // QUARANTINED, not broken by recent work: this test predates plan_8b2cb7da and
   // fails because it asserts an intent-ready state on a surface being retired.
   // DELETE it (do not repair it) when the subtraction plan removes the Save Card
   // committing routes and intent rail engine.
   'dist/main/main/database.intent-ledger.test.js',
   'dist/main/main/git-checkpoints/boundary-filter-replay.test.js',
-  'dist/main/main/commit-candidates/finalization-service.test.js',
-  'dist/main/main/commit-candidates/save-card.e2e.test.js',
-  'dist/main/main/commit-candidates/pinned-selection-drift.test.js',
+  'dist/main/main/commit-engine/finalization-service.test.js',
+  'dist/main/main/commit-engine/assembler.e2e.test.js',
+  'dist/main/main/commit-engine/pinned-selection-drift.test.js',
   'dist/main/main/git-checkpoints/raw-git-mode.test.js',
   // Save-card Stage 4 SC-WP-4B — opaque candidate-token mint/store lifecycle and
   // the repository-exclusive synchronous compose latch consumed by WP-4D.
-  'dist/main/main/commit-candidates/compose-lock-registry.test.js',
-  'dist/main/main/commit-candidates/candidate-service.mint.test.js',
+  'dist/main/main/commit-engine/compose-lock-registry.test.js',
+  'dist/main/main/commit-engine/candidate-service.mint.test.js',
+  'dist/main/main/commit-engine/candidate-service.carry.test.js',
   'dist/main/main/plans/promoted-lifecycle.test.js',
   'dist/main/main/supervisor/send-queue-checkpoint.test.js',
   'dist/main/main/supervisor/initial-user-prompt.test.js',

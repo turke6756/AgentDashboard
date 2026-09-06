@@ -27,9 +27,9 @@ import {
   type FinalizePackageResult,
   type FinalizationRefWriter,
   type MemberFreezer,
-} from '../commit-candidates/finalization-service';
+} from '../commit-engine/finalization-service';
 import { finalizationRef } from '../git-checkpoints/finalization-refs';
-import type { CommitRepresentationEntry } from '../commit-candidates/commit-representation';
+import type { CommitRepresentationEntry } from '../commit-engine/commit-representation';
 import type { EncodedGitPath } from '../../shared/commit-candidates';
 import type { PlanWorkPackage, PackageFinalization, FinalizationBoundaryStatus } from '../database';
 

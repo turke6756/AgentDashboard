@@ -10,7 +10,7 @@ import path from 'node:path';
 import type { DirtyEntry, EncodedGitPath, RepositoryIdentity } from '../shared/commit-candidates';
 import type { GitCapability } from '../shared/types';
 import type { DispatchContext } from './git-checkpoints/dispatch-context';
-import { assembleConflictComponents } from './commit-candidates/component-assembler';
+import { assembleConflictComponents } from './commit-engine/component-assembler';
 
 type SqlJsDatabase = {
   exec(sql: string): unknown;

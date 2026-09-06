@@ -13,7 +13,7 @@ import * as path from 'node:path';
 
 import type { EncodedGitPath } from '../../shared/commit-candidates';
 import type { TurnRecord, TurnWitnessEntry } from '../database';
-import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { encodeGitPath } from '../commit-engine/dirty-inventory';
 import { recordIntentArchitectureEvent } from './intent-architecture-telemetry';
 
 export const DEFAULT_CONTENTION_RECENT_WINDOW_MS = 30 * 60 * 1000;

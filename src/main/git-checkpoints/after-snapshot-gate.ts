@@ -1,6 +1,6 @@
 import type { LstatInfo } from './checkpoint-gating';
 import type { CheckpointTurnStore } from './checkpoint-service';
-import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { encodeGitPath } from '../commit-engine/dirty-inventory';
 import {
   resolveCheckpointPathEntry,
   type ConcurrencyRunGit,

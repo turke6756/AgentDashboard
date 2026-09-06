@@ -31,7 +31,7 @@ import {
   type TurnRecord,
 } from '../database';
 import { runGit, type GitRunResult } from '../git-checkpoints/git-command';
-import { normalizeIndexKeyPath } from '../commit-candidates/repository-identity';
+import { normalizeIndexKeyPath } from '../commit-engine/repository-identity';
 import { projectDurableStampedTrail, projectLiveStampedActivity } from './stamped-evidence-projection';
 
 const FRAME = 'These plans and turns contributed to this file.' as const;

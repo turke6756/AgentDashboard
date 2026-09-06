@@ -5,8 +5,8 @@ import {
   createPlanCandidateRoutes,
   type PlanCandidateRoutesDeps,
 } from './plan-candidate-routes';
-import { CommitCandidateSnapshotRegistry } from '../commit-candidates/snapshot-registry';
-import type { CandidateInventoryRead } from '../commit-candidates/candidate-service';
+import { CommitCandidateSnapshotRegistry } from '../commit-engine/snapshot-registry';
+import type { CandidateInventoryRead } from '../commit-engine/candidate-service';
 import type {
   ConflictComponent,
   DirtyEntry,

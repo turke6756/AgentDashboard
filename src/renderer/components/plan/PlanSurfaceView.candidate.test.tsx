@@ -21,7 +21,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import PlanSurfaceView from './PlanSurfaceView';
-import { buildCandidate, type CandidateBuildContext } from '../../../main/commit-candidates/candidate-service';
+import { buildCandidate, type CandidateBuildContext } from '../../../main/commit-engine/candidate-service';
 import type {
   ConflictComponent,
   DirtyEntry,
@@ -29,8 +29,8 @@ import type {
   RepositoryIdentity,
   CommitCandidate,
 } from '../../../shared/commit-candidates';
-import type { CommitRepresentation } from '../../../main/commit-candidates/commit-representation';
-import type { FrozenManifestMember } from '../../../main/commit-candidates/finalization-service';
+import type { CommitRepresentation } from '../../../main/commit-engine/commit-representation';
+import type { FrozenManifestMember } from '../../../main/commit-engine/finalization-service';
 import type { PackageFinalization } from '../../../main/database';
 import type { PlanCandidatePreviewResponse } from '../../../shared/types';
 

@@ -24,10 +24,10 @@ export const REACHABILITY_TARGET_REGISTRY: ReachabilityTargetRegistry = Object.f
   targets: Object.freeze({
     'exhaust-exclusions-suggest': Object.freeze({
       runner: 'node-test' as const,
-      file: 'src/main/commit-candidates/exhaust-exclusions.test.ts',
+      file: 'src/main/git/exhaust-exclusions.test.ts',
       test_name: 'production workspace-open and on-demand IPC enter the suggestion seam and acceptance',
       protected_test_paths: Object.freeze([
-        'src/main/commit-candidates/exhaust-exclusions.test.ts',
+        'src/main/git/exhaust-exclusions.test.ts',
       ]),
     }),
     'wp-b3-real-ipc-registration': Object.freeze({

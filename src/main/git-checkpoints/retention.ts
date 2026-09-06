@@ -53,12 +53,12 @@ import type { RunGitLike } from './checkpoint-service';
 import { CheckpointQueue, type SkippedDeadline } from './checkpoint-queue';
 import { liveEdgeKey, verifyLiveEdge, verifyLiveEdgesBatch } from './live-edge';
 import { deleteRefPair, type RefDeletion, type ReconLogger } from './reconciler';
-import { deriveRepositoryIdentity, defaultRepositoryIdentityDeps } from '../commit-candidates/repository-identity';
+import { deriveRepositoryIdentity, defaultRepositoryIdentityDeps } from '../commit-engine/repository-identity';
 import {
   produceDirtyInventory,
   type RunGitBytesLike,
-} from '../commit-candidates/dirty-inventory';
-import { evaluateCheckpointProtection } from '../commit-candidates/protection-read';
+} from '../commit-engine/dirty-inventory';
+import { evaluateCheckpointProtection } from '../commit-engine/protection-read';
 import type { DirtyEntry } from '../../shared/commit-candidates';
 import {
   accountAndSelectPins,

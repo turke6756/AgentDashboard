@@ -59,7 +59,7 @@ import { runGit } from '../git-checkpoints/git-command';
 import {
   defaultRepositoryIdentityDeps,
   deriveRepositoryIdentity,
-} from '../commit-candidates/repository-identity';
+} from '../commit-engine/repository-identity';
 import { buildPlanDocuments } from './plan-documents';
 import { reconcilePlanFolderProjections } from './plan-folder-reconciler';
 import { workspaceStateDir } from '../workspace-state-dir';

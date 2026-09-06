@@ -16,7 +16,7 @@ import {
   type RunGitOptions,
 } from '../git-checkpoints/git-command';
 import type { EncodedGitPath } from '../../shared/commit-candidates';
-import type { CommitRepresentationEntry } from '../commit-candidates/commit-representation';
+import type { CommitRepresentationEntry } from '../commit-engine/commit-representation';
 import type { FinalizePlanItemDoneRequest } from './plan-ipc';
 import { REACHABILITY_TARGET_REGISTRY } from './reachability-targets';
 

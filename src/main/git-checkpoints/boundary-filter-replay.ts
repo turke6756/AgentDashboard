@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import type { EncodedGitPath } from '../../shared/commit-candidates';
 import type { RunGitLike } from './checkpoint-service';
 import type { GitRunBytesResult, RunGitOptions } from './git-command';
-import type { CommitRepresentation, CommitRepresentationEntry } from '../commit-candidates/commit-representation';
+import type { CommitRepresentation, CommitRepresentationEntry } from '../commit-engine/commit-representation';
 
 export interface BoundaryFilterReplayRuntime {
   repoRoot: string;

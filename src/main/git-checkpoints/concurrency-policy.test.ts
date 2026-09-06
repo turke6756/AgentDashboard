@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { encodeGitPath } from '../commit-candidates/dirty-inventory';
+import { encodeGitPath } from '../commit-engine/dirty-inventory';
 import { runGit } from './git-command';
 import {
   classifyPathConcurrency,

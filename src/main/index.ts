@@ -41,8 +41,8 @@ import {
   createPlanCandidateRoutes,
   type PlanCandidateRoutesDeps,
 } from './plans/plan-candidate-routes';
-import { CommitCandidateSnapshotRegistry } from './commit-candidates/snapshot-registry';
-import type { CandidateInventoryRead } from './commit-candidates/candidate-service';
+import { CommitCandidateSnapshotRegistry } from './commit-engine/snapshot-registry';
+import type { CandidateInventoryRead } from './commit-engine/candidate-service';
 import { installExternalNavHandlers, forceCloseAllDetached, getDetachedEntries, type DetachedWindowDeps } from './detached-windows';
 import { runCloseFlush, type FlushTarget } from './close-flush';
 import { TAB_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState, type ResolveOpenableWorkspacePathRequest, type ResolveOpenableWorkspacePathResult } from '../shared/types';

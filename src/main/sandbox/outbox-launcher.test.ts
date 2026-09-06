@@ -270,7 +270,7 @@ test('no live launch path resolves the restricted outbox launcher', () => {
 test('main runner registers this suite ahead of the known fail-fast boundary', () => {
   const runnerSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'run-main-tests.mjs'), 'utf8');
   const thisSuite = runnerSource.indexOf("'dist/main/main/sandbox/outbox-launcher.test.js'");
-  const failFastBoundary = runnerSource.indexOf("'dist/main/main/commit-candidates/finalization-service.test.js'");
+  const failFastBoundary = runnerSource.indexOf("'dist/main/main/commit-engine/finalization-service.test.js'");
   assert.ok(thisSuite >= 0, 'outbox-launcher.test.ts must not remain a dead suite');
   assert.ok(thisSuite < failFastBoundary, 'outbox-launcher.test.ts must run ahead of finalization-service fail-fast');
 });
