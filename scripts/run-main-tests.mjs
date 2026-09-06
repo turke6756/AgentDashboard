@@ -440,6 +440,7 @@ const TESTS = [
   'dist/main/main/continuation-lifecycle.test.js',
   'dist/main/main/continuation-binding.restart.test.js',
   'dist/main/main/supervisor/continuation-watcher.test.js',
+  'dist/main/main/supervisor/continuation-codex-successor.test.js',
   'dist/main/main/supervisor/continuation-phase-authority.test.js',
   'dist/main/main/supervisor/file-activities-retention.test.js',
   'dist/main/main/api-browser-routes.test.js',

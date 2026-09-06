@@ -29,12 +29,12 @@ describe('isContinuationEligible', () => {
     expect(isContinuationEligible(agent({ provider: 'claude', isSupervisor: false, privilegeLane: 'supervisor' }))).toBe(true);
   });
 
-  it('is false for a codex privilege-lane persona (claude-only feature)', () => {
-    expect(isContinuationEligible(agent({ provider: 'codex', isSupervisor: false, privilegeLane: 'supervisor' }))).toBe(false);
+  it("is true for a codex privilegeLane:'supervisor' persona", () => {
+    expect(isContinuationEligible(agent({ provider: 'codex', isSupervisor: false, privilegeLane: 'supervisor' }))).toBe(true);
   });
 
-  it('is false for codex / gemini supervisors', () => {
-    expect(isContinuationEligible(agent({ provider: 'codex', isSupervisor: true }))).toBe(false);
+  it('is true for a codex supervisor and false for an unsupported-provider supervisor', () => {
+    expect(isContinuationEligible(agent({ provider: 'codex', isSupervisor: true }))).toBe(true);
     expect(isContinuationEligible(agent({ provider: 'gemini', isSupervisor: true }))).toBe(false);
   });
 });
@@ -85,7 +85,7 @@ describe('forceErrorMessage', () => {
 
   it('prefers the stable code copy over the server prose', () => {
     expect(forceErrorMessage({ ok: false, code: 'continuation-not-watched', error: 'long main-process prose' }))
-      .toBe('Transfer failed — this agent is not being watched (needs a running Claude supervisor)');
+      .toBe('Transfer failed — this agent is not being watched (needs a running Claude or Codex supervisor)');
     expect(forceErrorMessage({ ok: false, code: 'continuation-disabled', error: 'x' }))
       .toBe('Transfer failed — auto context transfer is off for this agent');
     expect(forceErrorMessage({ ok: false, code: 'continuation-watcher-unavailable' }))

@@ -39,13 +39,14 @@ export function getContinuationApi(): ContinuationApi | null {
 
 /** The continuation split button belongs on SUPERVISOR-PRIVILEGED cards only. The
  *  auto continuation watcher in main is supervisor-privilege-scoped
- *  (continuation-watcher-wiring filters on `hasSupervisorPrivilege && provider ===
- *  'claude'`) — the structural workspace supervisor AND a privilegeLane:'supervisor'
+ *  (continuation-watcher-wiring filters on supervisor privilege plus Claude/Codex)
+ *  — the structural workspace supervisor AND a privilegeLane:'supervisor'
  *  persona (#19). Workers are handed off by their supervisor via dashboard events,
  *  so worker cards must not show the control. Missing provider defaults to claude,
  *  matching the rest of the card code (`agent.provider || 'claude'`). */
 export function isContinuationEligible(agent: Pick<Agent, 'provider' | 'isSupervisor' | 'privilegeLane'>): boolean {
-  return hasSupervisorPrivilege(agent) && (agent.provider ?? 'claude') === 'claude';
+  const provider = agent.provider ?? 'claude';
+  return hasSupervisorPrivilege(agent) && (provider === 'claude' || provider === 'codex');
 }
 
 /** Read the agent's continuation flag tolerantly. The field rides the agent
@@ -61,7 +62,7 @@ export function getContinuationEnabled(agent: Agent): boolean {
  *  written for a log line; these are written for a 5 s inline note beside a
  *  32 px button. Codes not listed here fall through to the server string. */
 const FORCE_CODE_COPY: Record<ForceContinuationCode, string> = {
-  'continuation-not-watched': 'this agent is not being watched (needs a running Claude supervisor)',
+  'continuation-not-watched': 'this agent is not being watched (needs a running Claude or Codex supervisor)',
   'continuation-disabled': 'auto context transfer is off for this agent',
   'continuation-watcher-unavailable': 'the continuation watcher is not running',
 };

@@ -8140,8 +8140,8 @@ export class AgentSupervisor extends EventEmitter {
     // Step 1 — guard FIRST, before any stop: never stop a non-eligible agent.
     const agent = getAgent(agentId);
     if (!agent) throw new Error(`continuationRelaunch: no agent ${agentId}`);
-    if (agent.provider !== 'claude') {
-      throw new Error(`continuationRelaunch: agent ${agentId} provider '${agent.provider}' is not eligible (claude only)`);
+    if (agent.provider !== 'claude' && agent.provider !== 'codex') {
+      throw new Error(`continuationRelaunch: agent ${agentId} provider '${agent.provider}' is not eligible (claude or codex only)`);
     }
     const attempt = getContinuationAttempt(brick.handoffAttemptId);
     if (!attempt || attempt.dashboardAgentId !== agentId) {
@@ -8213,12 +8213,7 @@ export class AgentSupervisor extends EventEmitter {
       // on the first input-accepting transition). Step 2 deleted the predecessor's
       // stale pending prompt; this seeds the fresh kickoff in its place. Same TTL
       // as the launch_agent initialUserPrompt path.
-      this.pendingInitialPrompts.set(agentId, {
-        text: buildContinuationKickoffMessage(),
-        expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
-        dispatch: continuationDispatch,
-        continuation: { attemptId: attempt.id, successorSessionId: newSession },
-      });
+      this.stageContinuationSuccessor(agentId, attempt.id, newSession, continuationDispatch);
 
       // Step 7 — the runner-launch tail (and ONLY the launch). The phase moves
       // to `launching` HERE, not inside the tail's timer, so the card is never
@@ -8231,6 +8226,35 @@ export class AgentSupervisor extends EventEmitter {
       this.continuationSwapsInFlight.delete(agentId);
       throw err;
     }
+  }
+
+  /** Stage exactly one successor wake after the atomic relaunch has made the
+   *  successor generation visible. Claude receives note + memory through its
+   *  system prompt; Codex carries both ahead of the kickoff on this rail. */
+  private stageContinuationSuccessor(
+    agentId: string,
+    attemptId: string,
+    successorSessionId: string,
+    dispatch: DispatchContext,
+  ): void {
+    const agent = getAgent(agentId);
+    if (!agent) {
+      console.warn(`[continuation] Cannot stage successor for missing agent ${agentId}`);
+      return;
+    }
+    const text = agent.provider === 'codex'
+      ? [
+          this.buildContinuationBrickBlock(agent, false),
+          this.computeSupervisorMemoryInjectText(agent),
+          buildContinuationKickoffMessage(agent.provider),
+        ].filter(Boolean).join('\n\n')
+      : buildContinuationKickoffMessage(agent.provider);
+    this.pendingInitialPrompts.set(agentId, {
+      text,
+      expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
+      dispatch,
+      continuation: { attemptId, successorSessionId },
+    });
   }
 
   /** Context-brick Inc 4 (4.1 step 7 / 4.9) — the idempotent runner-launch
@@ -10148,12 +10172,12 @@ export class AgentSupervisor extends EventEmitter {
         // continuationRelaunch — that would allocate a second successorGen.
         // A healthily-continued agent (session file present) falls through to
         // the byte-identical plain resume below.
-        if (agent.provider === 'claude' && agent.resumeSessionId) {
+        if ((agent.provider === 'claude' || agent.provider === 'codex') && agent.resumeSessionId) {
           const relaunched = getLatestContinuationAttempt(agent.id, 'relaunched');
           const currentGen = agent.continuationGeneration ?? 0;
           if (relaunched && relaunched.generation === currentGen && currentGen > 0) {
             const sessionOnDisk = this.sessionLogReader.sessionFileExists(
-              'claude',
+              agent.provider,
               agent.workingDirectory,
               agent.resumeSessionId,
             );
@@ -10170,12 +10194,12 @@ export class AgentSupervisor extends EventEmitter {
               // warm. Same one-liner as continuationRelaunch Step 6.5.
               const continuationDispatch = getContinuationAttemptDispatch(relaunched.id);
               if (continuationDispatch) {
-                this.pendingInitialPrompts.set(agent.id, {
-                  text: buildContinuationKickoffMessage(),
-                  expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
-                  dispatch: continuationDispatch,
-                  continuation: { attemptId: relaunched.id, successorSessionId: agent.resumeSessionId },
-                });
+                this.stageContinuationSuccessor(
+                  agent.id,
+                  relaunched.id,
+                  agent.resumeSessionId,
+                  continuationDispatch,
+                );
               } else {
                 // Migrated pre-stamping attempts are explicitly unavailable.
                 // Launch without an auto-submitted turn rather than fabricating

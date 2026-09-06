@@ -99,11 +99,14 @@ test('isContinuationWatchEligible — a plain claude worker is excluded', () => 
   assert.equal(isContinuationWatchEligible({ isSupervisor: false, provider: 'claude' }), false);
 });
 
-test('isContinuationWatchEligible — a privilege-lane persona on a non-claude provider is excluded (claude-only)', () => {
+test("isContinuationWatchEligible — a codex privilegeLane:'supervisor' persona rides the tick", () => {
   assert.equal(
     isContinuationWatchEligible({ isSupervisor: false, privilegeLane: 'supervisor', provider: 'codex' }),
-    false,
+    true,
   );
+});
+
+test('isContinuationWatchEligible — unsupported providers remain excluded', () => {
   assert.equal(isContinuationWatchEligible({ isSupervisor: true, provider: 'gemini' }), false);
 });
 
@@ -856,7 +859,7 @@ test('committedReady retry path re-runs the post-note grace loop before relaunch
 // ── BUG-39 WP2: successor pre-stage kickoff builder ───────────────────
 
 test('kickoff message: [DASHBOARD]-labelled, orients then resumes without the human', () => {
-  const msg = buildContinuationKickoffMessage();
+  const msg = buildContinuationKickoffMessage('claude');
   assert.ok(msg.startsWith('[DASHBOARD] Continuation resume'), 'clearly dashboard-labelled');
   assert.ok(msg.includes('get_my_context'), 'orientation step present');
   assert.ok(/do NOT wait for the human/.test(msg), 'the successor is told not to park');
@@ -878,6 +881,11 @@ test('kickoff message: [DASHBOARD]-labelled, orients then resumes without the hu
     'truly requires the human (a decision only they can make, or a risky/irreversible action).',
     'If you do stop, say plainly why you are waiting.',
   ].join('\n'));
+});
+
+test('kickoff message: provider-aware note location is accurate', () => {
+  assert.match(buildContinuationKickoffMessage('claude'), /note is in your system prompt/);
+  assert.match(buildContinuationKickoffMessage('codex'), /note is included above in this same message/);
 });
 
 // ── Per-agent toggle + force handoff (Edward 2026-07-05) ──────────────

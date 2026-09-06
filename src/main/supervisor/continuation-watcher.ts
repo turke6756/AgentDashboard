@@ -1,4 +1,5 @@
 import type {
+  AgentProvider,
   AgentStatus,
   ContinuationPhase,
   ContinuationPhaseSignal,
@@ -228,20 +229,23 @@ export function decidePostNoteProceed(
  *  never asked to be involved. Unit-testable (fixed text). */
 /** Which active agents ride the auto continuation watcher on each monitor tick:
  *  supervisor-PRIVILEGED (the structural workspace supervisor OR a
- *  privilegeLane:'supervisor' persona, #19) AND claude-provider (continuation is
- *  claude-only). Exported from this pure module so the wiring's monitorTick filter
+ *  privilegeLane:'supervisor' persona, #19) AND a continuation-capable provider
+ *  (Claude or Codex). Exported from this pure module so the wiring's monitorTick filter
  *  is unit-testable without pulling in electron. */
 export function isContinuationWatchEligible(
   a: { isSupervisor?: boolean; privilegeLane?: 'supervisor'; provider?: string },
 ): boolean {
-  return hasSupervisorPrivilege(a) && a.provider === 'claude';
+  return hasSupervisorPrivilege(a) && (a.provider === 'claude' || a.provider === 'codex');
 }
 
-export function buildContinuationKickoffMessage(): string {
+export function buildContinuationKickoffMessage(provider: AgentProvider): string {
+  const noteLocation = provider === 'codex'
+    ? 'included above in this same message'
+    : 'in your system prompt';
   return (
     `[DASHBOARD] Continuation resume (automatic — the human has not spoken yet).
 ` +
-    `You are a fresh continuation session; your predecessor's note is in your system prompt.
+    `You are a fresh continuation session; your predecessor's note is ${noteLocation}.
 ` +
     `Orient FIRST, then keep going — do NOT wait for the human:
 ` +
