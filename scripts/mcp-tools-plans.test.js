@@ -45,6 +45,16 @@ test('implement_plan advertises hardening-to-ready promotion when readiness hold
   assert.match(def.description, /LARES_PLANNING_WORKTREES=1/);
 });
 
+test('gate schema rejects unknown root/nested fields and exposes no mode argument', () => {
+  const schema = getPlansToolDefinitions().find((tool) => tool.name === 'gate_landed_work_package').inputSchema;
+  assert.strictEqual(schema.additionalProperties, false);
+  assert.ok(!Object.hasOwn(schema.properties, 'mode'));
+  assert.strictEqual(schema.properties.override.additionalProperties, false);
+  assert.strictEqual(schema.properties.override.properties.manualObservation.additionalProperties, false);
+  assert.deepStrictEqual(schema.properties.override.properties.refusal.enum,
+    ['branch-unresolvable', 'verifier-unavailable', 'commit-witness-unavailable']);
+});
+
 test('F-F: NO migrate_plan_markdown tool, and nothing advertises markdown-migration input', () => {
   // Markdown→six-zones migration is deferred out of v1 (amendments F-F). The tool
   // must neither exist nor advertise a seed_markdown / migrate input anywhere in
@@ -236,7 +246,7 @@ test('mcp-dashboard.js registers plans as a lazy toolset', () => {
   assert.match(dashboardSrc, /handlePlansReadToolCall/);
 });
 
-test('gate_landed_work_package POSTs only the three claims to the authenticated route', async () => {
+test('gate_landed_work_package drops unknown claims from the authenticated route', async () => {
   const oid = 'a'.repeat(40);
   const api = fakeApi({
     'POST /api/plans/gate-landed': { outcome: 'accepted-not-landed', packageId: 'WP-4', commitOid: oid },
@@ -251,6 +261,20 @@ test('gate_landed_work_package POSTs only the three claims to the authenticated 
     },
   }]);
   assert.match(r.content[0].text, /accepted-not-landed/);
+});
+
+test('gate_landed_work_package forwards the audited override unchanged', async () => {
+  const oid = 'a'.repeat(40);
+  const override = { refusal: 'verifier-unavailable', reason: 'manual inspection',
+    manualObservation: { gateTipOid: 'b'.repeat(40), namedCommitOid: oid,
+      parentOid: 'c'.repeat(40), planLabel: 'plan_16910c64', wpLabel: 'WP-4', changedPaths: ['a.ts'] } };
+  const api = fakeApi({ 'POST /api/plans/gate-landed': { outcome: 'accepted-not-landed' } });
+  await handlePlansToolCall('gate_landed_work_package', {
+    plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: oid, override,
+  }, api);
+  assert.deepStrictEqual(api.calls[0].body, {
+    plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-4', commit_oid: oid, override,
+  });
 });
 
 test('plans-read refuses gate_landed_work_package without an HTTP call', async () => {

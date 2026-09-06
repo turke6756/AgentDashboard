@@ -4148,16 +4148,47 @@ export class ApiServer {
     // Landed-loop WP-4: the body identifies the claim only. Authorization comes
     // exclusively from resolveIdentity's validated X-Supervisor-Id capability.
     if (method === 'POST' && path === '/api/plans/gate-landed') {
-      const b = JSON.parse(await readBody(req)) as Partial<GateLandedWorkPackageArgs>;
+      const raw = JSON.parse(await readBody(req)) as unknown;
+      const isRecord = (value: unknown): value is Record<string, unknown> =>
+        !!value && typeof value === 'object' && !Array.isArray(value);
+      const hasOnly = (value: Record<string, unknown>, allowed: readonly string[]) =>
+        Object.keys(value).every((key) => allowed.includes(key));
+      if (!isRecord(raw) || !hasOnly(raw, ['plan_id', 'dispatch_attempt_id', 'commit_oid', 'override'])) {
+        throw Object.assign(new Error('unknown gate-landed request field'), { statusCode: 400 });
+      }
+      const b = raw as Partial<GateLandedWorkPackageArgs>;
       if (typeof b.plan_id !== 'string' || typeof b.dispatch_attempt_id !== 'string'
-          || typeof b.commit_oid !== 'string') {
+          || typeof b.commit_oid !== 'string' || !/^[0-9a-f]{40}$/i.test(b.commit_oid)) {
         throw Object.assign(new Error('plan_id, dispatch_attempt_id, and commit_oid are required'),
           { statusCode: 400 });
+      }
+      if (b.override !== undefined) {
+        if (!isRecord(b.override)
+            || !hasOnly(b.override, ['refusal', 'reason', 'manualObservation'])
+            || !['branch-unresolvable', 'verifier-unavailable', 'commit-witness-unavailable']
+              .includes(b.override.refusal as string)
+            || typeof b.override.reason !== 'string'
+            || Buffer.byteLength(b.override.reason.trim(), 'utf8') < 1
+            || Buffer.byteLength(b.override.reason.trim(), 'utf8') > 1000) {
+          throw Object.assign(new Error('invalid gate-landed override'), { statusCode: 400 });
+        }
+        const observation = b.override.manualObservation;
+        if (observation !== undefined && (!isRecord(observation)
+            || !hasOnly(observation, ['gateTipOid', 'namedCommitOid', 'parentOid', 'planLabel', 'wpLabel', 'changedPaths'])
+            || !/^[0-9a-f]{40}$/i.test(observation.gateTipOid as string)
+            || !/^[0-9a-f]{40}$/i.test(observation.namedCommitOid as string)
+            || !/^[0-9a-f]{40}$/i.test(observation.parentOid as string)
+            || typeof observation.planLabel !== 'string' || typeof observation.wpLabel !== 'string'
+            || !Array.isArray(observation.changedPaths)
+            || !observation.changedPaths.every((entry) => typeof entry === 'string'))) {
+          throw Object.assign(new Error('invalid gate-landed manual observation'), { statusCode: 400 });
+        }
       }
       return gateLandedWorkPackage({
         plan_id: b.plan_id,
         dispatch_attempt_id: b.dispatch_attempt_id,
         commit_oid: b.commit_oid,
+        ...(b.override ? { override: b.override } : {}),
       }, identity.supervisorId ?? '');
     }
 

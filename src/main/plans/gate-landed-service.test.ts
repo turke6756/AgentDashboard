@@ -5,7 +5,7 @@ import http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentSupervisor } from '../supervisor';
-import type { GateLandedRefusal } from '../../shared/types';
+import type { GateLandedRefusal, LandedCommitEvidenceV2 } from '../../shared/types';
 import type { PlanDispatchAttempt, PlanWorkPackage, TurnRecord } from '../database';
 
 type SqlDb = { exec(sql: string): unknown; run(sql: string, params?: unknown[]): unknown; prepare(sql: string): { bind(p: unknown[]): boolean; step(): boolean; getAsObject(): Record<string, unknown>; free(): boolean } };
@@ -46,14 +46,22 @@ const WITNESS = { id: 'witness', workspaceId: 'ws', turnSeq: 2, agentId: 'worker
   agentTitle: null, ownerAgentId: null, ownerBrickGeneration: null, planId: 'plan-row',
   planItemId: 'WP-4', planStampSource: 'explicit', intentId: 'intent', intentStampSource: null,
   sessionId: 'session', taskLabel: null, startedAt: 2, endedAt: 3, status: 'accepted',
-  beforeOid: null, afterOid: null, beforeRef: null, afterRef: null, beforeReady: false,
-  afterReady: false, beforeQuality: null, afterQuality: null, beforeRawFilterBypassed: false,
+  beforeOid: null, afterOid: null, beforeRef: null, afterRef: null, beforeReady: true,
+  afterReady: true, beforeQuality: null, afterQuality: null, beforeRawFilterBypassed: false,
   beforeFilteredPaths: null, beforePrunedAt: null, afterPrunedAt: null,
   touched: [{ path: 'owned.txt', op: 'write' }], diffStats: null, compactDiff: null,
   compactDiffProvenance: null, failureReason: null } as TurnRecord;
 
 let db: typeof import('../database');
 let gate: typeof import('./gate-landed-service');
+
+const EVIDENCE: LandedCommitEvidenceV2 = {
+  schemaVersion: 2, repositoryKey: 'repo', branchRef: 'refs/heads/main',
+  dispatchTipOid: BASE_ATTEMPT.dispatchTipOid!, gateTipOid: OID,
+  namedCommit: { commitOid: OID, parentOid: 'b'.repeat(40), subject: 'x' },
+  labels: { plan: 'plan_16910c64', wp: 'WP-4', verified: ['tests'], scopeOmitted: [] },
+  changedPaths: ['owned.txt'], priorFrozenPathTouches: [], postClaimTouches: [],
+};
 
 function ledgerCounts(): number[] {
   return ['commit_records', 'commit_turn_links', 'plan_package_gate_attempts', 'plan_package_gate_commit_links']
@@ -64,12 +72,16 @@ function refusalDeps(overrides: Partial<import('./gate-landed-service').GateLand
   return {
     getAttempt: () => BASE_ATTEMPT,
     getPackage: () => BASE_PACKAGE,
-    getPlanAuthority: () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64', responsibleSupervisorId: 'sup' }),
+    getPlanAuthority: () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64', responsibleSupervisorId: 'sup', landedGateMode: null }),
     getRepositoryRoot: () => 'C:/repo',
-    gitOracle: () => ({} as never),
-    verify: async () => ({ outcome: 'verified' as const, commitOid: OID, subject: 'x',
-      verifiedTrailer: 'tests', scopeOmittedTrailer: null, parentOid: 'b'.repeat(40) }),
+    gitOracle: () => ({ resolveCommit: async () => OID } as never),
+    verify: async () => ({ outcome: 'verified' as const, evidence: EVIDENCE,
+      commitOid: OID, subject: 'x', verifiedTrailer: 'tests', scopeOmittedTrailer: null,
+      parentOid: 'b'.repeat(40) }),
     findWitness: () => WITNESS,
+    listCommitLinks: () => [],
+    listSuccessors: () => [],
+    listGateCommitLinks: () => [],
     reconcile: () => ({ reconciledAttemptIds: [], diagnostics: [] }),
     ...overrides,
   };
@@ -77,7 +89,8 @@ function refusalDeps(overrides: Partial<import('./gate-landed-service').GateLand
 
 test('every identity, attempt, git, and witness refusal leaves the public ledger unchanged', async () => {
   const gitReasons: GateLandedRefusal[] = ['branch-unresolvable', 'dispatch-tip-not-ancestor',
-    'no-matching-commit', 'multiple-matching-commits', 'commit-oid-not-the-match', 'changed-paths-diverge'];
+    'range-truncated', 'named-commit-not-in-range', 'named-commit-not-single-parent',
+    'labels-mismatch', 'changed-paths-diverge', 'unrepresentable-paths', 'verifier-unavailable'];
   const cases: Array<{ reason: GateLandedRefusal; supervisor?: string; deps: ReturnType<typeof refusalDeps> }> = [
     { reason: 'not-responsible-supervisor', supervisor: 'other', deps: refusalDeps() },
     { reason: 'dispatch-attempt-not-found', deps: refusalDeps({ getAttempt: () => null }) },
@@ -87,6 +100,7 @@ test('every identity, attempt, git, and witness refusal leaves the public ledger
     { reason: 'dispatch-evidence-unavailable', deps: refusalDeps({ getAttempt: () => ({ ...BASE_ATTEMPT, captureStatus: 'unavailable', repositoryKey: null }) }) },
     ...gitReasons.map((reason) => ({ reason, deps: refusalDeps({ verify: async () => ({ outcome: 'refused' as const, reason: reason as never }) }) })),
     { reason: 'commit-witness-unavailable', deps: refusalDeps({
+      getPlanAuthority: () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64', responsibleSupervisorId: 'sup', landedGateMode: 'strict' }),
       findWitness: () => null,
       transition: () => { throw new Error('REACHABILITY:wp4-gate-landed-witness prompt-only turn reached the ledger'); },
     }) },
@@ -140,33 +154,228 @@ test('portable plan id resolves to row authority and gates the matching attempt'
   assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
 });
 
-test('missing target session is backfilled before gate evidence is evaluated', async () => {
+test('missing target session is witness degradation and is never backfilled by the gate', async () => {
   const attempt = { ...BASE_ATTEMPT, targetSessionId: null };
-  const persisted: string[] = [];
-  let witnessedSessionId: string | null = null;
+  let resolveCalls = 0;
   const result = await gate.gateLandedWorkPackage({
     plan_id: 'plan-row', dispatch_attempt_id: attempt.id, commit_oid: OID,
   }, 'sup', refusalDeps({
     getAttempt: () => attempt,
-    resolveTargetSessionId: (attemptId) => { persisted.push(attemptId); return 'codex-resume-session'; },
-    findWitness: (input) => { witnessedSessionId = input.targetSessionId; return null; },
+    resolveTargetSessionId: () => { resolveCalls += 1; return 'must-not-be-used'; },
+    verify: async () => ({ outcome: 'refused', reason: 'branch-unresolvable' }),
   }));
-  assert.deepEqual(persisted, [attempt.id]);
-  assert.equal(witnessedSessionId, 'codex-resume-session');
-  assert.deepEqual(result, { outcome: 'refused', reason: 'commit-witness-unavailable' });
+  assert.equal(resolveCalls, 0);
+  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
 });
 
-test('missing target session everywhere remains dispatch-evidence-unavailable', async () => {
+test('missing target session does not become dispatch-evidence-unavailable', async () => {
   let verifyCalls = 0;
   const result = await gate.gateLandedWorkPackage({
     plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
   }, 'sup', refusalDeps({
     getAttempt: () => ({ ...BASE_ATTEMPT, targetSessionId: null }),
-    resolveTargetSessionId: () => null,
     verify: async () => { verifyCalls += 1; return { outcome: 'refused', reason: 'branch-unresolvable' }; },
   }));
-  assert.equal(verifyCalls, 0);
-  assert.deepEqual(result, { outcome: 'refused', reason: 'dispatch-evidence-unavailable' });
+  assert.equal(verifyCalls, 1);
+  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-unresolvable' });
+});
+
+function evidenceWith(postClaimTouches: LandedCommitEvidenceV2['postClaimTouches'] = []): LandedCommitEvidenceV2 {
+  return { ...EVIDENCE, postClaimTouches };
+}
+
+async function runToLedger(
+  args: Parameters<typeof gate.gateLandedWorkPackage>[0],
+  overrides: Partial<import('./gate-landed-service').GateLandedServiceDeps> = {},
+): Promise<{ result: Awaited<ReturnType<typeof gate.gateLandedWorkPackage>>; witnesses: unknown[] }> {
+  const witnesses: unknown[] = [];
+  const result = await gate.gateLandedWorkPackage(args, 'sup', refusalDeps({
+    transition: (_command, witness) => { witnesses.push(witness); return {} as never; },
+    resolveFinalize: async () => ({ ok: false, reason: 'members-unresolvable', message: 'stop after ledger' }),
+    ...overrides,
+  }));
+  return { result, witnesses };
+}
+
+test('light mode persists absent, degraded, and conflicting witnesses with null gate columns', async () => {
+  const cases = [
+    { state: 'absent', attempt: BASE_ATTEMPT, witness: null, links: [], getTurn: () => null },
+    { state: 'degraded', attempt: { ...BASE_ATTEMPT, targetSessionId: null }, witness: null, links: [], getTurn: () => null },
+    { state: 'conflicting', attempt: BASE_ATTEMPT, witness: WITNESS,
+      links: [{ repositoryKey: 'repo', commitOid: OID, turnId: 'foreign', planId: null, planItemId: null, relation: 'metadata_only', captureQuality: null }],
+      getTurn: () => ({ ...WITNESS, id: 'foreign', agentId: 'other' }) },
+  ] as const;
+  for (const item of cases) {
+    const { result, witnesses } = await runToLedger({
+      plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    }, {
+      getAttempt: () => item.attempt,
+      findWitness: () => item.witness,
+      listCommitLinks: () => [...item.links] as never,
+      getTurn: item.getTurn as never,
+    });
+    assert.equal(result.outcome, 'accepted-not-landed');
+    const gitWitness = witnesses[0] as { turnId: string | null };
+    const gateWitness = witnesses[1] as { witnessTurnId: string | null; evidence: { witness: { state: string } } };
+    assert.equal(gitWitness.turnId, null, `${item.state} commit observation`);
+    assert.equal(gateWitness.witnessTurnId, null, `${item.state} gate witness`);
+    assert.equal(gateWitness.evidence.witness.state, item.state);
+  }
+});
+
+test('strict healthy absence refuses, while its exact audited override rereads the tip and persists v2 evidence', async () => {
+  let rereads = 0;
+  const strict = () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64',
+    responsibleSupervisorId: 'sup', landedGateMode: 'strict' as const });
+  const plain = await runToLedger({ plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID }, {
+    getPlanAuthority: strict, findWitness: () => null,
+  });
+  assert.deepEqual(plain.result, { outcome: 'refused', reason: 'commit-witness-unavailable' });
+  assert.equal(plain.witnesses.length, 0);
+  const overridden = await runToLedger({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    override: { refusal: 'commit-witness-unavailable', reason: '  monitor outage  ' },
+  }, {
+    getPlanAuthority: strict, findWitness: () => null,
+    gitOracle: () => ({ resolveCommit: async () => { rereads += 1; return OID; } } as never),
+  });
+  assert.equal(overridden.result.outcome, 'accepted-not-landed');
+  assert.equal(rereads, 1, 'strict witness override must reread the branch immediately before writes');
+  const evidence = (overridden.witnesses[1] as { evidence: { schemaVersion: number; decision: string; override: { reason: string } } }).evidence;
+  assert.deepEqual({ schemaVersion: evidence.schemaVersion, decision: evidence.decision, reason: evidence.override.reason },
+    { schemaVersion: 2, decision: 'passed-by-override', reason: 'monitor outage' });
+});
+
+test('strict global conflict is not overridable and leaves the ledger untouched', async () => {
+  const foreign = { ...WITNESS, id: 'foreign-conflict', agentId: 'other' };
+  const { result, witnesses } = await runToLedger({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    override: { refusal: 'commit-witness-unavailable', reason: 'wrong refusal' },
+  }, {
+    getPlanAuthority: () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64',
+      responsibleSupervisorId: 'sup', landedGateMode: 'strict' }),
+    listCommitLinks: () => [{ repositoryKey: 'repo', commitOid: OID, turnId: foreign.id,
+      planId: null, planItemId: null, relation: 'metadata_only', captureQuality: null }],
+    getTurn: () => foreign,
+  });
+  assert.deepEqual(result, { outcome: 'refused', reason: 'override-invalid' });
+  assert.equal(witnesses.length, 0);
+});
+
+test('null-turn light witness is forwarded explicitly as null to finalization enrichment', async () => {
+  let checkpointTurnId: string | null | undefined = undefined;
+  const { result } = await runToLedger({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+  }, {
+    findWitness: () => null,
+    resolveFinalize: async (input) => {
+      checkpointTurnId = input.checkpointTurnId;
+      return { ok: false, reason: 'members-unresolvable', message: 'captured' };
+    },
+  });
+  assert.equal(result.outcome, 'accepted-not-landed');
+  assert.strictEqual(checkpointTurnId, null);
+});
+
+test('manual testimony overrides only the matching Git availability refusal and performs no Git operation', async () => {
+  let gitCalls = 0;
+  const observation = { gateTipOid: 'c'.repeat(40), namedCommitOid: OID,
+    parentOid: 'b'.repeat(40), planLabel: 'plan_16910c64', wpLabel: 'wp-4', changedPaths: ['owned.txt'] };
+  const { result, witnesses } = await runToLedger({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    override: { refusal: 'verifier-unavailable', reason: ' external verifier unavailable ', manualObservation: observation },
+  }, {
+    verify: async () => ({ outcome: 'refused', reason: 'verifier-unavailable' }),
+    gitOracle: () => ({ resolveCommit: async () => { gitCalls += 1; return OID; } } as never),
+  });
+  assert.equal(result.outcome, 'accepted-not-landed');
+  assert.equal(gitCalls, 0, 'manual testimony path must not reread the tip or otherwise call Git');
+  const evidence = (witnesses[1] as { evidence: { git: { source: string }; decision: string } }).evidence;
+  assert.deepEqual({ source: evidence.git.source, decision: evidence.decision },
+    { source: 'manual-testimony', decision: 'passed-by-override' });
+});
+
+test('changed-paths-diverge is denylisted from override and reaches no ledger writer', async () => {
+  let writes = 0;
+  const forbiddenOverride = { refusal: 'changed-paths-diverge', reason: 'must not mask path mismatch',
+    manualObservation: { gateTipOid: OID, namedCommitOid: OID, parentOid: 'b'.repeat(40),
+      planLabel: 'plan_16910c64', wpLabel: 'WP-4', changedPaths: ['owned.txt'] } };
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    override: forbiddenOverride as never,
+  }, 'sup', refusalDeps({
+    verify: async () => ({ outcome: 'refused', reason: 'changed-paths-diverge' }),
+    transition: () => { writes += 1; return {} as never; },
+  }));
+  assert.deepEqual(result, { outcome: 'refused', reason: 'override-invalid' });
+  assert.equal(writes, 0, 'REACHABILITY:gate-landed-service denylisted override must not write');
+});
+
+test('branch tip movement after app verification refuses before the first ledger mutation', async () => {
+  let writes = 0;
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+  }, 'sup', refusalDeps({
+    gitOracle: () => ({ resolveCommit: async () => 'd'.repeat(40) } as never),
+    transition: () => { writes += 1; return {} as never; },
+  }));
+  assert.deepEqual(result, { outcome: 'refused', reason: 'branch-tip-moved' });
+  assert.equal(writes, 0);
+});
+
+test('parallel sibling dispatch accounts a post-claim touch, and an exact passed gate strengthens it', async () => {
+  const touch = { commitOid: 'c'.repeat(40), parentOids: [OID], paths: ['sibling.txt'],
+    planTrailers: ['plan_16910c64'], wpTrailers: ['WP-5'] };
+  const successorAttempt = { ...BASE_ATTEMPT, id: 'dispatch-sibling', packageId: 'WP-5',
+    dispatchTipOid: BASE_ATTEMPT.dispatchTipOid, frozenPaths: ['sibling.txt'] };
+  for (const gated of [false, true]) {
+    const { result, witnesses } = await runToLedger({
+      plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    }, {
+      verify: async () => ({ outcome: 'verified', evidence: evidenceWith([touch]),
+        commitOid: OID, parentOid: 'b'.repeat(40), subject: 'x', verifiedTrailer: null, scopeOmittedTrailer: null }),
+      listSuccessors: () => [{ attempt: successorAttempt, passedGateAttemptIds: gated ? ['gate-sibling'] : [] }],
+      listGateCommitLinks: () => gated ? [{ gateAttemptId: 'gate-sibling', repositoryKey: 'repo', commitOid: touch.commitOid, createdAt: 1 }] : [],
+    });
+    assert.equal(result.outcome, 'accepted-not-landed');
+    const classification = (witnesses[1] as { evidence: { postClaimClassification: Array<{ disposition: string; qualifyingDispatchAttemptIds: string[] }> } })
+      .evidence.postClaimClassification[0];
+    assert.equal(classification.disposition, gated ? 'accounted-successor-gated' : 'accounted-successor-dispatch');
+    assert.deepEqual(classification.qualifyingDispatchAttemptIds, ['dispatch-sibling']);
+  }
+});
+
+test('unqualified and merge post-claim touches refuse without Git calls during classification', async () => {
+  for (const touch of [
+    { commitOid: 'c'.repeat(40), parentOids: [OID], paths: ['wrong.txt'], planTrailers: ['plan_16910c64'], wpTrailers: ['WP-5'] },
+    { commitOid: 'd'.repeat(40), parentOids: [OID, 'e'.repeat(40)], paths: ['sibling.txt'], planTrailers: ['plan_16910c64'], wpTrailers: ['WP-5'] },
+  ]) {
+    let gitCalls = 0;
+    const result = await gate.gateLandedWorkPackage({
+      plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    }, 'sup', refusalDeps({
+      verify: async () => ({ outcome: 'verified', evidence: evidenceWith([touch]),
+        commitOid: OID, parentOid: 'b'.repeat(40), subject: 'x', verifiedTrailer: null, scopeOmittedTrailer: null }),
+      listSuccessors: () => [{ attempt: { ...BASE_ATTEMPT, id: 'D2', packageId: 'WP-5', frozenPaths: ['sibling.txt'] }, passedGateAttemptIds: [] }],
+      gitOracle: () => ({ resolveCommit: async () => { gitCalls += 1; return OID; } } as never),
+    }));
+    assert.deepEqual(result, { outcome: 'refused', reason: 'post-claim-touch-unaccounted' });
+    assert.equal(gitCalls, 0, 'successor classification must use verifier and database facts only');
+  }
+});
+
+test('invalid gate mode is never overridable and invokes neither verifier nor ledger', async () => {
+  let calls = 0;
+  const result = await gate.gateLandedWorkPackage({
+    plan_id: 'plan-row', dispatch_attempt_id: BASE_ATTEMPT.id, commit_oid: OID,
+    override: { refusal: 'commit-witness-unavailable', reason: 'no' },
+  }, 'sup', refusalDeps({
+    getPlanAuthority: () => ({ id: 'plan-row', workspaceId: 'ws', artifactId: 'plan_16910c64', responsibleSupervisorId: 'sup', landedGateMode: 'invalid' }),
+    verify: async () => { calls += 1; return { outcome: 'refused', reason: 'verifier-unavailable' }; },
+    transition: () => { calls += 1; return {} as never; },
+  }));
+  assert.deepEqual(result, { outcome: 'refused', reason: 'override-invalid' });
+  assert.equal(calls, 0);
 });
 
 function apiRequest(port: number, workspaceId: string, supervisorId: string) {
@@ -239,6 +448,21 @@ test('MCP definition -> sidecar -> authenticated HTTP route -> service -> public
     isInputInFlight: () => false, emit: () => false } as unknown as AgentSupervisor;
   const server = new ApiServer(stub, 0, undefined, '127.0.0.1'); const port = await server.start();
   try {
+    const baseBody = { plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-entry', commit_oid: commit };
+    for (const badBody of [
+      { ...baseBody, mode: 'strict' },
+      { ...baseBody, unknown: true },
+      { ...baseBody, commit_oid: 'short' },
+      { ...baseBody, override: { refusal: 'commit-witness-unavailable', reason: 'x', unknown: true } },
+      { ...baseBody, override: { refusal: 'commit-witness-unavailable', reason: 'x'.repeat(1001) } },
+      { ...baseBody, override: { refusal: 'verifier-unavailable', reason: 'x', manualObservation: {
+        gateTipOid: commit, namedCommitOid: commit, parentOid: base, planLabel: 'plan_16910c64',
+        wpLabel: 'WP-4', changedPaths: ['owned.txt'], unknown: true,
+      } } },
+    ]) {
+      await assert.rejects(apiRequest(port, ws.id, supervisor.id)('POST', '/api/plans/gate-landed', badBody), /400:/);
+    }
+    assert.deepEqual(ledgerCounts(), [0, 0, 0, 0], 'HTTP allowlist refusals must not invoke the service');
     const result = await tools.handlePlansToolCall('gate_landed_work_package', {
       plan_id: 'plan_16910c64', dispatch_attempt_id: 'dispatch-entry', commit_oid: commit,
     }, apiRequest(port, ws.id, supervisor.id));

@@ -5934,12 +5934,7 @@ export type LandedCommitRefusal =
   | 'changed-paths-diverge'
   | 'unrepresentable-paths'
   | 'branch-unresolvable'
-  | 'verifier-unavailable'
-  // Temporary compile compatibility for pre-WP-4 injected gate-service fixtures.
-  // verifyLandedCommit never emits these retired values.
-  | 'no-matching-commit'
-  | 'multiple-matching-commits'
-  | 'commit-oid-not-the-match';
+  | 'verifier-unavailable';
 
 export interface LandedCommitTouchV2 {
   commitOid: string;
@@ -5984,6 +5979,68 @@ export interface GateLandedWorkPackageArgs {
   plan_id: string;
   dispatch_attempt_id: string;
   commit_oid: string;
+  override?: GateOverrideRequest;
+}
+
+export type LandedGateMode = 'light' | 'strict';
+
+export type GateWitnessState =
+  | 'commit-linked'
+  | 'paths-witnessed'
+  | 'degraded'
+  | 'absent'
+  | 'conflicting';
+
+export interface GateWitnessEvidence {
+  state: GateWitnessState;
+  turnId: string | null;
+  agentId: string | null;
+  sessionId: string | null;
+  captureFailure: string | null;
+  observedAt: number | null;
+}
+
+export interface ManualGateObservation {
+  gateTipOid: string;
+  namedCommitOid: string;
+  parentOid: string;
+  planLabel: string;
+  wpLabel: string;
+  changedPaths: string[];
+}
+
+export interface GateOverrideRequest {
+  refusal: 'branch-unresolvable' | 'verifier-unavailable' | 'commit-witness-unavailable';
+  reason: string;
+  manualObservation?: ManualGateObservation;
+}
+
+export interface PostClaimTouchClassificationV2 {
+  commitOid: string;
+  parentOid: string;
+  paths: string[];
+  disposition: 'accounted-successor-dispatch' | 'accounted-successor-gated';
+  successorPackageId: string;
+  qualifyingDispatchAttemptIds: string[];
+  successorGateAttemptIds: string[];
+}
+
+export type GateGitBasisV2 =
+  | { source: 'app-verifier'; evidence: LandedCommitEvidenceV2 }
+  | {
+      source: 'manual-testimony';
+      observation: ManualGateObservation;
+      unverifiedBecause: 'branch-unresolvable' | 'verifier-unavailable';
+    };
+
+export interface GateDecisionEvidenceV2 {
+  schemaVersion: 2;
+  mode: LandedGateMode;
+  decision: 'passed' | 'passed-by-override';
+  git: GateGitBasisV2;
+  postClaimClassification: PostClaimTouchClassificationV2[];
+  witness: GateWitnessEvidence;
+  override: null | { refusal: GateLandedRefusal; reason: string };
 }
 
 export type GateLandedRefusal =
@@ -5993,6 +6050,7 @@ export type GateLandedRefusal =
   | 'attempt-unconfirmed'
   | 'stale-attempt-revision'
   | 'dispatch-evidence-unavailable'
+  | 'gate-mode-invalid'
   | 'branch-unresolvable'
   | 'dispatch-tip-not-ancestor'
   | 'range-truncated'
@@ -6001,11 +6059,12 @@ export type GateLandedRefusal =
   | 'labels-mismatch'
   | 'unrepresentable-paths'
   | 'verifier-unavailable'
-  | 'no-matching-commit'
-  | 'multiple-matching-commits'
-  | 'commit-oid-not-the-match'
   | 'changed-paths-diverge'
-  | 'commit-witness-unavailable';
+  | 'post-claim-touch-unaccounted'
+  | 'branch-tip-moved'
+  | 'commit-witness-unavailable'
+  | 'commit-witness-conflict'
+  | 'override-invalid';
 
 export type GateLandedResult =
   | { outcome: 'landed'; packageId: string; commitOid: string;

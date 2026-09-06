@@ -106,10 +106,33 @@ const GATE_LANDED_DEF = {
     'the validated calling supervisor must be the plan responsible supervisor. Supervisor-only.',
   inputSchema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
       plan_id: { type: 'string', pattern: PLAN_ID_PATTERN, description: PLAN_ID_DESCRIPTION },
       dispatch_attempt_id: { type: 'string', minLength: 1, description: 'Immutable plan dispatch attempt id.' },
       commit_oid: { type: 'string', pattern: '^[0-9a-fA-F]{40}$', description: 'Exact full Git commit OID to verify.' },
+      override: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          refusal: { type: 'string', enum: ['branch-unresolvable', 'verifier-unavailable', 'commit-witness-unavailable'] },
+          reason: { type: 'string', minLength: 1, maxLength: 1000 },
+          manualObservation: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              gateTipOid: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
+              namedCommitOid: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
+              parentOid: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
+              planLabel: { type: 'string' },
+              wpLabel: { type: 'string' },
+              changedPaths: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['gateTipOid', 'namedCommitOid', 'parentOid', 'planLabel', 'wpLabel', 'changedPaths'],
+          },
+        },
+        required: ['refusal', 'reason'],
+      },
     },
     required: ['plan_id', 'dispatch_attempt_id', 'commit_oid'],
   },
@@ -233,11 +256,13 @@ async function handlePlansToolCall(name, args, apiRequest) {
     }
 
     case 'gate_landed_work_package': {
-      const result = await apiRequest('POST', '/api/plans/gate-landed', {
+      const body = {
         plan_id: args.plan_id,
         dispatch_attempt_id: args.dispatch_attempt_id,
         commit_oid: args.commit_oid,
-      });
+      };
+      if (args.override !== undefined) body.override = args.override;
+      const result = await apiRequest('POST', '/api/plans/gate-landed', body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 

@@ -154,7 +154,9 @@ export async function resolveLandedFinalizeRequest(
         repositoryKey: attempt.repositoryKey,
         boundaryOid: commitOid,
         members,
-        checkpointTurnId: input.checkpointTurnId ?? attempt.confirmedTurnId,
+        checkpointTurnId: Object.prototype.hasOwnProperty.call(input, 'checkpointTurnId')
+          ? input.checkpointTurnId ?? null
+          : attempt.confirmedTurnId,
         finalizedBy: input.finalizedBy,
         createdFromWorkspaceId: input.createdFromWorkspaceId,
         contractVersion: input.contractVersion ?? 1,
