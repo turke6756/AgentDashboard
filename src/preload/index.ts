@@ -792,6 +792,7 @@ const api: IpcApi = withoutRetiredSaveApi({
     ingest: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
     rescan: (request: import('../shared/library').LibraryIngestRequest) => Promise<unknown>;
     listDocuments: (workspaceId: string, includeUntrusted?: boolean) => Promise<unknown>;
+    listShelf: (workspaceId: string) => Promise<import('../shared/library').ShelfRow[]>;
     query: (workspaceId: string, args: unknown) => Promise<unknown>;
     saveNote: (workspaceId: string, input: { query: string; chunk_ids: string[] }) => Promise<unknown>;
     onProgress: (callback: (event: import('../shared/library').LibraryProgressEvent) => void) => () => void;
@@ -800,6 +801,7 @@ const api: IpcApi = withoutRetiredSaveApi({
   ingest: (request) => ipcRenderer.invoke('library:ingest', request),
   rescan: (request) => ipcRenderer.invoke('library:rescan', request),
   listDocuments: (workspaceId, includeUntrusted) => ipcRenderer.invoke('library:list-documents', workspaceId, includeUntrusted),
+  listShelf: (workspaceId) => ipcRenderer.invoke('library:list-shelf', workspaceId),
   query: (workspaceId, args) => ipcRenderer.invoke('library:query', workspaceId, args),
   saveNote: (workspaceId, input) => ipcRenderer.invoke('library:save-note', workspaceId, input),
   onProgress: (callback) => {

@@ -10,9 +10,11 @@ import {
   LIBRARY_TOKENIZER_VERSION,
   LibrarySchemaTooNewError,
   closeLibraryStore,
+  deleteLibraryDocumentsByRelPaths,
   insertLibraryChunk,
   listLibraryChunks,
   listLibraryDocuments,
+  listLibraryDocumentsByRelPaths,
   openLibraryStore,
   type LibraryStore,
 } from './library-store';
@@ -161,6 +163,34 @@ test('trust-filtered reads omit untrusted documents and chunks by default', () =
       ['a-untrusted', 'b-cleared', 'c-user']);
     assert.deepEqual(listLibraryChunks(store, { include_untrusted: true }).map((row) => row.document_id),
       ['a-untrusted', 'b-cleared', 'c-user']);
+  } finally {
+    closeLibraryStore(store);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('path-keyed lookup preserves duplicates and path deletion cascades chunks and FTS', () => {
+  const workspace = makeWorkspace();
+  const store = openLibraryStore(workspace);
+  try {
+    insertDocument(store, 'duplicate-low', 'cleared');
+    insertDocument(store, 'duplicate-high', 'cleared');
+    insertDocument(store, 'keep', 'cleared');
+    store.database.prepare(`UPDATE library_documents SET source_rel_path = ?, index_generation = ? WHERE id = ?`)
+      .run('.lares/library/cleared/report.md', 1, 'duplicate-low');
+    store.database.prepare(`UPDATE library_documents SET source_rel_path = ?, index_generation = ? WHERE id = ?`)
+      .run('.lares/library/cleared/report.md', 2, 'duplicate-high');
+    for (const id of ['duplicate-low', 'duplicate-high', 'keep']) {
+      insertLibraryChunk(store, {
+        id: `chunk-${id}`, document_id: id, ordinal: 0, content: `searchable ${id}`,
+        content_char_length: `searchable ${id}`.length, locator: textLocator(0, `searchable ${id}`.length), embedding: null,
+      });
+    }
+    assert.deepEqual(listLibraryDocumentsByRelPaths(store, ['.lares/library/cleared/report.md']).map((row) => row.id), ['duplicate-high', 'duplicate-low']);
+    assert.equal(deleteLibraryDocumentsByRelPaths(store, ['.lares/library/cleared/report.md']), 2);
+    assert.deepEqual(listLibraryDocuments(store, { include_untrusted: true }).map((row) => row.id), ['keep']);
+    assert.deepEqual(listLibraryChunks(store, { include_untrusted: true }).map((row) => row.id), ['chunk-keep']);
+    assert.equal((store.database.prepare(`SELECT count(*) AS count FROM library_chunks_fts WHERE library_chunks_fts MATCH 'searchable'`).get() as { count: number }).count, 1);
   } finally {
     closeLibraryStore(store);
     fs.rmSync(workspace, { recursive: true, force: true });

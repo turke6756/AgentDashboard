@@ -372,6 +372,9 @@ const TESTS = [
   'dist/main/main/workspace-state-dir.test.js',
   'dist/main/main/library/library-migration.test.js',
   'dist/main/main/library/library-store.test.js',
+  'dist/main/main/library/library-report-sources.test.js',
+  'dist/main/main/library/library-shelf.test.js',
+  'dist/main/main/library/library-ipc.test.js',
   'dist/main/main/library/library-chunker.test.js',
   'dist/main/main/library/pdf-extractor.test.js',
   'dist/main/main/library/docx-extractor.test.js',
@@ -855,6 +858,8 @@ for (const file of testsToRun) {
     file.endsWith('/agy-session-reader.test.js') ||
     file.endsWith('/database.recovery-operation-insert.test.js') ||
     file.endsWith('/library-store.test.js') ||
+    file.endsWith('/library-shelf.test.js') ||
+    file.endsWith('/library-ipc.test.js') ||
     file.endsWith('/library-query.test.js') ||
     file.endsWith('/library-query-integration.test.js') ||
     file.endsWith('/library-embedder.test.js') ||

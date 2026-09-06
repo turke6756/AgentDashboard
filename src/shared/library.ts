@@ -19,6 +19,31 @@ export type LibraryDocumentStatus =
   | 'ready'
   | 'error';
 
+export type ShelfStatus = 'pending' | 'stale' | 'indexing' | 'ready' | 'error';
+
+export interface ShelfRow {
+  id: string;
+  type: LibraryDocumentType;
+  title: string;
+  created: string;
+  topics_json: string;
+  trust: LibraryTrust;
+  source_rel_path: string;
+  reader_rel_path: string;
+  source_hash: string;
+  size: number;
+  page_count: number | null;
+  provider: string | null;
+  agent_id: string | null;
+  summary: string | null;
+  status: LibraryDocumentStatus;
+  error_reason: string | null;
+  index_generation: number;
+  chunker_version: string;
+  tokenizer_version: string;
+  shelf_status: ShelfStatus;
+}
+
 export interface LibraryProgressEvent {
   workspace_id?: string;
   document_id: string;
