@@ -119,7 +119,7 @@ test('valid update round-trips atomically and refreshes the cache', () => {
   resetCaches();
   assert.deepEqual(loadOrchestrationProviderSettings(root), next);
   const stateDirEntries = fs.readdirSync(path.dirname(orchestrationProviderSettingsPath(root)));
-  assert.deepEqual(stateDirEntries, ['orchestration-provider-settings.json']);
+  assert.deepEqual(stateDirEntries, ['library', 'orchestration-provider-settings.json']);
 });
 
 test('two workspace roots keep independent disk and cache values', () => {
