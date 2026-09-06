@@ -247,7 +247,7 @@ test('T7: a plan-less "none" run maps its dispatch stamp source to explicit-none
   });
 });
 
-test('T8: library readiness requires a changed deliberation with this run identity', async () => {
+test('T8a: library readiness requires a changed deliberation with this run identity', () => {
   const run = makeRun({
     runId: 'lib-ready', planId: undefined, planBindingMode: 'none',
     planOutputKind: 'library-deliberation', planBaselineHash: null,
@@ -268,28 +268,30 @@ test('T8: library readiness requires a changed deliberation with this run identi
 
     fs.writeFileSync(run.planPath, libraryArtifact(run));
     assert.equal(libraryDeliberationMatchesRun(run), true, 'matching identity is ready');
-
-    const exercised = makeRun({
-      runId: 'lib-seam', planId: undefined, planBindingMode: 'none',
-      planOutputKind: 'library-deliberation', planBaselineHash: null,
-    });
-    const { client, state } = makeFake({
-      onTurn: (agent) => {
-        if (agent.title.startsWith('Lead') && agent.counter === 1) {
-          fs.writeFileSync(exercised.planPath, libraryArtifact(exercised, { runId: 'wrong-run' }));
-        } else if (agent.title.startsWith('Lead') && agent.counter === 2) {
-          fs.writeFileSync(exercised.planPath, libraryArtifact(exercised));
-        }
-      },
-    });
-    try {
-      await runSerial(client, makeCtx(exercised).ctx);
-      assert.equal(state.launchInputs.length, 2, 'REACHABILITY:groupthink-v2-library-readiness');
-    } finally {
-      rm(exercised.planPath);
-    }
   } finally {
     rm(run.planPath);
+  }
+});
+
+test('T8b: serial readiness enters the library deliverable matcher', async () => {
+  const exercised = makeRun({
+    runId: 'lib-seam', planId: undefined, planBindingMode: 'none',
+    planOutputKind: 'library-deliberation', planBaselineHash: null,
+  });
+  const { client, state } = makeFake({
+    onTurn: (agent) => {
+      if (agent.title.startsWith('Lead') && agent.counter === 1) {
+        fs.writeFileSync(exercised.planPath, libraryArtifact(exercised, { runId: 'wrong-run' }));
+      } else if (agent.title.startsWith('Lead') && agent.counter === 2) {
+        fs.writeFileSync(exercised.planPath, libraryArtifact(exercised));
+      }
+    },
+  });
+  try {
+    await runSerial(client, makeCtx(exercised).ctx);
+    assert.equal(state.launchInputs.length, 2, 'REACHABILITY:groupthink-v2-library-readiness');
+  } finally {
+    rm(exercised.planPath);
   }
 });
 
