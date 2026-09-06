@@ -8,7 +8,9 @@ import {
   SUPERVISOR_AGENT_MD_CHILD,
   SUPERVISOR_AGENT_MD_CHILD_V1,
   SUPERVISOR_AGENT_MD_CHILD_V2,
+  SUPERVISOR_AGENT_MD_CHILD_V3,
   SUPERVISOR_AGENT_MD_V32,
+  SUPERVISOR_AGENT_MD_V34,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
 } from '../../shared/constants';
@@ -66,13 +68,14 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
   assert.ok(Object.keys(files).length > 0, `${name} child map must not be empty`);
   for (const [rel, file] of Object.entries(files)) {
     const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
-    assert.equal(file.version, isInstructions ? 3 : 1, `${rel} must carry its expected scaffold version`);
+    assert.equal(file.version, isInstructions ? 4 : 1, `${rel} must carry its expected scaffold version`);
     if (isInstructions) {
       assert.deepEqual(
         file.previousHashes,
         {
           1: digestText(SUPERVISOR_AGENT_MD_CHILD_V1),
           2: digestText(SUPERVISOR_AGENT_MD_CHILD_V2),
+          3: digestText(SUPERVISOR_AGENT_MD_CHILD_V3),
         },
         `${rel} must retain the superseded child instruction hashes`,
       );
@@ -113,11 +116,11 @@ function run(): void {
       [statics.LEGACY_SUPERVISOR_FILES_CODEX, '.lares/supervisor/AGENTS.md'],
     ] as const) {
       const instructions = files[rel];
-      assert.equal(instructions.version, 34, `${rel} must advance to scaffold version 34`);
+      assert.equal(instructions.version, 35, `${rel} must advance to scaffold version 35`);
       assert.equal(
-        instructions.previousHashes?.[32],
-        digestText(SUPERVISOR_AGENT_MD_V32),
-        `${rel} must retain the superseded v32 instructions hash`,
+        instructions.previousHashes?.[34],
+        digestText(SUPERVISOR_AGENT_MD_V34),
+        `${rel} must retain the superseded v34 instructions hash`,
       );
     }
     assert.equal(
