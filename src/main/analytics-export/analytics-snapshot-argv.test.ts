@@ -75,11 +75,15 @@ test('the single-instance lock is gated off in snapshot mode', () => {
 });
 
 test('the main whenReady body returns early in snapshot mode (no window, no supervisor)', () => {
-  assert.match(
-    INDEX_SRC,
-    /app\.whenReady\(\)\.then\(async \(\) => \{[\s\S]{0,300}if \(analyticsSnapshotArgv !== null\) return;/,
-    'the normal-startup whenReady handler must early-return in snapshot mode',
+  const readyAt = INDEX_SRC.indexOf('app.whenReady().then(async () => {');
+  const guardAt = INDEX_SRC.indexOf(
+    'if (analyticsSnapshotArgv !== null || instanceLockRefused) return;',
+    readyAt,
   );
+  const createWindowAt = INDEX_SRC.indexOf('createWindow();', readyAt);
+  assert.ok(readyAt >= 0, 'the normal-startup whenReady handler must exist');
+  assert.ok(guardAt > readyAt, 'the whenReady handler must early-return in snapshot mode');
+  assert.ok(createWindowAt > guardAt, 'the snapshot early-return must precede window creation');
 });
 
 test('the branch exits via app.exit(code) — codes pass through, quit() would erase them', () => {
