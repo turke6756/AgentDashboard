@@ -163,14 +163,15 @@ test('one reconciliation migrates an exact v3-era workspace and provisions the p
   const raw = new supervisorModule.AgentSupervisor();
   (raw as unknown as { writeAgentRegistry(): void }).writeAgentRegistry = () => {};
   const scaffold = raw as unknown as {
-    ensureSupervisorScaffold(workDir: string, pathType: string): void;
+    ensureSupervisorScaffold(workDir: string, provider: string, pathType: string): void;
     ensureWorkerScaffold(workDir: string, provider: string, pathType: string): void;
-    ensureResearcherScaffold(workDir: string, pathType: string): void;
+    ensureResearcherScaffold(workDir: string, provider: string, pathType: string): void;
   };
-  scaffold.ensureSupervisorScaffold(workspaceRoot, 'windows');
+  scaffold.ensureSupervisorScaffold(workspaceRoot, 'claude', 'windows');
+  scaffold.ensureSupervisorScaffold(workspaceRoot, 'codex', 'windows');
   scaffold.ensureWorkerScaffold(workspaceRoot, 'claude', 'windows');
   scaffold.ensureWorkerScaffold(workspaceRoot, 'codex', 'windows');
-  scaffold.ensureResearcherScaffold(workspaceRoot, 'windows');
+  scaffold.ensureResearcherScaffold(workspaceRoot, 'claude', 'windows');
 
   for (const skillRoot of roots) {
     assert.equal(
@@ -183,7 +184,7 @@ test('one reconciliation migrates an exact v3-era workspace and provisions the p
     );
     assert.equal(
       fs.readFileSync(path.join(workspaceRoot, ...skillRoot.split('/'), 'scripts/plan-manifest.mjs'), 'utf8'),
-      constants.PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
+      supervisorModule.PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS,
     );
     assert.equal(
       fs.existsSync(path.join(workspaceRoot, ...skillRoot.split('/'), 'references/activities/capture.md')),
@@ -195,16 +196,16 @@ test('one reconciliation migrates an exact v3-era workspace and provisions the p
     'the pristine v3-era chain must not enter the user-modified backup path');
 
   const provisioned = [
-    '.lares/supervisor/.claude/skills/write-proposal/SKILL.md',
-    '.lares/supervisor/.agents/skills/write-proposal/SKILL.md',
+    '.lares/supervisor/claude/.claude/skills/write-proposal/SKILL.md',
+    '.lares/supervisor/codex/.agents/skills/write-proposal/SKILL.md',
     '.lares/workers/claude/.claude/skills/write-proposal/SKILL.md',
     '.lares/workers/codex/.agents/skills/write-proposal/SKILL.md',
-    '.lares/researcher/.claude/skills/write-proposal/SKILL.md',
-    '.lares/supervisor/.claude/skills/read-planning-surface/SKILL.md',
-    '.lares/supervisor/.agents/skills/read-planning-surface/SKILL.md',
+    '.lares/researcher/claude/.claude/skills/write-proposal/SKILL.md',
+    '.lares/supervisor/claude/.claude/skills/read-planning-surface/SKILL.md',
+    '.lares/supervisor/codex/.agents/skills/read-planning-surface/SKILL.md',
     '.lares/workers/claude/.claude/skills/read-planning-surface/SKILL.md',
     '.lares/workers/codex/.agents/skills/read-planning-surface/SKILL.md',
-    '.lares/researcher/.claude/skills/read-planning-surface/SKILL.md',
+    '.lares/researcher/claude/.claude/skills/read-planning-surface/SKILL.md',
   ];
   for (const rel of provisioned) assert.ok(fs.existsSync(path.join(workspaceRoot, ...rel.split('/'))), rel);
 
@@ -232,10 +233,11 @@ test('one reconciliation migrates an exact v3-era workspace and provisions the p
   }
 
   const before = fs.readFileSync(sidecarPath, 'utf8');
-  scaffold.ensureSupervisorScaffold(workspaceRoot, 'windows');
+  scaffold.ensureSupervisorScaffold(workspaceRoot, 'claude', 'windows');
+  scaffold.ensureSupervisorScaffold(workspaceRoot, 'codex', 'windows');
   scaffold.ensureWorkerScaffold(workspaceRoot, 'claude', 'windows');
   scaffold.ensureWorkerScaffold(workspaceRoot, 'codex', 'windows');
-  scaffold.ensureResearcherScaffold(workspaceRoot, 'windows');
+  scaffold.ensureResearcherScaffold(workspaceRoot, 'claude', 'windows');
   assert.equal(fs.readFileSync(sidecarPath, 'utf8'), before, 're-running reconciliation is idempotent');
   assert.deepEqual(findBackups(path.join(workspaceRoot, '.lares')), []);
 
