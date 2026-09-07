@@ -662,6 +662,7 @@ const TESTS = [
   'dist/main/main/skill-analytics/command-path-extractor.test.js',
   'dist/main/main/skill-analytics/skill-events.test.js',
   'dist/main/main/skill-analytics/mcp-toolset-map.test.js',
+  'dist/main/main/skill-analytics/plans-toolset-defs.test.js',
   'dist/main/main/skill-analytics/jsonl-scanner.test.js',
   'dist/main/main/skill-analytics/parse-runner.test.js',
   'dist/main/main/skill-analytics/parse-backfill.test.js',
@@ -696,6 +697,7 @@ const TESTS = [
   'dist/main/main/orchestration/plan-ownership.scope.test.js',
   // WP-P1A: planning-reader bounded enumeration + safe read IPC.
   'dist/main/main/plans/planning-reader.test.js',
+  'dist/main/main/plans/list-plans-fleet.test.js',
   // Save-card Stage ③ SC-WP-3E — plan-lens finalize IPC facade (WP-3Z registration).
   'dist/main/main/plans/plan-ipc.finalize.test.js',
   // Landed-loop WP-3: shared completion readiness + accepted-commit enrichment.
