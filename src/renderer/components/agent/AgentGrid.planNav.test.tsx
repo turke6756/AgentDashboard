@@ -188,7 +188,8 @@ describe('AgentGrid plan badge routing', () => {
     await act(async () => {
       childlessCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
     });
-    const childPlan = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    const childMenu = document.body.querySelector<HTMLElement>('.ui-menu');
+    const childPlan = Array.from(childMenu?.querySelectorAll<HTMLButtonElement>('button') ?? [])
       .find((button) => button.textContent?.includes('Go to plan — Childless destination'));
     expect(childPlan).toBeTruthy();
     await act(async () => { childPlan!.click(); });
@@ -197,7 +198,8 @@ describe('AgentGrid plan badge routing', () => {
     await act(async () => {
       ownerBar().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 30 }));
     });
-    const plansRow = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    const ownerMenu = document.body.querySelector<HTMLElement>('.ui-menu');
+    const plansRow = Array.from(ownerMenu?.querySelectorAll<HTMLButtonElement>('button') ?? [])
       .find((button) => button.textContent === 'Plans (3)…');
     expect(plansRow).toBeTruthy();
     await act(async () => { plansRow!.click(); });
@@ -213,7 +215,8 @@ describe('AgentGrid plan badge routing', () => {
     await act(async () => {
       childlessCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
     });
-    const proposal = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    const menu = document.body.querySelector<HTMLElement>('.ui-menu');
+    const proposal = Array.from(menu?.querySelectorAll<HTMLButtonElement>('button') ?? [])
       .find((button) => button.textContent?.includes('Go to proposal — Childless destination'));
     await act(async () => { proposal!.click(); });
     expect(openPlanTab).toHaveBeenCalledWith('plan-row-1', expect.any(String), 'ws', { tab: 'proposal' });

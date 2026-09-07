@@ -1,7 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import type { Agent } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
-import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge } from './agent-card-bits';
+import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge, ScheduleBadge } from './agent-card-bits';
+import ScheduleDialog from './ScheduleDialog';
+import { useScheduleSummary } from './schedule-store';
 import ContinuationSplitButton from './ContinuationSplitButton';
 import { isContinuationEligible } from './continuation-controls';
 import { PROVIDER_META } from '../../../shared/constants';
@@ -58,6 +61,7 @@ export default function OwnerContainerBar({
   // earns these badges (supervisors own children), so they must render them.
   const planBadges = useDashboardStore((s) => s.agentPlanBadges[agent.id] ?? null);
   const planNav = useAgentPlanNavigation(planBadges ?? []);
+  const scheduleSummary = useScheduleSummary(agent.workspaceId, agent.id);
   // Gold "snake" border while this supervisor is mid context-brick continuation transfer.
   const transferring = useDashboardStore((s) => isActivePhase(s.continuationPhases[agent.id]?.phase));
   const selectAgent = useDashboardStore((s) => s.selectAgent);
@@ -67,9 +71,10 @@ export default function OwnerContainerBar({
   // is destructive — it removes the supervisor and every agent it owns.
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const menuPosition = useCursorMenuPosition(menuRef, contextMenu, { width: 260, height: 85 }, confirmDelete);
+  const menuPosition = useCursorMenuPosition(menuRef, contextMenu, { width: 260, height: 120 }, confirmDelete);
 
   // Dismiss the menu on any outside click (mirrors AgentCard's context menu).
   useEffect(() => {
@@ -214,6 +219,7 @@ export default function OwnerContainerBar({
             {/* WP2 — hook-health badge, orthogonal to (and never replacing) the operational status. */}
             <HooksOffBadge agent={agent} />
             <DashboardMcpOffBadge agent={agent} />
+            {scheduleSummary && <ScheduleBadge summary={scheduleSummary} onOpen={() => setScheduleOpen(true)} />}
             <StatusBadge status={agent.status} />
           </div>
         </div>
@@ -222,13 +228,23 @@ export default function OwnerContainerBar({
       {/* Cascade-delete menu (right-click or shift+click). Deleting the bar
           deletes the supervisor AND every agent it owns — so a two-step confirm
           guards the whole cohort. */}
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
           ref={menuRef}
           className="ui-menu fixed z-50"
           style={{ left: menuPosition.left, top: menuPosition.top, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }}
         >
           <div className="ui-menu-header">Supervisor</div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setContextMenu(null);
+              setScheduleOpen(true);
+            }}
+            className="ui-menu-item"
+          >
+            Schedule…
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -249,9 +265,17 @@ export default function OwnerContainerBar({
             })()}
           </button>
           <PlanNavMenu navigation={planNav} onRequestClose={() => setContextMenu(null)} returnFocusRef={barRef} />
-        </div>
+        </div>,
+        document.body,
       )}
       <PlanNavMenu navigation={planNav} standalone />
+      {scheduleOpen && (
+        <ScheduleDialog
+          agentId={agent.id}
+          provider={agent.provider}
+          onClose={() => setScheduleOpen(false)}
+        />
+      )}
     </div>
   );
 }

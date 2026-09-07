@@ -56,7 +56,8 @@ async function openMenuAndStop() {
   await act(async () => {
     card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
   });
-  const stopBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+  const menu = document.body.querySelector<HTMLElement>('.ui-menu');
+  const stopBtn = Array.from(menu?.querySelectorAll('button') ?? []).find((b) =>
     (b.textContent ?? '').startsWith('Stop Agent'),
   );
   expect(stopBtn, 'Stop Agent menu item').toBeTruthy();

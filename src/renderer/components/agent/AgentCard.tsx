@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import type { Agent, AgentStopReason } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
@@ -568,7 +569,7 @@ export default function AgentCard({
       )}
 
       {/* Context menu */}
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
           ref={menuRef}
           className="ui-menu fixed z-50"
@@ -648,7 +649,8 @@ export default function AgentCard({
             </button>
           )}
           <PlanNavMenu navigation={planNav} onRequestClose={() => setContextMenu(null)} returnFocusRef={cardRef} />
-        </div>
+        </div>,
+        document.body,
       )}
 
       <PlanNavMenu navigation={planNav} standalone />
