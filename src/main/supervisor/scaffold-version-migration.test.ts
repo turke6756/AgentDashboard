@@ -45,6 +45,7 @@ import {
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH,
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH,
+  SUPERVISOR_RUN_ORCHESTRATION_SKILL_V7_HASH,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH,
   LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
   WORKER_CLAUDE_MD_V8_HASH,
@@ -6107,8 +6108,15 @@ const RUN_ORCHESTRATION_V5_AVAILABILITY_RULE = `> Resolve the desired lead and r
 > \`unavailable\`, do not launch and report the reasons. Same-provider pairs remain valid. No
 > persisted fallback order exists in v5; when one is introduced, it governs substitute ranking.`;
 
+function reconstructRunOrchestrationSkillV7(): string {
+  return SUPERVISOR_RUN_ORCHESTRATION_SKILL.replace(
+    '- **`orchestration.groupthink.aborted`**: the run was explicitly aborted and carries no `resume_hint`. Dashboard restart boot-reconcile instead emits `orchestration.groupthink.stalled` with a `resume_hint`. Diagnose via `get_orchestration_run`, then resume or escalate.',
+    '- **`orchestration.groupthink.aborted`**: the run was aborted (by you, or by a dashboard restart\'s boot-reconcile, which also emits a resume_hint). Diagnose via `get_orchestration_run`, then resume or escalate.',
+  );
+}
+
 function reconstructRunOrchestrationSkillV6(): string {
-  return SUPERVISOR_RUN_ORCHESTRATION_SKILL
+  return reconstructRunOrchestrationSkillV7()
     .replace(
       '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Provide `plan_id` and `planning_intent_id` together for a plan-bound run, or omit both for a plan-less deliberation. Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
       '- **run_orchestration** — Start a run (detached). Returns `{ runId }` synchronously. Args: `name`, `workspace_id`, `supervisor_id`, plus orchestration params (`topic`, `plan_id`, `planning_intent_id`, `section_anchor`, `mode`, `lead_provider`, `reviewer_provider`, `turn_timeout_ms`). Resume with `resume_run_id` (preferred) or `legacy_command` (paste a whole old `node scripts/groupthink-v2.js …` line).',
@@ -6181,13 +6189,16 @@ function reconstructRunOrchestrationSkillV4(): string {
     );
 }
 
-test('WP-B5-0. frozen v4, v5, and v6 hashes match the pristine historical bodies', () => {
+test('WP-B5-0. frozen v4 through v7 hashes match the pristine historical bodies', () => {
+  const v7 = reconstructRunOrchestrationSkillV7();
   const v6 = reconstructRunOrchestrationSkillV6();
   const v5 = reconstructRunOrchestrationSkillV5();
   const v4 = reconstructRunOrchestrationSkillV4();
+  assert.equal(sha256Hex(v7), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V7_HASH);
   assert.equal(sha256Hex(v6), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH);
   assert.equal(sha256Hex(v4), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
   assert.equal(sha256Hex(v5), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V5_HASH);
+  assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V7_HASH);
   assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V6_HASH);
   assert.notEqual(sha256Hex(v5), sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL));
   assert.notEqual(sha256Hex(SUPERVISOR_RUN_ORCHESTRATION_SKILL), SUPERVISOR_RUN_ORCHESTRATION_SKILL_V4_HASH);
@@ -6217,15 +6228,16 @@ test('WP-B5-1. current skill retains provider preflight and teaches only the two
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('`.lares/library/deliberations/`'));
   assert.ok(SUPERVISOR_RUN_ORCHESTRATION_SKILL.includes('artifact/deliberation written'));
   const managed = supFilesMap()['.lares/supervisor/.claude/skills/run-orchestration/SKILL.md'];
-  assert.equal(managed.version, 7);
-  assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6]);
+  assert.equal(managed.version, 8);
+  assert.deepEqual(Object.keys(managed.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6, 7]);
 });
 
-test('WP-B5-2. pristine v4, v5, and v6 run-orchestration skills silently upgrade to v7', () => {
+test('WP-B5-2. pristine v4 through v7 run-orchestration skills silently upgrade to v8', () => {
   for (const [oldVersion, oldBody] of [
     [4, reconstructRunOrchestrationSkillV4()],
     [5, reconstructRunOrchestrationSkillV5()],
     [6, reconstructRunOrchestrationSkillV6()],
+    [7, reconstructRunOrchestrationSkillV7()],
   ] as const) {
     const workDir = mktmp(`run-orchestration-v${oldVersion}`);
     const { supervisor, cleanup } = makeSupervisor();
@@ -6245,7 +6257,7 @@ test('WP-B5-2. pristine v4, v5, and v6 run-orchestration skills silently upgrade
       assert.equal(fs.readFileSync(skillPath, 'utf-8'), SUPERVISOR_RUN_ORCHESTRATION_SKILL);
       assert.equal(fs.readdirSync(path.dirname(skillPath)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0,
         `a pristine v${oldVersion} skill must upgrade without a backup`);
-      assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 7);
+      assert.equal(readSidecar(workDir)['supervisor/.claude/skills/run-orchestration/SKILL.md'], 8);
     } finally {
       cleanup();
       rmrf(workDir);

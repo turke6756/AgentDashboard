@@ -2695,6 +2695,12 @@ export class ApiServer {
     // POST /api/orchestrations — start a run (detached; returns {runId})
     if (method === 'POST' && path === '/api/orchestrations') {
       const { name, params } = JSON.parse(await readBody(req));
+      if (params?.plan_id !== undefined && params.planId === undefined) {
+        params.planId = params.plan_id;
+      }
+      if (params?.planning_intent_id !== undefined && params.planningIntentId === undefined) {
+        params.planningIntentId = params.planning_intent_id;
+      }
       if (!name || !params?.workspaceId || !params?.supervisorId) {
         throw Object.assign(
           new Error('name, params.workspaceId, params.supervisorId required'),

@@ -306,7 +306,10 @@ export class OrchestrationService extends EventEmitter {
     run.status = 'aborted'; run.endedAt = nowIso(); run.updatedAt = nowIso();
     updateOrchestration(run);
     this.emitActiveChanged();
-    insertOrchestrationEvent({ runId, ts: nowIso(), kind: 'aborted', payload: {} });
+    insertOrchestrationEvent({
+      runId, ts: nowIso(), kind: 'aborted',
+      payload: { planId: run.planId ?? null, artifactKind: orchestrationArtifactKind(run) },
+    });
     void this.cleanupMembers(run);
     void this.relay(runId, run.supervisorId,
       `[DASHBOARD EVENT] orchestration.groupthink.aborted\n` +

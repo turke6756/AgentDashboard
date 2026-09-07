@@ -784,6 +784,15 @@ test('orchestration route binds workspace before start_run and preserves resolve
   const liveServer = new ApiServer(supervisor, 0, svc, '127.0.0.1');
   const livePort = await liveServer.start();
   try {
+    const snakeCaseHalfBinding = await request(livePort, {
+      name: 'groupthink',
+      params: { workspaceId: 'ws-1', supervisorId: 'sup-1', plan_id: PLAN_ARTIFACT_ID },
+    });
+    assert.equal(snakeCaseHalfBinding.status, 400);
+    assert.deepEqual(JSON.parse(snakeCaseHalfBinding.body), {
+      error: 'planId and planningIntentId must be provided together, or both omitted',
+    });
+
     const missing = await request(livePort, {
       name: 'groupthink',
       params: {
@@ -927,6 +936,10 @@ test('abort cancels the run, delivers an aborted event, and persists aborted', a
   assert.equal(payload.planId, null);
   assert.equal(payload.artifactKind, 'deliberation');
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'resume_hint'), false);
+  assert.deepEqual(eventsFor(runId).find((event) => event.kind === 'aborted')?.payload, {
+    planId: null,
+    artifactKind: 'deliberation',
+  });
 });
 
 test('delivery_failed event is recorded when the supervisor is unreachable', async () => {

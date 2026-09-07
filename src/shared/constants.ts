@@ -4263,7 +4263,7 @@ When a \`[DASHBOARD EVENT]\` arrives in your chat:
 
 - **\`groupthink.complete\`**: the artifact/deliberation written is identified by the path in the message. Acknowledge; no action unless the user asks.
 - **\`orchestration.groupthink.stalled\`**: the payload carries a \`resume_hint\`. Typically \`{tool:'run_orchestration', params:{resumeRunId}}\` — resume with \`run_orchestration({name:'groupthink', workspace_id, supervisor_id, resume_run_id:'<id>'})\`. Decide based on the payload (reason, turns/rounds elapsed, planner ids). When in doubt, escalate to the user.
-- **\`orchestration.groupthink.aborted\`**: the run was aborted (by you, or by a dashboard restart's boot-reconcile, which also emits a resume_hint). Diagnose via \`get_orchestration_run\`, then resume or escalate.
+- **\`orchestration.groupthink.aborted\`**: the run was explicitly aborted and carries no \`resume_hint\`. Dashboard restart boot-reconcile instead emits \`orchestration.groupthink.stalled\` with a \`resume_hint\`. Diagnose via \`get_orchestration_run\`, then resume or escalate.
 
 You can also pull status anytime with \`get_orchestration_run({run_id})\` instead of waiting for an event.
 

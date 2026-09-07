@@ -165,8 +165,8 @@ function getOrchestrationToolDefinitions() {
     {
       name: 'run_orchestration',
       description: 'Start an orchestration. The only orchestration is `groupthink`, in one of two ' +
-        'modes: `serial` (Lead drafts → Reviewer critiques → Lead writes the plan) or `parallel` ' +
-        '(two planners draft independently → cross-pollinate → synthesizer writes the plan). ' +
+        'modes: `serial` (Lead drafts → Reviewer critiques → Lead writes the deliverable) or `parallel` ' +
+        '(two planners draft independently → cross-pollinate → synthesizer writes the deliverable). ' +
         'Returns immediately with a runId; the run executes ' +
         'detached inside the dashboard and streams [DASHBOARD EVENT] messages back to you ' +
         '(groupthink.complete / orchestration.groupthink.stalled / .aborted). ' +
