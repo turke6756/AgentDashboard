@@ -16,6 +16,14 @@ export const EMPTY_LIBRARY_FILTERS: LibraryFilterState = {
   types: [], trusts: [], dateFrom: '', dateTo: '', topic: '', provider: '', status: '', title: '',
 };
 
+const SHELF_STATUS_LABELS: Record<ShelfStatus, string> = {
+  pending: 'Not indexed yet',
+  stale: 'Needs re-index',
+  indexing: 'Working',
+  ready: 'Ready to search',
+  error: 'Ingest failed',
+};
+
 export default function LibraryFilters({ value, onChange }: { value: LibraryFilterState; onChange: (next: LibraryFilterState) => void }) {
   const set = (patch: Partial<LibraryFilterState>) => onChange({ ...value, ...patch });
   return (
@@ -31,7 +39,7 @@ export default function LibraryFilters({ value, onChange }: { value: LibraryFilt
       <input aria-label="Topic" placeholder="Topic" value={value.topic} onChange={(event) => set({ topic: event.target.value })} className="ui-input" />
       <input aria-label="Provider" placeholder="Provider" value={value.provider} onChange={(event) => set({ provider: event.target.value })} className="ui-input" />
       <select aria-label="Processing state" value={value.status} onChange={(event) => set({ status: event.target.value as LibraryFilterState['status'] })} className="ui-input">
-        <option value="">All states</option>{SHELF_STATUSES.map((status) => <option key={status}>{status}</option>)}
+        <option value="">All states</option>{SHELF_STATUSES.map((status) => <option key={status} value={status}>{SHELF_STATUS_LABELS[status]}</option>)}
       </select>
       <input aria-label="Title" placeholder="Filter titles" value={value.title} onChange={(event) => set({ title: event.target.value })} className="ui-input" />
     </div>

@@ -112,10 +112,14 @@ describe('LibraryPane shelf', () => {
     expect(listShelf).toHaveBeenCalledWith('ws');
     expect(pane.querySelector('[aria-label="Ingested and ready to search"]')?.textContent).toContain('Ready to search');
     expect(pane.querySelector('[aria-label="Ingest failed"]')?.textContent).toContain('Ingest failed');
-    expect(pane.querySelectorAll('[aria-label="Ingest in progress"]')).toHaveLength(2);
+    expect(pane.querySelector('[aria-label="Not indexed yet; press Rescan to index"]')?.textContent).toContain('Not indexed yet');
+    expect(pane.querySelectorAll('[aria-label="Ingest in progress"]')).toHaveLength(1);
     expect(pane.querySelector('[aria-label="Re-index needed"]')).not.toBeNull();
     expect(pane.querySelectorAll('[aria-label="Untrusted research report"]')).toHaveLength(2);
-    expect(Array.from(pane.querySelector<HTMLSelectElement>('[aria-label="Processing state"]')!.options).map((option) => option.value)).toEqual(['', 'pending', 'stale', 'indexing', 'ready', 'error']);
+    expect(Array.from(pane.querySelector<HTMLSelectElement>('[aria-label="Processing state"]')!.options).map((option) => [option.value, option.text])).toEqual([
+      ['', 'All states'], ['pending', 'Not indexed yet'], ['stale', 'Needs re-index'],
+      ['indexing', 'Working'], ['ready', 'Ready to search'], ['error', 'Ingest failed'],
+    ]);
   });
 
   it('ignores a stale reload that resolves after a newer shelf response', async () => {
@@ -138,6 +142,17 @@ describe('LibraryPane shelf', () => {
     const api = installLibraryApi([pending]);
     const pane = await renderPane();
     expect(pane.querySelector('[data-shelf-status="stale"]')).not.toBeNull();
+    await act(async () => { api.emitProgress({ workspace_id: 'ws', document_id: 'real-id', source_rel_path: '.lares\\library\\inbox\\report.md', status: 'embedding' }); });
+    expect(pane.querySelector('[data-shelf-status="indexing"]')).not.toBeNull();
+  });
+
+  it('case-folds progress paths before workspace metadata is available', async () => {
+    const pending = shelfRow('synthetic', 'pending');
+    pending.id = 'shelf:.lares/library/inbox/report.md';
+    pending.source_rel_path = '.lares/library/inbox/Report.md';
+    const api = installLibraryApi([pending]);
+    useDashboardStore.setState({ workspaces: [] });
+    const pane = await renderPane();
     await act(async () => { api.emitProgress({ workspace_id: 'ws', document_id: 'real-id', source_rel_path: '.lares\\library\\inbox\\report.md', status: 'embedding' }); });
     expect(pane.querySelector('[data-shelf-status="indexing"]')).not.toBeNull();
   });

@@ -22,7 +22,19 @@ function IndexBadge({ document }: { document: ShelfRow }) {
       </span>
     );
   }
-  if (document.shelf_status === 'pending' || document.shelf_status === 'indexing') {
+  if (document.shelf_status === 'pending') {
+    return (
+      <span
+        aria-label="Not indexed yet; press Rescan to index"
+        title="Press Rescan to index this report"
+        className="inline-flex items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 text-gray-400"
+      >
+        <Icons.CircleDashed className="h-3 w-3" aria-hidden="true" />
+        Not indexed yet
+      </span>
+    );
+  }
+  if (document.shelf_status === 'indexing') {
     return (
       <span aria-label="Ingest in progress" className="inline-flex items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 text-gray-400">
         <Icons.LoaderCircle className="h-3 w-3" aria-hidden="true" />

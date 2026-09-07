@@ -61,9 +61,10 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   }, [reload, workspaceId]);
   useEffect(() => libraryApi().onProgress((event) => {
     if (event.workspace_id !== workspaceId) return;
-    const eventPath = event.source_rel_path ? normalizeSourceRelPath(event.source_rel_path, workspacePathType === 'windows') : null;
+    const caseInsensitivePaths = workspacePathType !== 'wsl';
+    const eventPath = event.source_rel_path ? normalizeSourceRelPath(event.source_rel_path, caseInsensitivePaths) : null;
     setDocuments((current) => current.map((document) => {
-      const pathMatches = eventPath !== null && normalizeSourceRelPath(document.source_rel_path, workspacePathType === 'windows') === eventPath;
+      const pathMatches = eventPath !== null && normalizeSourceRelPath(document.source_rel_path, caseInsensitivePaths) === eventPath;
       return document.id === event.document_id || pathMatches
         ? { ...document, status: event.status, shelf_status: event.status === 'ready' || event.status === 'error' ? event.status : 'indexing', error_reason: event.error_reason ?? null }
         : document;
