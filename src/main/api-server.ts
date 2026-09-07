@@ -120,7 +120,7 @@ import { toolsetsForLane } from './supervisor/mcp-config-builder';
 import { implementPlan, SUPERVISOR_IMPLEMENT_TRIGGER_SOURCE } from './plans/plan-implement';
 import { markPlanReady } from './plans/plan-lifecycle';
 import type { GateLandedWorkPackageArgs } from '../shared/types';
-import { isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
+import { isCanonicalPlanRowId, isPlanArtifactId, PLAN_REF_ERROR_CODES } from '../shared/planning-artifact-ids';
 import {
   resolveRequestedPlanBinding,
   withResolvedPlanStamp,
@@ -4067,6 +4067,22 @@ export class ApiServer {
         throw Object.assign(new Error('invalid plan deploy filter'), { statusCode: 400 });
       }
       const projectFilter = url.searchParams.get('project');
+      const limitRaw = url.searchParams.get('limit');
+      let limit = 10;
+      if (limitRaw !== null) {
+        const normalized = limitRaw.trim();
+        if (!/^\d+$/.test(normalized)) {
+          throw Object.assign(new Error('limit must be an integer in [1,50]'), { statusCode: 400 });
+        }
+        limit = Number(normalized);
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+          throw Object.assign(new Error('limit must be an integer in [1,50]'), { statusCode: 400 });
+        }
+      }
+      const cursor = url.searchParams.get('cursor');
+      if (cursor !== null && !isPlanArtifactId(cursor) && !isCanonicalPlanRowId(cursor)) {
+        throw Object.assign(new Error('invalid plan cursor'), { statusCode: 400 });
+      }
       const requestedRef = url.searchParams.get('plan_id');
       let requestedPlanId: string | null = null;
       let requestedArtifactId: string | null = null;
@@ -4137,8 +4153,26 @@ export class ApiServer {
         plans.push(row);
       }
       plans.sort((a, b) => String(a.plan_id).localeCompare(String(b.plan_id)));
-      const result = { plans, warnings };
-      const bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+      const totalMatched = plans.length;
+      const remainingPlans = cursor === null
+        ? plans
+        : plans.filter((row) => String(row.plan_id).localeCompare(cursor) > 0);
+      let page = remainingPlans.slice(0, limit);
+      let hasMore = remainingPlans.length > page.length;
+      const buildResult = () => ({
+        plans: page,
+        warnings,
+        next_cursor: hasMore && page.length > 0 ? String(page[page.length - 1].plan_id) : null,
+        total_matched: totalMatched,
+      });
+      let result = buildResult();
+      let bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+      while (bytes > PLAN_LIST_MAX_BYTES && page.length > 1) {
+        page = page.slice(0, -1);
+        hasMore = true;
+        result = buildResult();
+        bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+      }
       if (bytes > PLAN_LIST_MAX_BYTES) {
         throw Object.assign(
           new Error(`list_plans response is ${bytes} bytes; maximum is ${PLAN_LIST_MAX_BYTES}`),

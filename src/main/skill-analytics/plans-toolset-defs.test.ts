@@ -25,11 +25,20 @@ function test(name: string, fn: () => void): void {
 
 test('provider sources the real plans tool defs', () => {
   const defs = makePlansAwareDefsProvider().defsFor('plans');
-  assert.ok(Array.isArray(defs) && defs.length === 5, `expected 5 plans defs, got ${defs?.length}`);
+  assert.ok(Array.isArray(defs) && defs.length === 7, `expected 7 plans defs, got ${defs?.length}`);
   const names = defs!.map((d) => d.name);
   assert.ok(names.includes('focus_plan'), 'focus_plan present');
   assert.ok(names.includes('read_plan_progress'), 'read_plan_progress present');
   assert.ok(names.includes('list_plans'), 'list_plans present');
+  const listPlans = defs!.find((def) => def.name === 'list_plans') as unknown as {
+    description: string;
+    inputSchema: { properties: Record<string, any> };
+  };
+  assert.deepEqual(listPlans.inputSchema.properties.limit, {
+    type: 'integer', minimum: 1, maximum: 50, default: 10,
+  });
+  assert.equal(listPlans.inputSchema.properties.cursor.type, 'string');
+  assert.match(listPlans.description, /paged/);
 });
 
 test('provider also sources the plans-read subset (GT-A WP-A4.5)', () => {

@@ -46,13 +46,14 @@ function manifest(planArtifactId: string, title: string): Record<string, unknown
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-list-plans-fleet-'));
   const plansRoot = path.join(root, '.lares', 'plans');
   const workspaceId = 'ws-list-plans-fleet';
-  const registeredArtifactId = 'plan_11111111';
-  const diskOnlyArtifactId = 'plan_22222222';
+  const registeredArtifactId = 'plan_00000001';
+  const diskOnlyArtifactId = 'plan_00000002';
   const registeredPlanId = '00000000-0000-4000-8000-000000000111';
-  for (const [folder, artifactId] of [
-    ['2026-08-23-registered-11111111', registeredArtifactId],
-    ['2026-08-23-disk-only-22222222', diskOnlyArtifactId],
-  ] as const) {
+  const fleetEntries = Array.from({ length: 24 }, (_, index) => {
+    const ordinal = String(index + 1).padStart(8, '0');
+    return [`2026-08-23-fleet-${ordinal}`, `plan_${ordinal}`] as const;
+  });
+  for (const [folder, artifactId] of fleetEntries) {
     fs.mkdirSync(path.join(plansRoot, folder), { recursive: true });
     const stateCard = manifest(artifactId, folder);
     if (artifactId === diskOnlyArtifactId) delete stateCard.deploy;
@@ -63,7 +64,7 @@ function manifest(planArtifactId: string, title: string): Record<string, unknown
   // enumerator, then enter through ApiServer.start() and the real HTTP route.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const db = require('../database') as Record<string, any>;
-  const keys = ['getWorkspace', 'getPlan', 'getPlanByWorkspaceArtifactId', 'getSupervisorAgent', 'listPlanWorkPackagesOrdered', 'listTurnRecords', 'getActiveAgents'];
+  const keys = ['getWorkspace', 'getPlan', 'getPlanByWorkspaceArtifactId', 'getSupervisorAgent', 'listPlanWorkPackagesOrdered', 'readPlanGateProgressEvidence', 'listTurnRecords', 'getActiveAgents'];
   const originals = new Map(keys.map((key) => [key, db[key]]));
   const registeredPlan = {
     id: registeredPlanId, workspaceId, artifactId: registeredArtifactId, path: null,
@@ -78,6 +79,7 @@ function manifest(planArtifactId: string, title: string): Record<string, unknown
     ws === workspaceId && artifactId === registeredArtifactId ? registeredPlan : null;
   db.getSupervisorAgent = () => null;
   db.listPlanWorkPackagesOrdered = () => [];
+  db.readPlanGateProgressEvidence = () => undefined;
   db.listTurnRecords = () => [];
   db.getActiveAgents = () => [];
 
@@ -90,9 +92,16 @@ function manifest(planArtifactId: string, title: string): Record<string, unknown
   let failed = 0;
   try {
     const fleet = await request(port, '/api/plans/state', workspaceId);
-    assert.equal(fleet.status, 200, 'REACHABILITY:list-plans-fleet real listener must register the fleet route');
-    assert.deepEqual(fleet.body.plans.map((row: any) => row.plan_id), [registeredArtifactId, diskOnlyArtifactId]);
-    const diskOnly = fleet.body.plans[1];
+    assert.equal(
+      fleet.status,
+      200,
+      `REACHABILITY:list-plans-fleet real listener must register the fleet route: ${JSON.stringify(fleet.body)}`,
+    );
+    assert.equal(fleet.body.plans.length, 10, 'default page is limited to 10 plans');
+    assert.equal(fleet.body.total_matched, fleetEntries.length);
+    assert.equal(fleet.body.next_cursor, fleet.body.plans[9].plan_id);
+    const diskOnly = fleet.body.plans.find((row: any) => row.plan_id === diskOnlyArtifactId);
+    assert.ok(diskOnly);
     assert.equal(diskOnly.fresh, false);
     assert.equal(diskOnly.db_snapshot_version, null);
     assert.equal(diskOnly.snapshot_age_s, null);
@@ -102,10 +111,38 @@ function manifest(planArtifactId: string, title: string): Record<string, unknown
     const filtered = await request(port, `/api/plans/state?plan_id=${diskOnlyArtifactId}`, workspaceId);
     assert.equal(filtered.status, 200);
     assert.deepEqual(filtered.body.plans.map((row: any) => row.plan_id), [diskOnlyArtifactId]);
-    console.log('  ok  list_plans fleet includes and filters a disk-only stamped state card');
+    assert.equal(filtered.body.next_cursor, null);
+    assert.equal(filtered.body.total_matched, 1);
+
+    const continued = await request(
+      port,
+      `/api/plans/state?cursor=${encodeURIComponent(fleet.body.next_cursor)}`,
+      workspaceId,
+    );
+    assert.equal(continued.status, 200);
+    const firstIds = fleet.body.plans.map((row: any) => row.plan_id);
+    const continuedIds = continued.body.plans.map((row: any) => row.plan_id);
+    assert.equal(firstIds.filter((id: string) => continuedIds.includes(id)).length, 0, 'pages do not overlap');
+    assert.deepEqual(
+      [...firstIds, ...continuedIds],
+      fleetEntries.slice(0, 20).map(([, artifactId]) => artifactId),
+      'cursor resumes immediately after the last returned plan_id',
+    );
+
+    const capped = await request(port, '/api/plans/state?limit=50', workspaceId);
+    assert.equal(capped.status, 200);
+    assert.ok(capped.body.plans.length < fleetEntries.length, 'oversized page is shrunk');
+    assert.ok(capped.body.plans.length > 0, 'shrunk page still returns rows');
+    assert.equal(capped.body.next_cursor, capped.body.plans.at(-1).plan_id);
+    assert.equal(capped.body.total_matched, fleetEntries.length);
+    assert.ok(Buffer.byteLength(JSON.stringify(capped.body), 'utf8') <= 6 * 1024);
+
+    const invalidLimit = await request(port, '/api/plans/state?limit=0', workspaceId);
+    assert.equal(invalidLimit.status, 400);
+    console.log('  ok  list_plans fleet filters, pages, continues, and shrinks under the byte cap');
   } catch (error) {
     failed++;
-    console.error('FAIL  list_plans fleet includes and filters a disk-only stamped state card');
+    console.error('FAIL  list_plans fleet filters, pages, continues, and shrinks under the byte cap');
     console.error(error);
   } finally {
     server.stop();

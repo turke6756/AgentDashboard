@@ -29,7 +29,8 @@ const READ_DEFS = [
     description:
       "List the workspace's bounded v2 plan-state rows without opening plan files. " +
       'Optionally filter by plan identity, status, deploy code, or project; freshness fields ' +
-      "show whether each rollup is current, and an unproven rollup is returned as 'unknown'.",
+      "show whether each rollup is current, and an unproven rollup is returned as 'unknown'. " +
+      'Results are paged; pass next_cursor back as cursor to continue.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -37,6 +38,8 @@ const READ_DEFS = [
         status: { type: 'string', enum: ['draft', 'ready', 'in_progress', 'code_complete', 'completed'] },
         deploy: { type: 'string', enum: ['n/a', 'local_unpushed', 'pushed_undeployed', 'deployed'] },
         project: { type: 'string', maxLength: 120 },
+        limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
+        cursor: { type: 'string', pattern: PLAN_ID_PATTERN, description: 'Opaque next_cursor returned by a previous list_plans page.' },
       },
       required: [],
     },
@@ -212,7 +215,7 @@ async function handlePlansToolCall(name, args, apiRequest) {
   switch (name) {
     case 'list_plans': {
       const query = new URLSearchParams();
-      for (const key of ['plan_id', 'status', 'deploy', 'project']) {
+      for (const key of ['plan_id', 'status', 'deploy', 'project', 'limit', 'cursor']) {
         if (args[key] !== undefined) query.set(key, String(args[key]));
       }
       const suffix = query.toString();
