@@ -7,6 +7,7 @@ import test from 'node:test';
 import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
 import { rescanLibraryReports } from './library-rescan';
+import { closeLibraryStore, openLibraryStore } from './library-store';
 
 test('rescan walks both report roots serially and is idempotent on an unchanged tree', async (t) => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-rescan-'));
@@ -55,4 +56,27 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
 
   const second = await secondPromise;
   assert.deepEqual(second, { scanned: 2, ingested: 0, skipped: 2, failed: 0 });
+});
+
+test('rescan retries a report whose previous ingest left an error row', async (t) => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-rescan-error-'));
+  const inbox = path.join(workspaceRoot, '.lares', 'library', 'inbox');
+  fs.mkdirSync(inbox, { recursive: true });
+  fs.writeFileSync(path.join(inbox, 'retry.md'), '# Retry');
+  const store = openLibraryStore(workspaceRoot);
+  t.after(() => {
+    closeLibraryStore(store);
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+  let fail = true;
+  const embedTexts = async (texts: string[]) => {
+    if (fail) throw new Error('persistent provider failure');
+    return { vectors: texts.map(() => new Float32Array(LIBRARY_EMBEDDING_DIMENSIONS)), load_ms: 0, embed_ms: 0 };
+  };
+
+  const first = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
+  assert.deepEqual(first, { scanned: 1, ingested: 0, skipped: 0, failed: 1 });
+  fail = false;
+  const second = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
+  assert.deepEqual(second, { scanned: 1, ingested: 1, skipped: 0, failed: 0 }, 'Rescan must be the explicit recovery path for error rows');
 });

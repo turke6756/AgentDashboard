@@ -27,7 +27,7 @@ export async function rescanLibraryReports(
 
     for (const { file, relPath } of files) {
       const status = byRelPath.get(relPath)?.shelf_status;
-      if (status !== 'pending' && status !== 'stale') {
+      if (status !== 'pending' && status !== 'stale' && status !== 'error') {
         result.skipped += 1;
         continue;
       }

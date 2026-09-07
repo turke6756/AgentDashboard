@@ -234,7 +234,6 @@ export class LibraryReportWatcher {
       } while (!state.stopped && state.dirty);
     } catch (error) {
       this.options.log(`reconcile failed for ${state.workspace.id}`, error);
-      for (const [key, tuple] of state.observed) if (tuple.eligible && !tuple.ingested) this.scheduleSettle(state, key, true);
     } finally {
       const rerun = !state.stopped && state.dirty;
       const rerunAllowsSettle = state.pendingAllowsSettle;
@@ -274,10 +273,6 @@ export class LibraryReportWatcher {
         state.observed.set(key, tuple);
         if (eligible) this.scheduleSettle(state, key, true);
         shelfChanged = true;
-      } else if (!previous.eligible && allowSettle) {
-        previous.eligible = true;
-        previous.observedAt = now;
-        this.scheduleSettle(state, key, true);
       } else if (previous.eligible && !previous.ingested && allowSettle && now - previous.observedAt >= LIBRARY_REPORT_SETTLE_MS) {
         settled.push({ key, sourcePath: file.abs_path, tuple: previous });
       } else if (previous.eligible && !previous.ingested) this.scheduleSettle(state, key);
@@ -289,32 +284,39 @@ export class LibraryReportWatcher {
       state.settleTimers.delete(key);
     }
 
-    const store = this.options.openStore(state.workspace.path);
-    try {
-      const rows = this.options.listDocuments(store, { include_untrusted: true });
-      const deleted: string[] = [];
-      for (const root of ROOTS) {
-        if (!deleteMissing) continue;
-        if (inventory[root].health !== 'complete') continue;
-        const prefix = normalizeLibraryReportKey(PREFIXES[root]);
-        const disk = new Set(inventory[root].files.map((file) => relPath(root, file.rel_path)));
-        for (const row of rows) {
-          const key = normalizeLibraryReportKey(row.source_rel_path);
-          if (key.startsWith(prefix) && !disk.has(key)) deleted.push(row.source_rel_path);
+    await withLibraryIngestLock(state.workspace.path, async () => {
+      const store = this.options.openStore(state.workspace.path);
+      try {
+        const rows = this.options.listDocuments(store, { include_untrusted: true });
+        const deleted: string[] = [];
+        for (const root of ROOTS) {
+          if (!deleteMissing) continue;
+          if (inventory[root].health !== 'complete') continue;
+          const prefix = normalizeLibraryReportKey(PREFIXES[root]);
+          const disk = new Set(inventory[root].files.map((file) => relPath(root, file.rel_path)));
+          for (const row of rows) {
+            const key = normalizeLibraryReportKey(row.source_rel_path);
+            if (key.startsWith(prefix) && !disk.has(key)) deleted.push(row.source_rel_path);
+          }
         }
-      }
-      if (deleted.length > 0) {
-        this.options.deleteDocuments(store, deleted);
-        shelfChanged = true;
-      }
-      if (shelfChanged) this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
-      for (const candidate of settled) {
-        if (state.stopped) break;
-        await withLibraryIngestLock(state.workspace.path, () => this.options.ingest({ workspaceId: state.workspace.id, workspaceRoot: state.workspace.path, store, sourcePath: candidate.sourcePath, trigger: 'report-arrival' }));
-        candidate.tuple.ingested = true;
-        this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
-      }
-    } finally { this.options.closeStore(store); }
+        if (deleted.length > 0) {
+          this.options.deleteDocuments(store, deleted);
+          shelfChanged = true;
+        }
+        if (shelfChanged) this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
+        for (const candidate of settled) {
+          if (state.stopped) break;
+          try {
+            await this.options.ingest({ workspaceId: state.workspace.id, workspaceRoot: state.workspace.path, store, sourcePath: candidate.sourcePath, trigger: 'report-arrival' });
+          } catch (error) {
+            candidate.tuple.ingested = true;
+            throw error;
+          }
+          candidate.tuple.ingested = true;
+          this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
+        }
+      } finally { this.options.closeStore(store); }
+    });
   }
 }
 

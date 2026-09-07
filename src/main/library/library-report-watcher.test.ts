@@ -3,6 +3,7 @@ import path from 'node:path';
 import test from 'node:test';
 import type { FsEvent, Workspace } from '../../shared/types';
 import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
+import { withLibraryIngestLock } from './library-ingest';
 import {
   LIBRARY_REPORT_COALESCE_MS,
   LIBRARY_REPORT_REFRESH_MS,
@@ -142,6 +143,26 @@ test('attach and refresh inventory a pre-existing quiet file without ingesting i
   h.watcher.stop();
 });
 
+test('an fs event only arms settling for tuples that changed on that pass', async () => {
+  let current = inventory([
+    { root: 'inbox', name: 'a.md', size: 1, mtimeMs: 1 },
+    { root: 'inbox', name: 'b.md', size: 1, mtimeMs: 1 },
+  ]);
+  const h = harness({ inventory: async () => current });
+  await h.watcher.start();
+  current = inventory([
+    { root: 'inbox', name: 'a.md', size: 2, mtimeMs: 2 },
+    { root: 'inbox', name: 'b.md', size: 1, mtimeMs: 1 },
+  ]);
+  h.listeners[0]({ type: 'change', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'a.md'), parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  assert.deepEqual(h.ingests.map(({ sourcePath }) => path.basename(sourcePath)), ['a.md']);
+  h.watcher.stop();
+});
+
 test('startup attachment and an arriving fs event share the workspace single-flight queue', async () => {
   let releaseFirst!: () => void;
   const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
@@ -225,11 +246,13 @@ test('reconcile and ingest are single-flight and an event during ingest causes o
   let active = 0;
   let maxActive = 0;
   let inventoryCalls = 0;
+  let current = inventory();
   const h = harness({
-    inventory: async () => { inventoryCalls += 1; return inventory([{ root: 'inbox', name: 'a.md', size: 1, mtimeMs: 1 }, { root: 'cleared', name: 'b.md', size: 1, mtimeMs: 1 }]); },
+    inventory: async () => { inventoryCalls += 1; return current; },
     ingest: async ({ sourcePath }) => { active += 1; maxActive = Math.max(maxActive, active); if (sourcePath.endsWith('a.md')) await gate; active -= 1; h.ingests.push({ sourcePath, trigger: 'report-arrival' }); },
   });
   await h.watcher.start();
+  current = inventory([{ root: 'inbox', name: 'a.md', size: 1, mtimeMs: 1 }, { root: 'cleared', name: 'b.md', size: 1, mtimeMs: 1 }]);
   h.listeners[0]({ type: 'change', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'a.md'), parentDir: workspace.path });
   h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
   await flush();
@@ -248,12 +271,38 @@ test('reconcile and ingest are single-flight and an event during ingest causes o
   h.watcher.stop();
 });
 
-test('an ingest throw preserves dirty work and retries once', async () => {
+test('watcher waits for the workspace ingest lock before listing, deleting, or ingesting', async () => {
+  let listCalls = 0;
+  const h = harness({
+    listDocuments: () => { listCalls += 1; return []; },
+  });
+  await h.watcher.start();
+  const baseline = listCalls;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const holding = withLibraryIngestLock(workspace.path, async () => {
+    entered();
+    await gate;
+  });
+  await new Promise<void>((resolve) => { entered = resolve; });
+  h.setInventory(inventory([{ root: 'inbox', name: 'locked.md', size: 1, mtimeMs: 1 }]));
+  h.listeners[0]({ type: 'add', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'locked.md'), parentDir: workspace.path, isDirectory: false, size: 1, mtimeMs: 1 });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  assert.equal(listCalls, baseline, 'watcher must not touch its store while Rescan/IPC owns the workspace lock');
+  release();
+  await holding;
+  await flush();
+  assert.equal(listCalls, baseline + 1);
+  h.watcher.stop();
+});
+
+test('an ingest throw only retries when dirty work changes the tuple', async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let attempts = 0;
   const h = harness({
-    inventory: async () => inventory([{ root: 'inbox', name: 'retry.md', size: 1, mtimeMs: 1 }]),
     ingest: async ({ sourcePath }) => {
       attempts += 1;
       if (attempts === 1) { await gate; throw new Error('first ingest failed'); }
@@ -261,6 +310,7 @@ test('an ingest throw preserves dirty work and retries once', async () => {
     },
   });
   await h.watcher.start();
+  h.setInventory(inventory([{ root: 'inbox', name: 'retry.md', size: 1, mtimeMs: 1 }]));
   const sourcePath = path.join(workspace.path, '.lares', 'library', 'inbox', 'retry.md');
   h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
   h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
@@ -268,14 +318,37 @@ test('an ingest throw preserves dirty work and retries once', async () => {
   h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
   await flush();
   assert.equal(attempts, 1);
+  h.setInventory(inventory([{ root: 'inbox', name: 'retry.md', size: 2, mtimeMs: 2 }]));
   h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
   h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
   await flush();
   release();
   await new Promise<void>((resolve) => setImmediate(resolve));
   await flush();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
   assert.equal(attempts, 2, 'dirty work arriving during a rejected ingest must run again');
   assert.equal(h.ingests.length, 1);
+  h.watcher.stop();
+});
+
+test('a persistently failing tuple attempts once and releases Rescan or IPC waiters', async () => {
+  let attempts = 0;
+  const h = harness({
+    ingest: async () => { attempts += 1; throw new Error('persistent failure'); },
+  });
+  await h.watcher.start();
+  h.setInventory(inventory([{ root: 'inbox', name: 'poison.md', size: 1, mtimeMs: 1 }]));
+  const sourcePath = path.join(workspace.path, '.lares', 'library', 'inbox', 'poison.md');
+  h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS + LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  let waiterRan = false;
+  await withLibraryIngestLock(workspace.path, async () => { waiterRan = true; });
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS * 10);
+  await flush();
+  assert.equal(attempts, 1, 'an unchanged failed tuple must not auto-retry');
+  assert.equal(waiterRan, true, 'a failed watcher ingest must release the shared lock for Rescan/IPC');
   h.watcher.stop();
 });
 

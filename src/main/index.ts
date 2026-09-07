@@ -1006,7 +1006,9 @@ app.whenReady().then(async () => {
     const apiConnectionGate = createApiConnectionGate();
     const agentScheduler = bootstrapAgentScheduler({ supervisor, app, getAgent });
     registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler);
-    libraryReportWatcher = await startLibraryReportWatcher();
+    void startLibraryReportWatcher()
+      .then((watcher) => { libraryReportWatcher = watcher; })
+      .catch((error) => console.error('[library-report-watcher] startup failed:', error));
     registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE
