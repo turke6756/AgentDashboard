@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Agent, ContextStats, UsageLimitsReading, UsageWindowReading } from '../../../shared/types';
+import type { FiringOutcome, ScheduleSummary } from '../../../shared/schedule-types';
 
 // Shared, presentational subexpressions lifted out of AgentCard so the
 // horizontal OwnerContainerBar can reuse them verbatim instead of duplicating
@@ -67,6 +68,42 @@ export function DashboardMcpOffBadge({ agent }: { agent: Agent }) {
     >
       MCP OFF
     </span>
+  );
+}
+
+const SCHEDULE_BADGE_STYLE: Record<ScheduleSummary['badgeState'], string> = {
+  active: 'text-accent-blue bg-accent-blue/15',
+  held: 'text-accent-orange bg-accent-orange/15',
+  reviving: 'text-accent-purple bg-accent-purple/15 animate-pulse',
+  warn: 'text-accent-red bg-accent-red/15',
+  paused: 'text-gray-400 bg-white/10',
+  exhausted: 'text-gray-500 bg-white/5',
+};
+
+function scheduleOutcome(outcome: FiringOutcome | null): string {
+  if (!outcome) return 'unknown outcome';
+  return typeof outcome === 'string' ? outcome : outcome.failed;
+}
+
+export function ScheduleBadge({ summary, onOpen }: { summary: ScheduleSummary; onOpen: () => void }) {
+  const next = summary.nextFireAt === null
+    ? 'No next firing'
+    : `Next firing: ${new Date(summary.nextFireAt).toLocaleString()}`;
+  const detail = summary.badgeState === 'warn'
+    ? `Last outcome: ${scheduleOutcome(summary.lastOutcome)}`
+    : `Schedule ${summary.badgeState}`;
+  return (
+    <button
+      type="button"
+      onClick={(event) => { event.stopPropagation(); onOpen(); }}
+      className={`text-[11px] px-1.5 py-0.5 font-semibold shrink-0 ${SCHEDULE_BADGE_STYLE[summary.badgeState]}`}
+      title={`${detail}. ${next}. Schedules stop when you quit Lares.`}
+      aria-label={`Open schedule (${summary.badgeState})`}
+      data-testid="schedule-badge"
+      data-schedule-state={summary.badgeState}
+    >
+      ◷
+    </button>
   );
 }
 

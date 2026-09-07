@@ -3,7 +3,9 @@ import { motion } from 'framer-motion';
 import type { Agent, AgentStopReason } from '../../../shared/types';
 import StatusBadge from './StatusBadge';
 import { formatAgentToken } from '../../lib/agent-mention';
-import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge } from './agent-card-bits';
+import { RoleChips, ContextStatsBar, HooksOffBadge, DashboardMcpOffBadge, ScheduleBadge } from './agent-card-bits';
+import ScheduleDialog from './ScheduleDialog';
+import { useScheduleSummary } from './schedule-store';
 import ContinuationSplitButton from './ContinuationSplitButton';
 import AgentTurnRail from './AgentTurnRail';
 import ContinuationPhaseLine from './ContinuationPhaseLine';
@@ -118,6 +120,7 @@ export default function AgentCard({
   const cs = useDashboardStore((s) => s.contextStats[agent.id] ?? null);
   const planBadges = useDashboardStore((s) => s.agentPlanBadges[agent.id] ?? null);
   const planNav = useAgentPlanNavigation(planBadges ?? []);
+  const scheduleSummary = useScheduleSummary(agent.workspaceId, agent.id);
   const selectAgent = useDashboardStore((s) => s.selectAgent);
   const setTerminalAgent = useDashboardStore((s) => s.setTerminalAgent);
   const deleteAgent = useDashboardStore((s) => s.deleteAgent);
@@ -139,6 +142,7 @@ export default function AgentCard({
     return { turns: rows.length, files: files.size, latest };
   }, [activityPage, agent.id]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   // WP-G2.4 checkpoint time-rail: COLLAPSED by default so the default card
   // footprint is unchanged; the rail (and its lazy checkpoint load) only mount
   // when the human expands the timeline.
@@ -417,6 +421,7 @@ export default function AgentCard({
              {/* WP2 — hook-health badge, orthogonal to (and never replacing) the operational status. */}
              <HooksOffBadge agent={agent} />
              <DashboardMcpOffBadge agent={agent} />
+             {scheduleSummary && <ScheduleBadge summary={scheduleSummary} onOpen={() => setScheduleOpen(true)} />}
              <StatusBadge status={agent.status} />
 
              {!confirmDelete && (
@@ -586,6 +591,16 @@ export default function AgentCard({
           >
             {agent.isSupervised ? 'Disable Supervision' : 'Enable Supervision'}
           </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setContextMenu(null);
+              setScheduleOpen(true);
+            }}
+            className="ui-menu-item"
+          >
+            Schedule…
+          </button>
           {!['done', 'crashed'].includes(agent.status) && (
             <button
               onClick={(e) => {
@@ -637,6 +652,14 @@ export default function AgentCard({
       )}
 
       <PlanNavMenu navigation={planNav} standalone />
+
+      {scheduleOpen && (
+        <ScheduleDialog
+          agentId={agent.id}
+          provider={agent.provider}
+          onClose={() => setScheduleOpen(false)}
+        />
+      )}
 
       {/* Drag-to-query popover */}
       {dragQuery && (
