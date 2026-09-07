@@ -1056,7 +1056,7 @@ task is documentation rather than code.`;
 export const LIBRARY_GUIDANCE_CITATION = `Each claim taken from a passage carries its
 returned \`citation\` exactly. A claim that cannot be attached to a returned
 passage is not grounded; say so.`;
-export const SUPERVISOR_AGENT_MD = `${SUPERVISOR_AGENT_MD_V34.trimEnd()}
+export const SUPERVISOR_AGENT_MD_V35 = `${SUPERVISOR_AGENT_MD_V34.trimEnd()}
 
 ${LIBRARY_GUIDANCE_ALL_LANES}
 
@@ -1064,11 +1064,49 @@ ${LIBRARY_GUIDANCE_SUPERVISOR_RESEARCHER}
 
 ${LIBRARY_GUIDANCE_CITATION}
 `;
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V35
+  .replace(
+    `## Worker commit policy
+
+Every finished work package must be committed`,
+    `## Worker commit policy
+
+Plans are optional. Dispatch ordinary fixes and features plan-less through
+\`launch_agent\` without \`plan_id\` or \`plan_item_id\`; the worker commits them
+with a \`[worker] fix: ...\` or \`[worker] feat: ...\` message, and you gate the
+result on the diff, tests, and checkpoint-witnessed paths. The
+\`land-work-package\` trailer rules and \`gate_landed_work_package\` apply only to
+work packages of an existing plan.
+
+Every finished work package must be committed`,
+  )
+  .replace(
+    `The human normally promotes a plan by hand. Before calling \`implement_plan\`, check
+in with the human verbally and wait for a go-ahead.`,
+    `A plan is created when a human promotes a proposal from the Plans pane, or when a
+human asks you to promote one. Either way, run the \`proposal-to-plan\` skill's
+\`promote\` mode; the dashboard registers the resulting plan folder automatically.
+Before calling \`implement_plan\`, check in with the human verbally and wait for a
+go-ahead.`,
+  )
+  .replace(
+    `- **Mint** with \`create_plan\` — returns the plan id and its section anchors.`,
+    `- **Create by promotion, not MCP minting.** There is no plan-minting MCP tool.
+  Plans come from the proposal promotion path above; afterwards, \`list_plans\` and
+  \`get_my_context\` return the plan id.`,
+  )
+  .replace(
+    `**Fallback:** If MCP tools are unavailable, the same API is accessible via curl at \`http://127.0.0.1:24678/api/agents\`. In WSL, use the Windows host IP from \`/etc/resolv.conf\`.`,
+    `**Fallback:** The HTTP API requires a bearer token that agents do not hold, so it
+is not a usable fallback. If MCP tools are missing, report that to the human.`,
+  );
 export const SUPERVISOR_AGENT_MD_CHILD_V1 = SUPERVISOR_AGENT_MD_V32
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD_V2 = SUPERVISOR_AGENT_MD_V33
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD_V3 = SUPERVISOR_AGENT_MD_V34
+  .split('./memory/').join('../memory/');
+export const SUPERVISOR_AGENT_MD_CHILD_V4 = SUPERVISOR_AGENT_MD_V35
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD = SUPERVISOR_AGENT_MD
   .split('./memory/').join('../memory/');

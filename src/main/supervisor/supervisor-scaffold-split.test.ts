@@ -9,8 +9,9 @@ import {
   SUPERVISOR_AGENT_MD_CHILD_V1,
   SUPERVISOR_AGENT_MD_CHILD_V2,
   SUPERVISOR_AGENT_MD_CHILD_V3,
+  SUPERVISOR_AGENT_MD_CHILD_V4,
   SUPERVISOR_AGENT_MD_V32,
-  SUPERVISOR_AGENT_MD_V34,
+  SUPERVISOR_AGENT_MD_V35,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
@@ -71,7 +72,7 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
   for (const [rel, file] of Object.entries(files)) {
     const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
     const isClaudeSettings = rel === '.lares/supervisor/claude/.claude/settings.json';
-    assert.equal(file.version, isInstructions ? 4 : isClaudeSettings ? 2 : 1, `${rel} must carry its expected scaffold version`);
+    assert.equal(file.version, isInstructions ? 5 : isClaudeSettings ? 2 : 1, `${rel} must carry its expected scaffold version`);
     if (isInstructions) {
       assert.deepEqual(
         file.previousHashes,
@@ -79,6 +80,7 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
           1: digestText(SUPERVISOR_AGENT_MD_CHILD_V1),
           2: digestText(SUPERVISOR_AGENT_MD_CHILD_V2),
           3: digestText(SUPERVISOR_AGENT_MD_CHILD_V3),
+          4: digestText(SUPERVISOR_AGENT_MD_CHILD_V4),
         },
         `${rel} must retain the superseded child instruction hashes`,
       );
@@ -125,11 +127,11 @@ function run(): void {
       [statics.LEGACY_SUPERVISOR_FILES_CODEX, '.lares/supervisor/AGENTS.md'],
     ] as const) {
       const instructions = files[rel];
-      assert.equal(instructions.version, 35, `${rel} must advance to scaffold version 35`);
+      assert.equal(instructions.version, 36, `${rel} must advance to scaffold version 36`);
       assert.equal(
-        instructions.previousHashes?.[34],
-        digestText(SUPERVISOR_AGENT_MD_V34),
-        `${rel} must retain the superseded v34 instructions hash`,
+        instructions.previousHashes?.[35],
+        digestText(SUPERVISOR_AGENT_MD_V35),
+        `${rel} must retain the superseded v35 instructions hash`,
       );
     }
     assert.equal(

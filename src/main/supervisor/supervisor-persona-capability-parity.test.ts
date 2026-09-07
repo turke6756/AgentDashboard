@@ -299,12 +299,15 @@ test('the behavior-bearing sections protected by §3 are still resident', () => 
   }
 });
 
-test('get_my_context is documented exactly once (Re-Orientation dedup)', () => {
-  // v12 dropped the duplicate "Additional tool" restatement in the Re-Orientation
-  // block; the call-it-FIRST bullet is the single remaining mention.
-  const count = SUPERVISOR_AGENT_MD.split('get_my_context').length - 1;
-  assert.equal(count, 1, `get_my_context should be documented exactly once, got ${count}`);
-  assert.ok(SUPERVISOR_AGENT_MD.includes('get_my_context'), 'the revival ground-truth call must stay documented');
+test('get_my_context remains scoped to its tool entry and plan-id discovery guidance', () => {
+  // v12 dropped the duplicate "Additional tool" restatement in Re-Orientation.
+  // v36 intentionally adds one planning-section mention explaining where an
+  // automatically registered plan id can be read after proposal promotion.
+  const revivalSection = SUPERVISOR_AGENT_MD.split('<!-- reorientation-note-v1 -->')[1]?.split('<!-- /reorientation-note-v1 -->')[0] ?? '';
+  const planningSection = SUPERVISOR_AGENT_MD.split('<!-- section:planning-surface v1 -->')[1]?.split('<!-- /section:planning-surface -->')[0] ?? '';
+  assert.equal(revivalSection.split('get_my_context').length - 1, 1, 'revival guidance must document get_my_context once');
+  assert.equal(planningSection.split('get_my_context').length - 1, 1, 'the promotion path must name get_my_context once');
+  assert.equal(SUPERVISOR_AGENT_MD.split('get_my_context').length - 1, 2, 'no other section may duplicate get_my_context');
   assert.ok(SUPERVISOR_AGENT_MD.includes('advisory, not authoritative'), 'the distrust-stale-wake-hint action must survive');
   assert.ok(SUPERVISOR_AGENT_MD.includes('`list_agents`'), 'the refresh-list_agents action must survive');
 });

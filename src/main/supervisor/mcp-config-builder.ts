@@ -46,10 +46,12 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // decommissioned. Re-add the day a workflow needs it — grants are one-line.
       // Planning-surface acceptance demo (2026-07-06) found `plans` registered in
       // the TOOLSET_REGISTRY but granted to NO lane; supervisor gets the full
-      // `plans` toolset here (create_plan + the read ladder). GT-A WP-A4 (I-1):
+      // `plans` toolset here: list_plans, read_plan_progress, focus_plan,
+      // unfocus_plan, gate_landed_work_package, implement_plan, and
+      // record_planning_event. GT-A WP-A4 (I-1):
       // workers get the read-only `plans-read` subset (below) — they orient/read/
       // observe the plan surface via MCP and still write by editing the HTML
-      // natively; create_plan + write stay supervisor-native.
+      // natively; plan promotion and plan-file writes stay supervisor-native.
       // WP-F (P5) split `observability` into `observability-core` (operational)
       // + `observability-analytics` (context-optimizer / agent-knowledge /
       // file-heat / skill-usage deep analytics), granting BOTH to the supervisor
@@ -88,7 +90,7 @@ export function toolsetsForLane(lane: AgentRoleLane): string {
       // decision, not a value judgment (notebook use is event-driven). Re-add
       // the day a workflow needs it — grants are one-line.
       // GT-A WP-A4 (I-1): workers now get the read-only `plans-read` subset
-      // (list/read/projection — no create_plan) so a plan-bound worker can orient
+      // (list_plans + read_plan_progress) so a plan-bound worker can orient
       // on and read its dispatched section via ToolSearch under --strict-mcp-config
       // (which otherwise starved the plan-read breadcrumb trail). Writes stay
       // native Edits; there is no plan-write MCP tool.
