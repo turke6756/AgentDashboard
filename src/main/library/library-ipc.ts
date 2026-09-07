@@ -1,6 +1,6 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type { LibraryBroadcastEvent, LibraryIngestRequest, LibraryShelfChangedEvent } from '../../shared/library';
-import { createLibraryIngestor } from './library-ingest';
+import { createLibraryIngestor, withLibraryIngestLock } from './library-ingest';
 import { rescanLibraryReports } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, saveLibraryNote, type QueryLibraryArgs, type SaveLibraryNoteInput } from './library-store';
 import { listLibraryShelf } from './library-shelf';
@@ -17,11 +17,16 @@ export const LIBRARY_CHANNELS = {
 } as const;
 
 let productionBroadcaster: ((event: LibraryBroadcastEvent) => void) | null = null;
-const pendingShelfChanges = new Set<string>();
+const pendingBroadcasts: LibraryBroadcastEvent[] = [];
 
 export function publishLibraryBroadcast(event: LibraryBroadcastEvent): void {
   if (productionBroadcaster) productionBroadcaster(event);
-  else if ('type' in event && event.type === LIBRARY_CHANNELS.shelfChanged) pendingShelfChanges.add(event.workspace_id);
+  else pendingBroadcasts.push(event);
+}
+
+export function resetLibraryBroadcastForTests(): void {
+  productionBroadcaster = null;
+  pendingBroadcasts.length = 0;
 }
 
 export function emitShelfChanged(workspaceId: string): void {
@@ -60,17 +65,17 @@ export function registerLibraryIpc(
 
   const ingest = (_event: IpcMainInvokeEvent, request: LibraryIngestRequest) => withStore(
     request.workspace_id,
-    (workspaceRoot, store) => createLibraryIngestor({
-      workspaceRoot,
-      store,
-      publish: (progress) => sendProgress({ ...progress, workspace_id: request.workspace_id }),
-    })({
-      source_path: request.source_path,
-      trigger: request.trigger,
-      document_id: request.document_id,
-      trust: request.trust,
-      type: request.type,
-    }),
+    (workspaceRoot, store) => withLibraryIngestLock(workspaceRoot, () => createLibraryIngestor({
+        workspaceRoot,
+        store,
+        publish: (progress) => sendProgress({ ...progress, workspace_id: request.workspace_id }),
+      })({
+        source_path: request.source_path,
+        trigger: request.trigger,
+        document_id: request.document_id,
+        trust: request.trust,
+        type: request.type,
+      })),
   );
   ipc.handle(LIBRARY_CHANNELS.ingest, ingest);
   ipc.handle(LIBRARY_CHANNELS.rescan, (_event, workspaceId: string) => withStore(
@@ -107,7 +112,6 @@ export function registerProductionLibraryIpc(
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
 ): void {
   productionBroadcaster = sendProgress;
-  for (const workspaceId of pendingShelfChanges) sendProgress({ type: LIBRARY_CHANNELS.shelfChanged, workspace_id: workspaceId });
-  pendingShelfChanges.clear();
+  for (const event of pendingBroadcasts.splice(0)) sendProgress(event);
   registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan);
 }

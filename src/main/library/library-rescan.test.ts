@@ -19,10 +19,16 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
   t.after(() => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
   let active = 0;
   let maxActive = 0;
+  let releaseFirst!: () => void;
+  let markFirstEntered!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstEntered = new Promise<void>((resolve) => { markFirstEntered = resolve; });
+  let embedCalls = 0;
   const embedTexts = async (texts: string[]) => {
     active += 1;
     maxActive = Math.max(maxActive, active);
-    await Promise.resolve();
+    embedCalls += 1;
+    if (embedCalls === 1) { markFirstEntered(); await firstGate; }
     active -= 1;
     return { vectors: texts.map(() => new Float32Array(LIBRARY_EMBEDDING_DIMENSIONS)), load_ms: 0, embed_ms: 0 };
   };
@@ -37,10 +43,16 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
   const handler = handlers.get(LIBRARY_CHANNELS.rescan);
   assert.ok(handler, 'REACHABILITY:library:rescan production registration missing');
 
-  const first = await handler({} as never, 'workspace-1');
+  const firstPromise = handler({} as never, 'workspace-1');
+  await firstEntered;
+  const secondPromise = handler({} as never, 'workspace-1');
+  await Promise.resolve();
+  assert.equal(embedCalls, 1, 'a concurrent Rescan must wait behind the workspace ingest mutex');
+  releaseFirst();
+  const first = await firstPromise;
   assert.deepEqual(first, { scanned: 2, ingested: 2, skipped: 0, failed: 0 }, 'REACHABILITY:library:rescan did not walk and ingest both report roots');
   assert.equal(maxActive, 1, 'rescan ingests must be serial');
 
-  const second = await handler({} as never, 'workspace-1');
+  const second = await secondPromise;
   assert.deepEqual(second, { scanned: 2, ingested: 0, skipped: 2, failed: 0 });
 });

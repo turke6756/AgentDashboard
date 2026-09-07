@@ -4,7 +4,7 @@ import type { FsEvent, PathType, Workspace } from '../../shared/types';
 import type { LibraryBroadcastEvent } from '../../shared/library';
 import { getWorkspaces } from '../database';
 import { subscribe } from '../fs-watcher';
-import { createLibraryIngestor } from './library-ingest';
+import { createLibraryIngestor, withLibraryIngestLock } from './library-ingest';
 import { publishLibraryBroadcast } from './library-ipc';
 import {
   listLibraryReportSources,
@@ -32,7 +32,7 @@ export interface LibraryReportWatcherScheduler {
   clearInterval(timer: unknown): void;
 }
 
-interface ObservedTuple { size: number; mtimeMs: number; observedAt: number; ingested: boolean }
+interface ObservedTuple { size: number; mtimeMs: number; observedAt: number; ingested: boolean; eligible: boolean }
 interface WorkspaceState {
   workspace: Workspace;
   subscriptions: Map<string, () => void>;
@@ -41,6 +41,7 @@ interface WorkspaceState {
   coalesceTimer: unknown | null;
   running: boolean;
   dirty: boolean;
+  pendingAllowsSettle: boolean;
   stopped: boolean;
 }
 
@@ -134,33 +135,28 @@ export class LibraryReportWatcher {
     for (const [id, state] of this.states) if (!live.has(id)) this.detach(state);
     for (const workspace of workspaces) {
       const existing = this.states.get(workspace.id);
-      if (existing) { await this.enqueue(existing, true); continue; }
+      if (existing) { await this.enqueue(existing, false); continue; }
       await this.attach(workspace);
     }
   }
 
   private async attach(workspace: Workspace): Promise<void> {
-    const state: WorkspaceState = { workspace, subscriptions: new Map(), observed: new Map(), settleTimers: new Map(), coalesceTimer: null, running: false, dirty: false, stopped: false };
+    const state: WorkspaceState = { workspace, subscriptions: new Map(), observed: new Map(), settleTimers: new Map(), coalesceTimer: null, running: false, dirty: false, pendingAllowsSettle: false, stopped: false };
     this.states.set(workspace.id, state);
-    for (const root of ROOTS) {
-      const directory = path.join(workspace.path, '.lares', 'library', root);
-      try { this.options.ensureDirectory(directory, workspace.pathType); }
-      catch (error) { this.options.log(`could not ensure ${directory}`, error); }
-      this.subscribeDirectory(state, directory, workspace.pathType);
-    }
-    const first = await this.options.inventory(workspace.path);
-    this.syncSubscriptions(state, first);
-    await this.reconcile(state, first, true);
-    const second = await this.options.inventory(workspace.path);
-    this.syncSubscriptions(state, second);
-    await this.reconcile(state, second, false);
+    await this.enqueue(state, false, true);
   }
 
   private detach(state: WorkspaceState): void {
     state.stopped = true;
+    state.dirty = false;
+    state.pendingAllowsSettle = false;
     for (const unsubscribe of state.subscriptions.values()) { try { unsubscribe(); } catch { /* best effort */ } }
     for (const timer of state.settleTimers.values()) this.options.scheduler.clearTimeout(timer);
     if (state.coalesceTimer !== null) this.options.scheduler.clearTimeout(state.coalesceTimer);
+    state.coalesceTimer = null;
+    state.settleTimers.clear();
+    state.subscriptions.clear();
+    state.observed.clear();
     this.states.delete(state.workspace.id);
   }
 
@@ -191,8 +187,6 @@ export class LibraryReportWatcher {
     if (state.stopped) return;
     invalidateLibraryShelfHashes([event.path]);
     this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
-    const directoryEvent = ('isDirectory' in event && event.isDirectory === true) || state.subscriptions.has(canonicalDirectory(event.path));
-    if (directoryEvent) void this.enqueue(state, false);
     if (state.coalesceTimer !== null) this.options.scheduler.clearTimeout(state.coalesceTimer);
     state.coalesceTimer = this.options.scheduler.setTimeout(() => {
       state.coalesceTimer = null;
@@ -200,25 +194,62 @@ export class LibraryReportWatcher {
     }, LIBRARY_REPORT_COALESCE_MS);
   }
 
-  private async enqueue(state: WorkspaceState, allowSettle: boolean): Promise<void> {
+  private async enqueue(state: WorkspaceState, allowSettle: boolean, attach = false): Promise<void> {
     if (state.stopped) return;
-    if (state.running) { state.dirty = true; return; }
+    if (state.running) {
+      state.dirty = true;
+      state.pendingAllowsSettle ||= allowSettle;
+      return;
+    }
     state.running = true;
     let nextAllowsSettle = allowSettle;
     try {
+      if (attach) {
+        for (const root of ROOTS) {
+          const directory = path.join(state.workspace.path, '.lares', 'library', root);
+          try { this.options.ensureDirectory(directory, state.workspace.pathType); }
+          catch (error) { this.options.log(`could not ensure ${directory}`, error); }
+          this.subscribeDirectory(state, directory, state.workspace.pathType);
+        }
+        const first = await this.options.inventory(state.workspace.path);
+        if (state.stopped) return;
+        this.syncSubscriptions(state, first);
+        await this.reconcile(state, first, false, false);
+        if (state.stopped) return;
+        const second = await this.options.inventory(state.workspace.path);
+        if (state.stopped) return;
+        this.syncSubscriptions(state, second);
+        await this.reconcile(state, second, false, true);
+      }
       do {
+        if (attach && !state.dirty) break;
+        nextAllowsSettle ||= state.pendingAllowsSettle;
+        state.pendingAllowsSettle = false;
         state.dirty = false;
         const inventory = await this.options.inventory(state.workspace.path);
+        if (state.stopped) return;
         this.syncSubscriptions(state, inventory);
-        await this.reconcile(state, inventory, nextAllowsSettle);
-        nextAllowsSettle = true;
+        await this.reconcile(state, inventory, nextAllowsSettle, true);
+        nextAllowsSettle = false;
       } while (!state.stopped && state.dirty);
-    } catch (error) { this.options.log(`reconcile failed for ${state.workspace.id}`, error); }
-    finally { state.running = false; }
+    } catch (error) {
+      this.options.log(`reconcile failed for ${state.workspace.id}`, error);
+      for (const [key, tuple] of state.observed) if (tuple.eligible && !tuple.ingested) this.scheduleSettle(state, key, true);
+    } finally {
+      const rerun = !state.stopped && state.dirty;
+      const rerunAllowsSettle = state.pendingAllowsSettle;
+      state.running = false;
+      if (rerun) void this.enqueue(state, rerunAllowsSettle);
+    }
   }
 
-  private scheduleSettle(state: WorkspaceState, key: string): void {
-    if (state.settleTimers.has(key) || state.stopped) return;
+  private scheduleSettle(state: WorkspaceState, key: string, restart = false): void {
+    if (state.stopped) return;
+    const existing = state.settleTimers.get(key);
+    if (existing !== undefined) {
+      if (!restart) return;
+      this.options.scheduler.clearTimeout(existing);
+    }
     const timer = this.options.scheduler.setTimeout(() => {
       state.settleTimers.delete(key);
       void this.enqueue(state, true);
@@ -226,7 +257,7 @@ export class LibraryReportWatcher {
     state.settleTimers.set(key, timer);
   }
 
-  private async reconcile(state: WorkspaceState, inventory: LibraryReportSourcesInventory, allowSettle: boolean): Promise<void> {
+  private async reconcile(state: WorkspaceState, inventory: LibraryReportSourcesInventory, allowSettle: boolean, deleteMissing: boolean): Promise<void> {
     if (state.stopped) return;
     const now = this.options.now();
     const present = new Set<string>();
@@ -238,13 +269,18 @@ export class LibraryReportWatcher {
       const previous = state.observed.get(key);
       if (!previous || !tupleMatches(previous, file.size, file.mtimeMs)) {
         if (previous) invalidateLibraryShelfHashes([file.abs_path]);
-        const tuple = { size: file.size, mtimeMs: file.mtimeMs, observedAt: now, ingested: false };
+        const eligible = allowSettle || previous?.eligible === true;
+        const tuple = { size: file.size, mtimeMs: file.mtimeMs, observedAt: now, ingested: false, eligible };
         state.observed.set(key, tuple);
-        this.scheduleSettle(state, key);
+        if (eligible) this.scheduleSettle(state, key, true);
         shelfChanged = true;
-      } else if (!previous.ingested && allowSettle && now - previous.observedAt >= LIBRARY_REPORT_SETTLE_MS) {
+      } else if (!previous.eligible && allowSettle) {
+        previous.eligible = true;
+        previous.observedAt = now;
+        this.scheduleSettle(state, key, true);
+      } else if (previous.eligible && !previous.ingested && allowSettle && now - previous.observedAt >= LIBRARY_REPORT_SETTLE_MS) {
         settled.push({ key, sourcePath: file.abs_path, tuple: previous });
-      } else if (!previous.ingested) this.scheduleSettle(state, key);
+      } else if (previous.eligible && !previous.ingested) this.scheduleSettle(state, key);
     }
     for (const [key] of state.observed) if (!present.has(key)) {
       state.observed.delete(key);
@@ -258,6 +294,7 @@ export class LibraryReportWatcher {
       const rows = this.options.listDocuments(store, { include_untrusted: true });
       const deleted: string[] = [];
       for (const root of ROOTS) {
+        if (!deleteMissing) continue;
         if (inventory[root].health !== 'complete') continue;
         const prefix = normalizeLibraryReportKey(PREFIXES[root]);
         const disk = new Set(inventory[root].files.map((file) => relPath(root, file.rel_path)));
@@ -273,7 +310,7 @@ export class LibraryReportWatcher {
       if (shelfChanged) this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
       for (const candidate of settled) {
         if (state.stopped) break;
-        await this.options.ingest({ workspaceId: state.workspace.id, workspaceRoot: state.workspace.path, store, sourcePath: candidate.sourcePath, trigger: 'report-arrival' });
+        await withLibraryIngestLock(state.workspace.path, () => this.options.ingest({ workspaceId: state.workspace.id, workspaceRoot: state.workspace.path, store, sourcePath: candidate.sourcePath, trigger: 'report-arrival' }));
         candidate.tuple.ingested = true;
         this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
       }

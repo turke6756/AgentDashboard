@@ -43,6 +43,29 @@ export interface LibraryIngestDependencies {
   embedTexts?: typeof embedLibraryTexts;
 }
 
+const workspaceIngestTails = new Map<string, Promise<void>>();
+
+function workspaceIngestKey(workspaceRoot: string): string {
+  const resolved = path.resolve(workspaceRoot);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/** Serialize every index mutation for one workspace, regardless of its caller. */
+export async function withLibraryIngestLock<T>(workspaceRoot: string, work: () => Promise<T>): Promise<T> {
+  const key = workspaceIngestKey(workspaceRoot);
+  const previous = workspaceIngestTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = new Promise<void>((resolve) => { release = resolve; });
+  workspaceIngestTails.set(key, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await work();
+  } finally {
+    release();
+    if (workspaceIngestTails.get(key) === tail) workspaceIngestTails.delete(key);
+  }
+}
+
 function inferType(filePath: string): LibraryDocumentType {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.pdf') return 'pdf';

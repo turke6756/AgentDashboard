@@ -4,7 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
+import { LIBRARY_CHANNELS, publishLibraryBroadcast, registerProductionLibraryIpc, resetLibraryBroadcastForTests } from './library-ipc';
+
+test('progress published before the production broadcaster is installed is delivered on registration', () => {
+  resetLibraryBroadcastForTests();
+  const progress = { workspace_id: 'workspace-1', document_id: 'doc-1', status: 'embedding' as const };
+  publishLibraryBroadcast(progress);
+  const delivered: unknown[] = [];
+  registerProductionLibraryIpc({ handle: () => undefined }, () => null, (event) => delivered.push(event));
+  assert.deepEqual(delivered, [progress]);
+});
 
 test('production library:list-shelf IPC enters the disk-to-index shelf join and returns untrusted pending reports', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-ipc-'));

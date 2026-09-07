@@ -883,7 +883,6 @@ app.whenReady().then(async () => {
       }
     }
     proposalsWatcher = await startProposalsWatcher({ notifyPlanBadgesInvalidated });
-    libraryReportWatcher = await startLibraryReportWatcher();
 
     // Boot lifecycle op, deliberately OUTSIDE initDatabase (which runs more than
     // once in some processes/tests). An 'open' continuation attempt is owned by
@@ -1007,6 +1006,7 @@ app.whenReady().then(async () => {
     const apiConnectionGate = createApiConnectionGate();
     const agentScheduler = bootstrapAgentScheduler({ supervisor, app, getAgent });
     registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler);
+    libraryReportWatcher = await startLibraryReportWatcher();
     registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE

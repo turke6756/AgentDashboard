@@ -128,6 +128,97 @@ test('shelf-changed production construct is emitted through the watcher publishe
   h.watcher.stop();
 });
 
+test('attach and refresh inventory a pre-existing quiet file without ingesting it', async () => {
+  const h = harness({ inventory: async () => inventory([{ root: 'inbox', name: 'offline.md', size: 8, mtimeMs: 1 }]) });
+  await h.watcher.start();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  assert.equal(h.ingests.length, 0, 'REACHABILITY:attach must leave offline reports for Rescan or a later fs event');
+  h.scheduler.advance(LIBRARY_REPORT_REFRESH_MS);
+  await flush();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  assert.equal(h.ingests.length, 0, 'the periodic inventory pass must not arm report ingestion');
+  h.watcher.stop();
+});
+
+test('startup attachment and an arriving fs event share the workspace single-flight queue', async () => {
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let inventoryCalls = 0;
+  let active = 0;
+  let maxActive = 0;
+  const h = harness({
+    inventory: async () => {
+      inventoryCalls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (inventoryCalls === 1) await firstGate;
+      active -= 1;
+      return inventory([{ root: 'inbox', name: 'during-attach.md', size: 1, mtimeMs: 1 }]);
+    },
+  });
+  const starting = h.watcher.start();
+  await flush();
+  assert.equal(h.listeners.length, 2);
+  h.listeners[0]({ type: 'change', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'during-attach.md'), parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  assert.equal(inventoryCalls, 1, 'an event during attach must mark the active queue dirty, not start a parallel pass');
+  releaseFirst();
+  await starting;
+  assert.equal(maxActive, 1);
+  assert.equal(inventoryCalls, 3, 'attach re-enumeration plus one dirty event pass must drain serially');
+  h.watcher.stop();
+});
+
+test('every changed tuple restarts settling and a partial write ingests once after the final quiet window', async () => {
+  const h = harness();
+  await h.watcher.start();
+  h.setInventory(inventory([{ root: 'inbox', name: 'partial.md', size: 10, mtimeMs: 1 }]));
+  h.listeners[0]({ type: 'add', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'partial.md'), parentDir: workspace.path, isDirectory: false, size: 10, mtimeMs: 1 });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  h.scheduler.advance(200);
+  h.setInventory(inventory([{ root: 'inbox', name: 'partial.md', size: 20, mtimeMs: 2 }]));
+  h.listeners[0]({ type: 'change', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'partial.md'), parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS - 1);
+  await flush();
+  assert.equal(h.ingests.length, 0);
+  h.scheduler.advance(1);
+  await flush();
+  assert.equal(h.ingests.length, 1);
+  assert.ok(h.ingests[0].sourcePath.endsWith('partial.md'));
+  h.watcher.stop();
+});
+
+test('unlink plus add is reconciled once from the post-rename end state', async () => {
+  let rows = [{ source_rel_path: '.lares/library/inbox/old.md' } as LibraryDocumentRow];
+  let renamed = false;
+  const deleted: string[][] = [];
+  const h = harness({
+    inventory: async () => inventory([{ root: 'inbox', name: renamed ? 'new.md' : 'old.md', size: 10, mtimeMs: renamed ? 2 : 1 }]),
+    listDocuments: () => rows,
+    deleteDocuments: (_store, paths) => { deleted.push([...paths]); rows = []; return paths.length; },
+  });
+  await h.watcher.start();
+  const oldPath = path.join(workspace.path, '.lares', 'library', 'inbox', 'old.md');
+  const newPath = path.join(workspace.path, '.lares', 'library', 'inbox', 'new.md');
+  renamed = true;
+  h.listeners[0]({ type: 'unlink', path: oldPath, parentDir: workspace.path });
+  h.listeners[0]({ type: 'add', path: newPath, parentDir: workspace.path, isDirectory: false, size: 10, mtimeMs: 2 });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  assert.deepEqual(deleted, [['.lares/library/inbox/old.md']]);
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  assert.equal(h.ingests.length, 1);
+  assert.ok(h.ingests[0].sourcePath.endsWith('new.md'));
+  h.watcher.stop();
+});
+
 test('reconcile and ingest are single-flight and an event during ingest causes one dirty rerun', async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -139,6 +230,9 @@ test('reconcile and ingest are single-flight and an event during ingest causes o
     ingest: async ({ sourcePath }) => { active += 1; maxActive = Math.max(maxActive, active); if (sourcePath.endsWith('a.md')) await gate; active -= 1; h.ingests.push({ sourcePath, trigger: 'report-arrival' }); },
   });
   await h.watcher.start();
+  h.listeners[0]({ type: 'change', path: path.join(workspace.path, '.lares', 'library', 'inbox', 'a.md'), parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
   h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
   await flush();
   const beforeDirty = inventoryCalls;
@@ -146,10 +240,42 @@ test('reconcile and ingest are single-flight and an event during ingest causes o
   h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
   await flush();
   release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   await flush();
   assert.equal(maxActive, 1, 'ingests must never interleave');
   assert.equal(h.ingests.length, 2);
   assert.equal(inventoryCalls, beforeDirty + 1, 'an in-flight event must collapse to exactly one dirty rerun');
+  h.watcher.stop();
+});
+
+test('an ingest throw preserves dirty work and retries once', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let attempts = 0;
+  const h = harness({
+    inventory: async () => inventory([{ root: 'inbox', name: 'retry.md', size: 1, mtimeMs: 1 }]),
+    ingest: async ({ sourcePath }) => {
+      attempts += 1;
+      if (attempts === 1) { await gate; throw new Error('first ingest failed'); }
+      h.ingests.push({ sourcePath, trigger: 'report-arrival' });
+    },
+  });
+  await h.watcher.start();
+  const sourcePath = path.join(workspace.path, '.lares', 'library', 'inbox', 'retry.md');
+  h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS);
+  await flush();
+  assert.equal(attempts, 1);
+  h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
+  h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS);
+  await flush();
+  release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await flush();
+  assert.equal(attempts, 2, 'dirty work arriving during a rejected ingest must run again');
+  assert.equal(h.ingests.length, 1);
   h.watcher.stop();
 });
 
