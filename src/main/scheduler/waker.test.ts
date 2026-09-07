@@ -10,6 +10,7 @@ function test(name: string, run: TestCase['run']): void { tests.push({ name, run
 function firing(events: string[], generation = 7): ScheduledFiring {
   return {
     agentId: 'agent-1', scheduleId: 'schedule-1', text: 'wake me', dueAt: 123, generation,
+    isGenerationCurrent: () => true,
     markReviving: () => { events.push('mark-reviving'); },
     markDelivering: () => { events.push('mark-delivering'); },
     finalizeFailure: (reason) => { events.push(`failed:${reason}`); },

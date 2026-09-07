@@ -20,6 +20,7 @@ export interface ScheduledFiring {
   text: string;
   dueAt: number;
   generation: number;
+  isGenerationCurrent: () => boolean;
   markReviving: () => void;
   markDelivering: (notificationRoute?: NotificationRoute | null) => void;
   finalizeFailure: (failure: Extract<FiringOutcome, { failed: string }>['failed']) => void;
@@ -52,6 +53,8 @@ interface PendingOccurrence {
 export interface AgentSchedulerOptions {
   store: AgentScheduleStore;
   deliver: (firing: ScheduledFiring) => ScheduledDeliveryResult | Promise<ScheduledDeliveryResult>;
+  onSummaryChange?: (agentId: string, summary: ScheduleSummary | null) => void;
+  cancelStaged?: (agentId: string) => void;
   now?: () => number;
   setInterval?: (callback: () => void, intervalMs: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -94,7 +97,10 @@ export class AgentScheduler {
   stop(): void {
     if (this.intervalHandle !== null) this.clearIntervalFn(this.intervalHandle);
     this.intervalHandle = null;
-    for (const agentId of [...this.pendingByAgent.keys()]) this.cancelPending(agentId);
+    for (const agentId of [...this.generationByAgent.keys()]) {
+      this.options.cancelStaged?.(agentId);
+      this.cancelPending(agentId);
+    }
   }
 
   setSchedule(agentId: string, dto: ScheduleSetDto): AgentSchedule {
@@ -145,7 +151,9 @@ export class AgentScheduler {
     this.pendingByAgent.delete(agentId);
     this.inFlightByAgent.delete(agentId);
     this.runtimeByAgent.delete(agentId);
-    return this.options.store.clear(agentId);
+    const cleared = this.options.store.clear(agentId);
+    this.emitSummary(agentId);
+    return cleared;
   }
 
   disposeForAgent(agentId: string): void {
@@ -170,6 +178,7 @@ export class AgentScheduler {
     const pending = this.pendingByAgent.get(agentId);
     if (!pending || (runtime?.kind !== 'held' && runtime?.kind !== 'reviving')) return;
     this.dispatch(pending);
+    this.emitSummary(agentId);
   }
 
   private claim(schedule: AgentSchedule, now: number): void {
@@ -197,6 +206,7 @@ export class AgentScheduler {
     this.pendingByAgent.set(schedule.agentId, pending);
     this.runtimeByAgent.set(schedule.agentId, { kind: 'held', dueAt, collapsedCount: 0, generation });
     this.dispatch(pending);
+    this.emitSummary(schedule.agentId);
   }
 
   private collapse(schedule: AgentSchedule, runtime: Exclude<RuntimeState, { kind: 'idle' }>, now: number): void {
@@ -224,6 +234,7 @@ export class AgentScheduler {
     this.options.store.mutate(schedule.agentId, (mutable) => {
       mutable.lastOutcome = 'collapsed';
     });
+    this.emitSummary(schedule.agentId);
   }
 
   private advanceAndConsume(agentId: string, dueAt: number, now: number): void {
@@ -253,6 +264,7 @@ export class AgentScheduler {
       text: pending.text,
       dueAt: pending.dueAt,
       generation: pending.generation,
+      isGenerationCurrent: () => this.isCurrentPending(pending),
       markReviving: () => this.markReviving(pending),
       markDelivering: (route) => this.markDelivering(pending, route),
       finalizeFailure: (failure) => this.finalize(pending, { failed: failure }, this.now()),
@@ -298,6 +310,7 @@ export class AgentScheduler {
           collapsedCount: pending.collapsedCount,
           generation: pending.generation,
         });
+        this.emitSummary(pending.agentId);
       }
       return;
     }
@@ -320,6 +333,7 @@ export class AgentScheduler {
       this.runtimeByAgent.set(pending.agentId, {
         kind: 'reviving', dueAt: pending.dueAt, collapsedCount: pending.collapsedCount, generation: pending.generation,
       });
+      this.emitSummary(pending.agentId);
     }
   }
 
@@ -384,13 +398,16 @@ export class AgentScheduler {
       this.pendingByAgent.delete(pending.agentId);
       this.runtimeByAgent.set(pending.agentId, { kind: 'idle' });
     }
+    this.emitSummary(pending.agentId);
   }
 
   private bumpGenerationAndCancel(agentId: string): void {
+    this.options.cancelStaged?.(agentId);
     const runtime = this.runtimeByAgent.get(agentId);
     if (runtime?.kind !== 'delivering') this.cancelPending(agentId);
     this.generationByAgent.set(agentId, (this.generationByAgent.get(agentId) ?? 0) + 1);
     if (runtime?.kind === 'delivering') this.cancelPending(agentId);
+    this.emitSummary(agentId);
   }
 
   private isCurrentPending(pending: PendingOccurrence): boolean {
@@ -430,5 +447,11 @@ export class AgentScheduler {
       lastOutcome: structuredClone(schedule.lastOutcome),
       revision: schedule.revision,
     };
+  }
+
+  private emitSummary(agentId: string): void {
+    if (!this.options.onSummaryChange) return;
+    const schedule = this.options.store.get(agentId);
+    this.options.onSummaryChange(agentId, schedule ? this.summaryFor(schedule) : null);
   }
 }

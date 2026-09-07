@@ -8060,6 +8060,7 @@ export class AgentSupervisor extends EventEmitter {
     this.releaseSpoolTailer(agentId);
     // WP-P2 — drop any undelivered initial prompt with the agent record.
     this.pendingInitialPrompts.delete(agentId);
+    this.cancelStagedScheduledFiring(agentId);
     // WP-3a — drop the retained terminal epoch so a reused agent id can't
     // inherit a stale epoch. (WP-3b keys its checkpoint validation off this
     // map; introduced here alongside the map itself to avoid an unbounded
@@ -8611,11 +8612,23 @@ export class AgentSupervisor extends EventEmitter {
     }
   }
 
+  /** Cancel an undelivered scheduler-owned slot and settle its pending delivery. */
+  cancelStagedScheduledFiring(agentId: string): void {
+    const staged = this.stagedScheduledFirings.get(agentId);
+    if (!staged) return;
+    this.stagedScheduledFirings.delete(agentId);
+    staged.onOutcome({ disposition: 'held' });
+  }
+
   /** Scheduler delivery entry. Terminal agents stage before revival; live
    * agents synchronously claim the existing send operation without queueing. */
   deliverScheduledFiring(
     firing: ScheduledFiring,
   ): ScheduledDeliveryResult | Promise<ScheduledDeliveryResult> {
+    if (!firing.isGenerationCurrent()) {
+      this.clearStagedScheduledFiring(firing.agentId, firing.generation);
+      return { disposition: 'held' };
+    }
     const agent = this.scheduledGetAgent(firing.agentId);
     if (agent && (agent.status === 'done' || agent.status === 'crashed')) {
       return wakeScheduledFiring(firing, {
@@ -8689,7 +8702,12 @@ export class AgentSupervisor extends EventEmitter {
   /** Release one held/reviving generation after initial-prompt arbitration. */
   maybeDeliverScheduledFiring(agentId: string, _status: AgentStatus): void {
     const staged = this.stagedScheduledFirings.get(agentId);
-    if (!staged || !this.hasRunner(agentId)) return;
+    if (!staged) return;
+    if (!staged.isGenerationCurrent()) {
+      this.cancelStagedScheduledFiring(agentId);
+      return;
+    }
+    if (!this.hasRunner(agentId)) return;
     const agent = this.scheduledGetAgent(agentId);
     if (!agent || agent.status === 'done' || agent.status === 'crashed') return;
 

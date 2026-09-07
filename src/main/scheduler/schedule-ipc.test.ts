@@ -16,13 +16,20 @@ function fixture() {
     handle: (channel, listener) => { handlers.set(channel, listener); },
   };
   const store = new AgentScheduleStore({
-    agentExists: (agentId) => agentId === 'agent-1',
+    agentExists: (agentId) => agentId === 'agent-1' || agentId === 'agent-2',
     now: () => 1_000,
     createId: () => 'schedule-1',
   });
   const scheduler = new AgentScheduler({ store, deliver: () => ({ disposition: 'held' }), now: () => 1_000 });
-  registerScheduleIpc(ipc, scheduler, (channel, payload) => { broadcasts.push({ channel, payload }); });
-  return { handlers, broadcasts };
+  registerScheduleIpc(
+    ipc,
+    scheduler,
+    (channel, payload) => { broadcasts.push({ channel, payload }); },
+    (agentId) => agentId === 'agent-1'
+      ? { workspaceId: 'workspace-1' }
+      : agentId === 'agent-2' ? { workspaceId: 'workspace-2' } : null,
+  );
+  return { handlers, broadcasts, scheduler };
 }
 
 const createDto: ScheduleSetDto = {
@@ -98,4 +105,33 @@ test('maps every store validation family to the IPC contract status', () => {
   set({}, 'agent-1', createDto);
   expectCode('agent-1', createDto, 409, 'schedule-exists');
   expectCode('agent-1', { ...createDto, revision: 99 }, 409, 'revision-conflict');
+});
+
+test('schedule:set guards raw IPC shapes with contract error codes', () => {
+  const { handlers } = fixture();
+  const set = handlers.get(SCHEDULE_CHANNELS.set)!;
+  const expectRawCode = (agentId: unknown, dto: unknown, statusCode: number, code: string) => {
+    assert.throws(() => set({}, agentId, dto), (error: unknown) => {
+      const mapped = error as { statusCode?: number; code?: string };
+      return mapped.statusCode === statusCode && mapped.code === code;
+    });
+  };
+  expectRawCode(42, createDto, 404, 'no-agent');
+  expectRawCode('agent-1', null, 400, 'message-invalid');
+  expectRawCode('agent-1', { ...createDto, message: 4 }, 400, 'message-invalid');
+  expectRawCode('agent-1', { ...createDto, enabled: 'false' }, 400, 'message-invalid');
+  expectRawCode('agent-1', { ...createDto, recurrence: { kind: 'weekly' } }, 400, 'interval-out-of-range');
+  expectRawCode('agent-1', { ...createDto, stopping: { kind: 'forever' } }, 400, 'count-invalid');
+  expectRawCode('agent-1', { ...createDto, revision: '1' }, 409, 'revision-conflict');
+});
+
+test('schedule:hydrate returns summaries only for agents in the requested workspace', () => {
+  const { handlers, scheduler } = fixture();
+  scheduler.setSchedule('agent-1', createDto);
+  scheduler.setSchedule('agent-2', { ...createDto, message: 'other workspace' });
+  const hydrate = handlers.get(SCHEDULE_CHANNELS.hydrate)!;
+  assert.deepEqual(
+    (hydrate({}, 'workspace-1') as Array<{ agentId: string }>).map((summary) => summary.agentId),
+    ['agent-1'],
+  );
 });

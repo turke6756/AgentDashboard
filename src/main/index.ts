@@ -11,6 +11,8 @@ import { loadLifecycleSettings, saveLifecycleSettings } from './lifecycle/lifecy
 import { IdleSweep } from './lifecycle/idle-sweep';
 import { LogRetentionScheduler } from './log-retention/log-retention-scheduler';
 import { bootstrapAgentScheduler } from './scheduler/scheduler-bootstrap';
+import type { AgentScheduler } from './scheduler/agent-scheduler';
+import type { ScheduleChangedBroadcast } from './scheduler/schedule-ipc';
 import { inventoryBundles } from './log-retention/log-retention-inventory';
 import { readState as readRetentionState, writeState as writeRetentionState, acknowledgeFirstSweepNotice } from './lifecycle/log-retention-state';
 import { registerLogRetentionIpc, broadcastLogRetentionState, makeRetentionSinks } from './lifecycle/log-retention-ipc';
@@ -44,9 +46,9 @@ import {
 } from './plans/plan-candidate-routes';
 import { CommitCandidateSnapshotRegistry } from './commit-engine/snapshot-registry';
 import type { CandidateInventoryRead } from './commit-engine/candidate-service';
-import { installExternalNavHandlers, forceCloseAllDetached, getDetachedEntries, type DetachedWindowDeps } from './detached-windows';
+import { installExternalNavHandlers, forceCloseAllDetached, getDetachedEntries, broadcastToDetachedViews, type DetachedWindowDeps } from './detached-windows';
 import { runCloseFlush, type FlushTarget } from './close-flush';
-import { TAB_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState, type ResolveOpenableWorkspacePathRequest, type ResolveOpenableWorkspacePathResult } from '../shared/types';
+import { TAB_CHANNELS, SCHEDULE_CHANNELS, LOG_RETENTION_CAP_BYTES, type FlushRequestPayload, type LogRetentionState, type ResolveOpenableWorkspacePathRequest, type ResolveOpenableWorkspacePathResult } from '../shared/types';
 import { WsServer } from './ws-server';
 import { ApiServer, type BrowserToolProvider } from './api-server';
 import { OrchestrationService } from './orchestration/service';
@@ -356,6 +358,7 @@ let constructingDetached = false;
 // tear-off window loads from the same place the shell did.
 let devServerUrl: string | null = null;
 let supervisor: AgentSupervisor | null = null;
+let agentScheduler: AgentScheduler | null = null;
 let wsServer: WsServer | null = null;
 let apiServer: ApiServer | null = null;
 let activeDevDiscoveryFile: string | null = null;
@@ -1004,8 +1007,19 @@ app.whenReady().then(async () => {
       },
     };
     const apiConnectionGate = createApiConnectionGate();
-    const agentScheduler = bootstrapAgentScheduler({ supervisor, app, getAgent });
-    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler);
+    const scheduleBroadcast: ScheduleChangedBroadcast = (channel, payload) => {
+      if (!mainWindow!.isDestroyed()) mainWindow!.webContents.send(channel, payload);
+      broadcastToDetachedViews(channel, payload);
+    };
+    agentScheduler = bootstrapAgentScheduler({
+      supervisor,
+      app,
+      getAgent,
+      onSummaryChange: (agentId, scheduleSummary) => {
+        scheduleBroadcast(SCHEDULE_CHANNELS.changed, { agentId, scheduleSummary });
+      },
+    });
+    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler, scheduleBroadcast);
     void startLibraryReportWatcher()
       .then((watcher) => { libraryReportWatcher = watcher; })
       .catch((error) => console.error('[library-report-watcher] startup failed:', error));
@@ -1475,6 +1489,7 @@ let drainCompleted = false;
 async function shutdownApp(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  agentScheduler?.stop();
   // Let any detached windows close without the dirty-on-close prompt so the
   // 'close' intercept can't deadlock quit (detachable-file-tabs-plan §2.2).
   forceCloseAllDetached();

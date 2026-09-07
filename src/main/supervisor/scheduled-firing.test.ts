@@ -13,6 +13,7 @@ function makeFiring(overrides: Partial<ScheduledFiring> = {}): ScheduledFiring {
   return {
     agentId: 'cron-agent', scheduleId: 'cron-schedule', text: '  original\r\nbytes  ',
     dueAt: 100, generation: 3,
+    isGenerationCurrent: () => true,
     markReviving: () => {}, markDelivering: () => {}, finalizeFailure: () => {},
     ...overrides,
   };
@@ -124,11 +125,10 @@ test('a rejected send becomes a complete failed outcome', async () => {
 test('REACHABILITY:cron-held-release status listener drains initial prompt before releasing the held firing', async () => {
   await withSupervisor(async (supervisor, agent) => {
     const sent: string[] = [];
-    (supervisor as unknown as { sendInputWithOutcome: unknown }).sendInputWithOutcome = (
+    (supervisor as unknown as { _deliverAndConfirm: unknown })._deliverAndConfirm = (
       agentId: string, text: string,
     ) => {
       sent.push(text);
-      (supervisor as unknown as { inputInFlight: Set<string> }).inputInFlight.add(agentId);
       if (text === 'initial first') return new Promise<SendOutcome>(() => {});
       return Promise.resolve(confirmed(agentId));
     };
@@ -143,14 +143,17 @@ test('REACHABILITY:cron-held-release status listener drains initial prompt befor
       .stagedScheduledFirings.set(agent.id, staged);
 
     supervisor.emit('statusChanged', { agentId: agent.id, status: 'idle', fromStatus: 'launching', source: 'monitor' });
-    assert.deepEqual(sent, ['initial first'], 'initial prompt synchronously claims priority');
+    assert.equal(supervisor.isInputInFlight(agent.id), true, 'production sendInputWithOutcome must claim the latch synchronously');
     assert.equal(
       (supervisor as unknown as { stagedScheduledFirings: Map<string, StagedFiring> }).stagedScheduledFirings.has(agent.id),
       true,
       'scheduled firing remains held while initial input is in flight',
     );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, ['initial first'], 'initial prompt enters the production delivery implementation first');
 
     (supervisor as unknown as { inputInFlight: Set<string> }).inputInFlight.delete(agent.id);
+    (supervisor as unknown as { inputQueues: Map<string, Promise<SendOutcome>> }).inputQueues.delete(agent.id);
     supervisor.emit('statusChanged', { agentId: agent.id, status: 'idle', fromStatus: 'working', source: 'monitor' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(sent.length, 2, 'the next accepting transition releases the staged firing');
@@ -160,6 +163,33 @@ test('REACHABILITY:cron-held-release status listener drains initial prompt befor
       false,
     );
     assert.equal((released as ScheduledDeliveryResult | null)?.disposition, 'sent');
+  });
+});
+
+test('editing during revival cannot release staged text from the old generation', async () => {
+  await withSupervisor(async (supervisor, agent) => {
+    agent.status = 'done';
+    let current = true;
+    let sends = 0;
+    (supervisor as unknown as { reviveAgent: unknown }).reviveAgent = () => Promise.resolve();
+    (supervisor as unknown as { sendInputWithOutcome: unknown }).sendInputWithOutcome = () => {
+      sends += 1;
+      return Promise.resolve(confirmed(agent.id));
+    };
+    const delivery = supervisor.deliverScheduledFiring(makeFiring({
+      text: 'old message',
+      isGenerationCurrent: () => current,
+    }));
+    assert.ok(delivery instanceof Promise);
+    current = false;
+    agent.status = 'idle';
+    supervisor.emit('statusChanged', { agentId: agent.id, status: 'idle', fromStatus: 'done', source: 'monitor' });
+    assert.deepEqual(await delivery, { disposition: 'held' });
+    assert.equal(sends, 0, 'generation-cancelled text must never reach the send seam');
+    assert.equal(
+      (supervisor as unknown as { stagedScheduledFirings: Map<string, StagedFiring> }).stagedScheduledFirings.has(agent.id),
+      false,
+    );
   });
 });
 

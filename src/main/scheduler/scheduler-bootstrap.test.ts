@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ScheduleSetDto } from '../../shared/schedule-types';
 import type { ScheduledFiring } from './agent-scheduler';
+import type { ScheduleSummary } from '../../shared/schedule-types';
 import { bootstrapAgentScheduler, type SchedulerBootstrapDeps } from './scheduler-bootstrap';
 
 type Listener = (event: { agentId: string }) => void;
@@ -12,6 +13,8 @@ test('bootstrap starts one scheduler and owns status, deletion and quit lifecycl
   let timerCallback: (() => void) | null = null;
   let clearedHandle: unknown = null;
   let deliveryCalls = 0;
+  const summaryChanges: Array<ScheduleSummary | null> = [];
+  const cancelledStaged: string[] = [];
   let nowMs = 1_000;
   const supervisor: SchedulerBootstrapDeps['supervisor'] = {
     deliverScheduledFiring: (_firing: ScheduledFiring) => {
@@ -24,6 +27,7 @@ test('bootstrap starts one scheduler and owns status, deletion and quit lifecycl
       listeners.set(event, bucket);
     },
     off: (event, listener) => { listeners.get(event)?.delete(listener); },
+    cancelStagedScheduledFiring: (agentId) => { cancelledStaged.push(agentId); },
   };
 
   const scheduler = bootstrapAgentScheduler({
@@ -37,6 +41,7 @@ test('bootstrap starts one scheduler and owns status, deletion and quit lifecycl
       return 'cron-timer';
     },
     clearInterval: (handle) => { clearedHandle = handle; },
+    onSummaryChange: (_agentId, summary) => { summaryChanges.push(summary); },
   });
 
   assert.equal(typeof timerCallback, 'function', 'REACHABILITY:cron-bootstrap');
@@ -52,6 +57,8 @@ test('bootstrap starts one scheduler and owns status, deletion and quit lifecycl
   nowMs = 61_000;
   timerCallback!();
   assert.equal(deliveryCalls, 1);
+  assert.equal(summaryChanges.at(-1)?.badgeState, 'held', 'timer claim must reach the schedule change broadcast sink');
+  assert.equal(summaryChanges.at(-1)?.nextFireAt, 121_000);
   // Make the interval schedule due, then prove the status subscription releases
   // the held occurrence through the same production scheduler.
   listeners.get('statusChanged')?.forEach((listener) => listener({ agentId: 'agent-1' }));
@@ -61,6 +68,7 @@ test('bootstrap starts one scheduler and owns status, deletion and quit lifecycl
 
   appListeners.get('before-quit')!();
   assert.equal(clearedHandle, 'cron-timer');
+  assert.ok(cancelledStaged.includes('agent-1'));
   assert.equal(listeners.get('statusChanged')?.size, 0);
   assert.equal(listeners.get('agentDeleted')?.size, 0);
 });

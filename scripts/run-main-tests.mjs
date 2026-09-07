@@ -15,6 +15,7 @@ const TESTS = [
   'dist/main/main/scheduler/agent-scheduler.test.js',
   'dist/main/main/scheduler/schedule-ipc.test.js',
   'dist/main/main/scheduler/scheduler-bootstrap.test.js',
+  'dist/main/main/scheduler/schedule-production-wiring.test.js',
   'dist/main/main/scheduler/waker.test.js',
   'dist/main/main/supervisor/scheduled-firing.test.js',
   'scripts/dev-instance.test.mjs',
