@@ -37,8 +37,9 @@ function test(name: string, fn: () => void | Promise<void>): void {
   tests.push({ name, run: fn });
 }
 
-const SESSION_ID = '33333333-4444-5555-6666-777777777777';
-const OTHER_ID = '44444444-5555-6666-7777-888888888888';
+const SESSION_ID = '0199a000-0000-7000-8000-000000000001';
+const OTHER_ID = '0199a000-0001-7000-8000-000000000002';
+const FAKE_V4_ID = '44444444-5555-4666-8777-888888888888';
 
 function makeRollout(root: string, sessionId: string, cwd: string, metaId = sessionId): CodexRolloutFile {
   const dir = path.join(root, '2026', '05', '02');
@@ -1051,13 +1052,11 @@ test('decideCodexHookBind: empty/whitespace/absent sid → ignore (empty-session
   }
 });
 
-test('decideCodexHookBind: NULL-GUARD ordering — already-bound agent never overwrites, even with a different sid', () => {
-  // Mirrors captureCodexSessionId: a set resumeSessionId is authoritative (a
-  // later restart/resume may own it), so a differing hook report is ignored,
-  // NOT applied. This is the ordering that keeps BUG-29 closed.
+test('decideCodexHookBind: a UUIDv7 binding with a rollout remains authoritative', () => {
   const bound = decideCodexHookBind({
     agent: { provider: 'codex', resumeSessionId: OTHER_ID },
     sessionId: SESSION_ID,
+    currentSessionFileExists: true,
   });
   assert.equal(bound.action, 'ignore');
   if (bound.action === 'ignore') assert.equal(bound.reason, 'already-bound');
@@ -1071,6 +1070,24 @@ test('decideCodexHookBind: NULL-GUARD ordering — already-bound agent never ove
   if (same.action === 'ignore') assert.equal(same.reason, 'already-bound');
 });
 
+test('decideCodexHookBind: AGENT_ID hook may replace a fake v4 continuation id', () => {
+  const d = decideCodexHookBind({
+    agent: { provider: 'codex', resumeSessionId: FAKE_V4_ID },
+    sessionId: SESSION_ID,
+    currentSessionFileExists: false,
+  });
+  assert.deepEqual(d, { action: 'bind', sessionId: SESSION_ID });
+});
+
+test('decideCodexHookBind: AGENT_ID hook may replace a UUIDv7 with no rollout file', () => {
+  const d = decideCodexHookBind({
+    agent: { provider: 'codex', resumeSessionId: OTHER_ID },
+    sessionId: SESSION_ID,
+    currentSessionFileExists: false,
+  });
+  assert.deepEqual(d, { action: 'bind', sessionId: SESSION_ID });
+});
+
 test('decideCodexHookBind: sibling-theft protection — sid owned by another agent → ignore (session-owned-by-sibling)', () => {
   const d = decideCodexHookBind({
     agent: { ...CODEX_AGENT },
@@ -1081,16 +1098,28 @@ test('decideCodexHookBind: sibling-theft protection — sid owned by another age
   if (d.action === 'ignore') assert.equal(d.reason, 'session-owned-by-sibling');
 });
 
-test('decideCodexHookBind: ordering — null-guard is checked BEFORE sibling-ownership', () => {
-  // An already-bound agent whose incoming sid is also sibling-owned must report
-  // 'already-bound' (the earlier guard), proving the guard order is stable.
+test('decideCodexHookBind: sibling-theft guard wins even while repairing a fake id', () => {
   const d = decideCodexHookBind({
-    agent: { provider: 'codex', resumeSessionId: OTHER_ID },
+    agent: { provider: 'codex', resumeSessionId: FAKE_V4_ID },
     sessionId: SESSION_ID,
     sessionOwnedByOther: true,
+    currentSessionFileExists: false,
   });
   assert.equal(d.action, 'ignore');
-  if (d.action === 'ignore') assert.equal(d.reason, 'already-bound');
+  if (d.action === 'ignore') assert.equal(d.reason, 'session-owned-by-sibling');
+});
+
+test('ensureCodexResumeSessionId: cwd-only recovery cannot replace a fake persisted id', () => {
+  let recoverCalls = 0;
+  const result = ensureCodexResumeSessionId({
+    current: FAKE_V4_ID,
+    recover: () => {
+      recoverCalls += 1;
+      return SESSION_ID;
+    },
+  });
+  assert.equal(result, FAKE_V4_ID);
+  assert.equal(recoverCalls, 0, 'cwd recovery remains null-only; only an AGENT_ID hook may overwrite');
 });
 
 (async () => {

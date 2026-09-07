@@ -135,7 +135,7 @@ type DbModule = {
   createAgent(data: Record<string, unknown>): DbAgentRow;
   getAgent(id: string): DbAgentRow | null;
   getActiveAgents(): DbAgentRow[];
-  updateAgentResumeSessionId(id: string, sessionId: string): void;
+  updateAgentResumeSessionId(id: string, sessionId: string | null): void;
   setContinuationGeneration(agentId: string, gen: number): void;
   createContinuationHandoffAttempt(agentId: string, opts?: { reason?: string; thresholdContextPct?: number }): Attempt;
   freezeContinuationAttemptBinding(attemptId: string, binding: {
@@ -152,7 +152,7 @@ type DbModule = {
   insertContinuationBrick(input: { agentId: string; handoffAttemptId: string; generation: number; note: string; noteSource: 'tool' | 'scrape' }): string;
   getLatestBrickForAttempt(agentId: string, attemptId: string, opts?: { source?: 'tool' | 'scrape' }): Brick | null;
   getCurrentBrick(agentId: string): Brick | null;
-  commitContinuationRelaunch(agentId: string, newSessionId: string, successorGen: number, attemptId: string): void;
+  commitContinuationRelaunch(agentId: string, newSessionId: string | null, successorGen: number, attemptId: string): void;
   hasRunningOrchestrationForSupervisor(supervisorId: string): boolean;
   updateAgentStatus(id: string, status: string): void;
   // Slice 1 §3.3 — boot reconcile of orphaned 'open' attempts.
@@ -691,6 +691,24 @@ test('lineage: commitContinuationRelaunch appends the successor and closes the o
   assert.equal(rows[1].generation, att.generation, 'successor stamped at the attempt successorGen');
   assert.ok(rows[0].endedAt, 'outgoing session closed on transition');
   assert.equal(rows[1].endedAt, null, 'successor is the live session (open)');
+});
+
+test('lineage: Codex continuation closes the outgoing session but leaves the successor unbound', () => {
+  const agent = makeDbAgent({ provider: 'codex', command: 'codex' });
+  dbm.insertAgentSession(agent.id, 0, 'codex-g0', wsPath, 'codex');
+  dbm.updateAgentResumeSessionId(agent.id, 'codex-g0');
+  const att = dbm.createContinuationHandoffAttempt(agent.id);
+  dbm.closeContinuationHandoffAttempt(att.id, 'committed');
+
+  dbm.commitContinuationRelaunch(agent.id, null, att.generation, att.id);
+
+  const after = dbm.getAgent(agent.id)!;
+  assert.equal(after.continuationGeneration, att.generation);
+  assert.equal(after.resumeSessionId, null, 'Codex has no provider id until the rollout binds');
+  const rows = dbm.getAgentSessions(agent.id);
+  assert.equal(rows.length, 1, 'no fake successor row is inserted');
+  assert.equal(rows[0].sessionId, 'codex-g0');
+  assert.ok(rows[0].endedAt, 'the outgoing Codex binding is closed');
 });
 
 test('lineage: two same-generation /clear siblings stay distinct, disambiguated by session_id', () => {

@@ -4826,7 +4826,7 @@ export function updateAgentLastOutput(id: string): void {
   run("UPDATE agents SET last_output_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [id]);
 }
 
-export function updateAgentResumeSessionId(id: string, sessionId: string): void {
+export function updateAgentResumeSessionId(id: string, sessionId: string | null): void {
   run("UPDATE agents SET resume_session_id = ?, updated_at = datetime('now') WHERE id = ?", [sessionId, id]);
 }
 
@@ -5391,12 +5391,14 @@ export function getCurrentBrick(agentId: string): ContinuationBrickRow | null {
 }
 
 /** Context-brick Inc 4 (4.1 step 3) — the atomic relaunch transaction:
- *  new session id + generation bump (to the attempt's successorGen) +
- *  attempt close ('relaunched'), all-or-nothing. This is the ONLY place the
- *  agent's continuation_generation advances. */
+ *  provider-owned successor binding + generation bump (to the attempt's
+ *  successorGen) + attempt close ('relaunched'), all-or-nothing. Codex cannot
+ *  accept a pre-minted id, so its successor stays null until the real rollout
+ *  is hook/SQLite-bound. This is the ONLY place continuation_generation
+ *  advances. */
 export function commitContinuationRelaunch(
   agentId: string,
-  newSessionId: string,
+  newSessionId: string | null,
   successorGen: number,
   attemptId: string,
 ): void {
@@ -5413,13 +5415,16 @@ export function commitContinuationRelaunch(
     if (row) {
       const outgoing = row.resume_session_id as string | null;
       if (outgoing) closeAgentSession(agentId, outgoing);
-      insertAgentSession(
-        agentId,
-        successorGen,
-        newSessionId,
-        row.working_directory as string,
-        (row.provider || 'claude') as string,
-      );
+      const provider = (row.provider || 'claude') as string;
+      if (provider !== 'codex' && newSessionId) {
+        insertAgentSession(
+          agentId,
+          successorGen,
+          newSessionId,
+          row.working_directory as string,
+          provider,
+        );
+      }
     }
     updateAgentResumeSessionId(agentId, newSessionId);
     setContinuationGeneration(agentId, successorGen);

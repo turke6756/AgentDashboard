@@ -374,19 +374,19 @@ export function shouldDiscoverCodexSession(opts: {
  * race-free even under the shared-cwd invariant (many codex agents, one cwd).
  * No cwd / first-user-message disambiguation is involved.
  *
- * Ordering mirrors `captureCodexSessionId`'s success path exactly so the two
- * bind channels can never disagree:
+ * The hook is the only identity-strong channel allowed to repair a stale
+ * binding. Cwd/SQLite discovery remains null-only because many agents share a
+ * cwd. The caller supplies whether the current id still has a rollout file:
  *   1. empty/absent session id       → ignore (nothing to bind)
  *   2. unknown agent                  → ignore (report for a since-gone agent)
  *   3. provider !== 'codex'           → ignore (only codex mints late ids)
- *   4. agent already has a sid        → ignore  ← the NULL-GUARD. Never
- *      overwrite an existing `resumeSessionId`; a later restart/`resume` may
- *      have set a newer one, and clobbering it re-opens BUG-29. Idempotent when
- *      the incoming id equals the bound one.
- *   5. session id already owned by a  → ignore (sibling-theft protection, same
+ *   4. session id already owned by a  → ignore (sibling-theft protection, same
  *      DIFFERENT agent                        spirit as selectFreshCodexRollouts'
  *                                             excludeSessionIds)
- *   6. otherwise                      → bind
+ *   5. current id is the same, or is a → ignore (already-bound)
+ *      UUIDv7 with a rollout file
+ *   6. otherwise                       → bind (hook-only repair of a fake or
+ *                                        missing-rollout id)
  *
  * Pure / synchronous so it is unit-testable without a supervisor, DB, or FS.
  */
@@ -408,15 +408,22 @@ export function decideCodexHookBind(opts: {
   /** True when some OTHER agent already carries this session id as its
    *  `resumeSessionId`. Resolved by the caller against the agent registry. */
   sessionOwnedByOther?: boolean;
+  /** Whether the agent's CURRENT persisted id resolves to a Codex rollout.
+   *  Only meaningful when resumeSessionId is set. */
+  currentSessionFileExists?: boolean;
 }): CodexHookBindDecision {
   const sessionId = typeof opts.sessionId === 'string' ? opts.sessionId.trim() : '';
   if (!sessionId) return { action: 'ignore', reason: 'empty-session-id' };
   if (!opts.agent) return { action: 'ignore', reason: 'unknown-agent' };
   if (opts.agent.provider !== 'codex') return { action: 'ignore', reason: 'non-codex' };
-  // Null-guard (mirror captureCodexSessionId): a set resumeSessionId is
-  // authoritative — never overwrite it, even with a different id.
-  if (opts.agent.resumeSessionId) return { action: 'ignore', reason: 'already-bound' };
   if (opts.sessionOwnedByOther) return { action: 'ignore', reason: 'session-owned-by-sibling' };
+  const current = opts.agent.resumeSessionId?.trim() ?? '';
+  if (current) {
+    if (current === sessionId) return { action: 'ignore', reason: 'already-bound' };
+    if (isCodexUuidV7(current) && opts.currentSessionFileExists !== false) {
+      return { action: 'ignore', reason: 'already-bound' };
+    }
+  }
   return { action: 'bind', sessionId };
 }
 
@@ -542,6 +549,11 @@ function readFirstUserMessage(jsonlPath: string): string | null {
  *  second-granularity truncation and minor clock skew vs. the launch stamp. */
 const CODEX_ROLLOUT_LAUNCH_SLACK_MS = 2_000;
 
+export function isCodexUuidV7(sessionId: string): boolean {
+  const hex = sessionId.replace(/-/g, '').toLowerCase();
+  return /^[0-9a-f]{32}$/.test(hex) && hex[12] === '7';
+}
+
 /**
  * Session creation timestamp of a rollout, in epoch ms, or null when neither
  * encoding is parseable.
@@ -556,7 +568,7 @@ export function codexRolloutSessionTimestampMs(
   sessionId: string
 ): number | null {
   const hex = sessionId.replace(/-/g, '').toLowerCase();
-  if (/^[0-9a-f]{32}$/.test(hex) && hex[12] === '7') {
+  if (isCodexUuidV7(sessionId)) {
     const ms = parseInt(hex.slice(0, 12), 16);
     if (Number.isFinite(ms) && ms > 0) return ms;
   }

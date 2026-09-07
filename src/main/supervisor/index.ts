@@ -763,12 +763,17 @@ interface PendingInitialPrompt {
   text: string;
   expiresAt: number;
   dispatch: DispatchContext;
-  continuation?: { attemptId: string; successorSessionId: string };
+  continuation?: {
+    attemptId: string;
+    correlationKey: string;
+    successorSessionId: string | null;
+  };
 }
 
 interface PendingContinuationOrientation {
   attemptId: string;
-  successorSessionId: string;
+  correlationKey: string;
+  successorSessionId: string | null;
   kickoffTurnId: string | null;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -3291,7 +3296,7 @@ export class AgentSupervisor extends EventEmitter {
       this.pendingContinuationOrientations.delete(agentId);
       this.safeRecordHandoff({
         handoffAttemptId: state.attemptId,
-        idempotencyKey: `successor_oriented:${state.successorSessionId}:timed_out`,
+        idempotencyKey: `successor_oriented:${state.correlationKey}:timed_out`,
         resultKind: 'successor_oriented',
         successorSessionId: state.successorSessionId,
         kickoffTurnId: state.kickoffTurnId,
@@ -3318,7 +3323,7 @@ export class AgentSupervisor extends EventEmitter {
     this.pendingContinuationOrientations.delete(agentId);
     this.safeRecordHandoff({
       handoffAttemptId: state.attemptId,
-      idempotencyKey: `successor_oriented:${state.successorSessionId}:failed`,
+      idempotencyKey: `successor_oriented:${state.correlationKey}:failed`,
       resultKind: 'successor_oriented',
       successorSessionId: state.successorSessionId,
       kickoffTurnId: state.kickoffTurnId,
@@ -3332,7 +3337,7 @@ export class AgentSupervisor extends EventEmitter {
     this.pendingContinuationOrientations.delete(event.agentId);
     this.safeRecordHandoff({
       handoffAttemptId: state.attemptId,
-      idempotencyKey: `successor_oriented:${state.successorSessionId}:${event.turnId}:${event.status}`,
+      idempotencyKey: `successor_oriented:${state.correlationKey}:${event.turnId}:${event.status}`,
       resultKind: 'successor_oriented',
       successorSessionId: state.successorSessionId,
       kickoffTurnId: event.turnId,
@@ -6259,7 +6264,7 @@ export class AgentSupervisor extends EventEmitter {
       this.startCodexSidRecoveryPoll(agent.id);
       return null;
     }
-    updateAgentResumeSessionId(agent.id, result.sessionId);
+    this.persistCodexSessionBinding(agent.id, result.sessionId);
     // BUG-26: rebind drops any provisional/wrong events the reader may have
     // emitted under the stale (empty) sessionId. invalidatePath alone only
     // clears file offsets; the dispatcher ring buffer is the load-bearing
@@ -6269,6 +6274,25 @@ export class AgentSupervisor extends EventEmitter {
       `[Codex] Recovered session id ${result.sessionId} for agent ${agent.id} via cwd-match (${result.path})`
     );
     return result.sessionId;
+  }
+
+  /** Persist a real Codex rollout id and its lineage row at the agent's current
+   * generation. Hook binding may replace a stale/fake id; cwd/SQLite callers
+   * invoke this only after their existing null guard has passed. */
+  private persistCodexSessionBinding(agentId: string, sessionId: string): boolean {
+    const latest = getAgent(agentId);
+    if (!latest || latest.provider !== 'codex') return false;
+    if (latest.resumeSessionId === sessionId) return false;
+    if (latest.resumeSessionId) closeAgentSession(agentId, latest.resumeSessionId);
+    insertAgentSession(
+      agentId,
+      latest.continuationGeneration ?? 0,
+      sessionId,
+      latest.workingDirectory,
+      latest.provider,
+    );
+    updateAgentResumeSessionId(agentId, sessionId);
+    return true;
   }
 
   /**
@@ -6366,7 +6390,7 @@ export class AgentSupervisor extends EventEmitter {
       const result = this.scanForFreshCodexRollout(latest);
       if (result) {
         this.codexSidRecoveryPolls.delete(agentId);
-        updateAgentResumeSessionId(agentId, result.sessionId);
+        this.persistCodexSessionBinding(agentId, result.sessionId);
         this.sessionLogReader.rebindAgent(agentId);
         console.log(
           `[Codex] Recovered session id ${result.sessionId} for agent ${agentId} via fresh-rollout poll (${result.path})`
@@ -6538,7 +6562,7 @@ export class AgentSupervisor extends EventEmitter {
       if (!result) return;
       const latest = getAgent(agentId);
       if (!latest || latest.resumeSessionId) return; // null-guard: don't overwrite a later restart
-      updateAgentResumeSessionId(agentId, result.sessionId);
+      this.persistCodexSessionBinding(agentId, result.sessionId);
       // BUG-26: see recoverCodexResumeSessionId — drop any provisional ring
       // events emitted while sessionId was empty so they can't survive into
       // the chat the user/supervisor reads.
@@ -6586,9 +6610,21 @@ export class AgentSupervisor extends EventEmitter {
         }
       }
     }
-    const decision = decideCodexHookBind({ agent, sessionId, sessionOwnedByOther });
+    let currentSessionFileExists: boolean | undefined;
+    if (agent?.provider === 'codex' && agent.resumeSessionId) {
+      try {
+        currentSessionFileExists = this.sessionLogReader.sessionFileExists(
+          'codex', agent.workingDirectory, agent.resumeSessionId,
+        );
+      } catch {
+        currentSessionFileExists = false;
+      }
+    }
+    const decision = decideCodexHookBind({
+      agent, sessionId, sessionOwnedByOther, currentSessionFileExists,
+    });
     if (decision.action === 'bind') {
-      updateAgentResumeSessionId(agentId, decision.sessionId);
+      this.persistCodexSessionBinding(agentId, decision.sessionId);
       // Drop any provisional/wrong ring events emitted while sessionId was
       // empty (identity-blind window) so they can't survive into the chat.
       this.sessionLogReader.rebindAgent(agentId);
@@ -7258,10 +7294,27 @@ export class AgentSupervisor extends EventEmitter {
 
     try {
       const pathType = detectPathType(latest.workingDirectory);
+      const codexCanResume = latest.provider !== 'codex' || (
+        !!latest.resumeSessionId && this.sessionLogReader.sessionFileExists(
+          'codex', latest.workingDirectory, latest.resumeSessionId,
+        )
+      );
+      if (latest.provider === 'codex' && !codexCanResume) {
+        if (latest.resumeSessionId) closeAgentSession(latest.id, latest.resumeSessionId);
+        updateAgentResumeSessionId(latest.id, null);
+        this.sessionLogReader.rebindAgent(latest.id);
+      }
+      const restartTarget = getAgent(latest.id) ?? latest;
       if (pathType === 'windows') {
-        await this.launchWindowsAgent(latest, true);
+        await this.launchWindowsAgent(
+          restartTarget, codexCanResume, undefined, undefined, undefined,
+          codexCanResume ? undefined : true,
+        );
       } else {
-        await this.launchWslAgent(latest, true);
+        await this.launchWslAgent(
+          restartTarget, codexCanResume, undefined, undefined, undefined,
+          codexCanResume ? undefined : true,
+        );
       }
       // BUG-38 — auto-restart swapped the PTY under the same agent id; the
       // renderer's cached terminal is bound to the dead bridge. Notify AFTER
@@ -8324,11 +8377,12 @@ export class AgentSupervisor extends EventEmitter {
       this.forgetMonitorState(agentId);
       this.pendingInitialPrompts.delete(agentId);
 
-      // Step 3 — the atomic transaction (session mint + generation bump to the
-      // attempt's successorGen + attempt close 'relaunched'). Synchronous,
-      // BEFORE the relaunch timer; generation advances nowhere else.
-      const newSession = uuidv4();
-      commitContinuationRelaunch(agentId, newSession, attempt.generation, attempt.id);
+      // Step 3 — Claude can pre-mint its successor id; Codex cannot accept one
+      // at launch, so it stays unbound until SessionStart/SQLite discovery.
+      // The attempt id is the Codex pending-operation correlation key.
+      const successorSessionId = agent.provider === 'codex' ? null : uuidv4();
+      const correlationKey = successorSessionId ?? attempt.id;
+      commitContinuationRelaunch(agentId, successorSessionId, attempt.generation, attempt.id);
 
       // Step 4 — ONE rebind call: delegates invalidatePath to every reader and
       // emits agent-rebound (purges ring/context-stats/file_activities layers).
@@ -8340,7 +8394,8 @@ export class AgentSupervisor extends EventEmitter {
         handoffAttemptId: attempt.id,
         noteId: brick.noteId,
         reason: brick.reason,
-        newSession,
+        newSession: successorSessionId,
+        correlationKey,
       }));
       const tCont = applyStatusTransition(agentId, 'restarting');
       this.emit('statusChanged', { agentId, status: 'restarting', fromStatus: tCont?.prior, source: 'continuation' } satisfies StatusChangedEvent);
@@ -8355,13 +8410,17 @@ export class AgentSupervisor extends EventEmitter {
       // on the first input-accepting transition). Step 2 deleted the predecessor's
       // stale pending prompt; this seeds the fresh kickoff in its place. Same TTL
       // as the launch_agent initialUserPrompt path.
-      this.stageContinuationSuccessor(agentId, attempt.id, newSession, continuationDispatch);
+      this.stageContinuationSuccessor(
+        agentId, attempt.id, correlationKey, successorSessionId, continuationDispatch,
+      );
 
       // Step 7 — the runner-launch tail (and ONLY the launch). The phase moves
       // to `launching` HERE, not inside the tail's timer, so the card is never
       // dark across the 1 s gap between the session mint and the launch.
       this.publishContinuationPhase({ agentId, phase: 'launching', updatedAt: Date.now() });
-      this.continuationLaunchTail(agentId, newSession, attempt.id, agent.resumeSessionId ?? null);
+      this.continuationLaunchTail(
+        agentId, correlationKey, attempt.id, agent.resumeSessionId ?? null, successorSessionId,
+      );
     } catch (err) {
       // A step threw before the launch tail was scheduled → its finally will
       // never clear the predicate. Clear it here so the swap flag does not leak.
@@ -8376,7 +8435,8 @@ export class AgentSupervisor extends EventEmitter {
   private stageContinuationSuccessor(
     agentId: string,
     attemptId: string,
-    successorSessionId: string,
+    correlationKey: string,
+    successorSessionId: string | null,
     dispatch: DispatchContext,
   ): void {
     const agent = getAgent(agentId);
@@ -8395,7 +8455,7 @@ export class AgentSupervisor extends EventEmitter {
       text,
       expiresAt: Date.now() + INITIAL_USER_PROMPT_TTL_MS,
       dispatch,
-      continuation: { attemptId, successorSessionId },
+      continuation: { attemptId, correlationKey, successorSessionId },
     });
   }
 
@@ -8404,9 +8464,10 @@ export class AgentSupervisor extends EventEmitter {
    *  reconcile re-drive; MUST NOT touch the atomic transaction. */
   private continuationLaunchTail(
     agentId: string,
-    sessionId: string,
+    correlationKey: string,
     handoffAttemptId?: string,
     sourceSessionId: string | null = null,
+    successorSessionId: string | null = correlationKey,
   ): void {
     setTimeout(async () => {
       const latest = getAgent(agentId);
@@ -8414,10 +8475,10 @@ export class AgentSupervisor extends EventEmitter {
         if (handoffAttemptId) {
           this.safeRecordHandoff({
             handoffAttemptId,
-            idempotencyKey: `successor_started:${sessionId}:failed`,
+            idempotencyKey: `successor_started:${correlationKey}:failed`,
             resultKind: 'successor_started',
             sourceSessionId,
-            successorSessionId: sessionId,
+            successorSessionId,
           }, { outcome: 'failed', witnessedAt: Date.now(), detail: { reason: 'agent-row-missing' } });
           this.failContinuationOrientation(agentId, 'agent-row-missing');
         }
@@ -8427,20 +8488,24 @@ export class AgentSupervisor extends EventEmitter {
         const pathType = detectPathType(latest.workingDirectory);
         if (pathType === 'windows') {
           // (agent, resume, agentMdPrompt, sessionId, overrideArgs, freshSession)
-          await this.launchWindowsAgent(latest, false, null, sessionId, undefined, true);
+          await this.launchWindowsAgent(
+            latest, false, null, successorSessionId ?? undefined, undefined, true,
+          );
         } else {
           // (agent, resume, agentMdPrompt, overrideCommand, sessionId, freshSession)
           // — WSL param order differs; null agentMdPrompt suppresses re-running
           // the predecessor's original task on the fresh session.
-          await this.launchWslAgent(latest, false, null, undefined, sessionId, true);
+          await this.launchWslAgent(
+            latest, false, null, undefined, successorSessionId ?? undefined, true,
+          );
         }
         if (handoffAttemptId) {
           this.safeRecordHandoff({
             handoffAttemptId,
-            idempotencyKey: `successor_started:${sessionId}:succeeded`,
+            idempotencyKey: `successor_started:${correlationKey}:succeeded`,
             resultKind: 'successor_started',
             sourceSessionId,
-            successorSessionId: sessionId,
+            successorSessionId,
           }, { outcome: 'succeeded', witnessedAt: Date.now() });
         }
         // BUG-38 — a continuation mints a fresh session and swaps the PTY under
@@ -8456,10 +8521,10 @@ export class AgentSupervisor extends EventEmitter {
         if (handoffAttemptId) {
           this.safeRecordHandoff({
             handoffAttemptId,
-            idempotencyKey: `successor_started:${sessionId}:failed`,
+            idempotencyKey: `successor_started:${correlationKey}:failed`,
             resultKind: 'successor_started',
             sourceSessionId,
-            successorSessionId: sessionId,
+            successorSessionId,
           }, {
             outcome: 'failed', witnessedAt: Date.now(),
             detail: { reason: err instanceof Error ? err.message : String(err) },
@@ -10593,6 +10658,7 @@ export class AgentSupervisor extends EventEmitter {
                   agent.id,
                   relaunched.id,
                   agent.resumeSessionId,
+                  agent.resumeSessionId,
                   continuationDispatch,
                 );
               } else {
@@ -10604,6 +10670,33 @@ export class AgentSupervisor extends EventEmitter {
               this.continuationLaunchTail(agent.id, agent.resumeSessionId, relaunched.id);
               await new Promise(r => setTimeout(r, AgentSupervisor.RECONCILE_STAGGER_MS));
               continue;
+            }
+          }
+        }
+
+        // Codex continuation ids are provider-created after launch. A null or
+        // missing-rollout pointer must never be fed to `codex resume`, and a
+        // legacy fake pointer must be cleared so fresh SQLite/hook discovery is
+        // not stopped by its null guard. Re-stage the pending kickoff from the
+        // durable attempt, but use the attempt id only as correlation metadata.
+        if (agent.provider === 'codex') {
+          const sid = agent.resumeSessionId ?? null;
+          const sessionOnDisk = !!sid && this.sessionLogReader.sessionFileExists(
+            'codex', agent.workingDirectory, sid,
+          );
+          if (!sessionOnDisk) {
+            if (sid) closeAgentSession(agent.id, sid);
+            updateAgentResumeSessionId(agent.id, null);
+            this.sessionLogReader.rebindAgent(agent.id);
+            const relaunched = getLatestContinuationAttempt(agent.id, 'relaunched');
+            const currentGen = agent.continuationGeneration ?? 0;
+            if (relaunched && relaunched.generation === currentGen && currentGen > 0) {
+              const continuationDispatch = getContinuationAttemptDispatch(relaunched.id);
+              if (continuationDispatch) {
+                this.stageContinuationSuccessor(
+                  agent.id, relaunched.id, relaunched.id, null, continuationDispatch,
+                );
+              }
             }
           }
         }
@@ -10661,7 +10754,7 @@ export class AgentSupervisor extends EventEmitter {
           // newest-file scan), then validated as a signed /clear root. Safe
           // pre-launch: rebindAgent only clears caches (reader isn't polling
           // this agent yet).
-          let agentForLaunch = agent;
+          let agentForLaunch = getAgent(agent.id) ?? agent;
           if (agent.provider === 'claude' && agent.resumeSessionId) {
             const rediscovered = this.findLatestClaudeHookSessionFromSpool(agent);
             if (rediscovered && this.maybeRotateClaudeSession(agent.id, {
@@ -10672,10 +10765,26 @@ export class AgentSupervisor extends EventEmitter {
             }
           }
 
+          const codexCanResume = agentForLaunch.provider !== 'codex' || (
+            !!agentForLaunch.resumeSessionId && this.sessionLogReader.sessionFileExists(
+              'codex', agentForLaunch.workingDirectory, agentForLaunch.resumeSessionId,
+            )
+          );
+          if (!codexCanResume) {
+            console.warn(
+              `[reconcile] Codex agent ${agentForLaunch.id} has no matching rollout; launching fresh for authoritative session discovery`,
+            );
+          }
           if (pathType === 'windows') {
-            await this.launchWindowsAgent(agentForLaunch, true);
+            await this.launchWindowsAgent(
+              agentForLaunch, codexCanResume, undefined, undefined, undefined,
+              codexCanResume ? undefined : true,
+            );
           } else {
-            await this.launchWslAgent(agentForLaunch, true);
+            await this.launchWslAgent(
+              agentForLaunch, codexCanResume, undefined, undefined, undefined,
+              codexCanResume ? undefined : true,
+            );
           }
           addEvent(agent.id, 'reconnected');
         } catch (err) {

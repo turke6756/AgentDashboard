@@ -87,6 +87,9 @@ type DbModule = {
   createAgent(input: Record<string, unknown>): AgentRow;
   getAgent(id: string): AgentRow | null;
   getActiveAgents(): AgentRow[];
+  getAgentSessions(agentId: string): Array<{ generation: number; sessionId: string; endedAt: string | null }>;
+  insertAgentSession(agentId: string, generation: number, sessionId: string, cwd: string, provider: string): void;
+  updateAgentResumeSessionId(id: string, sessionId: string | null): void;
   updateAgentStatus(id: string, status: string): void;
   createContinuationHandoffAttempt(agentId: string, opts?: { reason?: string }): Attempt;
   freezeContinuationAttemptBinding(attemptId: string, binding: {
@@ -97,11 +100,11 @@ type DbModule = {
     note: string; noteSource: 'tool';
   }): string;
   closeContinuationHandoffAttempt(id: string, status: string): void;
-  commitContinuationRelaunch(agentId: string, sessionId: string, generation: number, attemptId: string): void;
+  commitContinuationRelaunch(agentId: string, sessionId: string | null, generation: number, attemptId: string): void;
 };
 type Pending = {
   text: string;
-  continuation?: { attemptId: string; successorSessionId: string };
+  continuation?: { attemptId: string; correlationKey: string; successorSessionId: string | null };
 };
 type SupervisorLike = {
   continuationRelaunch(agentId: string, brick: Record<string, unknown>): Promise<void>;
@@ -145,7 +148,6 @@ function occurrences(text: string, needle: string): number {
 function assertCodexPayload(
   pending: Pending | undefined,
   attempt: Attempt,
-  successorSessionId: string,
   note: string,
 ): void {
   assert.ok(pending, 'the Codex successor has one staged initial prompt');
@@ -162,7 +164,11 @@ function assertCodexPayload(
   assert.equal(occurrences(pending!.text, note), 1, 'note injected exactly once');
   assert.equal(occurrences(pending!.text, memory), 1, 'memory injected exactly once');
   assert.equal(occurrences(pending!.text, kickoff), 1, 'kickoff injected exactly once');
-  assert.deepEqual(pending!.continuation, { attemptId: attempt.id, successorSessionId });
+  assert.deepEqual(pending!.continuation, {
+    attemptId: attempt.id,
+    correlationKey: attempt.id,
+    successorSessionId: null,
+  });
 }
 
 function neutralizeSupervisor(supervisor: SupervisorLike): Record<string, unknown> {
@@ -189,8 +195,9 @@ test('post-commit relaunch stages one Codex note -> memory -> kickoff payload at
 
   const supervisor = new AgentSupervisorCtor();
   const mutable = neutralizeSupervisor(supervisor);
+  const tailCalls: unknown[][] = [];
   mutable.stopAgentLocked = async () => {};
-  mutable.continuationLaunchTail = () => {};
+  mutable.continuationLaunchTail = (...args: unknown[]) => { tailCalls.push(args); };
   (mutable.monitor as Record<string, unknown>).forgetAgent = () => {};
   (mutable.sessionLogReader as Record<string, unknown>).rebindAgent = () => {};
 
@@ -204,12 +211,16 @@ test('post-commit relaunch stages one Codex note -> memory -> kickoff payload at
 
   const after = db.getAgent(agent.id)!;
   const slots = pendingMap(supervisor);
+  assert.equal(after.resumeSessionId, null, 'Codex stays unbound until its real rollout id is discovered');
+  assert.deepEqual(db.getAgentSessions(agent.id), [], 'the fake continuation correlation id never enters lineage');
+  assert.deepEqual(tailCalls, [[agent.id, attempt.id, attempt.id, null, null]],
+    'the attempt id correlates launch work while successorSessionId stays null');
   assert.equal(slots.size, 1, 'the relaunch path creates exactly one pending slot');
-  assertCodexPayload(slots.get(agent.id), attempt, after.resumeSessionId!, note);
+  assertCodexPayload(slots.get(agent.id), attempt, note);
   db.updateAgentStatus(agent.id, 'done');
 });
 
-test('boot reconcile re-drive stages the same one payload and keys session lookup on codex', async () => {
+test('boot reconcile stages the same payload and fresh-launches an unbound Codex successor', async () => {
   const agent = createAgent('codex');
   const attempt = db.createContinuationHandoffAttempt(agent.id, { reason: 'electron-death' });
   db.freezeContinuationAttemptBinding(attempt.id, {
@@ -221,15 +232,17 @@ test('boot reconcile re-drive stages the same one payload and keys session looku
     note, noteSource: 'tool',
   });
   db.closeContinuationHandoffAttempt(attempt.id, 'committed');
-  const successorSessionId = 'codex-successor-never-written';
-  db.commitContinuationRelaunch(agent.id, successorSessionId, attempt.generation, attempt.id);
+  db.commitContinuationRelaunch(agent.id, null, attempt.generation, attempt.id);
 
   const supervisor = new AgentSupervisorCtor();
   const mutable = neutralizeSupervisor(supervisor);
   const tailCalls: Array<[string, string]> = [];
+  const launches: Array<{ resume: unknown; freshSession: unknown }> = [];
   const sessionLookups: Array<[string, string, string]> = [];
   mutable.continuationLaunchTail = (id: string, sessionId: string) => tailCalls.push([id, sessionId]);
-  mutable.launchWindowsAgent = async () => {};
+  mutable.launchWindowsAgent = async (...args: unknown[]) => {
+    launches.push({ resume: args[1], freshSession: args[5] });
+  };
   (mutable.sessionLogReader as Record<string, unknown>).sessionFileExists =
     (provider: string, cwd: string, sessionId: string) => {
       sessionLookups.push([provider, cwd, sessionId]);
@@ -237,12 +250,62 @@ test('boot reconcile re-drive stages the same one payload and keys session looku
     };
   await supervisor.reconcile();
 
-  assert.deepEqual(sessionLookups, [['codex', workspacePath, successorSessionId]],
-    'boot reconcile checks the provider-specific Codex session store');
-  assert.deepEqual(tailCalls, [[agent.id, successorSessionId]], 'the launch tail is re-driven exactly once');
+  assert.deepEqual(sessionLookups, [], 'an unbound Codex continuation never probes a fabricated session id');
+  assert.deepEqual(tailCalls, [], 'Codex continuation is not re-driven with a fake provider session id');
+  assert.deepEqual(launches, [{ resume: false, freshSession: true }],
+    'boot reconcile falls back to a fresh Codex launch that re-runs discovery');
+  assert.equal(db.getAgent(agent.id)!.resumeSessionId, null);
+  assert.deepEqual(db.getAgentSessions(agent.id), []);
   const slots = pendingMap(supervisor);
   assert.equal(slots.size, 1, 'the reconcile path creates exactly one pending slot');
-  assertCodexPayload(slots.get(agent.id), attempt, successorSessionId, note);
+  assertCodexPayload(slots.get(agent.id), attempt, note);
+});
+
+test('auto-restart never runs codex resume for a missing rollout and clears the fake pointer', async () => {
+  const agent = createAgent('codex');
+  const fakeId = '11111111-2222-4333-8444-555555555555';
+  db.updateAgentResumeSessionId(agent.id, fakeId);
+  const supervisor = new AgentSupervisorCtor();
+  const mutable = neutralizeSupervisor(supervisor);
+  const launches: Array<{ resume: unknown; freshSession: unknown; persistedSid: string | null | undefined }> = [];
+  (mutable.sessionLogReader as Record<string, unknown>).sessionFileExists = () => false;
+  (mutable.sessionLogReader as Record<string, unknown>).rebindAgent = () => {};
+  mutable.launchWindowsAgent = async (...args: unknown[]) => {
+    launches.push({
+      resume: args[1], freshSession: args[5],
+      persistedSid: (args[0] as AgentRow).resumeSessionId,
+    });
+  };
+
+  await (mutable.autoRestartLocked as (a: AgentRow) => Promise<void>).call(
+    supervisor, db.getAgent(agent.id)!,
+  );
+
+  assert.deepEqual(launches, [{ resume: false, freshSession: true, persistedSid: null }]);
+  assert.equal(db.getAgent(agent.id)!.resumeSessionId, null);
+});
+
+test('real hook bind repairs a fake id and inserts the real rollout at the current generation', () => {
+  const agent = createAgent('codex');
+  const fakeId = '11111111-2222-4333-8444-555555555555';
+  const realId = '0199a000-0000-7000-8000-000000000009';
+  db.insertAgentSession(agent.id, 0, fakeId, workspacePath, 'codex');
+  db.updateAgentResumeSessionId(agent.id, fakeId);
+  const supervisor = new AgentSupervisorCtor();
+  const mutable = neutralizeSupervisor(supervisor);
+  (mutable.sessionLogReader as Record<string, unknown>).sessionFileExists = () => false;
+  (mutable.sessionLogReader as Record<string, unknown>).rebindAgent = () => {};
+
+  const decision = (supervisor as unknown as {
+    bindCodexSessionFromHook(agentId: string, sessionId: string): unknown;
+  }).bindCodexSessionFromHook(agent.id, realId);
+
+  assert.deepEqual(decision, { action: 'bind', sessionId: realId });
+  assert.equal(db.getAgent(agent.id)!.resumeSessionId, realId);
+  const rows = db.getAgentSessions(agent.id);
+  assert.deepEqual(rows.map((r) => [r.sessionId, r.generation]), [[fakeId, 0], [realId, 0]]);
+  assert.ok(rows[0].endedAt, 'the replaced fake lineage row is closed');
+  assert.equal(rows[1].endedAt, null, 'the real rollout is the live lineage row');
 });
 
 test('shared helper keeps Claude kickoff-only and null-guards a vanished agent', () => {
@@ -250,10 +313,11 @@ test('shared helper keeps Claude kickoff-only and null-guards a vanished agent',
   const supervisor = new AgentSupervisorCtor();
   const mutable = neutralizeSupervisor(supervisor);
   const stage = mutable.stageContinuationSuccessor as (
-    agentId: string, attemptId: string, successorSessionId: string, dispatch: unknown,
+    agentId: string, attemptId: string, correlationKey: string,
+    successorSessionId: string | null, dispatch: unknown,
   ) => void;
   const dispatch = { planId: null, planItemId: null, source: 'continuation-carry' };
-  stage.call(supervisor, agent.id, 'claude-attempt', 'claude-session', dispatch);
+  stage.call(supervisor, agent.id, 'claude-attempt', 'claude-session', 'claude-session', dispatch);
   const staged = pendingMap(supervisor).get(agent.id);
   assert.ok(staged);
   assert.match(staged!.text, /note is in your system prompt/);
@@ -264,7 +328,7 @@ test('shared helper keeps Claude kickoff-only and null-guards a vanished agent',
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    stage.call(supervisor, 'missing-agent', 'missing-attempt', 'missing-session', dispatch);
+    stage.call(supervisor, 'missing-agent', 'missing-attempt', 'missing-session', 'missing-session', dispatch);
   } finally {
     console.warn = originalWarn;
   }

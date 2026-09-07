@@ -27,8 +27,8 @@ function test(name: string, fn: () => Promise<void> | void): void {
   tests.push({ name, run: fn });
 }
 
-const SESSION_ID = '33333333-4444-5555-6666-777777777777';
-const OTHER_ID = '44444444-5555-6666-7777-888888888888';
+const SESSION_ID = '0199a000-0000-7000-8000-000000000001';
+const OTHER_ID = '0199a000-0001-7000-8000-000000000002';
 
 interface RegAgent { id: string; provider: string; resumeSessionId: string | null; }
 
@@ -51,7 +51,10 @@ const stubSupervisor = {
         if (other.id !== agentId && other.resumeSessionId === sid) { sessionOwnedByOther = true; break; }
       }
     }
-    const decision = decideCodexHookBind({ agent, sessionId, sessionOwnedByOther });
+    const decision = decideCodexHookBind({
+      agent, sessionId, sessionOwnedByOther,
+      currentSessionFileExists: !!agent?.resumeSessionId,
+    });
     if (decision.action === 'bind') {
       const a = registry.get(agentId);
       if (a) a.resumeSessionId = decision.sessionId;

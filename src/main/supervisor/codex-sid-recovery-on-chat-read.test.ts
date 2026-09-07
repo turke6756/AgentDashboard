@@ -42,6 +42,9 @@ function test(name: string, fn: () => Promise<void> | void): void {
 interface DbPatch {
   agentLookup: (id: string) => Agent | null;
   sidUpdates: Array<{ id: string; sessionId: string }>;
+  lineageInserts: Array<{
+    id: string; generation: number; sessionId: string; cwd: string; provider: string;
+  }>;
   restore: () => void;
 }
 
@@ -49,7 +52,7 @@ function patchDb(agentLookup: (id: string) => Agent | null): DbPatch {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const db = require('../database') as Record<string, unknown>;
   const keys = [
-    'getAgent', 'updateAgentResumeSessionId',
+    'getAgent', 'updateAgentResumeSessionId', 'insertAgentSession', 'closeAgentSession',
     // Constructor + sessionLogReader callbacks also touch these; stub them so
     // background polls during the test don't blow up.
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent', 'addEvent',
@@ -59,10 +62,15 @@ function patchDb(agentLookup: (id: string) => Agent | null): DbPatch {
   for (const k of keys) orig[k] = db[k];
 
   const sidUpdates: Array<{ id: string; sessionId: string }> = [];
+  const lineageInserts: DbPatch['lineageInserts'] = [];
   db.getAgent = (id: string) => agentLookup(id);
   db.updateAgentResumeSessionId = (id: string, sessionId: string) => {
     sidUpdates.push({ id, sessionId });
   };
+  db.insertAgentSession = (
+    id: string, generation: number, sessionId: string, cwd: string, provider: string,
+  ) => { lineageInserts.push({ id, generation, sessionId, cwd, provider }); };
+  db.closeAgentSession = () => {};
   db.getActiveAgents = () => [];
   db.getAllAgents = () => [];
   db.getSupervisorAgent = () => null;
@@ -73,6 +81,7 @@ function patchDb(agentLookup: (id: string) => Agent | null): DbPatch {
   return {
     agentLookup,
     sidUpdates,
+    lineageInserts,
     restore: () => {
       for (const k of keys) db[k] = orig[k];
     },
@@ -192,6 +201,13 @@ test('maybeRecoverCodexSid: codex agent with null sid + matching rollout → sid
       ROLLOUT_SID,
       'sid persisted matches the on-disk rollout UUID'
     );
+    assert.deepEqual(patch.lineageInserts, [{
+      id: agent.id,
+      generation: agent.continuationGeneration ?? 0,
+      sessionId: ROLLOUT_SID,
+      cwd: workspaceDir,
+      provider: 'codex',
+    }], 'the recovered real rollout is inserted into provider lineage');
   } finally {
     patch.restore();
     if (originalUserProfile === undefined) delete process.env.USERPROFILE;
