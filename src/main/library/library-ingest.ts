@@ -106,16 +106,16 @@ function permitsHashReuse(trigger: LibraryIngestTrigger): trigger is LibraryHash
 }
 
 export function createLibraryIngestor(deps: LibraryIngestDependencies) {
-  const publish = (id: string, status: LibraryDocumentStatus, error_reason?: string) => {
-    deps.publish?.({ document_id: id, status, ...(error_reason ? { error_reason } : {}) });
-  };
-
   return async function ingest(input: IngestDocumentInput): Promise<LibraryIngestResult> {
     const absolute = path.resolve(input.source_path);
+    const sourceRelPath = relativePath(deps.workspaceRoot, absolute);
+    const publish = (id: string, status: LibraryDocumentStatus, error_reason?: string) => {
+      deps.publish?.({ document_id: id, source_rel_path: sourceRelPath, status, ...(error_reason ? { error_reason } : {}) });
+    };
     const bytes = await fs.readFile(absolute);
     const stat = await fs.stat(absolute);
     const sourceHash = createHash('sha256').update(bytes).digest('hex');
-    const id = input.document_id ?? documentId(relativePath(deps.workspaceRoot, absolute));
+    const id = input.document_id ?? documentId(sourceRelPath);
     const existing = getLibraryDocument(deps.store, id);
     const folderDefaults = reportFolderDefaults(deps.workspaceRoot, absolute);
     const currentContract = existing?.chunker_version === CHUNKER_VERSION
@@ -136,7 +136,7 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       created: existing?.created ?? new Date(0).toISOString(),
       topics_json: existing?.topics_json ?? '[]',
       trust: input.trust ?? folderDefaults?.trust ?? existing?.trust ?? 'user-trusted',
-      source_rel_path: relativePath(deps.workspaceRoot, absolute),
+      source_rel_path: sourceRelPath,
       reader_rel_path: relativePath(deps.workspaceRoot, absolute),
       source_hash: sourceHash,
       size: stat.size,

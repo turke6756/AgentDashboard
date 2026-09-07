@@ -139,6 +139,7 @@ test('all explicit triggers use the visible state machine', async () => {
         source_path: path.join(root, 'docs', 'b.md'), trigger,
       });
       assert.deepEqual(events.map((event) => event.status), ['queued', 'extracting', 'chunking', 'embedding', 'ready']);
+      assert.ok(events.every((event) => event.source_rel_path === 'docs/b.md'));
     } finally { closeLibraryStore(store); }
   }
 });
