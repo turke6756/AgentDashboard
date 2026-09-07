@@ -33,6 +33,11 @@ try {
   assert.ok(defaultResult.excerpts.every((excerpt) => excerpt.trust !== 'untrusted'));
   const included = queryLibrary(store, { query: 'needle', mode: 'keyword', include_untrusted: true });
   assert.ok(included.excerpts.some((excerpt) => excerpt.trust === 'untrusted'));
+  addText(store, document('punctuation-doc'), 'punctuation-1', 0, 'zebra-quartz-lantern-2026 says alpha"beta', 0);
+  const hyphenated = queryLibrary(store, { query: 'zebra-quartz-lantern-2026', mode: 'keyword' });
+  assert.strictEqual(hyphenated.excerpts[0]?.chunk_id, 'punctuation-1');
+  const quoted = queryLibrary(store, { query: 'alpha"beta', mode: 'keyword' });
+  assert.strictEqual(quoted.excerpts[0]?.chunk_id, 'punctuation-1');
   addText(store, document('overlap-doc'), 'overlap-a', 0, 'overlap window', 0);
   addText(store, document('overlap-doc'), 'overlap-b', 1, 'overlap window', 5);
   const overlap = queryLibrary(store, { query: 'overlap', mode: 'keyword', doc_ids: ['overlap-doc'], highlight_doc_id: 'overlap-doc' });
@@ -48,7 +53,7 @@ try {
   assert.deepStrictEqual(pdfResult.document_highlights?.spans[0].source, {
     page_index: 3, selector: { exact: 'needle', prefix: 'page prefix before ', suffix: ' after page suffix' },
   });
-  console.log('All 10 library query tests passed');
+  console.log('All 12 library query tests passed');
 } finally {
   closeLibraryStore(store);
   fs.rmSync(root, { recursive: true, force: true });

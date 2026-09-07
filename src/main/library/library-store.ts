@@ -524,6 +524,12 @@ function rangesOverlap(a: { start: number; end: number }, b: { start: number; en
   return a.start < b.end && b.start < a.end;
 }
 
+function keywordFtsQuery(query: string): string {
+  return (query.match(/\S+/gu) ?? [])
+    .map((token) => `"${token.replace(/"/g, '""')}"`)
+    .join(' ');
+}
+
 function keywordRows(store: LibraryStore, args: QueryLibraryArgs, before: string, after: string): KeywordRow[] {
   const clauses = [`library_chunks_fts MATCH ?`, `d.status = 'ready'`];
   const values: unknown[] = [args.query];
@@ -618,7 +624,7 @@ export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): Libra
   const result: LibraryQueryResult = { query: args.query, mode, excerpts: [] };
   if (!query) return result;
   const [before, after] = mode === 'semantic' ? ['', ''] : markerPair(store);
-  const ftsQuery = mode === 'hybrid' ? `"${query.replace(/"/g, '""')}"` : query;
+  const ftsQuery = mode === 'hybrid' ? `"${query.replace(/"/g, '""')}"` : keywordFtsQuery(query);
   const keyword = mode === 'semantic' ? [] : keywordRows(store, { ...args, query: ftsQuery }, before, after).slice(0, 50);
   const queryEmbedding = mode === 'keyword' ? undefined : args.query_embedding ?? embedLibraryTextSync(query);
   const semantic = queryEmbedding ? semanticRows(store, args, queryEmbedding) : [];
