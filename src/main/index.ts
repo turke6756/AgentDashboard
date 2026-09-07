@@ -10,6 +10,7 @@ import {
 import { loadLifecycleSettings, saveLifecycleSettings } from './lifecycle/lifecycle-settings';
 import { IdleSweep } from './lifecycle/idle-sweep';
 import { LogRetentionScheduler } from './log-retention/log-retention-scheduler';
+import { bootstrapAgentScheduler } from './scheduler/scheduler-bootstrap';
 import { inventoryBundles } from './log-retention/log-retention-inventory';
 import { readState as readRetentionState, writeState as writeRetentionState, acknowledgeFirstSweepNotice } from './lifecycle/log-retention-state';
 import { registerLogRetentionIpc, broadcastLogRetentionState, makeRetentionSinks } from './lifecycle/log-retention-ipc';
@@ -1004,7 +1005,8 @@ app.whenReady().then(async () => {
       },
     };
     const apiConnectionGate = createApiConnectionGate();
-    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate);
+    const agentScheduler = bootstrapAgentScheduler({ supervisor, app, getAgent });
+    registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler);
     registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE

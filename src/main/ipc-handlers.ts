@@ -80,6 +80,8 @@ import { resolveOwnerFocusPlanId } from './plans/executing-supervisor-plan';
 import { proveReachability, type ReachabilityProofRequest } from './plans/reachability-prover';
 import { registerGitignoreSuggestionIpc } from './git/exhaust-exclusions';
 import { registerProductionLibraryIpc } from './library/library-ipc';
+import { registerScheduleIpc } from './scheduler/schedule-ipc';
+import type { AgentScheduler } from './scheduler/agent-scheduler';
 
 const WSL_DISABLE_STOP_WAIT_MS = 10_000;
 
@@ -150,7 +152,14 @@ export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   detachedWindowDeps: DetachedWindowDeps,
   apiConnectionGate?: ApiConnectionGate,
+  scheduler?: AgentScheduler,
 ): void {
+  if (scheduler) {
+    registerScheduleIpc(ipcMain, scheduler, (channel, payload) => {
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+      broadcastToDetachedViews(channel, payload);
+    });
+  }
   registerProductionLibraryIpc(
     ipcMain,
     (workspaceId) => getWorkspace(workspaceId),

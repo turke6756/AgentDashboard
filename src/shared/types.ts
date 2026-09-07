@@ -1,4 +1,5 @@
 import type { SessionEvent, ChatEventBatch } from './session-events';
+import type { AgentSchedule, FiringHistoryRow, ScheduleSetDto, ScheduleSummary } from './schedule-types';
 import type { PdfSelectionAnchorV1, SelectionAnchorType } from './pdf-annotations';
 import type { PackageRollup } from './package-rollup';
 import type {
@@ -2934,6 +2935,16 @@ export const ACTIVITY_CHANNELS = {
   pageCounts: 'activity:page-counts',
 } as const;
 
+/** Renderer/main schedule transport names. Keep invoke and push channels together. */
+export const SCHEDULE_CHANNELS = {
+  hydrate: 'schedule:hydrate',
+  set: 'schedule:set',
+  get: 'schedule:get',
+  clear: 'schedule:clear',
+  history: 'schedule:history',
+  changed: 'schedule:changed',
+} as const;
+
 /** WP-G3.5 — outcome of the workspace-scoped prune: both encoded namespaces
  *  (`refs/lares/checkpoints/<enc(ws)>/*` + `refs/lares/recovery/<enc(ws)>/*`) deleted
  *  in one atomic batch, with the deleted-ref count. Objects are left for normal git
@@ -3165,6 +3176,17 @@ export interface IpcApi {
     listContinuationPhases: () => Promise<ContinuationPhaseState[]>;
     onContinuationPhaseChanged: (callback: (signal: ContinuationPhaseSignal) => void) => () => void;
     onPlanBadgesInvalidated: (callback: (payload: PlanBadgesInvalidatedPayload) => void) => () => void;
+  };
+  schedule: {
+    hydrate: (workspaceId: string) => Promise<ScheduleSummary[]>;
+    set: (agentId: string, input: ScheduleSetDto) => Promise<AgentSchedule>;
+    get: (agentId: string) => Promise<AgentSchedule | null>;
+    clear: (agentId: string) => Promise<boolean>;
+    history: (agentId: string) => Promise<FiringHistoryRow[]>;
+    onChanged: (callback: (payload: {
+      agentId: string;
+      scheduleSummary: ScheduleSummary | null;
+    }) => void) => () => void;
   };
   terminal: {
     // WP-3a: attach resolves to an atomic snapshot cutoff + epoch so the

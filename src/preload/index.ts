@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { AgentPlanBadge, IpcApi, DetachRequest, DetachedClosedPayload, ViewDetachRequest, ViewDetachedClosedPayload, FlushRequestPayload, FlushReplyPayload, PlanBadgesInvalidatedPayload } from '../shared/types';
-import { ACTIVITY_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS, PLAN_DETACHED_REVEAL_CHANNELS, CHECKPOINT_CHANNELS, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, PLAN_FACTUAL_REGISTER_CHANNEL, PLAN_BADGES_INVALIDATED } from '../shared/types';
+import { ACTIVITY_CHANNELS, TAB_CHANNELS, VIEW_CHANNELS, PLAN_DETACHED_REVEAL_CHANNELS, CHECKPOINT_CHANNELS, SCHEDULE_CHANNELS, PLAN_PREVIEW_CHANNEL, PLAN_REVIEW_PROJECTION_CHANNEL, PLAN_LEDGER_PROJECTION_CHANNEL, PLAN_FACTUAL_REGISTER_CHANNEL, PLAN_BADGES_INVALIDATED } from '../shared/types';
 import { BROWSER_CHANNELS } from '../shared/browser';
 import type {
   AccessRequestDecision,
@@ -134,6 +134,18 @@ const api: IpcApi = withoutRetiredSaveApi({
       const listener = (_event: any, batch: any) => callback(batch);
       ipcRenderer.on('agent:chat-events', listener);
       return () => ipcRenderer.removeListener('agent:chat-events', listener);
+    },
+  },
+  schedule: {
+    hydrate: (workspaceId) => ipcRenderer.invoke(SCHEDULE_CHANNELS.hydrate, workspaceId),
+    set: (agentId, input) => ipcRenderer.invoke(SCHEDULE_CHANNELS.set, agentId, input),
+    get: (agentId) => ipcRenderer.invoke(SCHEDULE_CHANNELS.get, agentId),
+    clear: (agentId) => ipcRenderer.invoke(SCHEDULE_CHANNELS.clear, agentId),
+    history: (agentId) => ipcRenderer.invoke(SCHEDULE_CHANNELS.history, agentId),
+    onChanged: (callback) => {
+      const listener = (_event: unknown, payload: Parameters<typeof callback>[0]) => callback(payload);
+      ipcRenderer.on(SCHEDULE_CHANNELS.changed, listener);
+      return () => ipcRenderer.removeListener(SCHEDULE_CHANNELS.changed, listener);
     },
   },
   usage: {
