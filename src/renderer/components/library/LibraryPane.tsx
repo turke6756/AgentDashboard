@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LibraryProgressEvent, LibraryRescanResult, LibraryShelfChangedEvent, ShelfRow } from '../../../shared/library';
 import { useDashboardStore } from '../../stores/dashboard-store';
 import LibraryAddFiles from './LibraryAddFiles';
@@ -20,8 +20,16 @@ type LibraryApi = {
 
 function libraryApi(): LibraryApi { return (window.api as typeof window.api & { library: LibraryApi }).library; }
 
+const SHELF_CHANGED_DEBOUNCE_MS = 150;
+
+function normalizeSourceRelPath(sourceRelPath: string, caseInsensitive: boolean): string {
+  const normalized = sourceRelPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  return caseInsensitive ? normalized.toLowerCase() : normalized;
+}
+
 export default function LibraryPane({ initialType }: { initialType?: 'research' }) {
   const workspaceId = useDashboardStore((state) => state.selectedWorkspaceId);
+  const workspacePathType = useDashboardStore((state) => state.workspaces.find((workspace) => workspace.id === state.selectedWorkspaceId)?.pathType);
   const [documents, setDocuments] = useState<ShelfRow[]>([]);
   const [filters, setFilters] = useState<LibraryFilterState>({ ...EMPTY_LIBRARY_FILTERS, types: initialType ? [initialType] : [] });
   const [sort, setSort] = useState<'newest' | 'title' | 'type'>('newest');
@@ -30,18 +38,36 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   const [results, setResults] = useState<{ excerpts: LibraryQueryExcerptView[]; document_highlights?: LibraryDocumentHighlightsView }>({ excerpts: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
+  const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
-    if (!workspaceId) return;
-    setDocuments(await libraryApi().listShelf(workspaceId));
+    const generation = ++reloadGeneration.current;
+    if (!workspaceId) { setDocuments([]); return; }
+    const nextDocuments = await libraryApi().listShelf(workspaceId);
+    if (generation === reloadGeneration.current) setDocuments(nextDocuments);
   }, [workspaceId]);
-  useEffect(() => { void reload(); }, [reload]);
-  useEffect(() => libraryApi().onShelfChanged((event) => {
-    if (event.workspace_id === workspaceId) void reload();
-  }), [reload, workspaceId]);
+  useEffect(() => {
+    void reload();
+    return () => { reloadGeneration.current += 1; };
+  }, [reload]);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = libraryApi().onShelfChanged((event) => {
+      if (event.workspace_id !== workspaceId) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = undefined; void reload(); }, SHELF_CHANGED_DEBOUNCE_MS);
+    });
+    return () => { if (timer) clearTimeout(timer); unsubscribe(); };
+  }, [reload, workspaceId]);
   useEffect(() => libraryApi().onProgress((event) => {
     if (event.workspace_id !== workspaceId) return;
-    setDocuments((current) => current.map((document) => document.id === event.document_id ? { ...document, status: event.status, shelf_status: event.status === 'ready' || event.status === 'error' ? event.status : 'indexing', error_reason: event.error_reason ?? null } : document));
+    const eventPath = event.source_rel_path ? normalizeSourceRelPath(event.source_rel_path, workspacePathType === 'windows') : null;
+    setDocuments((current) => current.map((document) => {
+      const pathMatches = eventPath !== null && normalizeSourceRelPath(document.source_rel_path, workspacePathType === 'windows') === eventPath;
+      return document.id === event.document_id || pathMatches
+        ? { ...document, status: event.status, shelf_status: event.status === 'ready' || event.status === 'error' ? event.status : 'indexing', error_reason: event.error_reason ?? null }
+        : document;
+    }));
     if (event.status !== 'ready') {
       setResults((current) => ({
         excerpts: current.excerpts.filter((excerpt) => excerpt.doc_id !== event.document_id),
@@ -54,7 +80,7 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
       })) }));
     }
     if (event.status === 'ready' || event.status === 'error') void reload();
-  }), [reload, workspaceId]);
+  }), [reload, workspaceId, workspacePathType]);
 
   const filtered = useMemo(() => documents.filter((document) => {
     const topics = (() => { try { return JSON.parse(document.topics_json) as string[]; } catch { return []; } })();

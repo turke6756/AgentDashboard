@@ -48,6 +48,7 @@ export interface ShelfRow {
 export interface LibraryProgressEvent {
   workspace_id?: string;
   document_id: string;
+  source_rel_path?: string;
   status: LibraryDocumentStatus;
   error_reason?: string;
 }
