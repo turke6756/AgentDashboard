@@ -167,6 +167,10 @@ export class StatusMonitor extends EventEmitter {
   // UserPromptSubmit hook (the bug we're trying to detect is specifically
   // a missing start hook).
   private lastStartHookEventAt = new Map<string, number>();
+  // Durable handshake evidence that the latest start hook actually completed
+  // its launching/idle -> working transition. A fast Stop hook may already have
+  // returned the row to idle by the time the sender reads confirmation.
+  private lastHookWorkingAt = new Map<string, number>();
   // Dedupes start-hook silence warnings per input delivery — cleared when a
   // new input is delivered (re-arms the watchdog for the new turn) and when
   // any start-hook event fires.
@@ -180,7 +184,7 @@ export class StatusMonitor extends EventEmitter {
   // (no body) to an agent whose prompt was delivered but never submitted.
   // Left undefined in tests that don't exercise the resend path.
   private resubmit?: (agentId: string) => void;
-  // BUG-23 — wallclock stamp set when `runner.launch()` returns, read by
+  // BUG-23 — wallclock stamp set immediately before `runner.launch()`, read by
   // `poll()` to fire the per-provider settle-timer promotion `launching → idle`.
   // Cleared synchronously by `promoteFromLaunching` so a hook arriving inside
   // the settle window prevents a duplicate `launch-settle` emission on the
@@ -467,7 +471,10 @@ export class StatusMonitor extends EventEmitter {
     const agent = this.getAgentFn(agentId);
     if (!agent) return;
     if (TERMINAL_STATUSES.includes(agent.status)) return;
-    if (TRANSITIONAL_STATUSES.includes(agent.status)) return;
+    // UserPromptSubmit is authoritative turn-start evidence and may race the
+    // launch helper while the row is still `launching`. Other transitional
+    // states (notably `restarting`) remain protected.
+    if (TRANSITIONAL_STATUSES.includes(agent.status) && agent.status !== 'launching') return;
 
     const now = this.now();
     const prior = agent.status;
@@ -480,6 +487,8 @@ export class StatusMonitor extends EventEmitter {
       ttlClass: 'tool-pending',
       turnInFlight: true,
     });
+    this.lastHookWorkingAt.set(agentId, now);
+    if (prior === 'launching') this.clearLaunch(agentId);
     if (prior === 'working') return;
 
     const t = applyStatusTransition(agentId, 'working');
@@ -506,6 +515,7 @@ export class StatusMonitor extends EventEmitter {
     this.lastLaunchOverrunWarnAt.delete(agentId);
     this.lastInputDeliveredAt.delete(agentId);
     this.lastStartHookEventAt.delete(agentId);
+    this.lastHookWorkingAt.delete(agentId);
     this.lastStartWatchdogWarnAt.delete(agentId);
     this.startHookResendCount.delete(agentId);
     this.lastStartHookResendAt.delete(agentId);
@@ -540,7 +550,7 @@ export class StatusMonitor extends EventEmitter {
   }
 
   /** BUG-23 — called by `AgentSupervisor.launchWindowsAgent` /
-   *  `launchWslAgent` immediately after `runner.launch()` returns. Stamps the
+   *  `launchWslAgent` immediately before `runner.launch()`. Stamps the
    *  wallclock so `poll()` can promote `'launching' → 'idle'` once the
    *  per-provider settle window has elapsed. Naturally idempotent: a restart
    *  overwrites the prior timestamp. */
@@ -557,8 +567,8 @@ export class StatusMonitor extends EventEmitter {
   }
 
   /** HOOK_SYSTEM_DESIGN.md §5.4 / B5 — arm the launch-time hook canary. Called
-   *  by `AgentSupervisor.launchAgent` for worker-lane agents right after the
-   *  agent row is created. Stamps the launch wallclock; `checkHookCanary`
+   *  by the runner launch choke point immediately before `runner.launch()`.
+   *  Stamps the launch wallclock; `checkHookCanary`
    *  reads it on each poll tick. Naturally idempotent — a relaunch re-arms. */
   recordHookCanary(agentId: string, ts: number = this.now()): void {
     this.canaryArmedAt.set(agentId, ts);
@@ -641,6 +651,11 @@ export class StatusMonitor extends EventEmitter {
   /** Test seam — last start-hook event timestamp for an agent. */
   getLastStartHookEventAt(agentId: string): number | undefined {
     return this.lastStartHookEventAt.get(agentId);
+  }
+
+  /** Last time a start hook successfully installed the working latch. */
+  getLastHookWorkingAt(agentId: string): number | undefined {
+    return this.lastHookWorkingAt.get(agentId);
   }
 
   /** Q6 launch-time self-test signal — has a UserPromptSubmit (`hook-start`)
@@ -854,6 +869,16 @@ export class StatusMonitor extends EventEmitter {
       ?? LAUNCH_SETTLE_TIMEOUT_MS.claude;
     const elapsed = this.now() - stamp;
     if (elapsed < budget) return true;
+
+    const startHookAt = this.lastStartHookEventAt.get(agent.id) ?? 0;
+    if (startHookAt > stamp) {
+      console.warn(
+        `[launch-settle] invariant violation: agent ${agent.id} (${agent.provider}) ` +
+        `received a start hook after launch but is still 'launching'; repairing to 'working'.`,
+      );
+      this.forceWorkingFromHook(agent.id, 'launch-settle-start-hook-repair');
+      return true;
+    }
 
     const overrun = elapsed - budget;
     if (overrun >= LAUNCH_SETTLE_OVERRUN_GRACE_MS) {

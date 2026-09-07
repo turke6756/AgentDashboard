@@ -2233,6 +2233,7 @@ export class ApiServer {
                   mode: outcome.disposition === 'confirmed'
                     ? (outcome.confirmationSource === 'status' ? 'status-poll' : outcome.confirmationSource ?? 'hook')
                     : 'unconfirmed',
+                  reason: outcome.reason === 'hook-status-stuck' ? outcome.reason : undefined,
                 };
               })
             : await this.supervisor.sendInputConfirmed(agentId, text);
@@ -2244,7 +2245,10 @@ export class ApiServer {
             ? undefined
             : sendOutcomeMessage({
                 disposition: 'delivered-unconfirmed', agentId, delivered: true,
-                reason: 'confirmation-timeout', completedAt: Date.now(),
+                reason: result.reason === 'hook-status-stuck'
+                  ? 'hook-status-stuck'
+                  : 'confirmation-timeout',
+                completedAt: Date.now(),
               }).text;
           return { ok: true, agentId, submit: true, ...result, message, transientSubscription };
         } catch (err) {

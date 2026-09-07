@@ -1040,7 +1040,7 @@ export interface SendOutcome {
   delivered: boolean;
   /** Which independent evidence source proved the turn started (confirmed only). */
   confirmationSource?: 'hook' | 'session-log' | 'status';
-  reason?: 'delivery-failed' | 'confirmation-timeout' | 'interactive-prompt';
+  reason?: 'delivery-failed' | 'confirmation-timeout' | 'interactive-prompt' | 'hook-status-stuck';
   /** Populated when the WP4 PTY classifier recognized a blocking prompt on a
    *  `delivered-unconfirmed` outcome or a provider-specific pre-delivery guard,
    *  so surfaces can name what the terminal is waiting on. */

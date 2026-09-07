@@ -1610,8 +1610,10 @@ export const PROPOSAL_TO_PLAN_ACTIVITY_DELIBERATE_MD_V2_HASH = '2ac7717242e48b36
 // WP-L7 — frozen pristine lane guidance bodies immediately before Library-use guidance.
 export const SUPERVISOR_AGENT_MD_V34_HASH = 'ba2c8aa88e5334fdbc0628c02bac2901b7c371501f0d2cfe9b9c6a2847e73807';
 export const SUPERVISOR_AGENT_MD_V35_HASH = '20a15c81c600bae3ed91ec1f3166cf39c5b76600f9a46480b2f314c37b706755';
+export const SUPERVISOR_AGENT_MD_V36_HASH = '941ed1bda38c75595687368d0954210a1c36eeff81a4e9c10f011d9d250ea2d4';
 export const SUPERVISOR_AGENT_MD_CHILD_V3_HASH = 'aa56a9dfa38e45501fbb516c64d3b6a068a08008bd5db604fd8bff782c3af4d4';
 export const SUPERVISOR_AGENT_MD_CHILD_V4_HASH = 'e6696f05cecbc3ae0e803253ddcefc27fe415790fb644137f777678020ff939f';
+export const SUPERVISOR_AGENT_MD_CHILD_V5_HASH = 'df9e22b774c7f6d14f5b4582d04af63f0aed2231a829467247a8ed8edfb4085a';
 export const WORKER_CLAUDE_MD_V18_HASH = '0e26b68da747e63894c4f92cb8feafb11bb480d50f0a34ce926c3e591356211d';
 export const WORKER_CODEX_AGENTS_MD_V11_HASH = '0fa1ae18014d32641dd5284314fbfe1395f767b3da4c1e9ecadc0db7ea518677';
 export const RESEARCHER_AGENT_MD_V9_HASH = '8bf1bcfe960114c7a8c70b416a822d9f5228069eea18d54985caf2cffb42e4db';
@@ -4007,19 +4009,8 @@ export class AgentSupervisor extends EventEmitter {
     // WP2 (hook-absence-resilience) — the supervisor lane (and any non-legacy
     // claude lane) now arms the canary too. Without this the supervisor stayed
     // hookStatus:'unknown' and threw false 'Send failed' (VM report §6).
-    const isSupervisorLane = roleLaneOf(agent) === 'supervisor';
     if (codexHookDegraded) {
       updateAgentHookStatus(agent.id, 'degraded');
-    } else if (agent.provider !== 'agy' && (
-      isWorkerLane || isResearcher || wantsCodexHooks || isSupervisorLane
-      || (agent.provider === 'claude' && roleLaneOf(agent) !== 'legacy')
-    )) {
-      // Arm the launch-time hook canary: if no hook event reaches the dashboard
-      // within HOOK_CANARY_WINDOW_MS and hook_status is still 'unknown', the
-      // StatusMonitor flips it to 'broken'. See StatusMonitor.checkHookCanary.
-      // The researcher is its own lane but carries the same status hooks, so it
-      // gets the same scaffold-broken health signal.
-      this.monitor.recordHookCanary(agent.id);
     }
 
     // Assign a session ID for providers whose fresh-launch CLI accepts one.
@@ -4218,9 +4209,9 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/supervisor/CLAUDE.md`]:                                              {
       content: SUPERVISOR_AGENT_MD,
-      version: 36, // v36 makes plans optional and removes nonexistent plan-tool guidance.
+      version: 37, // v37 clarifies stuck-status handshakes without encouraging a double submit.
       previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH, 27: SUPERVISOR_AGENT_MD_V27_HASH,
-        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH },
+        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -4306,9 +4297,9 @@ export class AgentSupervisor extends EventEmitter {
     },
     [`.lares/supervisor/AGENTS.md`]: {
       content: SUPERVISOR_AGENT_MD,
-      version: 36,
+      version: 37,
       previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH, 27: SUPERVISOR_AGENT_MD_V27_HASH,
-        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH },
+        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH },
     },
     [`.lares/supervisor/.agents/skills/remember/SKILL.md`]: { content: REMEMBER_SKILL, version: 4, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH } }, // v4: parser-valid concrete date in the expires example
   };
@@ -4325,8 +4316,8 @@ export class AgentSupervisor extends EventEmitter {
     ),
     [`.lares/supervisor/claude/CLAUDE.md`]: {
       content: SUPERVISOR_AGENT_MD_CHILD,
-      version: 5,
-      previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH, 4: SUPERVISOR_AGENT_MD_CHILD_V4_HASH },
+      version: 6,
+      previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH, 4: SUPERVISOR_AGENT_MD_CHILD_V4_HASH, 5: SUPERVISOR_AGENT_MD_CHILD_V5_HASH },
     },
     [`.lares/supervisor/claude/.claude/settings.json`]: {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
@@ -4348,8 +4339,8 @@ export class AgentSupervisor extends EventEmitter {
     ),
     [`.lares/supervisor/codex/AGENTS.md`]: {
       content: SUPERVISOR_AGENT_MD_CHILD,
-      version: 5,
-      previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH, 4: SUPERVISOR_AGENT_MD_CHILD_V4_HASH },
+      version: 6,
+      previousHashes: { 1: sha256Hex(SUPERVISOR_AGENT_MD_CHILD_V1), 2: SUPERVISOR_AGENT_MD_CHILD_V2_HASH, 3: SUPERVISOR_AGENT_MD_CHILD_V3_HASH, 4: SUPERVISOR_AGENT_MD_CHILD_V4_HASH, 5: SUPERVISOR_AGENT_MD_CHILD_V5_HASH },
     },
     // Native-Windows Codex loads hooks only from the trusted launch cwd. Keep
     // this byte-for-byte derived from the worker carrier so Stop/submit/start
@@ -5670,6 +5661,28 @@ export class AgentSupervisor extends EventEmitter {
     return tracker;
   }
 
+  /** Arm lifecycle state at the last synchronous point before runner launch.
+   *  Hooks may fire as soon as the child exists, so no unconditional launching
+   *  write or launch/canary stamp is allowed after runner.launch. */
+  private armRunnerLaunch(agent: Agent): void {
+    const latest = getAgent(agent.id) ?? agent;
+    const transition = applyStatusTransition(agent.id, 'launching');
+    this.monitor.recordLaunch(agent.id);
+    if (
+      latest.provider !== 'agy'
+      && latest.hookStatus !== 'degraded'
+      && (roleLaneOf(latest) !== 'legacy' || isCodexHookPersona(latest))
+    ) {
+      this.monitor.recordHookCanary(agent.id);
+    }
+    this.emit('statusChanged', {
+      agentId: agent.id,
+      status: 'launching',
+      fromStatus: transition?.prior,
+      source: 'launch',
+    } satisfies StatusChangedEvent);
+  }
+
   private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
     // WP0.5 — resolve EXACTLY ONE per-agent capability token at method entry,
     // before ANY environment or command construction. `mint()` rotates, so the
@@ -6220,16 +6233,9 @@ export class AgentSupervisor extends EventEmitter {
       extraEnv.CODEX_HOME ?? process.env.CODEX_HOME,
       extraEnv.GROK_HOME ?? process.env.GROK_HOME,
     ]);
+    this.armRunnerLaunch(agent);
     runner.launch(agent.workingDirectory, launchCmd, args, agent.logPath || '', useDirectSpawn, extraEnvArg);
     updateAgentPid(agent.id, runner.pid);
-    // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle
-    // timer. `StatusMonitor.poll()` will promote `'launching' → 'idle'` once
-    // `LAUNCH_SETTLE_TIMEOUT_MS[provider]` has elapsed, or a Stop hook
-    // arriving inside the window can short-circuit the wallclock via
-    // `forceIdleFromHook → promoteFromLaunching('stop-hook')`.
-    const tWinLaunch = applyStatusTransition(agent.id, 'launching');
-    this.monitor.recordLaunch(agent.id);
-    this.emit('statusChanged', { agentId: agent.id, status: 'launching', fromStatus: tWinLaunch?.prior, source: 'launch' } satisfies StatusChangedEvent);
 
     if (codexSnapshot) {
       this.captureCodexSessionId(
@@ -7230,13 +7236,8 @@ export class AgentSupervisor extends EventEmitter {
         process.env.GROK_HOME,
       ]);
     }
+    this.armRunnerLaunch(agent);
     await runner.launch(wslWorkDir, command, nativeLogPath, diagnostics);
-    // BUG-23 — write `'launching'` (was `'working'`) and stamp the settle
-    // timer. See the Windows path above for the lifecycle description; the
-    // promotion mechanism is provider-neutral.
-    const tWslLaunch = applyStatusTransition(agent.id, 'launching');
-    this.monitor.recordLaunch(agent.id);
-    this.emit('statusChanged', { agentId: agent.id, status: 'launching', fromStatus: tWslLaunch?.prior, source: 'launch' } satisfies StatusChangedEvent);
 
     if (codexSnapshot) {
       this.captureCodexSessionId(
@@ -9737,10 +9738,13 @@ export class AgentSupervisor extends EventEmitter {
 
     // Delivered, but no start evidence before the deadline. Run the WP4 PTY
     // classifier so the (amber) copy can name a blocking prompt when one is up.
-    const prompt = this.classifyPtyPrompt(agentId);
+    const hookStatusStuck = this.isStartHookStatusStuck(agentId, baselineStartHook);
+    const prompt = hookStatusStuck ? null : this.classifyPtyPrompt(agentId);
     return this.recordSendOutcome({
       disposition: 'delivered-unconfirmed', agentId, delivered: true,
-      reason: prompt ? 'interactive-prompt' : 'confirmation-timeout',
+      reason: hookStatusStuck
+        ? 'hook-status-stuck'
+        : prompt ? 'interactive-prompt' : 'confirmation-timeout',
       prompt: prompt ? { kind: prompt.kind, label: prompt.label, excerpt: prompt.excerpt } : undefined,
       completedAt: Date.now(),
     });
@@ -9781,7 +9785,11 @@ export class AgentSupervisor extends EventEmitter {
     if (agent && this.usesSubmitConfirmation(agent)) {
       // Hook path + submit-only re-press across the confirm windows.
       const confirmed = await this.monitor.confirmSubmission(agentId, baselineStartHook);
-      if (confirmed) return 'hook';
+      if (confirmed) {
+        // Re-read the full invariant: a timestamp alone is not confirmation if
+        // the hook failed to drive the row through working.
+        return this.readFallbackConfirmation(agentId, baselineStartHook, evidenceBaseline);
+      }
       // Re-press exhausted — session-log/status evidence may have accrued during
       // the wait. Never throw: an unconfirmed send is delivered-unconfirmed.
       return this.readFallbackConfirmation(agentId, baselineStartHook, evidenceBaseline);
@@ -9798,10 +9806,22 @@ export class AgentSupervisor extends EventEmitter {
     baselineStartHook: number,
     evidenceBaseline: import('./turn-evidence').TurnEvidenceBaseline,
   ): SendOutcome['confirmationSource'] | null {
+    if (this.isStartHookStatusStuck(agentId, baselineStartHook)) return null;
     if ((this.monitor.getLastStartHookEventAt(agentId) ?? 0) > baselineStartHook) return 'hook';
     if (this.turnEvidence.hasStartSince(agentId, evidenceBaseline)) return 'session-log';
     if (getAgent(agentId)?.status === 'working') return 'status';
     return null;
+  }
+
+  /** A start-hook timestamp is not sufficient proof when status never made it
+   *  through working. `lastHookWorkingAt` preserves that proof across a fast
+   *  working -> idle turn completion. */
+  private isStartHookStatusStuck(agentId: string, baselineStartHook: number): boolean {
+    const startHookAt = this.monitor.getLastStartHookEventAt(agentId) ?? 0;
+    if (startHookAt <= baselineStartHook) return false;
+    const status = getAgent(agentId)?.status;
+    if (status === 'launching') return true;
+    return status === 'idle' && (this.monitor.getLastHookWorkingAt(agentId) ?? 0) < startHookAt;
   }
 
   /** WP5 — bounded (absolute-deadline) poll of the fallback evidence for lanes
@@ -9866,7 +9886,12 @@ export class AgentSupervisor extends EventEmitter {
   async sendInputConfirmed(
     agentId: string,
     text: string,
-  ): Promise<{ delivered: boolean; confirmed: boolean; mode: 'hook' | 'status-poll' | 'unconfirmed' }> {
+  ): Promise<{
+    delivered: boolean;
+    confirmed: boolean;
+    mode: 'hook' | 'status-poll' | 'unconfirmed';
+    reason?: 'hook-status-stuck';
+  }> {
     const baselineStartHookAt = this.monitor.getLastStartHookEventAt(agentId) ?? 0;
     const delivered = await this.sendInput(agentId, text);
     if (!delivered) {
@@ -9882,6 +9907,14 @@ export class AgentSupervisor extends EventEmitter {
     for (;;) {
       const startHookAt = this.monitor.getLastStartHookEventAt(agentId) ?? 0;
       if (startHookAt > baselineStartHookAt) {
+        if (this.isStartHookStatusStuck(agentId, baselineStartHookAt)) {
+          return {
+            delivered: true,
+            confirmed: false,
+            mode: 'unconfirmed',
+            reason: 'hook-status-stuck',
+          };
+        }
         return { delivered: true, confirmed: true, mode: 'hook' };
       }
       const agent = getAgent(agentId);

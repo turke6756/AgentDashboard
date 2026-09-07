@@ -254,8 +254,8 @@ export const START_HOOK_SILENCE_WARN_MS = 3_000;
 // Stop hook) to reach the dashboard within this window. If none has arrived by
 // then AND hook_status is still 'unknown', the scaffold is broken — set
 // hook_status='broken' immediately rather than wait for the 15-min silence
-// watchdog. This does NOT change `status` and does NOT re-enable PTY inference;
-// broken is surfaced via hook_status only. 8 s comfortably covers a cold codex
+// watchdog. On an actually launched row, expiry may also settle `launching` to
+// `idle`; it does NOT re-enable PTY inference. 8 s comfortably covers a cold codex
 // boot's first SessionStart on a healthy scaffold (the POST round-trips in well
 // under 1 s once the hook fires).
 export const HOOK_CANARY_WINDOW_MS = 8_000;
@@ -1064,7 +1064,7 @@ ${LIBRARY_GUIDANCE_SUPERVISOR_RESEARCHER}
 
 ${LIBRARY_GUIDANCE_CITATION}
 `;
-export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V35
+export const SUPERVISOR_AGENT_MD_V36 = SUPERVISOR_AGENT_MD_V35
   .replace(
     `## Worker commit policy
 
@@ -1100,6 +1100,15 @@ go-ahead.`,
     `**Fallback:** The HTTP API requires a bearer token that agents do not hold, so it
 is not a usable fallback. If MCP tools are missing, report that to the human.`,
   );
+export const SUPERVISOR_AGENT_MD = SUPERVISOR_AGENT_MD_V36
+  .replace(
+    `- **HANDSHAKE OK** — the worker is genuinely working; you'll get an idle event when it finishes. Safe to end your turn.`,
+    `- **HANDSHAKE OK** — turn start confirmed; you'll get an idle event when it finishes. Safe to end your turn.`,
+  )
+  .replace(
+    `- **HANDSHAKE UNCONFIRMED** — delivered, but no start proof (some providers lack one). Verify with \`read_agent_log\` before relying on it.`,
+    `- **HANDSHAKE UNCONFIRMED** — delivered, but no start proof (some providers lack one), or the start hook fired while status stayed stuck before reaching working. In the stuck-status case, do not re-press Enter because the turn was submitted; inspect the agent status/log instead.`,
+  );
 export const SUPERVISOR_AGENT_MD_CHILD_V1 = SUPERVISOR_AGENT_MD_V32
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD_V2 = SUPERVISOR_AGENT_MD_V33
@@ -1107,6 +1116,8 @@ export const SUPERVISOR_AGENT_MD_CHILD_V2 = SUPERVISOR_AGENT_MD_V33
 export const SUPERVISOR_AGENT_MD_CHILD_V3 = SUPERVISOR_AGENT_MD_V34
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD_V4 = SUPERVISOR_AGENT_MD_V35
+  .split('./memory/').join('../memory/');
+export const SUPERVISOR_AGENT_MD_CHILD_V5 = SUPERVISOR_AGENT_MD_V36
   .split('./memory/').join('../memory/');
 export const SUPERVISOR_AGENT_MD_CHILD = SUPERVISOR_AGENT_MD
   .split('./memory/').join('../memory/');

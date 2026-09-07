@@ -1330,17 +1330,77 @@ test('forceWorking(source) string overload: no-op on terminal status', () => {
   }
 });
 
-test('forceWorking(source) string overload: no-op on transitional status (launching)', () => {
+test('forceWorking(source) string overload: start hook promotes launching to working and cancels settle', async () => {
   const fakes = makeStatusMonitorFakes();
   const restore = patchDatabaseModule(fakes);
   try {
     const agent = makeAgent('w-claude', { status: 'launching', isSupervised: true, provider: 'claude' });
     const monitor = makeMonitor({ fakes, agent });
+    monitor.recordLaunch(agent.id);
 
     monitor.forceWorking(agent.id, 'hook-start');
 
-    assert.equal(fakes.updates.length, 0);
-    assert.equal(monitor.getLatchSnapshot(agent.id), undefined);
+    assert.equal(agent.status, 'working');
+    assert.equal(monitor.getLatchSnapshot(agent.id)?.state, 'working');
+    assert.equal(monitor.getLastHookWorkingAt(agent.id), fakes.now.value);
+
+    fakes.now.value += LAUNCH_SETTLE_TIMEOUT_MS.claude + 1;
+    await pollOnce(monitor);
+    assert.equal(agent.status, 'working', 'cancelled launch settle cannot write idle mid-turn');
+
+    monitor.forceIdle(agent.id, 'hook-stop');
+    assert.equal(agent.status, 'idle');
+    assert.deepEqual(
+      fakes.emissions.map((event) => [event.fromStatus, event.status]),
+      [['launching', 'working'], ['working', 'idle']],
+      'the Stop hook retains the observable working -> idle turn boundary',
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('launch settle repairs launching to working when a newer start hook was recorded', async () => {
+  const fakes = makeStatusMonitorFakes();
+  const restore = patchDatabaseModule(fakes);
+  const warn = captureWarn();
+  try {
+    const agent = makeAgent('launch-start-invariant', {
+      status: 'launching', isSupervised: true, provider: 'codex',
+    });
+    const monitor = makeMonitor({ fakes, agent });
+    monitor.recordLaunch(agent.id);
+    fakes.now.value += 1;
+    monitor.recordStartHookEventAt(agent.id, fakes.now.value);
+    fakes.now.value += LAUNCH_SETTLE_TIMEOUT_MS.codex;
+
+    await pollOnce(monitor);
+
+    assert.equal(agent.status, 'working', 'start-hook evidence must never settle to idle');
+    assert.equal(monitor.getLatchSnapshot(agent.id)?.state, 'working');
+    assert.equal(warn.warnings.length, 1);
+    assert.match(warn.warnings[0], /invariant violation/);
+  } finally {
+    warn.restore();
+    restore();
+  }
+});
+
+test('forceWorking overload boundaries: opts-object launching and hook-source restarting remain refused', () => {
+  const fakes = makeStatusMonitorFakes();
+  const restore = patchDatabaseModule(fakes);
+  try {
+    const launching = makeAgent('launching-chat', { status: 'launching', provider: 'claude' });
+    const launchingMonitor = makeMonitor({ fakes, agent: launching });
+    launchingMonitor.forceWorking(launching.id, { source: 'chat-stream', ttlClass: 'model-pending' });
+    assert.equal(launching.status, 'launching');
+    assert.equal(launchingMonitor.getLatchSnapshot(launching.id), undefined);
+
+    const restarting = makeAgent('restarting-hook', { status: 'restarting', provider: 'claude' });
+    const restartingMonitor = makeMonitor({ fakes, agent: restarting });
+    restartingMonitor.forceWorking(restarting.id, 'hook-start');
+    assert.equal(restarting.status, 'restarting');
+    assert.equal(restartingMonitor.getLatchSnapshot(restarting.id), undefined);
   } finally {
     restore();
   }

@@ -211,6 +211,7 @@ function setup(opts: {
   };
   const monitor = (supervisor as unknown as { monitor: {
     forceWorking: (id: string, opts: { source: string }) => void;
+    recordStartHookEventAt: (id: string, ts: number) => void;
     confirmSubmission: (id: string, prior: number) => Promise<boolean>;
   } }).monitor;
   monitor.forceWorking = (_id: string, fwOpts: { source: string }) => {
@@ -221,7 +222,19 @@ function setup(opts: {
   // contract path engaged for a given provider/lane.
   monitor.confirmSubmission = async (_id: string, _prior: number) => {
     calls.push('confirmSubmission');
-    return opts.confirmResult !== false;
+    const confirmed = opts.confirmResult !== false;
+    // A successful hook confirmation in production also records proof that
+    // the row reached working. Keep the row idle here to model a fast turn
+    // that already completed before the handshake response was assembled.
+    if (confirmed) {
+      const hookAt = Date.now();
+      monitor.recordStartHookEventAt(opts.agent.id, hookAt);
+      const hookWorkingAt = (monitor as unknown as {
+        lastHookWorkingAt: Map<string, number>;
+      }).lastHookWorkingAt;
+      hookWorkingAt.set(opts.agent.id, hookAt);
+    }
+    return confirmed;
   };
   // WP5 — the non-contract (broken/gemini) lane's fallback-evidence poll waits on
   // the real wall-clock in production. Stub it to resolve immediately (no
@@ -275,6 +288,43 @@ test('Case 1: launchWindowsAgent fires neither launch-pending nor user-input-sub
     );
   } finally {
     h.cleanup();
+  }
+});
+
+test('Codex launch queued at the production gate arms no canary or launch settle before runner.launch', async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-codex-gate-'));
+  const agent = makeAgent('codex-gate-queued', {
+    provider: 'codex',
+    status: 'launching',
+    hookStatus: 'unknown',
+    isWorker: true,
+    command: 'codex --dangerously-bypass-approvals-and-sandbox',
+    workingDirectory: scratch,
+  });
+  const h = setup({ agent, injectRunner: 'none' });
+  let releaseAcquire!: (value: { waitedMs: number; queuedBehind: number; release: () => void }) => void;
+  const acquire = new Promise<{ waitedMs: number; queuedBehind: number; release: () => void }>((resolve) => {
+    releaseAcquire = resolve;
+  });
+  (h.supervisor as unknown as { codexLaunchGate: { acquire: () => typeof acquire } }).codexLaunchGate = {
+    acquire: () => acquire,
+  };
+  try {
+    const launch = (h.supervisor as unknown as { launchWindowsAgent: (a: Agent) => Promise<void> })
+      .launchWindowsAgent(agent);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(monitorOf(h).isHookCanaryArmed(agent.id), false,
+      'queue wait begins before the launch canary is armed');
+    assert.equal(agent.status, 'launching', 'queue wait cannot settle or rewrite the row');
+
+    releaseAcquire({ waitedMs: 1, queuedBehind: 1, release: () => {} });
+    await launch;
+    assert.equal(monitorOf(h).isHookCanaryArmed(agent.id), true,
+      'the canary arms only when the production path reaches runner.launch');
+  } finally {
+    h.cleanup();
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 });
 

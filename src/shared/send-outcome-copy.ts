@@ -59,6 +59,13 @@ export function sendOutcomeMessage(o: SendOutcome): SendOutcomeCopy {
     };
   }
 
+  if (o.reason === 'hook-status-stuck') {
+    return {
+      tone: 'warn',
+      text: `The start hook fired, but the agent status was stuck before reaching working. ${TERMINAL_CHECK_SENTENCE}`,
+    };
+  }
+
   const lead =
     o.disposition === 'failed'
       ? 'The message could not be delivered — no runner accepted it.'

@@ -439,6 +439,27 @@ test('25. HANDSHAKE-OK text mentions the one-turn subscription only when registe
 // identity env, so the helper strips ALL of it first, sets exactly the fixture
 // set, reloads the proxy, and restores the original env afterwards.
 
+test('26. fired hook with stuck status is UNCONFIRMED and never recommends re-pressing Enter', async () => {
+  const proxy = loadProxy('comms');
+  const api = capturingApi({
+    delivered: true,
+    confirmed: false,
+    mode: 'unconfirmed',
+    reason: 'hook-status-stuck',
+  });
+  const result = await proxy.handleToolCall(
+    'send_message_to_agent',
+    { agent_id: 't-stuck', message: 'hi' },
+    api,
+  );
+  const message = result.content[0].text;
+  assert.match(message, /^HANDSHAKE UNCONFIRMED/);
+  assert.match(message, /start hook fired/i);
+  assert.match(message, /status was stuck/i);
+  assert.match(message, /do not re-press Enter/i);
+  assert.ok(!/HANDSHAKE FAILED/.test(message));
+});
+
 function withCallerEnv(vars, fn) {
   const saved = {};
   for (const key of Object.keys(process.env)) {

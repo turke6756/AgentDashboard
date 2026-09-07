@@ -26,6 +26,16 @@ test('delivered-unconfirmed includes the verbatim terminal-check sentence (amber
   assert.ok(!/send failed/i.test(copy.text), 'delivered-unconfirmed must never read as "Send failed"');
 });
 
+test('a fired start hook with stuck status is unconfirmed and names the invariant', () => {
+  const copy = sendOutcomeMessage(outcome({
+    disposition: 'delivered-unconfirmed', reason: 'hook-status-stuck',
+  }));
+  assert.equal(copy.tone, 'warn');
+  assert.match(copy.text, /start hook fired/i);
+  assert.match(copy.text, /status was stuck/i);
+  assert.ok(copy.text.includes(TERMINAL_CHECK_SENTENCE));
+});
+
 test('failed includes the SAME verbatim terminal-check sentence (red)', () => {
   const copy = sendOutcomeMessage(outcome({ disposition: 'failed', delivered: false, reason: 'delivery-failed' }));
   assert.equal(copy.tone, 'error');

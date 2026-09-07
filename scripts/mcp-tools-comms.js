@@ -79,6 +79,16 @@ async function handleCommsToolCall(name, args, apiRequest) {
             }],
           };
         }
+        if (r.reason === 'hook-status-stuck') {
+          return {
+            content: [{
+              type: 'text',
+              text: `HANDSHAKE UNCONFIRMED — message delivered to agent ${args.agent_id}; `
+                + `the start hook fired, but status was stuck before reaching working. `
+                + `Do not re-press Enter because the turn was submitted; inspect the agent status/log instead.`,
+            }],
+          };
+        }
         return {
           content: [{
             type: 'text',

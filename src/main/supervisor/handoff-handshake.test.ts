@@ -274,19 +274,34 @@ function makeConfirmSeam(opts: {
   delivered: boolean;
   /** Sequential return values for getLastStartHookEventAt (baseline first). */
   startHookAts: Array<number | undefined>;
+  hookWorkingAt?: number;
+  rowStatus?: Agent['status'];
 }): { sup: AgentSupervisor; sendInputCalls: number[] } {
   const sup = Object.create(AgentSupervisor.prototype) as AgentSupervisor;
   let hookCall = 0;
-  (sup as unknown as { monitor: { getLastStartHookEventAt: (id: string) => number | undefined } }).monitor = {
+  (sup as unknown as { monitor: {
+    getLastStartHookEventAt: (id: string) => number | undefined;
+    getLastHookWorkingAt: (id: string) => number | undefined;
+  } }).monitor = {
     getLastStartHookEventAt: () => {
       const v = opts.startHookAts[Math.min(hookCall, opts.startHookAts.length - 1)];
       hookCall++;
       return v;
     },
+    getLastHookWorkingAt: () => opts.hookWorkingAt,
   };
   const sendInputCalls: number[] = [];
   (sup as unknown as { sendInput: (id: string, text: string) => Promise<boolean> }).sendInput =
     async () => { sendInputCalls.push(1); return opts.delivered; };
+  (sup as unknown as {
+    isStartHookStatusStuck: (id: string, baseline: number) => boolean;
+  }).isStartHookStatusStuck = (_id, baseline) => {
+    const hookAt = opts.startHookAts[opts.startHookAts.length - 1] ?? 0;
+    if (hookAt <= baseline) return false;
+    const status = opts.rowStatus ?? 'working';
+    return status === 'launching'
+      || (status === 'idle' && (opts.hookWorkingAt ?? 0) < hookAt);
+  };
   return { sup, sendInputCalls };
 }
 
@@ -310,6 +325,35 @@ test('sendInputConfirmed resolves mode=hook when delivered and the start hook ad
   const { sup } = makeConfirmSeam({ delivered: true, startHookAts: [0, 10] });
   const result = await sup.sendInputConfirmed('w-ok-1', 'hello');
   assert.deepEqual(result, { delivered: true, confirmed: true, mode: 'hook' });
+});
+
+test('sendInputConfirmed returns hook-status-stuck UNCONFIRMED when hook fires but row stays launching', async () => {
+  const { sup } = makeConfirmSeam({
+    delivered: true, startHookAts: [0, 10], rowStatus: 'launching',
+  });
+  const result = await sup.sendInputConfirmed('w-stuck-launching', 'hello');
+  assert.deepEqual(result, {
+    delivered: true, confirmed: false, mode: 'unconfirmed', reason: 'hook-status-stuck',
+  });
+});
+
+test('sendInputConfirmed accepts fast working-to-idle completion when hook working proof exists', async () => {
+  const { sup } = makeConfirmSeam({
+    delivered: true, startHookAts: [0, 10], hookWorkingAt: 10, rowStatus: 'idle',
+  });
+  assert.deepEqual(
+    await sup.sendInputConfirmed('w-fast-idle', 'hello'),
+    { delivered: true, confirmed: true, mode: 'hook' },
+  );
+});
+
+test('sendInputConfirmed returns hook-status-stuck when row is idle without hook working proof', async () => {
+  const { sup } = makeConfirmSeam({
+    delivered: true, startHookAts: [0, 10], rowStatus: 'idle',
+  });
+  assert.deepEqual(await sup.sendInputConfirmed('w-idle-no-working', 'hello'), {
+    delivered: true, confirmed: false, mode: 'unconfirmed', reason: 'hook-status-stuck',
+  });
 });
 
 // WP1 evidence matrix (CHARACTERIZATION): with the hooks DEAD (the start-hook
