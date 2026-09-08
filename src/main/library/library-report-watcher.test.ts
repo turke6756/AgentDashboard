@@ -216,7 +216,7 @@ test('every changed tuple restarts settling and a partial write ingests once aft
 });
 
 test('unlink plus add is reconciled once from the post-rename end state', async () => {
-  let rows = [{ source_rel_path: '.lares/library/inbox/old.md' } as LibraryDocumentRow];
+  let rows = [{ source_rel_path: '.lares/library/inbox/old.md', attempt_count: 0 } as LibraryDocumentRow];
   let renamed = false;
   const deleted: string[][] = [];
   const h = harness({
@@ -353,8 +353,8 @@ test('a persistently failing tuple attempts once and releases Rescan or IPC wait
 });
 
 test('deletion is root-health-aware and never removes user-dropped rows', async () => {
-  const watched = { source_rel_path: '.lares/library/inbox/gone.md' } as LibraryDocumentRow;
-  const user = { source_rel_path: '.lares/library/sources/manual.md' } as LibraryDocumentRow;
+  const watched = { source_rel_path: '.lares/library/inbox/gone.md', attempt_count: 0 } as LibraryDocumentRow;
+  const user = { source_rel_path: '.lares/library/sources/manual.md', attempt_count: 0 } as LibraryDocumentRow;
   const deleted: string[][] = [];
   let current = inventory([], { inbox: 'incomplete' });
   const h = harness({ inventory: async () => current, listDocuments: () => [watched, user], deleteDocuments: (_store, paths) => { deleted.push([...paths]); return paths.length; } });

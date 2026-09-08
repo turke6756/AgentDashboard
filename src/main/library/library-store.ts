@@ -17,7 +17,7 @@ import { CHUNKER_VERSION, TOKENIZER_VERSION, type LibraryChunk } from './library
 import { formatLibraryCitation } from './library-citation';
 import { decodeLibraryEmbedding, embedLibraryText, LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 
-export const LIBRARY_SCHEMA_VERSION = 1;
+export const LIBRARY_SCHEMA_VERSION = 2;
 export const LIBRARY_CHUNKER_VERSION = CHUNKER_VERSION;
 export const LIBRARY_TOKENIZER_VERSION = TOKENIZER_VERSION;
 
@@ -50,6 +50,7 @@ export interface LibraryDocumentRow {
   index_generation: number;
   chunker_version: string;
   tokenizer_version: string;
+  attempt_count: number;
 }
 
 export interface LibraryChunkRow {
@@ -238,6 +239,13 @@ const MIGRATORS: ReadonlyArray<(database: Database.Database) => void> = [
       VALUES (1, 1, '${LIBRARY_CHUNKER_VERSION}', '${LIBRARY_TOKENIZER_VERSION}');
     `);
   },
+  function migrateToSchemaVersion2(database) {
+    database.exec(`
+      ALTER TABLE library_documents
+      ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+      UPDATE library_meta SET schema_version = 2 WHERE singleton = 1;
+    `);
+  },
 ];
 
 function tableExists(database: Database.Database, tableName: string): boolean {
@@ -331,16 +339,18 @@ export function deleteLibraryDocumentsByRelPaths(store: LibraryStore, relPaths: 
   ).run(...paths).changes)();
 }
 
-export function upsertLibraryDocument(store: LibraryStore, row: LibraryDocumentRow): void {
+type LibraryDocumentWrite = Omit<LibraryDocumentRow, 'attempt_count'> & { attempt_count?: number };
+
+export function upsertLibraryDocument(store: LibraryStore, row: LibraryDocumentWrite): void {
   store.database.prepare(`
     INSERT INTO library_documents (
       id, type, title, created, topics_json, trust, source_rel_path, reader_rel_path,
       source_hash, size, page_count, provider, agent_id, summary, status, error_reason,
-      index_generation, chunker_version, tokenizer_version
+      index_generation, chunker_version, tokenizer_version, attempt_count
     ) VALUES (
       @id, @type, @title, @created, @topics_json, @trust, @source_rel_path, @reader_rel_path,
       @source_hash, @size, @page_count, @provider, @agent_id, @summary, @status, @error_reason,
-      @index_generation, @chunker_version, @tokenizer_version
+      @index_generation, @chunker_version, @tokenizer_version, @attempt_count
     ) ON CONFLICT(id) DO UPDATE SET
       type=excluded.type, title=excluded.title, trust=excluded.trust,
       source_rel_path=excluded.source_rel_path, reader_rel_path=excluded.reader_rel_path,
@@ -348,7 +358,33 @@ export function upsertLibraryDocument(store: LibraryStore, row: LibraryDocumentR
       status=excluded.status, error_reason=excluded.error_reason,
       index_generation=excluded.index_generation, chunker_version=excluded.chunker_version,
       tokenizer_version=excluded.tokenizer_version
-  `).run(row);
+  `).run({ ...row, attempt_count: row.attempt_count ?? 0 });
+}
+
+export function incrementLibraryDocumentAttempt(store: LibraryStore, id: string): number {
+  return store.database.transaction(() => {
+    const changed = store.database.prepare(
+      `UPDATE library_documents SET attempt_count = attempt_count + 1 WHERE id = ?`,
+    ).run(id).changes;
+    if (changed !== 1) throw new Error(`Library document not found for attempt increment: ${id}`);
+    return (store.database.prepare(
+      `SELECT attempt_count FROM library_documents WHERE id = ?`,
+    ).get(id) as { attempt_count: number }).attempt_count;
+  })();
+}
+
+export function clearLibraryDocumentAttemptsForErrorPaths(
+  store: LibraryStore,
+  sourceRelPaths: readonly string[],
+): number {
+  const paths = [...new Set(sourceRelPaths)];
+  if (paths.length === 0) return 0;
+  const placeholders = paths.map(() => '?').join(',');
+  return store.database.transaction(() => store.database.prepare(`
+    UPDATE library_documents
+    SET attempt_count = 0
+    WHERE status = 'error' AND source_rel_path IN (${placeholders})
+  `).run(...paths).changes)();
 }
 
 export function setLibraryDocumentStatus(

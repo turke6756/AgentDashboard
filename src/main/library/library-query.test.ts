@@ -8,7 +8,7 @@ function document(id: string, trust: LibraryDocumentRow['trust'] = 'cleared'): L
   return { id, type: 'md', title: `${id} title`, created: '2026-09-06', topics_json: '["query"]', trust,
     source_rel_path: `.lares/library/cleared/${id}.md`, reader_rel_path: `.lares/library/cleared/${id}.md`,
     source_hash: `${id}-hash`, size: 100, page_count: null, provider: null, agent_id: null, summary: null,
-    status: 'ready', error_reason: null, index_generation: 0, chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1' };
+    status: 'ready', error_reason: null, index_generation: 0, chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1', attempt_count: 0 };
 }
 
 function addText(store: LibraryStore, doc: LibraryDocumentRow, id: string, ordinal: number, content: string, start: number): void {

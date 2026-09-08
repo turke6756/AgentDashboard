@@ -144,6 +144,7 @@ test('all explicit triggers use the visible state machine', async () => {
       });
       assert.deepEqual(events.map((event) => event.status), ['queued', 'extracting', 'chunking', 'embedding', 'ready']);
       assert.ok(events.every((event) => event.source_rel_path === 'docs/b.md'));
+      assert.ok(events.every((event) => event.attempt_count === 1));
     } finally { closeLibraryStore(store); }
   }
 });
@@ -161,32 +162,65 @@ test('production IPC entry registers ingest, rescan, list, and progress-capable 
   }
 });
 
-test('report-arrival leaves an unchanged error row alone; rescan remains the retry path', async () => {
+test('automatic ingest stops at three persisted attempts without a fourth embed call', async () => {
   const root = workspace();
   const source = path.join(root, '.lares', 'library', 'inbox', 'flaky.md');
   fs.mkdirSync(path.dirname(source), { recursive: true });
   fs.writeFileSync(source, '# Flaky\n\nContent that fails to embed once. '.repeat(10));
   const store = openLibraryStore(root);
-  let fail = true;
   let embedCalls = 0;
-  const embedTexts = async (texts: string[]) => {
+  const embedTexts = async (_texts: string[]) => {
     embedCalls += 1;
-    if (fail) throw new Error('embedder down');
-    return fakeEmbeddings(texts);
+    throw new Error('embedder down');
   };
   try {
     const ingest = createLibraryIngestor({ workspaceRoot: root, store, embedTexts });
-    await assert.rejects(ingest({ source_path: source, trigger: 'report-arrival' }), /embedder down/);
-    fail = false;
+    for (const expected of [1, 2, 3]) {
+      await assert.rejects(ingest({ source_path: source, trigger: 'report-arrival' }), /embedder down/);
+      const row = store.database.prepare(`SELECT attempt_count, status FROM library_documents`).get() as { attempt_count: number; status: string };
+      assert.deepEqual(row, { attempt_count: expected, status: 'error' });
+    }
     const skipped = await ingest({ source_path: source, trigger: 'report-arrival' });
     assert.equal(skipped.skipped_error, true);
     assert.equal(skipped.document.status, 'error');
-    assert.equal(embedCalls, 1, 'the passive watcher must not re-run a known-failing ingest');
-    const retried = await ingest({ source_path: source, trigger: 'rescan' });
-    assert.equal(retried.document.status, 'ready');
-    assert.equal(embedCalls, 2);
+    assert.equal(skipped.document.attempt_count, 3);
+    assert.equal(embedCalls, 3, 'a capped automatic row must not make a fourth embed call');
     fs.appendFileSync(source, ' changed');
-    fail = true;
-    await assert.rejects(ingest({ source_path: source, trigger: 'report-arrival' }), /embedder down/, 'changed content is always retried');
+    const changed = await ingest({ source_path: source, trigger: 'report-arrival' });
+    assert.equal(changed.skipped_error, true, 'source modification must not reset or bypass the automatic budget');
+    assert.equal(embedCalls, 3);
   } finally { closeLibraryStore(store); }
+});
+
+test('success, hash reuse, and restart preserve the attempt ledger', async () => {
+  const root = workspace();
+  const source = path.join(root, 'docs', 'a.txt');
+  let store = openLibraryStore(root);
+  try {
+    const first = await createLibraryIngestor({ workspaceRoot: root, store, embedTexts: fakeEmbeddings })({
+      source_path: source,
+      trigger: 'add',
+    });
+    assert.equal(first.document.attempt_count, 1);
+    const reused = await createLibraryIngestor({ workspaceRoot: root, store, embedTexts: fakeEmbeddings })({
+      source_path: source,
+      trigger: 'rescan',
+      initiator: 'automatic',
+    });
+    assert.equal(reused.reused, true);
+    assert.equal(reused.document.attempt_count, 1, 'hash reuse must not increment or reset attempts');
+    closeLibraryStore(store);
+    store = openLibraryStore(root);
+    assert.equal((store.database.prepare(`SELECT attempt_count FROM library_documents`).get() as { attempt_count: number }).attempt_count, 1,
+      'restart must preserve attempts');
+    fs.appendFileSync(source, ' changed');
+    const changed = await createLibraryIngestor({ workspaceRoot: root, store, embedTexts: fakeEmbeddings })({
+      source_path: source,
+      trigger: 'rescan',
+      initiator: 'automatic',
+    });
+    assert.equal(changed.document.attempt_count, 2, 'source modification and a ready transition must carry the prior count forward');
+  } finally {
+    if (store.database.open) closeLibraryStore(store);
+  }
 });

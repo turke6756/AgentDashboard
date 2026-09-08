@@ -31,7 +31,7 @@ function request(body: unknown): import('http').IncomingMessage {
     id: 'manual', type: 'md', title: 'Manual', created: '2026-09-06', topics_json: '[]', trust: 'cleared',
     source_rel_path: 'manual.md', reader_rel_path: 'manual.md', source_hash: 'hash', size: 12, page_count: null,
     provider: null, agent_id: null, summary: null, status: 'ready', error_reason: null, index_generation: 0,
-    chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1',
+    chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1', attempt_count: 0,
   });
   insertLibraryChunk(store, {
     id: 'manual-0', document_id: 'manual', ordinal: 0, content: 'needle', content_char_length: 6, embedding: null,
@@ -43,7 +43,7 @@ function request(body: unknown): import('http').IncomingMessage {
     id: 'secret', type: 'md', title: 'Secret', created: '2026-09-06', topics_json: '[]', trust: 'untrusted',
     source_rel_path: 'secret.md', reader_rel_path: 'secret.md', source_hash: 'secret-hash', size: 12, page_count: null,
     provider: null, agent_id: null, summary: null, status: 'ready', error_reason: null, index_generation: 0,
-    chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1',
+    chunker_version: 'library-chunker-v1', tokenizer_version: 'unicode-codepoint-v1', attempt_count: 0,
   });
   insertLibraryChunk(store, {
     id: 'secret-0', document_id: 'secret', ordinal: 0, content: 'needle secret', content_char_length: 13, embedding: null,

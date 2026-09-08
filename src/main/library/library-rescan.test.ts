@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
-import { rescanLibraryReports } from './library-rescan';
+import { rescanLibraryReports, rescanLibraryReportsDetailed } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, upsertLibraryDocument } from './library-store';
 
 test('rescan walks both report roots serially and is idempotent on an unchanged tree', async (t) => {
@@ -70,7 +70,7 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
   assert.deepEqual(third, { scanned: 2, ingested: 1, skipped: 1, failed: 0 }, 'Rescan must ingest a row whose chunker contract is stale');
 });
 
-test('rescan retries a report whose previous ingest left an error row', async (t) => {
+test('automatic rescan honors the cap while manual rescan clears and retries from attempt one', async (t) => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-rescan-error-'));
   const inbox = path.join(workspaceRoot, '.lares', 'library', 'inbox');
   fs.mkdirSync(inbox, { recursive: true });
@@ -81,14 +81,36 @@ test('rescan retries a report whose previous ingest left an error row', async (t
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
   let fail = true;
+  let embedCalls = 0;
   const embedTexts = async (texts: string[]) => {
+    embedCalls += 1;
     if (fail) throw new Error('persistent provider failure');
     return { vectors: texts.map(() => new Float32Array(LIBRARY_EMBEDDING_DIMENSIONS)), load_ms: 0, embed_ms: 0 };
   };
 
-  const first = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
-  assert.deepEqual(first, { scanned: 1, ingested: 0, skipped: 0, failed: 1 });
+  const first = await rescanLibraryReportsDetailed({ workspaceRoot, store, embedTexts, initiator: 'automatic' });
+  assert.deepEqual(first, {
+    scanned: 1, ingested: 0, skipped: 0, failed: 1,
+    retryable_failures: [{
+      document_id: first.retryable_failures[0]?.document_id,
+      source_rel_path: '.lares/library/inbox/retry.md',
+      attempt_count: 1,
+    }],
+  });
+  const second = await rescanLibraryReportsDetailed({ workspaceRoot, store, embedTexts, initiator: 'automatic' });
+  assert.equal(second.retryable_failures[0]?.attempt_count, 2);
+  const third = await rescanLibraryReportsDetailed({ workspaceRoot, store, embedTexts, initiator: 'automatic' });
+  assert.deepEqual(third.retryable_failures, []);
+  const capped = await rescanLibraryReportsDetailed({ workspaceRoot, store, embedTexts, initiator: 'automatic' });
+  assert.deepEqual(capped, { scanned: 1, ingested: 0, skipped: 1, failed: 0, retryable_failures: [] });
+  assert.equal(embedCalls, 3);
+
+  const manualFailure = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
+  assert.deepEqual(manualFailure, { scanned: 1, ingested: 0, skipped: 0, failed: 1 });
+  assert.equal((store.database.prepare(`SELECT attempt_count FROM library_documents`).get() as { attempt_count: number }).attempt_count, 1,
+    'a failed manual attempt must display as attempt one after the clear');
   fail = false;
-  const second = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
-  assert.deepEqual(second, { scanned: 1, ingested: 1, skipped: 0, failed: 0 }, 'Rescan must be the explicit recovery path for error rows');
+  const recovered = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
+  assert.deepEqual(recovered, { scanned: 1, ingested: 1, skipped: 0, failed: 0 }, 'manual Rescan must remain the explicit recovery path');
+  assert.equal((store.database.prepare(`SELECT attempt_count, status FROM library_documents`).get() as { attempt_count: number; status: string }).attempt_count, 1);
 });

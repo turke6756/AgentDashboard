@@ -31,7 +31,7 @@ interface QualityCase { id: string; passage: string; query: string }
         id: item.id, type: 'md', title: item.id, created: '2026-09-06', topics_json: '[]', trust: 'cleared',
         source_rel_path: `manuals/${item.id}.md`, reader_rel_path: `manuals/${item.id}.md`, source_hash: `${item.id}-hash`,
         size: item.passage.length, page_count: null, provider: null, agent_id: null, summary: null, status: 'ready',
-        error_reason: null, index_generation: 0, chunker_version: 'paragraph-window-v1', tokenizer_version: 'cl100k_base-js-tiktoken-1.0.21',
+        error_reason: null, index_generation: 0, chunker_version: 'paragraph-window-v1', tokenizer_version: 'cl100k_base-js-tiktoken-1.0.21', attempt_count: 0,
       };
       upsertLibraryDocument(store, document);
       insertLibraryChunk(store, {

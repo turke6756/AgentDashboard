@@ -11,6 +11,7 @@ export type LibraryHighlightKind = 'exact' | 'similar';
 
 export type LibraryIngestTrigger = 'report-arrival' | 'add' | 'drop' | 'rescan';
 export type LibraryHashReuseTrigger = Extract<LibraryIngestTrigger, 'report-arrival' | 'rescan'>;
+export type LibraryRescanInitiator = 'automatic' | 'manual';
 export type LibraryDocumentStatus =
   | 'queued'
   | 'extracting'
@@ -42,6 +43,7 @@ export interface ShelfRow {
   index_generation: number;
   chunker_version: string;
   tokenizer_version: string;
+  attempt_count?: number;
   shelf_status: ShelfStatus;
 }
 
@@ -51,6 +53,7 @@ export interface LibraryProgressEvent {
   source_rel_path?: string;
   status: LibraryDocumentStatus;
   error_reason?: string;
+  attempt_count?: number;
 }
 
 export interface LibraryShelfChangedEvent {

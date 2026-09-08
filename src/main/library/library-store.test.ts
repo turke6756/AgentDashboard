@@ -9,13 +9,16 @@ import {
   LIBRARY_SCHEMA_VERSION,
   LIBRARY_TOKENIZER_VERSION,
   LibrarySchemaTooNewError,
+  clearLibraryDocumentAttemptsForErrorPaths,
   closeLibraryStore,
   deleteLibraryDocumentsByRelPaths,
   insertLibraryChunk,
+  incrementLibraryDocumentAttempt,
   listLibraryChunks,
   listLibraryDocuments,
   listLibraryDocumentsByRelPaths,
   openLibraryStore,
+  upsertLibraryDocument,
   type LibraryStore,
 } from './library-store';
 
@@ -75,11 +78,90 @@ test('openLibraryStore creates the versioned WAL schema and reopens idempotently
       chunker_version: LIBRARY_CHUNKER_VERSION,
       tokenizer_version: LIBRARY_TOKENIZER_VERSION,
     });
+    assert.equal((store.database.prepare(
+      `SELECT dflt_value FROM pragma_table_info('library_documents') WHERE name = 'attempt_count'`,
+    ).get() as { dflt_value: string }).dflt_value, '0');
     closeLibraryStore(store);
     store = openLibraryStore(workspace);
     assert.equal((store.database.prepare(`SELECT count(*) AS count FROM library_meta`).get() as { count: number }).count, 1);
   } finally {
     if (store?.database.open) closeLibraryStore(store);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('v1 stores migrate atomically to v2 without losing documents or chunks', () => {
+  const workspace = makeWorkspace();
+  const libraryDir = path.join(workspace, '.lares', 'library');
+  fs.mkdirSync(libraryDir, { recursive: true });
+  const databasePath = path.join(libraryDir, 'library.db');
+  const raw = new Database(databasePath);
+  raw.exec(`
+    CREATE TABLE library_meta (
+      singleton INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL,
+      chunker_version TEXT NOT NULL, tokenizer_version TEXT NOT NULL
+    );
+    INSERT INTO library_meta VALUES (1, 1, '${LIBRARY_CHUNKER_VERSION}', '${LIBRARY_TOKENIZER_VERSION}');
+    CREATE TABLE library_documents (
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL, created TEXT NOT NULL,
+      topics_json TEXT NOT NULL, trust TEXT NOT NULL, source_rel_path TEXT NOT NULL,
+      reader_rel_path TEXT NOT NULL, source_hash TEXT NOT NULL, size INTEGER NOT NULL,
+      page_count INTEGER, provider TEXT, agent_id TEXT, summary TEXT, status TEXT NOT NULL,
+      error_reason TEXT, index_generation INTEGER NOT NULL, chunker_version TEXT NOT NULL,
+      tokenizer_version TEXT NOT NULL
+    );
+    INSERT INTO library_documents VALUES (
+      'old', 'md', 'Old', '2026-09-06', '[]', 'cleared', 'old.md', 'old.md',
+      'old-hash', 3, NULL, NULL, NULL, NULL, 'ready', NULL, 0,
+      '${LIBRARY_CHUNKER_VERSION}', '${LIBRARY_TOKENIZER_VERSION}'
+    );
+    CREATE TABLE library_chunks (
+      id TEXT PRIMARY KEY, document_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      content TEXT NOT NULL, content_char_length INTEGER NOT NULL, locator_json TEXT NOT NULL,
+      embedding BLOB
+    );
+    INSERT INTO library_chunks VALUES ('old-0', 'old', 0, 'old', 3, '{}', NULL);
+  `);
+  raw.close();
+
+  const store = openLibraryStore(workspace);
+  try {
+    assert.equal((store.database.prepare(`SELECT schema_version FROM library_meta`).get() as { schema_version: number }).schema_version, 2);
+    assert.deepEqual(store.database.prepare(`SELECT id, attempt_count FROM library_documents`).all(), [{ id: 'old', attempt_count: 0 }]);
+    assert.equal((store.database.prepare(`SELECT count(*) AS count FROM library_chunks`).get() as { count: number }).count, 1);
+  } finally {
+    closeLibraryStore(store);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('attempt accessors increment atomically, preserve generic upserts, and clear only named error rows', () => {
+  const workspace = makeWorkspace();
+  const store = openLibraryStore(workspace);
+  try {
+    insertDocument(store, 'error-a', 'cleared');
+    insertDocument(store, 'error-b', 'cleared');
+    insertDocument(store, 'ready', 'cleared');
+    store.database.prepare(`UPDATE library_documents SET status = 'error' WHERE id IN ('error-a', 'error-b')`).run();
+    assert.equal(incrementLibraryDocumentAttempt(store, 'error-a'), 1);
+    assert.equal(incrementLibraryDocumentAttempt(store, 'error-a'), 2);
+    assert.equal(incrementLibraryDocumentAttempt(store, 'error-b'), 1);
+    assert.equal(incrementLibraryDocumentAttempt(store, 'ready'), 1);
+    assert.throws(() => incrementLibraryDocumentAttempt(store, 'missing'), /not found/);
+
+    const before = store.database.prepare(`SELECT * FROM library_documents WHERE id = 'error-a'`).get() as any;
+    upsertLibraryDocument(store, { ...before, title: 'Updated', attempt_count: 0 });
+    assert.equal((store.database.prepare(`SELECT attempt_count FROM library_documents WHERE id = 'error-a'`).get() as { attempt_count: number }).attempt_count, 2,
+      'generic upsert must not reset the durable ledger');
+
+    assert.equal(clearLibraryDocumentAttemptsForErrorPaths(store, ['error-a.md', 'ready.md', 'missing.md']), 1);
+    assert.deepEqual(store.database.prepare(`SELECT id, attempt_count FROM library_documents ORDER BY id`).all(), [
+      { id: 'error-a', attempt_count: 0 },
+      { id: 'error-b', attempt_count: 1 },
+      { id: 'ready', attempt_count: 1 },
+    ]);
+  } finally {
+    closeLibraryStore(store);
     fs.rmSync(workspace, { recursive: true, force: true });
   }
 });

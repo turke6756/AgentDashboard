@@ -7,6 +7,7 @@ import type {
   LibraryHashReuseTrigger,
   LibraryIngestTrigger,
   LibraryProgressEvent,
+  LibraryRescanInitiator,
   LibraryTrust,
 } from '../../shared/library';
 import { CHUNKER_VERSION, TOKENIZER_VERSION } from './library-chunker';
@@ -16,6 +17,7 @@ import { extractPdf } from './pdf-extractor';
 import { embedLibraryTexts, encodeLibraryEmbedding } from './library-embedder';
 import {
   getLibraryDocument,
+  incrementLibraryDocumentAttempt,
   replaceLibraryChunks,
   setLibraryDocumentStatus,
   upsertLibraryDocument,
@@ -29,13 +31,14 @@ export interface IngestDocumentInput {
   document_id?: string;
   type?: LibraryDocumentType;
   trust?: LibraryTrust;
+  initiator?: LibraryRescanInitiator;
 }
 
 export interface LibraryIngestResult {
   document: LibraryDocumentRow;
   reused: boolean;
   chunk_ids: string[];
-  /** True when an unchanged source in `error` was left alone; Rescan is the explicit retry path. */
+  /** True when an automatic attempt found an error row whose durable budget is exhausted. */
   skipped_error?: true;
 }
 
@@ -112,8 +115,9 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
   return async function ingest(input: IngestDocumentInput): Promise<LibraryIngestResult> {
     const absolute = path.resolve(input.source_path);
     const sourceRelPath = relativePath(deps.workspaceRoot, absolute);
+    let attemptCount = 0;
     const publish = (id: string, status: LibraryDocumentStatus, error_reason?: string) => {
-      deps.publish?.({ document_id: id, source_rel_path: sourceRelPath, status, ...(error_reason ? { error_reason } : {}) });
+      deps.publish?.({ document_id: id, source_rel_path: sourceRelPath, status, attempt_count: attemptCount, ...(error_reason ? { error_reason } : {}) });
     };
     const bytes = await fs.readFile(absolute);
     const stat = await fs.stat(absolute);
@@ -123,6 +127,7 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
     const folderDefaults = reportFolderDefaults(deps.workspaceRoot, absolute);
     const currentContract = existing?.chunker_version === CHUNKER_VERSION
       && existing?.tokenizer_version === TOKENIZER_VERSION;
+    attemptCount = existing?.attempt_count ?? 0;
     if (permitsHashReuse(input.trigger) && existing?.source_hash === sourceHash
       && existing.status === 'ready' && currentContract) {
       const rows = deps.store.database.prepare(
@@ -130,11 +135,9 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       ).all(id) as Array<{ id: string }>;
       return { document: existing, reused: true, chunk_ids: rows.map((row) => row.id) };
     }
-    // A report that already failed on this exact content is not retried by the
-    // passive watcher: every app start would otherwise re-run the same failing
-    // ingest for every error row. Explicit Rescan/add/drop still retry.
-    if (input.trigger === 'report-arrival' && existing?.source_hash === sourceHash
-      && existing.status === 'error' && currentContract) {
+    const automatic = input.trigger === 'report-arrival'
+      || (input.trigger === 'rescan' && input.initiator !== 'manual');
+    if (automatic && existing?.status === 'error' && currentContract && attemptCount >= 3) {
       return { document: existing, reused: false, chunk_ids: [], skipped_error: true };
     }
 
@@ -159,8 +162,13 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       index_generation: (existing?.index_generation ?? -1) + 1,
       chunker_version: CHUNKER_VERSION,
       tokenizer_version: TOKENIZER_VERSION,
+      attempt_count: attemptCount,
     };
-    upsertLibraryDocument(deps.store, base);
+    deps.store.database.transaction(() => {
+      upsertLibraryDocument(deps.store, base);
+      attemptCount = incrementLibraryDocumentAttempt(deps.store, id);
+      base.attempt_count = attemptCount;
+    })();
     publish(id, 'queued');
 
     try {

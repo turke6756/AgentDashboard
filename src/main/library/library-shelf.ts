@@ -44,7 +44,7 @@ function statusFor(row: LibraryDocumentRow | undefined, diskSize: number, hash?:
   if (INDEXING_STATUSES.has(row.status as LibraryDocumentStatus)) return 'indexing'; if (row.status === 'error') return 'error'; if (row.status === 'ready') return 'ready'; return 'error';
 }
 function pendingRow(relPath: string, file: LibraryReportFile, root: LibraryReportRoot): ShelfRow {
-  return { id: `shelf:${relPath}`, type: 'research', title: path.basename(file.rel_path, path.extname(file.rel_path)), created: new Date(file.mtimeMs).toISOString(), topics_json: '[]', trust: root === 'inbox' ? 'untrusted' : 'cleared', source_rel_path: relPath, reader_rel_path: relPath, source_hash: '', size: file.size, page_count: null, provider: null, agent_id: null, summary: null, status: 'queued', error_reason: null, index_generation: 0, chunker_version: '', tokenizer_version: '', shelf_status: 'pending' };
+  return { id: `shelf:${relPath}`, type: 'research', title: path.basename(file.rel_path, path.extname(file.rel_path)), created: new Date(file.mtimeMs).toISOString(), topics_json: '[]', trust: root === 'inbox' ? 'untrusted' : 'cleared', source_rel_path: relPath, reader_rel_path: relPath, source_hash: '', size: file.size, page_count: null, provider: null, agent_id: null, summary: null, status: 'queued', error_reason: null, index_generation: 0, chunker_version: '', tokenizer_version: '', attempt_count: 0, shelf_status: 'pending' };
 }
 export async function listLibraryShelf(workspaceRoot: string, store: LibraryStore, options: ListLibraryShelfOptions = {}): Promise<ShelfRow[]> {
   const inventory = options.inventory ?? await listLibraryReportSources(workspaceRoot);
