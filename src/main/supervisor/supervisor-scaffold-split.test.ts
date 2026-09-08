@@ -10,6 +10,7 @@ import {
   SUPERVISOR_AGENT_MD_CHILD_V2,
   SUPERVISOR_AGENT_MD_CHILD_V3,
   SUPERVISOR_AGENT_MD_CHILD_V4,
+  SUPERVISOR_AGENT_MD_CHILD_V5,
   SUPERVISOR_AGENT_MD_V32,
   SUPERVISOR_AGENT_MD_V35,
   SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -17,7 +18,7 @@ import {
   SUPERVISOR_CLAUDE_SETTINGS_JSON_V4,
   WORKER_CODEX_CONFIG_TOML,
 } from '../../shared/constants';
-import { AgentSupervisor } from './index';
+import { AgentSupervisor, SUPERVISOR_AGENT_MD_V36_HASH } from './index';
 
 interface ScaffoldFileForTest {
   content: string;
@@ -70,10 +71,14 @@ function digestText(text: string): string {
 function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>): void {
   assert.ok(Object.keys(files).length > 0, `${name} child map must not be empty`);
   for (const [rel, file] of Object.entries(files)) {
-    const isInstructions = /\/(?:CLAUDE|AGENTS)\.md$/.test(rel);
+    const isRetiredParent = rel === '.lares/supervisor/CLAUDE.md' || rel === '.lares/supervisor/AGENTS.md';
+    const isInstructions = rel === '.lares/supervisor/claude/CLAUDE.md' || rel === '.lares/supervisor/codex/AGENTS.md';
     const isClaudeSettings = rel === '.lares/supervisor/claude/.claude/settings.json';
-    assert.equal(file.version, isInstructions ? 5 : isClaudeSettings ? 2 : 1, `${rel} must carry its expected scaffold version`);
-    if (isInstructions) {
+    assert.equal(file.version, isRetiredParent ? 38 : isInstructions ? 6 : isClaudeSettings ? 2 : 1, `${rel} must carry its expected scaffold version`);
+    if (isRetiredParent) {
+      assert.equal(file.removed, true, `${rel} must remain an unremapped retirement row`);
+      assert.equal(file.content, '', `${rel} retirement content must be empty`);
+    } else if (isInstructions) {
       assert.deepEqual(
         file.previousHashes,
         {
@@ -81,6 +86,7 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
           2: digestText(SUPERVISOR_AGENT_MD_CHILD_V2),
           3: digestText(SUPERVISOR_AGENT_MD_CHILD_V3),
           4: digestText(SUPERVISOR_AGENT_MD_CHILD_V4),
+          5: digestText(SUPERVISOR_AGENT_MD_CHILD_V5),
         },
         `${rel} must retain the superseded child instruction hashes`,
       );
@@ -93,7 +99,7 @@ function assertChildMap(name: string, files: Record<string, ScaffoldFileForTest>
     } else {
       assert.equal(file.previousHashes, undefined, `${rel} must have no pre-child hash history`);
     }
-    assert.equal(file.removed, undefined, `${rel} must not introduce a retired child row`);
+    if (!isRetiredParent) assert.equal(file.removed, undefined, `${rel} must not introduce a retired child row`);
     assert.doesNotMatch(
       rel,
       /\.lares\/supervisor\/(?:claude|codex)\/(?:scripts|memory)\//,
@@ -127,12 +133,18 @@ function run(): void {
       [statics.LEGACY_SUPERVISOR_FILES_CODEX, '.lares/supervisor/AGENTS.md'],
     ] as const) {
       const instructions = files[rel];
-      assert.equal(instructions.version, 36, `${rel} must advance to scaffold version 36`);
+      assert.equal(instructions.version, 38, `${rel} must advance to retirement version 38`);
+      assert.equal(instructions.removed, true, `${rel} must be retired`);
+      assert.equal(instructions.content, '', `${rel} retirement content must be empty`);
       assert.equal(
         instructions.previousHashes?.[35],
         digestText(SUPERVISOR_AGENT_MD_V35),
         `${rel} must retain the superseded v35 instructions hash`,
       );
+      assert.equal(instructions.previousHashes?.[36], SUPERVISOR_AGENT_MD_V36_HASH,
+        `${rel} must retain the superseded v36 instructions hash`);
+      assert.equal(instructions.previousHashes?.[37], digestText(SUPERVISOR_AGENT_MD),
+        `${rel} must retain the superseded v37 instructions hash`);
     }
     assert.equal(
       SUPERVISOR_AGENT_MD_CHILD,
@@ -157,8 +169,12 @@ function run(): void {
     for (const files of legacyMaps) {
       for (const rel of Object.keys(files)) {
         const filePath = diskPath(workDir, rel);
-        writeSeed(filePath, `flat-kit-sentinel:${rel}\n`);
-        flatHashes.set(filePath, digest(filePath));
+        if (rel === '.lares/supervisor/CLAUDE.md' || rel === '.lares/supervisor/AGENTS.md') {
+          writeSeed(filePath, SUPERVISOR_AGENT_MD_V32);
+        } else {
+          writeSeed(filePath, `flat-kit-sentinel:${rel}\n`);
+          flatHashes.set(filePath, digest(filePath));
+        }
       }
     }
     const memoryPath = path.join(workDir, '.lares', 'supervisor', 'memory', 'MEMORY.md');
@@ -225,6 +241,9 @@ function run(): void {
     for (const [filePath, beforeHash] of flatHashes) {
       assert.ok(fs.existsSync(filePath), `flat kit and memory file must not be deleted: ${filePath}`);
       assert.equal(digest(filePath), beforeHash, `flat kit and memory file must not be rewritten: ${filePath}`);
+    }
+    for (const rel of ['.lares/supervisor/CLAUDE.md', '.lares/supervisor/AGENTS.md']) {
+      assert.equal(fs.existsSync(diskPath(workDir, rel)), false, `retired parent instruction must be deleted: ${rel}`);
     }
 
     harness.ensureSupervisorScaffold(workDir, 'codex', 'windows');
