@@ -117,7 +117,7 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col gap-3 bg-surface-0 p-4" data-testid="library-pane">
+    <section role="region" aria-label="Workspace Library" className="flex h-full min-h-0 flex-col gap-3 bg-surface-0 p-4" data-testid="library-pane">
       <header className="flex items-center justify-between"><h1 className="text-lg font-semibold">Workspace Library</h1><select aria-label="Sort library" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="ui-input"><option value="newest">Newest</option><option value="title">Title</option><option value="type">Type</option></select></header>
       <LibraryAddFiles onAdd={addFiles} onRescan={async () => {
         if (!workspaceId) return;

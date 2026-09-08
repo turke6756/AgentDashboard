@@ -93,6 +93,12 @@ describe('openLibraryResult production seam', () => {
 });
 
 describe('LibraryPane shelf', () => {
+  it('exposes the pane as a labelled Workspace Library region', async () => {
+    installLibraryApi([]);
+    const pane = await renderPane();
+    expect(pane.querySelector('[role="region"][aria-label="Workspace Library"]')).not.toBeNull();
+  });
+
   it('reloads only for shelf changes in the selected workspace', async () => {
     const api = installLibraryApi([shelfRow('report', 'pending', 'untrusted')]);
     await renderPane();

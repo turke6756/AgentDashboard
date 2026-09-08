@@ -5,7 +5,6 @@ import { useThemeStore } from '../../stores/theme-store';
 import appIcon from '../../../../assets/icon.png';
 import { LARES_RELEASES_URL } from '../../../shared/constants';
 import ActivityShield from '../activity/ActivityShield';
-import LibraryPane from '../library/LibraryPane';
 
 // The spanning top chrome for the frameless window. The window is
 // titleBarStyle:'hidden' + titleBarOverlay, so the native min/max/close buttons
@@ -47,7 +46,6 @@ export default function TopBar() {
   const resetLayout = useDashboardStore((s) => s.resetLayout);
   const loadWorkspaces = useDashboardStore((s) => s.loadWorkspaces);
   const openToolTab = useDashboardStore((s) => s.openToolTab);
-  const activeLibraryTab = useDashboardStore((s) => s.openTabs.find((tab) => tab.id === s.activeTabId && tab.kind === 'tool' && tab.toolId === 'library'));
   const openPrerequisitesDialog = useDashboardStore((s) => s.openPrerequisitesDialog);
   const { theme, toggleTheme } = useThemeStore();
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -183,11 +181,6 @@ export default function TopBar() {
       </div>
 
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
-      {activeLibraryTab && (
-        <div className="fixed inset-x-0 bottom-0 top-8 z-40 app-no-drag">
-          <LibraryPane initialType={activeLibraryTab.params?.type === 'research' ? 'research' : undefined} />
-        </div>
-      )}
     </div>
   );
 }

@@ -15,6 +15,7 @@ import CapstonePanel from '../context-optimizer/CapstonePanel';
 import SystemMemoryView from '../watchdog/SystemMemoryView';
 import ContextWindowWarningPanel from '../context-gauge/ContextWindowWarningPanel';
 import GroupThinkProvidersPanel from '../orchestration/GroupThinkProvidersPanel';
+import LibraryPane from '../library/LibraryPane';
 import { detectFileType } from './fileTypeUtils';
 import ResizeDivider from '../layout/ResizeDivider';
 import CollapseButton from '../layout/CollapseButton';
@@ -246,7 +247,9 @@ export default function FileViewerPanel() {
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">Plan unavailable</div>
             )
           ) : isTool ? (
-            effectiveTab.toolId === 'context-overhead' ? (
+            effectiveTab.toolId === 'library' ? (
+              <LibraryPane initialType={effectiveTab.params?.type === 'research' ? 'research' : undefined} />
+            ) : effectiveTab.toolId === 'context-overhead' ? (
               <ContextOverheadPanel />
             ) : effectiveTab.toolId === 'agent-knowledge-graph' ? (
               <AgentKnowledgePanel initialAgentId={effectiveTab.params?.agentId} />
