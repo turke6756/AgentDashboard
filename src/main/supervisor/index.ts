@@ -4226,10 +4226,11 @@ export class AgentSupervisor extends EventEmitter {
       previousHashes: { 1: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1), 2: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2), 3: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH },
     },
     [`.lares/supervisor/CLAUDE.md`]:                                              {
-      content: SUPERVISOR_AGENT_MD,
-      version: 37, // v37 clarifies stuck-status handshakes without encouraging a double submit.
+      content: '',
+      removed: true,
+      version: 38, // v38 retires the orphaned parent instruction file; provider-child files are authoritative.
       previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH, 27: SUPERVISOR_AGENT_MD_V27_HASH,
-        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH },
+        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH, 37: sha256Hex(SUPERVISOR_AGENT_MD) },
     },
     [`.lares/supervisor/.claude/settings.json`]:                                  {
       content: SUPERVISOR_CLAUDE_SETTINGS_JSON,
@@ -4314,12 +4315,20 @@ export class AgentSupervisor extends EventEmitter {
       previousHashes: { 1: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1), 2: sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2), 3: SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH },
     },
     [`.lares/supervisor/AGENTS.md`]: {
-      content: SUPERVISOR_AGENT_MD,
-      version: 37,
+      content: '',
+      removed: true,
+      version: 38,
       previousHashes: { 1: SUPERVISOR_AGENT_MD_V1_HASH, 2: SUPERVISOR_AGENT_MD_V2_HASH, 3: SUPERVISOR_AGENT_MD_V3_HASH, 4: SUPERVISOR_AGENT_MD_V4_HASH, 5: SUPERVISOR_AGENT_MD_V5_HASH, 6: SUPERVISOR_AGENT_MD_V6_HASH, 7: SUPERVISOR_AGENT_MD_V7_HASH, 8: SUPERVISOR_AGENT_MD_V8_HASH, 9: SUPERVISOR_AGENT_MD_V9_HASH, 10: SUPERVISOR_AGENT_MD_V10_HASH, 11: SUPERVISOR_AGENT_MD_V11_HASH, 12: SUPERVISOR_AGENT_MD_V12_HASH, 13: SUPERVISOR_AGENT_MD_V13_HASH, 14: SUPERVISOR_AGENT_MD_V14_HASH, 15: SUPERVISOR_AGENT_MD_V15_HASH, 16: SUPERVISOR_AGENT_MD_V16_HASH, 17: SUPERVISOR_AGENT_MD_V17_HASH, 18: SUPERVISOR_AGENT_MD_V18_HASH, 19: SUPERVISOR_AGENT_MD_V19_HASH, 20: SUPERVISOR_AGENT_MD_V20_HASH, 21: SUPERVISOR_AGENT_MD_V21_HASH, 22: '7a61845e3c95bb7b295ad6378e46f9411b8427f4c0dd6dee7145962ba9df0bcd', 23: SUPERVISOR_AGENT_MD_V23_HASH, 24: sha256Hex(SUPERVISOR_AGENT_MD_V24), 25: SUPERVISOR_AGENT_MD_V25_HASH, 26: SUPERVISOR_AGENT_MD_V26_HASH, 27: SUPERVISOR_AGENT_MD_V27_HASH,
-        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH },
+        28: sha256Hex(SUPERVISOR_AGENT_MD_V28), 29: sha256Hex(SUPERVISOR_AGENT_MD_V29), 30: SUPERVISOR_AGENT_MD_V30_HASH, 31: sha256Hex(SUPERVISOR_AGENT_MD_V31), 32: sha256Hex(SUPERVISOR_AGENT_MD_V32), 33: SUPERVISOR_AGENT_MD_V33_HASH, 34: SUPERVISOR_AGENT_MD_V34_HASH, 35: SUPERVISOR_AGENT_MD_V35_HASH, 36: SUPERVISOR_AGENT_MD_V36_HASH, 37: sha256Hex(SUPERVISOR_AGENT_MD) },
     },
     [`.lares/supervisor/.agents/skills/remember/SKILL.md`]: { content: REMEMBER_SKILL, version: 4, previousHashes: { 1: REMEMBER_SKILL_V1_HASH, 2: REMEMBER_SKILL_V2_HASH, 3: REMEMBER_SKILL_V3_HASH } }, // v4: parser-valid concrete date in the expires example
+  };
+
+  /** Parent-level provider instructions are retired together. Keep these exact
+   *  entries on every child and workspace-level pass without path remapping. */
+  static readonly SUPERVISOR_PARENT_RETIREMENTS: Record<string, ScaffoldFile> = {
+    '.lares/supervisor/CLAUDE.md': AgentSupervisor.LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'],
+    '.lares/supervisor/AGENTS.md': AgentSupervisor.LEGACY_SUPERVISOR_FILES_CODEX['.lares/supervisor/AGENTS.md'],
   };
 
   static readonly SUPERVISOR_FILES_CLAUDE_CHILD = {
@@ -4332,6 +4341,7 @@ export class AgentSupervisor extends EventEmitter {
         '.lares/supervisor/.claude/settings.json': SUPERVISOR_CLAUDE_SETTINGS_JSON_CHILD,
       },
     ),
+    ...AgentSupervisor.SUPERVISOR_PARENT_RETIREMENTS,
     [`.lares/supervisor/claude/CLAUDE.md`]: {
       content: SUPERVISOR_AGENT_MD_CHILD,
       version: 6,
@@ -4355,6 +4365,7 @@ export class AgentSupervisor extends EventEmitter {
       '.lares/supervisor/codex',
       { '.lares/supervisor/AGENTS.md': SUPERVISOR_AGENT_MD_CHILD },
     ),
+    ...AgentSupervisor.SUPERVISOR_PARENT_RETIREMENTS,
     [`.lares/supervisor/codex/AGENTS.md`]: {
       content: SUPERVISOR_AGENT_MD_CHILD,
       version: 6,
@@ -4618,6 +4629,7 @@ export class AgentSupervisor extends EventEmitter {
    *  Idempotent: a workspace already at the bundled version is a no-op skip. */
   private ensureWorkspaceScripts(workDir: string, pathType: string): void {
     this.writeScaffoldMap(workDir, AgentSupervisor.WORKSPACE_SCRIPT_FILES, pathType);
+    this.writeScaffoldMap(workDir, AgentSupervisor.SUPERVISOR_PARENT_RETIREMENTS, pathType);
     // WP1 (G1) — the installation-owned snapshot launcher rides this same
     // unconditional per-launch refresh: the analytics-snapshot shim (versioned
     // scaffold) plus .lares/installation.json (healed by full-payload
@@ -10883,6 +10895,10 @@ export class AgentSupervisor extends EventEmitter {
           // NOTE: do NOT add ensureProviderDirTrust here — it writes ~/.claude.json,
           // which would add a dashboard writer inside the startup herd window.
           if (ws) {
+            // The lane-agnostic workspace pass also carries parent-level
+            // supervisor retirements, so app-start reconciliation cleans them
+            // even when no live agent uses the former parent cwd.
+            this.ensureWorkspaceScripts(ws.path, pathType);
             if (agent.isSupervisor) {
               this.ensureSupervisorScaffold(ws.path, agent.provider, pathType);
             } else if (agent.isResearcher) {

@@ -197,6 +197,7 @@ import {
   SUPERVISOR_AGENT_MD_V29,
   SUPERVISOR_AGENT_MD_V30,
   SUPERVISOR_AGENT_MD_V31,
+  SUPERVISOR_AGENT_MD_V32,
   SUPERVISOR_AGENT_MD_V33,
   SUPERVISOR_AGENT_MD_V34,
   SUPERVISOR_AGENT_MD_V35,
@@ -497,6 +498,7 @@ function makeSupervisor(): { supervisor: SupervisorTestSurface; cleanup: () => v
 interface ProductionSupervisorTestSurface {
   ensureSupervisorScaffold(workDir: string, provider: string, pathType: string): void;
   ensureWorkerScaffold(workDir: string, provider: string, pathType: string): void;
+  ensureWorkspaceScripts(workDir: string, pathType: string): void;
 }
 
 function makeProductionSupervisor(): { supervisor: ProductionSupervisorTestSurface; cleanup: () => void } {
@@ -2602,7 +2604,7 @@ test('CF-0. v19 is the current bundled version, previousHashes[18] is registered
   const managed = (AgentSupervisor as unknown as {
     LEGACY_SUPERVISOR_FILES: Record<string, { version: number; previousHashes?: Record<number, string> }>;
   }).LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'];
-  assert.equal(managed.version, 37, 'the bundled supervisor CLAUDE.md must be current v37');
+  assert.equal(managed.version, 38, 'the retired supervisor CLAUDE.md entry must be current v38');
   assert.equal(
     managed.previousHashes?.[18],
     SUPERVISOR_AGENT_MD_V18_HASH,
@@ -2855,7 +2857,7 @@ test('WP6-0. previousHashes[17] is registered and v18 documents revive_agent + s
   const managed = (AgentSupervisor as unknown as {
     LEGACY_SUPERVISOR_FILES: Record<string, { version: number; previousHashes?: Record<number, string> }>;
   }).LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'];
-  assert.equal(managed.version, 37, 'the bundled supervisor CLAUDE.md must be current v37');
+  assert.equal(managed.version, 38, 'the retired supervisor CLAUDE.md entry must be current v38');
   assert.equal(
     managed.previousHashes?.[17],
     SUPERVISOR_AGENT_MD_V17_HASH,
@@ -3343,7 +3345,7 @@ test('CP-0. precondition: the frozen v11 hash is registered for silent v11→v12
   const previous = (AgentSupervisor as unknown as {
     LEGACY_SUPERVISOR_FILES: Record<string, { version: number; previousHashes?: Record<number, string> }>;
   }).LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'];
-  assert.equal(previous.version, 37, 'supervisor CLAUDE.md must be at current version 37');
+  assert.equal(previous.version, 38, 'the retired supervisor CLAUDE.md entry must be current v38');
   assert.equal(
     previous.previousHashes?.[11],
     SUPERVISOR_AGENT_MD_V11_HASH,
@@ -3564,7 +3566,7 @@ test('OV-0. precondition: the frozen v13 hash is registered for silent v13→v14
   const managed = (AgentSupervisor as unknown as {
     LEGACY_SUPERVISOR_FILES: Record<string, { version: number; previousHashes?: Record<number, string> }>;
   }).LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'];
-  assert.equal(managed.version, 37, 'the bundled supervisor CLAUDE.md must be current v37');
+  assert.equal(managed.version, 38, 'the retired supervisor CLAUDE.md entry must be current v38');
   assert.equal(
     managed.previousHashes?.[13],
     SUPERVISOR_AGENT_MD_V13_HASH,
@@ -3670,7 +3672,7 @@ test('PV-0. precondition: the frozen v14 hash is registered for silent v14→v15
   const managed = (AgentSupervisor as unknown as {
     LEGACY_SUPERVISOR_FILES: Record<string, { version: number; previousHashes?: Record<number, string> }>;
   }).LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'];
-  assert.equal(managed.version, 37, 'the bundled supervisor CLAUDE.md must be current v37');
+  assert.equal(managed.version, 38, 'the retired supervisor CLAUDE.md entry must be current v38');
   assert.equal(
     managed.previousHashes?.[14],
     SUPERVISOR_AGENT_MD_V14_HASH,
@@ -4208,13 +4210,29 @@ test('normalizeManagedKey strips .lares/ AND legacy .dashboard/, and normalizes 
 // stale-file cleanup are asserted here.
 
 function supFilesMap(): Record<string, ScaffoldFile> {
-  return (AgentSupervisor as unknown as { LEGACY_SUPERVISOR_FILES: Record<string, ScaffoldFile> }).LEGACY_SUPERVISOR_FILES;
+  const files = (AgentSupervisor as unknown as { LEGACY_SUPERVISOR_FILES: Record<string, ScaffoldFile> }).LEGACY_SUPERVISOR_FILES;
+  return withHistoricalParentV37(files, '.lares/supervisor/CLAUDE.md');
 }
 function workerClaudeFilesMap(): Record<string, ScaffoldFile> {
   return (AgentSupervisor as unknown as { WORKER_FILES_CLAUDE: Record<string, ScaffoldFile> }).WORKER_FILES_CLAUDE;
 }
 function supCodexFilesMap(): Record<string, ScaffoldFile> {
-  return (AgentSupervisor as unknown as { LEGACY_SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile> }).LEGACY_SUPERVISOR_FILES_CODEX;
+  const files = (AgentSupervisor as unknown as { LEGACY_SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile> }).LEGACY_SUPERVISOR_FILES_CODEX;
+  return withHistoricalParentV37(files, '.lares/supervisor/AGENTS.md');
+}
+function withHistoricalParentV37(files: Record<string, ScaffoldFile>, rel: string): Record<string, ScaffoldFile> {
+  const { removed: _removed, ...entry } = files[rel];
+  return {
+    ...files,
+    [rel]: {
+      ...entry,
+      content: SUPERVISOR_AGENT_MD,
+      version: 37,
+      previousHashes: Object.fromEntries(
+        Object.entries(entry.previousHashes ?? {}).filter(([version]) => Number(version) <= 36),
+      ),
+    },
+  };
 }
 function workspaceScriptFilesMap(): Record<string, ScaffoldFile> {
   return (AgentSupervisor as unknown as { WORKSPACE_SCRIPT_FILES: Record<string, ScaffoldFile> }).WORKSPACE_SCRIPT_FILES;
@@ -7129,6 +7147,130 @@ test('stuck-status handshake guidance advances both provider-child scaffolds fro
       cleanup();
       rmrf(workDir);
     }
+  }
+});
+
+test('parent supervisor instruction retirements retain cumulative v1 through v37 hashes in every production pass', () => {
+  const maps = AgentSupervisor as unknown as {
+    LEGACY_SUPERVISOR_FILES: Record<string, ScaffoldFile>;
+    LEGACY_SUPERVISOR_FILES_CODEX: Record<string, ScaffoldFile>;
+    SUPERVISOR_PARENT_RETIREMENTS: Record<string, ScaffoldFile>;
+    SUPERVISOR_FILES_CLAUDE_CHILD: Record<string, ScaffoldFile>;
+    SUPERVISOR_FILES_CODEX_CHILD: Record<string, ScaffoldFile>;
+  };
+  const entries = [
+    maps.LEGACY_SUPERVISOR_FILES['.lares/supervisor/CLAUDE.md'],
+    maps.LEGACY_SUPERVISOR_FILES_CODEX['.lares/supervisor/AGENTS.md'],
+  ];
+  for (const entry of entries) {
+    assert.equal(entry.content, '');
+    assert.equal(entry.removed, true);
+    assert.equal(entry.version, 38);
+    assert.deepEqual(
+      Object.keys(entry.previousHashes ?? {}).map(Number),
+      Array.from({ length: 37 }, (_, index) => index + 1),
+    );
+    assert.equal(entry.previousHashes?.[37], sha256Hex(SUPERVISOR_AGENT_MD));
+  }
+  for (const map of [
+    maps.SUPERVISOR_PARENT_RETIREMENTS,
+    maps.SUPERVISOR_FILES_CLAUDE_CHILD,
+    maps.SUPERVISOR_FILES_CODEX_CHILD,
+  ]) {
+    assert.equal(map['.lares/supervisor/CLAUDE.md'], entries[0]);
+    assert.equal(map['.lares/supervisor/AGENTS.md'], entries[1]);
+  }
+});
+
+test('claude and codex child scaffold passes both retire pristine v32 parent instruction files at v38', () => {
+  for (const provider of ['claude', 'codex'] as const) {
+    const workDir = mktmp(`parent-supervisor-retirement-${provider}`);
+    const { supervisor, cleanup } = makeProductionSupervisor();
+    const targets = [
+      { rel: '.lares/supervisor/CLAUDE.md', key: 'supervisor/CLAUDE.md' },
+      { rel: '.lares/supervisor/AGENTS.md', key: 'supervisor/AGENTS.md' },
+    ];
+    try {
+      for (const target of targets) {
+        const full = path.join(workDir, ...target.rel.split('/'));
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, SUPERVISOR_AGENT_MD_V32, 'utf-8');
+      }
+      fs.writeFileSync(sidecarPath(workDir), JSON.stringify(Object.fromEntries(
+        targets.map((target) => [target.key, 32]),
+      ), null, 2) + '\n', 'utf-8');
+
+      supervisor.ensureSupervisorScaffold(workDir, provider, 'windows');
+
+      const sidecar = readSidecar(workDir);
+      for (const target of targets) {
+        const full = path.join(workDir, ...target.rel.split('/'));
+        assert.equal(fs.existsSync(full), false, `${provider} child pass must retire ${target.rel}`);
+        assert.equal(sidecar[target.key], 38);
+        assert.deepEqual(
+          fs.readdirSync(path.dirname(full)).filter((name) => name.startsWith(`${path.basename(full)}.bak.`)),
+          [],
+        );
+      }
+    } finally {
+      cleanup();
+      rmrf(workDir);
+    }
+  }
+});
+
+test('lane-agnostic workspace refresh retires pristine parent supervisor instructions without a lane match', () => {
+  const workDir = mktmp('parent-supervisor-retirement-workspace-pass');
+  const { supervisor, cleanup } = makeProductionSupervisor();
+  const targets = [
+    { rel: '.lares/supervisor/CLAUDE.md', key: 'supervisor/CLAUDE.md' },
+    { rel: '.lares/supervisor/AGENTS.md', key: 'supervisor/AGENTS.md' },
+  ];
+  try {
+    for (const target of targets) {
+      const full = path.join(workDir, ...target.rel.split('/'));
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, SUPERVISOR_AGENT_MD_V32, 'utf-8');
+    }
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify(Object.fromEntries(
+      targets.map((target) => [target.key, 32]),
+    ), null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureWorkspaceScripts(workDir, 'windows');
+
+    const sidecar = readSidecar(workDir);
+    for (const target of targets) {
+      assert.equal(fs.existsSync(path.join(workDir, ...target.rel.split('/'))), false);
+      assert.equal(sidecar[target.key], 38);
+    }
+  } finally {
+    cleanup();
+    rmrf(workDir);
+  }
+});
+
+test('hand-edited retired parent supervisor instruction is backed up before its managed path is removed', () => {
+  const workDir = mktmp('parent-supervisor-retirement-hand-edit');
+  const { supervisor, cleanup } = makeProductionSupervisor();
+  const rel = '.lares/supervisor/CLAUDE.md';
+  const key = 'supervisor/CLAUDE.md';
+  const full = path.join(workDir, ...rel.split('/'));
+  const edited = `${SUPERVISOR_AGENT_MD_V32.trimEnd()}\n\n<!-- local supervisor guidance -->\n`;
+  try {
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, edited, 'utf-8');
+    fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [key]: 32 }, null, 2) + '\n', 'utf-8');
+
+    supervisor.ensureSupervisorScaffold(workDir, 'claude', 'windows');
+
+    assert.equal(fs.existsSync(full), false, 'retirement removes the managed path after preserving the edit');
+    const backups = fs.readdirSync(path.dirname(full)).filter((name) => name.startsWith('CLAUDE.md.bak.'));
+    assert.equal(backups.length, 1);
+    assert.equal(fs.readFileSync(path.join(path.dirname(full), backups[0]), 'utf-8'), edited);
+    assert.equal(readSidecar(workDir)[key], 38);
+  } finally {
+    cleanup();
+    rmrf(workDir);
   }
 });
 
