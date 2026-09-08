@@ -13,6 +13,7 @@ import {
   readAgyHistoryBinding,
 } from './agy-session-reader';
 import { SessionLogDispatcher } from '../session-log-dispatcher';
+import { buildMessages } from '../agent-chat-service';
 import type { ChatLogReaderSession } from './types';
 import type { SessionEvent } from '../../../shared/session-events';
 
@@ -192,6 +193,54 @@ test('user and final assistant content use stable row-derived UUIDs', () => {
     assert.ok(assistant?.type === 'assistant-text' && assistant.text === 'Hello from agy.');
     assert.equal(assistant.uuid, `agy:${SID}:step:1:assistant`);
     assert.equal(assistant.turnComplete, true);
+  } finally { cleanup(root); }
+});
+
+test('realistic completed Agy transcript becomes relay-visible structured assistant chat', () => {
+  const root = tempRoot();
+  try {
+    const submittedPrompt = 'GroupThink kickoff — relay this draft';
+    const persistedPrompt = 'GroupThink kickoff  relay this draft';
+    createFixture(root, { rows: [
+      { idx: 0, type: 14, status: 3, payload: userPayload(persistedPrompt) },
+      // Agy persists empty final-kind assistant bookkeeping rows around tool
+      // work before the one visible completed response.
+      { idx: 1, type: 15, status: 3, payload: assistantPayload('', 2, CREATED_MS + 2_000, false) },
+      { idx: 2, type: 132, status: 3, payload: toolPayload({ stepType: 132, ms: CREATED_MS + 3_000 }) },
+      { idx: 3, type: 15, status: 3, payload: assistantPayload('', 2, CREATED_MS + 4_000, false) },
+      { idx: 4, type: 132, status: 3, payload: toolPayload({ stepType: 132, ms: CREATED_MS + 5_000 }) },
+      { idx: 5, type: 15, status: 3, payload: assistantPayload('Completed GroupThink draft', 2, CREATED_MS + 6_000) },
+    ] });
+    fs.writeFileSync(path.join(root, 'history.jsonl'), JSON.stringify({
+      display: persistedPrompt,
+      timestamp: CREATED_MS + 1_000,
+      workspace: CWD,
+    }) + '\n');
+    const reader = readerAt(root);
+    const dispatcher = new SessionLogDispatcher(() => [session({
+      sessionId: '',
+      discoveryPrompt: submittedPrompt,
+      discoveryPromptExact: true,
+    })]);
+    dispatcher.register(reader);
+    dispatcher.appendSyntheticUserText('agent-1', submittedPrompt);
+
+    dispatcher.pollNow('agent-1');
+    assert.equal(reader.getResolvedSessionId('agent-1'), SID);
+    const messages = buildMessages(
+      dispatcher.getCachedEvents('agent-1').events,
+      { provider: 'agy', resumeSessionId: '' },
+      { limit: 1, role: 'assistant' },
+    );
+
+    assert.deepEqual(messages, [{
+      role: 'assistant',
+      content: 'Completed GroupThink draft',
+      ts: new Date(CREATED_MS + 6_000).toISOString(),
+      sessionId: '',
+      turnComplete: true,
+      provider: 'agy',
+    }], 'read_agent_chat limit:1 must expose the completed Agy turn to GroupThink waitForResponse');
   } finally { cleanup(root); }
 });
 

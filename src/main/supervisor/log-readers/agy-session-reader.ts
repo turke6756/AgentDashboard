@@ -466,6 +466,22 @@ function tailUtf8(filePath: string, maxBytes: number): string {
   }
 }
 
+/** Compare the submitted prompt with Agy's persisted display text. The Windows
+ * TUI normalizes line endings and drops Unicode en/em dashes while accepting a
+ * bracketed-paste body. Discovery remains fail-closed if this normalization
+ * creates more than one candidate inside the agent's launch window. */
+function normalizeAgyPromptForBinding(value: string): string {
+  return value.replace(/\r\n?/g, '\n').replace(/[\u2013\u2014]/g, '');
+}
+
+function agyPromptMatches(display: string, prompt: string, exact: boolean): boolean {
+  const normalizedDisplay = normalizeAgyPromptForBinding(display);
+  const normalizedPrompt = normalizeAgyPromptForBinding(prompt);
+  return exact
+    ? normalizedDisplay === normalizedPrompt
+    : normalizedDisplay.startsWith(normalizedPrompt);
+}
+
 /** Per-agent live binding. Agy writes the exact submitted prompt, timestamp,
  * and cwd in history.jsonl (conversationId may be absent on the first row).
  * Only one prompt candidate inside this agent's launch window is attributable. */
@@ -499,7 +515,7 @@ export function readAgyHistoryBinding(
       const timestamp = typeof row.timestamp === 'number' ? row.timestamp : 0;
       if (
         (!!id && !CONVERSATION_ID_RE.test(id))
-        || (promptExact ? display !== prompt : !display.startsWith(prompt))
+        || !agyPromptMatches(display, prompt, promptExact)
         || !cwdMatches(workspace, cwd)
         || !Number.isFinite(timestamp)
         || timestamp < floor
