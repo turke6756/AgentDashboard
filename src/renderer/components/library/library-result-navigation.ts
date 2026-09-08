@@ -30,6 +30,9 @@ export interface LibraryQueryExcerptView {
   quote: string;
   citation: string;
   locator: LibraryChunkLocatorV1;
+  keyword_matches?: Array<{ kind: 'exact'; chunk_char_start: number; chunk_char_end: number; text: string }>;
+  similar_passage?: { kind: 'similar'; chunk_char_start: number; chunk_char_end: number } | null;
+  scores?: { keyword_rank: number | null; semantic_rank: number | null; semantic_score: number | null; fused_score: number };
 }
 
 export interface LibraryDocumentHighlightsView {
@@ -66,6 +69,28 @@ function isTextSource(source: LibraryHighlightSpan['source']): source is Library
   return 'start' in source;
 }
 
+function validSpans(spans: readonly LibraryHighlightSpan[]): LibraryHighlightSpan[] {
+  return spans.filter((span) => {
+    if (isPdfSource(span.source)) return Number.isInteger(span.source.page_index) && span.source.page_index >= 0 && Boolean(span.source.selector.exact);
+    return Number.isInteger(span.source.start.line) && Number.isInteger(span.source.end.line)
+      && span.source.start.line > 0 && span.source.end.line >= span.source.start.line
+      && span.source.start.utf16_column >= 0 && span.source.end.utf16_column >= 0;
+  });
+}
+
+function chooseFocusSpan(spans: readonly LibraryHighlightSpan[]): LibraryHighlightSpan | undefined {
+  return [...spans].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'exact' ? -1 : 1;
+    if (isPdfSource(left.source) && isPdfSource(right.source)) return left.source.page_index - right.source.page_index;
+    if (isTextSource(left.source) && isTextSource(right.source)) {
+      return left.source.canonical_char_start - right.source.canonical_char_start;
+    }
+    return isTextSource(left.source) ? -1 : 1;
+  })[0];
+}
+
+let lastFocusNonce = 0;
+
 export function openLibraryResult(
   excerpt: LibraryQueryExcerptView,
   documentHighlights?: LibraryDocumentHighlightsView,
@@ -77,10 +102,12 @@ export function openLibraryResult(
   const state = useDashboardStore.getState();
   const workspace = state.workspaces.find((item) => item.id === state.selectedWorkspaceId);
   if (!workspace) return { ok: false, error: 'Select a workspace first.' };
-  const nonce = Date.now();
+  const nonce = Math.max(Date.now(), lastFocusNonce + 1);
+  lastFocusNonce = nonce;
   const spans = documentHighlights?.document_hash === excerpt.document_hash
-    ? documentHighlights.spans
+    ? validSpans(documentHighlights.spans)
     : [];
+  const chosen = chooseFocusSpan(spans);
 
   if (excerpt.locator.kind === 'pdf') {
     const highlights: PdfLibraryHighlight[] = spans
@@ -95,9 +122,9 @@ export function openLibraryResult(
       resolveWorkspaceRelativePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
       undefined, workspace.id, undefined,
       {
-        pageIndex: excerpt.locator.page_index,
+        pageIndex: chosen && isPdfSource(chosen.source) ? chosen.source.page_index : excerpt.locator.page_index,
         documentHash: excerpt.document_hash,
-        selectedHighlightId: spans[0]?.id,
+        selectedHighlightId: chosen?.id,
         highlights,
         nonce,
       },
@@ -110,12 +137,12 @@ export function openLibraryResult(
       resolveWorkspaceRelativePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
       undefined, workspace.id,
       {
-        lineStart: excerpt.locator.start.line,
-        lineEnd: excerpt.locator.end.line,
+        lineStart: chosen && isTextSource(chosen.source) ? chosen.source.start.line : excerpt.locator.start.line,
+        lineEnd: chosen && isTextSource(chosen.source) ? chosen.source.end.line : excerpt.locator.end.line,
         mode: 'source',
         reason: excerpt.citation,
         documentHash: excerpt.document_hash,
-        selectedHighlightId: spans[0]?.id,
+        selectedHighlightId: chosen?.id,
         highlights,
         nonce,
       },

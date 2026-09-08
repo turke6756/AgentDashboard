@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShelfRow } from '../../../shared/library';
 import type { Workspace } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
+import { EMPTY_LIBRARY_FILTERS } from './LibraryFilters';
+import { useLibraryViewState } from './library-view-state';
 import { openLibraryDocument, openLibraryResult, resolveWorkspaceRelativePath, type LibraryQueryExcerptView } from './library-result-navigation';
 import LibraryPane from './LibraryPane';
 
@@ -19,6 +21,14 @@ const shelfRow = (id: string, shelf_status: ShelfRow['shelf_status'], trust: She
   size: 10, page_count: null, provider: 'codex', agent_id: null, summary: null,
   status: shelf_status === 'error' ? 'error' : shelf_status === 'indexing' ? 'embedding' : 'ready', error_reason: null,
   index_generation: 1, chunker_version: 'v1', tokenizer_version: 'v1', shelf_status,
+});
+
+const queryExcerpt = (document: ShelfRow, chunkId = `chunk-${document.id}`, quote = 'before needle after'): LibraryQueryExcerptView => ({
+  chunk_id: chunkId, doc_id: document.id, document_hash: document.source_hash, title: document.title, type: document.type, trust: document.trust,
+  source_rel_path: document.source_rel_path, reader_rel_path: document.reader_rel_path, quote, citation: `${document.reader_rel_path}:1`,
+  locator: { version: 1, kind: 'text', encoding: 'utf-8', line_start: 1, line_end: 1, start: { line: 1, utf16_column: 0 }, end: { line: 1, utf16_column: quote.length }, canonical_char_start: 0, canonical_char_end: quote.length, quote: { exact: quote, prefix: '', suffix: '' } },
+  keyword_matches: [{ kind: 'exact', chunk_char_start: 7, chunk_char_end: 13, text: 'needle' }], similar_passage: null,
+  scores: { keyword_rank: 1, semantic_rank: null, semantic_score: null, fused_score: 1 },
 });
 
 function installLibraryApi(rows: ShelfRow[], query = vi.fn().mockResolvedValue({ excerpts: [] })) {
@@ -42,6 +52,7 @@ async function renderPane(): Promise<HTMLDivElement> {
 async function settle(milliseconds = 0): Promise<void> { await act(async () => { await new Promise((resolve) => setTimeout(resolve, milliseconds)); }); }
 
 beforeEach(() => {
+  useLibraryViewState.getState().reset();
   useDashboardStore.setState({ workspaces: [workspace], selectedWorkspaceId: workspace.id, openTabs: [], activeTabId: null });
   vi.spyOn(Date, 'now').mockReturnValue(42);
 });
@@ -266,5 +277,109 @@ describe('LibraryPane shelf', () => {
     await act(async () => { valueSetter.call(search, 'second'); search.dispatchEvent(new Event('input', { bubbles: true })); });
     await settle(250);
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('LibraryPane grouped search and focused hand-off', () => {
+  it('renders only grouped matching documents in response order with marks and returned-passage counts', async () => {
+    const first = shelfRow('first', 'ready'); const second = shelfRow('second', 'ready'); const hidden = shelfRow('hidden', 'ready');
+    const query = vi.fn().mockResolvedValue({ excerpts: [queryExcerpt(second, 's2'), queryExcerpt(first, 'f1'), queryExcerpt(second, 's1')] });
+    installLibraryApi([first, second, hidden], query);
+    const pane = await renderPane();
+    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { valueSetter.call(search, 'needle'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle(270);
+    const cards = [...pane.querySelectorAll<HTMLElement>('[data-document-id]')];
+    expect(cards.map((card) => card.dataset.documentId)).toEqual(['second', 'first']);
+    expect(pane.querySelector('[data-document-id="second"]')?.textContent).toContain('2 matching passages');
+    expect(pane.querySelector('[data-document-id="second"] mark')?.textContent).toBe('needle');
+    expect(pane.querySelector('[data-document-id="hidden"]')).toBeNull();
+  });
+
+  it('uses one clicked-document focused query and forwards every highlight with exact-first focus', async () => {
+    const document = shelfRow('focus', 'ready');
+    const browseResult = { excerpts: [queryExcerpt(document)] };
+    const focusedResult = { excerpts: [queryExcerpt(document)], document_highlights: { doc_id: document.id, document_hash: document.source_hash, spans: [
+      { id: 'similar-first', kind: 'similar' as const, chunk_id: 'c2', source: { start: { line: 2, utf16_column: 0 }, end: { line: 2, utf16_column: 5 }, canonical_char_start: 10, canonical_char_end: 15 } },
+      { id: 'exact-later', kind: 'exact' as const, chunk_id: 'c1', source: { start: { line: 4, utf16_column: 2 }, end: { line: 4, utf16_column: 8 }, canonical_char_start: 30, canonical_char_end: 36 } },
+    ] } };
+    const query = vi.fn().mockResolvedValueOnce(browseResult).mockResolvedValueOnce(focusedResult);
+    installLibraryApi([document], query);
+    const openTab = vi.spyOn(useDashboardStore.getState(), 'openTab'); openTab.mockClear();
+    const pane = await renderPane();
+    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { valueSetter.call(search, '  needle  '); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle(270);
+    await act(async () => { pane.querySelector<HTMLButtonElement>('[data-document-id="focus"] > button')!.click(); });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]).toEqual(['ws', expect.objectContaining({ query: 'needle', doc_ids: ['focus'], highlight_doc_id: 'focus', limit: 50, include_untrusted: true })]);
+    expect(openTab, 'REACHABILITY:library:focused-open focused result must enter the Files reader').toHaveBeenCalledWith(
+      expect.any(String), 'C:\\repo', 'windows', undefined, 'ws', expect.objectContaining({ lineStart: 4, selectedHighlightId: 'exact-later', highlights: [expect.objectContaining({ id: 'similar-first' }), expect.objectContaining({ id: 'exact-later' })] }),
+    );
+  });
+
+  it('keeps newer success and error outcomes when older requests settle later', async () => {
+    const document = shelfRow('race', 'ready');
+    let rejectOld!: (reason: Error) => void;
+    const old = new Promise<{ excerpts: LibraryQueryExcerptView[] }>((_resolve, reject) => { rejectOld = reject; });
+    const query = vi.fn().mockReturnValueOnce(old).mockResolvedValueOnce({ excerpts: [queryExcerpt(document, 'new')] });
+    installLibraryApi([document], query);
+    const pane = await renderPane(); const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setValue.call(search, 'old'); search.dispatchEvent(new Event('input', { bubbles: true })); }); await settle(260);
+    await act(async () => { setValue.call(search, 'new'); search.dispatchEvent(new Event('input', { bubbles: true })); }); await settle(260);
+    expect(pane.querySelector('[data-document-id="race"]')).not.toBeNull();
+    await act(async () => { rejectOld(new Error('stale failure')); await Promise.resolve(); });
+    expect(pane.querySelector('[role="alert"]')).toBeNull();
+    expect(pane.querySelector('[data-document-id="race"]')).not.toBeNull();
+  });
+
+  it('restores workspace session fields after the pane unmounts', async () => {
+    installLibraryApi([shelfRow('restore', 'ready')]);
+    let pane = await renderPane();
+    useLibraryViewState.getState().updateWorkspace('ws', { draftQuery: 'remember me', executedQuery: '', sort: 'title', scrollOffset: 44, selectedChunkIds: ['chunk'], filters: { ...EMPTY_LIBRARY_FILTERS, topic: 'agents' } });
+    await settle();
+    act(() => root!.unmount()); root = null; container!.remove(); container = null;
+    pane = await renderPane(); await settle();
+    expect(pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')?.value).toBe('remember me');
+    expect(pane.querySelector<HTMLInputElement>('[aria-label="Topic"]')?.value).toBe('agents');
+    expect(pane.querySelector<HTMLSelectElement>('[aria-label="Sort library"]')?.value).toBe('title');
+    expect(useLibraryViewState.getState().byWorkspace.ws).toMatchObject({ selectedChunkIds: ['chunk'], scrollOffset: 44 });
+  });
+
+  it('distinguishes empty-library, filter-zero, query-zero, and error recovery states', async () => {
+    installLibraryApi([]); let pane = await renderPane();
+    expect(pane.textContent).toContain('Add or drop reports to build your Library');
+    act(() => root!.unmount()); root = null; container!.remove(); container = null; useLibraryViewState.getState().reset();
+    installLibraryApi([shelfRow('ready', 'ready')]); pane = await renderPane();
+    const topic = pane.querySelector<HTMLInputElement>('[aria-label="Topic"]')!;
+    const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setInput.call(topic, 'missing'); topic.dispatchEvent(new Event('input', { bubbles: true })); });
+    expect(pane.textContent).toContain('No documents match these filters');
+    act(() => root!.unmount()); root = null; container!.remove(); container = null; useLibraryViewState.getState().reset();
+    const query = vi.fn().mockResolvedValueOnce({ excerpts: [] }).mockRejectedValueOnce(new Error('offline'));
+    installLibraryApi([shelfRow('ready', 'ready')], query); pane = await renderPane();
+    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    await act(async () => { setInput.call(search, 'nothing'); search.dispatchEvent(new Event('input', { bubbles: true })); }); await settle(260);
+    expect(pane.textContent).toContain('No documents match “nothing”'); expect(pane.textContent).toContain('Clear search');
+    await act(async () => { setInput.call(search, 'broken'); search.dispatchEvent(new Event('input', { bubbles: true })); }); await settle(260);
+    expect(pane.querySelector('[role="alert"]')?.textContent).toContain('Search failed: offline'); expect(pane.textContent).toContain('Retry');
+  });
+
+  it('clears highlights only on tabs matching a non-ready document by hash or normalized path', async () => {
+    const affected = shelfRow('affected', 'ready'); const api = installLibraryApi([affected]); await renderPane();
+    const highlight = [{ id: 'h', kind: 'exact' as const, start: { line: 1, utf16_column: 0 }, end: { line: 1, utf16_column: 1 } }];
+    useDashboardStore.setState({ openTabs: [
+      { id: 'hash', filePath: 'C:\\elsewhere\\hash.md', rootDirectory: 'C:\\repo', pathType: 'windows', label: 'hash', focusRange: { lineStart: 1, lineEnd: 1, nonce: 1, documentHash: affected.source_hash, highlights: highlight } },
+      { id: 'path', filePath: 'c:/REPO/.lares/library/inbox/AFFECTED.md', rootDirectory: 'C:\\repo', pathType: 'windows', label: 'path', pdfFocus: { pageIndex: 0, nonce: 1, documentHash: 'other', highlights: [] } },
+      { id: 'other', filePath: 'C:\\repo\\other.md', rootDirectory: 'C:\\repo', pathType: 'windows', label: 'other', focusRange: { lineStart: 1, lineEnd: 1, nonce: 1, documentHash: 'other', highlights: highlight } },
+    ] as never });
+    await act(async () => { api.emitProgress({ workspace_id: 'ws', document_id: affected.id, status: 'embedding' }); });
+    const tabs = useDashboardStore.getState().openTabs;
+    expect(tabs.find((tab) => tab.id === 'hash')?.focusRange?.highlights).toEqual([]);
+    expect(tabs.find((tab) => tab.id === 'path')?.pdfFocus?.highlights).toEqual([]);
+    expect(tabs.find((tab) => tab.id === 'other')?.focusRange?.highlights).toEqual(highlight);
   });
 });

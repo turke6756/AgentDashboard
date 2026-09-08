@@ -73,7 +73,10 @@ function makeTextModel() {
     getPageInfo: vi.fn(async (pageIndex: number) => ({
       pageIndex, cropWidth: 612, cropHeight: 792, rotation: 0,
     })),
-    getPageText: vi.fn(async (pageIndex: number) => ({ pageIndex, text: '', items: [] })),
+    getPageText: vi.fn(async (pageIndex: number) => ({ pageIndex, text: 'needle other', items: [
+      { itemIndex: 0, str: 'needle', charStart: 0, charEnd: 6, rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.1 }, dir: 'ltr', hasEOL: false },
+      { itemIndex: 1, str: 'other', charStart: 7, charEnd: 12, rect: { x: 0.4, y: 0.1, width: 0.2, height: 0.1 }, dir: 'ltr', hasEOL: false },
+    ] })),
     destroy: vi.fn(),
   };
 }
@@ -91,6 +94,7 @@ const flush = () => act(async () => {
 
 beforeEach(() => {
   slotMock.props.length = 0;
+  fallbackMock.props = null;
   engineMock.openDocument.mockReset();
   engineMock.closeDocument.mockClear();
   textModelMock.open.mockReset();
@@ -187,6 +191,28 @@ describe('PdfRenderer orchestrator', () => {
     await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\other.pdf" pathType="windows" focusRequest={focusRequest} />));
     await flush();
     expect(fallbackMock.props?.focusRequest).toEqual(focusRequest);
+  });
+
+  it('reapplies every highlight and reactivates the chosen page for a fresh nonce', async () => {
+    engineMock.openDocument.mockResolvedValue({ docId: 7, pageCount: 3, sizes: new Map() });
+    const model = makeTextModel(); textModelMock.open.mockResolvedValue(model);
+    const highlights = [
+      { id: 'exact', kind: 'exact' as const, pageIndex: 2, selector: { exact: 'needle', prefix: '', suffix: ' other' } },
+      { id: 'similar', kind: 'similar' as const, pageIndex: 1, selector: { exact: 'other', prefix: 'needle ', suffix: '' } },
+    ];
+    await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\paper.pdf" pathType="windows" focusRequest={{ pageIndex: 2, documentHash: 'hash', nonce: 20, highlights }} />));
+    await flush();
+    const firstResolveCount = model.getPageText.mock.calls.length;
+    expect(slotMock.props.some((props) => props.pageIndex === 2 && props.active === true)).toBe(true);
+    expect(slotMock.props.some((props) => Array.isArray(props.queryHighlights) && (props.queryHighlights as unknown[]).some((highlight) => (highlight as { id: string }).id === 'exact'))).toBe(true);
+    await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\paper.pdf" pathType="windows" focusRequest={{ pageIndex: 1, documentHash: 'hash', nonce: 21, highlights }} />));
+    await flush();
+    expect(model.getPageText.mock.calls.length).toBeGreaterThan(firstResolveCount);
+    expect(slotMock.props.some((props) => props.pageIndex === 1 && props.active === true)).toBe(true);
+    engineMock.openDocument.mockRejectedValue(new Error('fallback'));
+    await act(async () => root.render(<PdfRenderer filePath="C:\\workspace\\fallback.pdf" pathType="windows" focusRequest={{ pageIndex: 1, documentHash: 'hash', nonce: 21, highlights }} />));
+    await flush();
+    expect(fallbackMock.props?.focusRequest).toMatchObject({ pageIndex: 1, nonce: 21, highlights });
   });
 
   it('the toolbar Open-externally control routes to the system viewer', async () => {
