@@ -101,6 +101,7 @@ export function createLibraryEmbedderClient(deps: LibraryEmbedderClientDeps = pr
   let generationCounter = 0;
   let requestCounter = 0;
   let active: ChildGeneration | undefined;
+  const retired = new Set<ChildGeneration>();
   const pending = new Map<number, PendingRequest>();
 
   const rejectGeneration = (generation: ChildGeneration, primary?: { id: number; error: Error }): void => {
@@ -118,8 +119,15 @@ export function createLibraryEmbedderClient(deps: LibraryEmbedderClientDeps = pr
     if (generation.retired) return;
     generation.retired = true;
     if (active === generation) active = undefined;
+    retired.add(generation);
     rejectGeneration(generation, primary);
     try { generation.child.kill(); } catch { generation.markExited(); }
+  };
+
+  const finishGeneration = (generation: ChildGeneration): void => {
+    generation.markExited();
+    retired.delete(generation);
+    generation.child.removeAllListeners();
   };
 
   const spawnGeneration = (): ChildGeneration => {
@@ -150,14 +158,14 @@ export function createLibraryEmbedderClient(deps: LibraryEmbedderClientDeps = pr
     });
     child.once('error', (error: Error) => {
       retire(generation, { id: -1, error: new Error(`Library embedder helper failed: ${error.message}`) });
-      generation.markExited();
+      finishGeneration(generation);
     });
     child.once('exit', (code: number | null) => {
-      generation.markExited();
       if (!generation.retired) {
         const detail = generation.stderr.trim();
         retire(generation, { id: -1, error: new Error(`Library embedder exited ${code}${detail ? `: ${detail}` : ''}`) });
       }
+      finishGeneration(generation);
     });
     if (generation.kind === 'node') {
       child.unref?.();
@@ -190,17 +198,27 @@ export function createLibraryEmbedderClient(deps: LibraryEmbedderClientDeps = pr
   };
 
   const shutdown = async (): Promise<void> => {
-    const generation = active;
-    if (!generation) return;
-    retire(generation, { id: -1, error: new Error('Library embedder shut down') });
-    await Promise.race([
-      generation.exited,
-      new Promise<void>((resolve) => {
-        const timer = deps.setTimer(resolve, deps.killFallbackMs);
-        generation.exited.finally(() => deps.clearTimer(timer));
-      }),
-    ]);
-    generation.child.removeAllListeners();
+    const generations = new Set(retired);
+    if (active) {
+      const generation = active;
+      retire(generation, { id: -1, error: new Error('Library embedder shut down') });
+      generations.add(generation);
+    }
+    await Promise.all([...generations].map(async (generation) => {
+      let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          generation.exited,
+          new Promise<void>((resolve) => {
+            fallbackTimer = deps.setTimer(resolve, deps.killFallbackMs);
+          }),
+        ]);
+      } finally {
+        if (fallbackTimer) deps.clearTimer(fallbackTimer);
+        retired.delete(generation);
+        generation.child.removeAllListeners();
+      }
+    }));
   };
 
   return { embedTexts, shutdown };

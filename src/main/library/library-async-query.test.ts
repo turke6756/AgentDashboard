@@ -50,6 +50,7 @@ function workspaceRecord(root: string) {
 test('production IPC query yields to the main loop and awaits query completion', async () => {
   const root = workspace();
   const handlers = new Map<string, (...args: any[]) => unknown>();
+  let opened: LibraryStore | undefined;
   let release!: () => void;
   const delayed = new Promise<void>((resolve) => { release = resolve; });
   try {
@@ -59,7 +60,10 @@ test('production IPC query yields to the main loop and awaits query completion',
       () => undefined,
       undefined,
       async (store, args) => {
+        opened = store;
+        assert.equal(store.database.open, true);
         await delayed;
+        assert.equal(store.database.open, true, 'REACHABILITY:library:query-async IPC store stays open across await');
         return queryLibrary(store, { ...args, mode: 'keyword' });
       },
     );
@@ -67,11 +71,15 @@ test('production IPC query yields to the main loop and awaits query completion',
     assert.ok(handler, 'REACHABILITY:library:query-async production registration must expose library:query');
     let tickRan = false;
     setTimeout(() => { tickRan = true; release(); }, 0);
-    const result = await handler!({}, 'workspace', { query: 'needle', mode: 'semantic' }) as Awaited<ReturnType<typeof queryLibrary>>;
+    const pending = handler!({}, 'workspace', { query: 'needle', mode: 'semantic' }) as Promise<Awaited<ReturnType<typeof queryLibrary>>>;
+    assert.equal(opened?.database.open, true, 'REACHABILITY:library:query-async IPC store remains open while query is pending');
+    const result = await pending;
     assert.equal(tickRan, true, 'REACHABILITY:library:query-async unresolved embedding must yield to the main loop');
     assert.equal(result.excerpts[0]?.chunk_id, 'chunk');
+    assert.equal(opened?.database.open, false, 'REACHABILITY:library:query-async IPC store closes after query settles');
   } finally {
     resetLibraryBroadcastForTests();
+    if (opened?.database.open) closeLibraryStore(opened);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -15,6 +15,8 @@ class FakeChild extends EventEmitter implements LibraryEmbedderChild {
   readonly channel = { unrefCalls: 0, unref: () => { this.channel.unrefCalls += 1; } };
   unrefCalls = 0;
   killCalls = 0;
+  removeAllListenersCalls = 0;
+  constructor(private readonly exitOnKill = true) { super(); }
   send(message: unknown): boolean {
     this.sent.push(message as SentRequest);
     return true;
@@ -25,8 +27,12 @@ class FakeChild extends EventEmitter implements LibraryEmbedderChild {
   unref(): void { this.unrefCalls += 1; }
   kill(): boolean {
     this.killCalls += 1;
-    this.emit('exit', 0);
+    if (this.exitOnKill) this.emit('exit', 0);
     return true;
+  }
+  override removeAllListeners(eventName?: string | symbol): this {
+    this.removeAllListenersCalls += 1;
+    return eventName === undefined ? super.removeAllListeners() : super.removeAllListeners(eventName);
   }
 }
 
@@ -34,12 +40,12 @@ function vector(value: number): number[] {
   return Array.from({ length: LIBRARY_EMBEDDING_DIMENSIONS }, () => value);
 }
 
-function harness(kind: 'node' | 'utility' = 'node') {
+function harness(kind: 'node' | 'utility' = 'node', exitOnKill = true) {
   const children: FakeChild[] = [];
   const timers = new Map<object, () => void>();
   const deps: LibraryEmbedderClientDeps = {
     spawnChild: () => {
-      const child = new FakeChild();
+      const child = new FakeChild(exitOnKill);
       children.push(child);
       return { child, kind };
     },
@@ -124,4 +130,25 @@ test('node handles unref, unexpected exit respawns, and shutdown is idempotent',
   await assert.rejects(next, /shut down|recycled/);
   await h.client.shutdown();
   assert.equal(h.timers.size, 0);
+});
+
+test('shutdown drains a timed-out generation that has not exited and clears fallback state', async () => {
+  const h = harness('utility', false);
+  const pending = h.client.embedTexts(['held'], 'model');
+  const child = h.children[0];
+  h.expireFirst();
+  await assert.rejects(pending, /timed out/);
+  assert.equal(child.killCalls, 1, 'timeout must retire and kill the generation');
+  assert.equal(h.timers.size, 0, 'request timers must be cleared during retirement');
+
+  let shutdownSettled = false;
+  const shutdown = h.client.shutdown().then(() => { shutdownSettled = true; });
+  await Promise.resolve();
+  assert.equal(shutdownSettled, false, 'REACHABILITY:embedderShutdown shutdown must wait for a retired child');
+  assert.equal(h.timers.size, 1, 'shutdown must install a bounded kill fallback for the retired child');
+  h.expireFirst();
+  await shutdown;
+  assert.equal(child.removeAllListenersCalls, 1, 'shutdown must clear listeners after the bounded wait');
+  assert.equal(child.eventNames().length, 0);
+  assert.equal(h.timers.size, 0, 'shutdown must clear its fallback timer');
 });
