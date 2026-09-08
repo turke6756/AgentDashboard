@@ -2,7 +2,7 @@ import assert from 'assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { embedLibraryTexts, encodeLibraryEmbedding } from './library-embedder';
+import { embedLibraryTexts, encodeLibraryEmbedding, shutdownLibraryEmbedder } from './library-embedder';
 import {
   closeLibraryStore,
   insertLibraryChunk,
@@ -46,19 +46,20 @@ interface QualityCase { id: string; passage: string; query: string }
 
     let hits = 0;
     const misses: string[] = [];
-    cases.forEach((item, index) => {
+    for (let index = 0; index < cases.length; index += 1) {
+      const item = cases[index];
       const query = item.query.replace(/[?]/g, '');
-      const result = queryLibrary(store, {
+      const result = await queryLibrary(store, {
         query, mode: 'hybrid', limit: 3, query_embedding: embedded.vectors[cases.length + index],
       });
       if (result.excerpts.some((excerpt) => excerpt.doc_id === item.id)) hits += 1;
       else misses.push(`${item.id}->${result.excerpts.map((excerpt) => excerpt.doc_id).join(',')}`);
       assert.ok(result.excerpts.every((excerpt) => excerpt.scores.semantic_rank !== null),
         'REACHABILITY:queryLibrary:hybrid every hybrid candidate must carry a semantic rank');
-    });
+    }
     assert.ok(hits >= 18, `REACHABILITY:queryLibrary:hybrid expected at least 18/20 top-3 hits, observed ${hits}/20 (${misses.join('; ')})`);
 
-    const highlighted = queryLibrary(store, {
+    const highlighted = await queryLibrary(store, {
       query: cases[0].query.replace(/[?]/g, ''), mode: 'hybrid', limit: 3,
       query_embedding: embedded.vectors[cases.length], highlight_doc_id: cases[0].id,
     });
@@ -68,6 +69,7 @@ interface QualityCase { id: string; passage: string; query: string }
     console.log('All 4 library hybrid tests passed');
   } finally {
     closeLibraryStore(store);
+    await shutdownLibraryEmbedder();
     fs.rmSync(root, { recursive: true, force: true });
   }
 })().catch((error) => {

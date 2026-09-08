@@ -61,6 +61,7 @@ import { closeAllWatchers as closeAllFsWatchers } from './fs-watcher';
 import { startPlansWatcher, PlansWatcher } from './plans-watcher';
 import { startProposalsWatcher, type ProposalsWatcher } from './proposals-watcher';
 import { startLibraryReportWatcher, type LibraryReportWatcher } from './library/library-report-watcher';
+import { shutdownLibraryEmbedder } from './library/library-embedder';
 import { runProposalScan } from './proposal-scan';
 import {
   BadgeInvalidationCoordinator,
@@ -1515,6 +1516,7 @@ async function shutdownApp(): Promise<void> {
   apiServer?.stop();
   proposalsWatcher?.stop();
   libraryReportWatcher?.stop();
+  await shutdownLibraryEmbedder();
   wsServer?.stop();
   disposeKernelClient();
   void shutdownJupyterServer();

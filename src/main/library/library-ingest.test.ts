@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import type { LibraryProgressEvent } from '../../shared/library';
 import { createLibraryIngestor, ingestLibraryDocuments } from './library-ingest';
-import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
+import { LIBRARY_EMBEDDING_DIMENSIONS, shutdownLibraryEmbedder } from './library-embedder';
 import { registerProductionLibraryIpc } from './library-ipc';
 import { closeLibraryStore, listLibraryChunks, openLibraryStore } from './library-store';
+
+after(async () => {
+  await shutdownLibraryEmbedder();
+});
 
 function workspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-ingest-'));

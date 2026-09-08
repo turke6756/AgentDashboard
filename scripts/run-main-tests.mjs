@@ -390,6 +390,8 @@ const TESTS = [
   'dist/main/main/library/library-citation.test.js',
   'dist/main/main/library/library-query.test.js',
   'dist/main/main/library/library-query-integration.test.js',
+  'dist/main/main/library/library-embedder-client.test.js',
+  'dist/main/main/library/library-async-query.test.js',
   'dist/main/main/library/library-embedder.test.js',
   'dist/main/main/library/library-hybrid.test.js',
   // MCP Library contract: match-centered multi-excerpt projection with fair quote budgeting.
@@ -875,6 +877,8 @@ for (const file of testsToRun) {
     file.endsWith('/library-report-watcher.test.js') ||
     file.endsWith('/library-query.test.js') ||
     file.endsWith('/library-query-integration.test.js') ||
+    file.endsWith('/library-embedder-client.test.js') ||
+    file.endsWith('/library-async-query.test.js') ||
     file.endsWith('/library-embedder.test.js') ||
     file.endsWith('/library-hybrid.test.js') ||
     file.endsWith('/pdf-extractor.test.js') ||

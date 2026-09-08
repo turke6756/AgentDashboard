@@ -5,6 +5,7 @@ import path from 'path';
 import { Readable } from 'stream';
 import { closeLibraryStore, insertLibraryChunk, openLibraryStore, upsertLibraryDocument } from './library-store';
 import { LIBRARY_CHANNELS, registerLibraryIpc } from './library-ipc';
+import { shutdownLibraryEmbedder } from './library-embedder';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-route-'));
 const appData = path.join(root, 'appdata');
@@ -84,7 +85,8 @@ function request(body: unknown): import('http').IncomingMessage {
   assert.strictEqual(denied?.code, 'library-read-grant-required');
   assert.strictEqual(await registerLibraryRoutes({ method: 'POST', path: '/api/other', request: request({}) }), undefined);
   console.log('All 8 library query integration tests passed');
-})().finally(() => {
+})().finally(async () => {
+  await shutdownLibraryEmbedder();
   db.closeDatabaseForTests();
   fs.rmSync(root, { recursive: true, force: true });
 }).catch((error) => { console.error(error); process.exit(1); });

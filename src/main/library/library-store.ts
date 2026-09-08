@@ -15,7 +15,7 @@ import {
 import { ANCHOR_CONTEXT_CHARS } from '../../shared/anchor-constants';
 import { CHUNKER_VERSION, TOKENIZER_VERSION, type LibraryChunk } from './library-chunker';
 import { formatLibraryCitation } from './library-citation';
-import { decodeLibraryEmbedding, embedLibraryTextSync, LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
+import { decodeLibraryEmbedding, embedLibraryText, LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 
 export const LIBRARY_SCHEMA_VERSION = 1;
 export const LIBRARY_CHUNKER_VERSION = CHUNKER_VERSION;
@@ -617,8 +617,8 @@ function projectPassage(row: Pick<KeywordRow, 'content'>, locator: LibraryChunkL
   };
 }
 
-/** FTS5 keyword retrieval shared by the pane IPC and the agent-facing HTTP projection. */
-export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): LibraryQueryResult {
+/** Pure retrieval/scoring seam. Callers must supply query_embedding for semantic work. */
+export function queryLibraryWithEmbedding(store: LibraryStore, args: QueryLibraryArgs): LibraryQueryResult {
   const mode = args.mode ?? 'hybrid';
   const query = args.query.trim();
   const result: LibraryQueryResult = { query: args.query, mode, excerpts: [] };
@@ -626,7 +626,7 @@ export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): Libra
   const [before, after] = mode === 'semantic' ? ['', ''] : markerPair(store);
   const ftsQuery = mode === 'hybrid' ? `"${query.replace(/"/g, '""')}"` : keywordFtsQuery(query);
   const keyword = mode === 'semantic' ? [] : keywordRows(store, { ...args, query: ftsQuery }, before, after).slice(0, 50);
-  const queryEmbedding = mode === 'keyword' ? undefined : args.query_embedding ?? embedLibraryTextSync(query);
+  const queryEmbedding = mode === 'keyword' ? undefined : args.query_embedding;
   const semantic = queryEmbedding ? semanticRows(store, args, queryEmbedding) : [];
   const keywordRanks = new Map(keyword.map((row, index) => [row.chunk_id, index + 1]));
   const semanticRanks = new Map(semantic.map((row, index) => [row.chunk_id, index + 1]));
@@ -706,4 +706,23 @@ export function queryLibrary(store: LibraryStore, args: QueryLibraryArgs): Libra
     result.document_highlights = { doc_id: args.highlight_doc_id, document_hash: highlightRow.document_hash, spans: highlightSpans };
   }
   return result;
+}
+
+export interface QueryLibraryDeps {
+  embedText(text: string): Promise<Float32Array>;
+}
+
+/** FTS5 keyword retrieval shared by the pane IPC and the agent-facing HTTP projection. */
+export async function queryLibrary(
+  store: LibraryStore,
+  args: QueryLibraryArgs,
+  deps: QueryLibraryDeps = { embedText: embedLibraryText },
+): Promise<LibraryQueryResult> {
+  const mode = args.mode ?? 'hybrid';
+  const query = args.query.trim();
+  if (!query || mode === 'keyword' || args.query_embedding) {
+    return queryLibraryWithEmbedding(store, args);
+  }
+  const queryEmbedding = await deps.embedText(query);
+  return queryLibraryWithEmbedding(store, { ...args, query_embedding: queryEmbedding });
 }

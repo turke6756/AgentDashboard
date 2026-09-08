@@ -48,6 +48,7 @@ export function registerLibraryIpc(
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
   sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
+  runQuery: typeof queryLibrary = queryLibrary,
 ): void {
   const requireWorkspaceId = (workspaceId: unknown): string => {
     if (typeof workspaceId !== 'string' || workspaceId.trim().length === 0) {
@@ -96,7 +97,7 @@ export function registerLibraryIpc(
   ));
   ipc.handle(LIBRARY_CHANNELS.query, (_event, workspaceId: string, args: QueryLibraryArgs) => withStore(
     workspaceId,
-    (_root, store) => queryLibrary(store, args),
+    async (_root, store) => await runQuery(store, args),
   ));
   ipc.handle(LIBRARY_CHANNELS.saveNote, (_event, workspaceId: string, input: SaveLibraryNoteInput) => withStore(
     workspaceId,
@@ -110,8 +111,9 @@ export function registerProductionLibraryIpc(
   resolveWorkspace: (workspaceId: string) => LibraryWorkspace | null,
   sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
+  runQuery: typeof queryLibrary = queryLibrary,
 ): void {
   productionBroadcaster = sendProgress;
   for (const event of pendingBroadcasts.splice(0)) sendProgress(event);
-  registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan);
+  registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan, runQuery);
 }

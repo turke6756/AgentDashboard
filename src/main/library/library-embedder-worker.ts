@@ -86,23 +86,22 @@ async function embed(request: EmbedRequest): Promise<EmbedResponse> {
 }
 
 const parentPort = (process as NodeJS.Process & { parentPort?: NodeJS.EventEmitter & { postMessage(value: unknown): void } }).parentPort;
+let embedTail = Promise.resolve();
+
+function enqueue(request: EmbedRequest, send: (response: EmbedResponse) => void): void {
+  const result = embedTail.then(() => embed(request));
+  embedTail = result.then(() => undefined, () => undefined);
+  void result.then(send);
+}
+
 if (parentPort) {
   parentPort.on('message', (event: any) => {
     const request = (event?.data ?? event) as EmbedRequest;
-    void embed(request).then((response) => parentPort.postMessage(response));
+    enqueue(request, (response) => parentPort.postMessage(response));
   });
 } else if (typeof process.send === 'function') {
   const send = process.send.bind(process);
   process.on('message', (request: EmbedRequest) => {
-    void embed(request).then((response) => send(response));
-  });
-} else if (require.main === module) {
-  const encoded = process.argv[2];
-  const modelRoot = process.argv[3];
-  if (!encoded || !modelRoot) throw new Error('Expected base64 text JSON and model root');
-  const texts = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as string[];
-  void embed({ id: 1, modelRoot, texts }).then((response) => {
-    process.stdout.write(JSON.stringify(response));
-    if (response.error) process.exitCode = 1;
+    enqueue(request, (response) => send(response));
   });
 }

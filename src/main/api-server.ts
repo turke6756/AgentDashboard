@@ -326,8 +326,23 @@ export interface LibraryRouteResult {
   value: unknown;
 }
 
+export interface LibraryRouteDeps {
+  getWorkspace: typeof getWorkspace;
+  openStore: typeof openLibraryStore;
+  closeStore: typeof closeLibraryStore;
+  query: typeof queryLibrary;
+}
+
 /** Production Library HTTP seam used by the MCP proxy. Undefined means no route matched. */
-export async function registerLibraryRoutes(input: LibraryRouteRequest): Promise<LibraryRouteResult | undefined> {
+export async function registerLibraryRoutes(
+  input: LibraryRouteRequest,
+  deps: LibraryRouteDeps = {
+    getWorkspace,
+    openStore: openLibraryStore,
+    closeStore: closeLibraryStore,
+    query: queryLibrary,
+  },
+): Promise<LibraryRouteResult | undefined> {
   if (input.path !== '/api/library/list' && input.path !== '/api/library/query') return undefined;
   const claim = input.capability;
   const grants = claim ? toolsetsForLane(claim.privilegeLane).split(',') : [];
@@ -337,9 +352,9 @@ export async function registerLibraryRoutes(input: LibraryRouteRequest): Promise
       code: 'library-read-grant-required',
     });
   }
-  const workspace = getWorkspace(claim.workspaceId);
+  const workspace = deps.getWorkspace(claim.workspaceId);
   if (!workspace) throw Object.assign(new Error('Workspace not found'), { statusCode: 404 });
-  const store = openLibraryStore(workspace.path);
+  const store = deps.openStore(workspace.path);
   try {
     if (input.path === '/api/library/list' && input.method === 'POST') {
       const body = JSON.parse(await readBody(input.request)) as {
@@ -364,11 +379,11 @@ export async function registerLibraryRoutes(input: LibraryRouteRequest): Promise
     }
     if (input.path === '/api/library/query' && input.method === 'POST') {
       const body = JSON.parse(await readBody(input.request)) as QueryLibraryArgs;
-      return { matched: true, value: queryLibrary(store, body) };
+      return { matched: true, value: await deps.query(store, body) };
     }
     throw Object.assign(new Error('Method not allowed'), { statusCode: 405, code: 'method-not-allowed' });
   } finally {
-    closeLibraryStore(store);
+    deps.closeStore(store);
   }
 }
 
