@@ -7,7 +7,7 @@ import test from 'node:test';
 import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
 import { rescanLibraryReports } from './library-rescan';
-import { closeLibraryStore, openLibraryStore } from './library-store';
+import { closeLibraryStore, listLibraryDocuments, openLibraryStore, upsertLibraryDocument } from './library-store';
 
 test('rescan walks both report roots serially and is idempotent on an unchanged tree', async (t) => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lares-library-rescan-'));
@@ -56,6 +56,18 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
 
   const second = await secondPromise;
   assert.deepEqual(second, { scanned: 2, ingested: 0, skipped: 2, failed: 0 });
+
+  const store = openLibraryStore(workspaceRoot);
+  try {
+    const stale = listLibraryDocuments(store, { include_untrusted: true })
+      .find((row) => row.source_rel_path === '.lares/library/inbox/alpha.md');
+    assert.ok(stale);
+    upsertLibraryDocument(store, { ...stale, chunker_version: 'paragraph-window-v1' });
+  } finally {
+    closeLibraryStore(store);
+  }
+  const third = await handler({} as never, 'workspace-1');
+  assert.deepEqual(third, { scanned: 2, ingested: 1, skipped: 1, failed: 0 }, 'Rescan must ingest a row whose chunker contract is stale');
 });
 
 test('rescan retries a report whose previous ingest left an error row', async (t) => {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'; import crypto from 'node:crypto'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import test from 'node:test';
+import { CHUNKER_VERSION, TOKENIZER_VERSION } from './library-chunker';
 import { closeLibraryStore, openLibraryStore, type LibraryDocumentRow, type LibraryStore, upsertLibraryDocument } from './library-store';
 import type { LibraryReportSourcesInventory } from './library-report-sources'; import { listLibraryShelf } from './library-shelf';
-function row(id: string, relPath: string, content: string, overrides: Partial<LibraryDocumentRow> = {}): LibraryDocumentRow { return { id, type: 'md', title: id, created: '2026-09-06T00:00:00.000Z', topics_json: '[]', trust: 'user-trusted', source_rel_path: relPath, reader_rel_path: relPath, source_hash: crypto.createHash('sha256').update(content).digest('hex'), size: Buffer.byteLength(content), page_count: null, provider: null, agent_id: null, summary: null, status: 'ready', error_reason: null, index_generation: 0, chunker_version: 'v1', tokenizer_version: 'v1', ...overrides }; }
+function row(id: string, relPath: string, content: string, overrides: Partial<LibraryDocumentRow> = {}): LibraryDocumentRow { return { id, type: 'md', title: id, created: '2026-09-06T00:00:00.000Z', topics_json: '[]', trust: 'user-trusted', source_rel_path: relPath, reader_rel_path: relPath, source_hash: crypto.createHash('sha256').update(content).digest('hex'), size: Buffer.byteLength(content), page_count: null, provider: null, agent_id: null, summary: null, status: 'ready', error_reason: null, index_generation: 0, chunker_version: CHUNKER_VERSION, tokenizer_version: TOKENIZER_VERSION, ...overrides }; }
 function inventory(workspace: string, inbox: Array<[string, string]>, cleared: Array<[string, string]>): LibraryReportSourcesInventory {
   const make = (root: 'inbox' | 'cleared', files: Array<[string, string]>) => ({ root, root_path: path.join(workspace, '.lares', 'library', root), files: files.map(([rel_path, content], index) => ({ rel_path, abs_path: path.join(workspace, '.lares', 'library', root, rel_path), size: Buffer.byteLength(content), mtimeMs: 1000 + index })), directories: [], health: 'complete' as const }); return { inbox: make('inbox', inbox), cleared: make('cleared', cleared) };
 }
@@ -17,6 +18,11 @@ test('size mismatch avoids hashing and path+size+mtime cache avoids a second rea
   const f = fixture(); t.after(f.close); upsertLibraryDocument(f.store, row('cached','.lares/library/cleared/cached.md','cache')); upsertLibraryDocument(f.store,row('size-change','.lares/library/inbox/size.md','longer'));
   let reads=0; const source=inventory(f.workspace,[['size.md','x']],[['cached.md','cache']]); const options={inventory:source,readFile:async()=>{reads+=1;return Buffer.from('cache');}};
   await listLibraryShelf(f.workspace,f.store,options); const rows=await listLibraryShelf(f.workspace,f.store,options); assert.equal(rows.find((item)=>item.id==='size-change')?.shelf_status,'stale'); assert.equal(reads,1);
+});
+test('matching disk content is stale for an old chunker contract and ready for the current contract', async (t) => {
+  const f=fixture(); t.after(f.close); upsertLibraryDocument(f.store,row('old-chunker','.lares/library/cleared/old.md','same',{chunker_version:'paragraph-window-v1'})); upsertLibraryDocument(f.store,row('current','.lares/library/cleared/current.md','same'));
+  const rows=await listLibraryShelf(f.workspace,f.store,{inventory:inventory(f.workspace,[],[['old.md','same'],['current.md','same']]),readFile:async()=>Buffer.from('same')});
+  assert.equal(rows.find((item)=>item.id==='old-chunker')?.shelf_status,'stale'); assert.equal(rows.find((item)=>item.id==='current')?.shelf_status,'ready');
 });
 test('duplicate paths select highest generation then id and diagnose ids and path', async (t) => {
   const f=fixture(); t.after(f.close); const rel='.lares/library/cleared/duplicate.md'; upsertLibraryDocument(f.store,row('alpha',rel,'same',{index_generation:2})); upsertLibraryDocument(f.store,row('zulu',rel,'same',{index_generation:2})); const warnings:string[]=[];

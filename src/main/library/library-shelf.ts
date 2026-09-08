@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LibraryDocumentStatus, ShelfRow, ShelfStatus } from '../../shared/library';
+import { CHUNKER_VERSION, TOKENIZER_VERSION } from './library-chunker';
 import { listLibraryDocuments, listLibraryDocumentsByRelPaths, type LibraryDocumentRow, type LibraryStore } from './library-store';
 import { listLibraryReportSources, normalizeLibraryReportKey, type LibraryReportFile, type LibraryReportRoot, type LibraryReportSourcesInventory } from './library-report-sources';
 
@@ -39,6 +40,7 @@ export function invalidateLibraryShelfHashes(filePaths: Iterable<string>): void 
 }
 function statusFor(row: LibraryDocumentRow | undefined, diskSize: number, hash?: string): ShelfStatus {
   if (!row) return 'pending'; if (row.size !== diskSize || hash !== row.source_hash) return 'stale';
+  if (row.chunker_version !== CHUNKER_VERSION || row.tokenizer_version !== TOKENIZER_VERSION) return 'stale';
   if (INDEXING_STATUSES.has(row.status as LibraryDocumentStatus)) return 'indexing'; if (row.status === 'error') return 'error'; if (row.status === 'ready') return 'ready'; return 'error';
 }
 function pendingRow(relPath: string, file: LibraryReportFile, root: LibraryReportRoot): ShelfRow {
