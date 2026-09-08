@@ -332,13 +332,23 @@ test('an ingest throw only retries when dirty work changes the tuple', async () 
   h.watcher.stop();
 });
 
-test('a persistently failing tuple attempts once and releases Rescan or IPC waiters', async () => {
+test('a failed candidate hands off automatic retry, continues to a sibling, and releases Rescan or IPC waiters', async () => {
   let attempts = 0;
+  const failures: string[] = [];
   const h = harness({
-    ingest: async () => { attempts += 1; throw new Error('persistent failure'); },
+    ingest: async ({ sourcePath }) => {
+      attempts += 1;
+      if (sourcePath.endsWith('poison.md')) throw new Error('persistent failure');
+      h.ingests.push({ sourcePath, trigger: 'report-arrival' });
+    },
+    listDocuments: () => [{ source_rel_path: '.lares/library/inbox/poison.md', attempt_count: 1 } as LibraryDocumentRow],
+    onAutomaticFailure: (workspaceId, attemptCount) => failures.push(`${workspaceId}:${attemptCount}`),
   });
   await h.watcher.start();
-  h.setInventory(inventory([{ root: 'inbox', name: 'poison.md', size: 1, mtimeMs: 1 }]));
+  h.setInventory(inventory([
+    { root: 'inbox', name: 'poison.md', size: 1, mtimeMs: 1 },
+    { root: 'inbox', name: 'healthy.md', size: 1, mtimeMs: 1 },
+  ]));
   const sourcePath = path.join(workspace.path, '.lares', 'library', 'inbox', 'poison.md');
   h.listeners[0]({ type: 'change', path: sourcePath, parentDir: workspace.path });
   h.scheduler.advance(LIBRARY_REPORT_COALESCE_MS + LIBRARY_REPORT_SETTLE_MS);
@@ -347,7 +357,9 @@ test('a persistently failing tuple attempts once and releases Rescan or IPC wait
   await withLibraryIngestLock(workspace.path, async () => { waiterRan = true; });
   h.scheduler.advance(LIBRARY_REPORT_SETTLE_MS * 10);
   await flush();
-  assert.equal(attempts, 1, 'an unchanged failed tuple must not auto-retry');
+  assert.equal(attempts, 2, 'a poison candidate must not block its settled sibling');
+  assert.deepEqual(h.ingests.map(({ sourcePath }) => path.basename(sourcePath)), ['healthy.md']);
+  assert.deepEqual(failures, ['workspace-1:1']);
   assert.equal(waiterRan, true, 'a failed watcher ingest must release the shared lock for Rescan/IPC');
   h.watcher.stop();
 });

@@ -51,3 +51,26 @@ test('production library:rescan IPC takes only workspaceId and returns walk coun
   assert.ok(handler);
   assert.deepEqual(await handler({} as never, 'workspace-1'), { scanned: 0, ingested: 0, skipped: 0, failed: 0 });
 });
+
+test('production library:rescan delegates directly to the coordinator as manual without opening an IPC store', async () => {
+  const handlers = new Map<string, (...args: any[]) => unknown>();
+  const calls: unknown[] = [];
+  let workspaceResolutions = 0;
+  registerProductionLibraryIpc(
+    { handle: (channel, listener) => handlers.set(channel, listener) },
+    () => { workspaceResolutions += 1; return null; },
+    () => undefined,
+    undefined,
+    undefined,
+    { run: async (workspaceId, initiator) => { calls.push({ workspaceId, initiator }); return { scanned: 1, ingested: 0, skipped: 1, failed: 0 }; } },
+  );
+  const handler = handlers.get(LIBRARY_CHANNELS.rescan);
+  assert.ok(handler, 'REACHABILITY:library:rescan-manual production registration missing');
+  assert.deepEqual(
+    await handler({} as never, 'workspace-1'),
+    { scanned: 1, ingested: 0, skipped: 1, failed: 0 },
+    'REACHABILITY:library:rescan-manual coordinator result did not reach the IPC caller',
+  );
+  assert.deepEqual(calls, [{ workspaceId: 'workspace-1', initiator: 'manual' }], 'REACHABILITY:library:rescan-manual must reach coordinator.run');
+  assert.equal(workspaceResolutions, 0, 'the IPC layer must not open or resolve an outer store');
+});

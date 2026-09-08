@@ -4,6 +4,7 @@ import { createLibraryIngestor, withLibraryIngestLock } from './library-ingest';
 import { rescanLibraryReports } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, queryLibrary, saveLibraryNote, type QueryLibraryArgs, type SaveLibraryNoteInput } from './library-store';
 import { listLibraryShelf } from './library-shelf';
+import type { LibraryRescanCoordinator } from './library-rescan-coordinator';
 
 export const LIBRARY_CHANNELS = {
   ingest: 'library:ingest',
@@ -17,6 +18,7 @@ export const LIBRARY_CHANNELS = {
 } as const;
 
 let productionBroadcaster: ((event: LibraryBroadcastEvent) => void) | null = null;
+let productionRescanCoordinator: Pick<LibraryRescanCoordinator, 'run'> | null = null;
 const pendingBroadcasts: LibraryBroadcastEvent[] = [];
 
 export function publishLibraryBroadcast(event: LibraryBroadcastEvent): void {
@@ -27,6 +29,10 @@ export function publishLibraryBroadcast(event: LibraryBroadcastEvent): void {
 export function resetLibraryBroadcastForTests(): void {
   productionBroadcaster = null;
   pendingBroadcasts.length = 0;
+}
+
+export function setProductionLibraryRescanCoordinator(coordinator: Pick<LibraryRescanCoordinator, 'run'> | null): void {
+  productionRescanCoordinator = coordinator;
 }
 
 export function emitShelfChanged(workspaceId: string): void {
@@ -49,6 +55,7 @@ export function registerLibraryIpc(
   sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
   runQuery: typeof queryLibrary = queryLibrary,
+  coordinator?: Pick<LibraryRescanCoordinator, 'run'>,
 ): void {
   const requireWorkspaceId = (workspaceId: unknown): string => {
     if (typeof workspaceId !== 'string' || workspaceId.trim().length === 0) {
@@ -79,14 +86,13 @@ export function registerLibraryIpc(
       })),
   );
   ipc.handle(LIBRARY_CHANNELS.ingest, ingest);
-  ipc.handle(LIBRARY_CHANNELS.rescan, (_event, workspaceId: string) => withStore(
-    requireWorkspaceId(workspaceId),
-    (workspaceRoot, store) => runRescan({
-      workspaceRoot,
-      store,
-      publish: (progress) => sendProgress({ ...progress, workspace_id: workspaceId }),
-    }),
-  ));
+  ipc.handle(LIBRARY_CHANNELS.rescan, (_event, workspaceId: string) => {
+    const requiredId = requireWorkspaceId(workspaceId);
+    if (coordinator) return coordinator.run(requiredId, 'manual');
+    return withStore(requiredId, (workspaceRoot, store) => runRescan({
+      workspaceRoot, store, publish: (progress) => sendProgress({ ...progress, workspace_id: workspaceId }),
+    }));
+  });
   ipc.handle(LIBRARY_CHANNELS.list, (_event, workspaceId: string, includeUntrusted = false) => withStore(
     workspaceId,
     (_root, store) => listLibraryDocuments(store, { include_untrusted: includeUntrusted }),
@@ -112,8 +118,9 @@ export function registerProductionLibraryIpc(
   sendProgress: (event: LibraryBroadcastEvent) => void,
   runRescan: typeof rescanLibraryReports = rescanLibraryReports,
   runQuery: typeof queryLibrary = queryLibrary,
+  coordinator: Pick<LibraryRescanCoordinator, 'run'> | null = productionRescanCoordinator,
 ): void {
   productionBroadcaster = sendProgress;
   for (const event of pendingBroadcasts.splice(0)) sendProgress(event);
-  registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan, runQuery);
+  registerLibraryIpc(ipc, resolveWorkspace, sendProgress, runRescan, runQuery, coordinator ?? undefined);
 }

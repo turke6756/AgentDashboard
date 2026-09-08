@@ -62,6 +62,9 @@ import { startPlansWatcher, PlansWatcher } from './plans-watcher';
 import { startProposalsWatcher, type ProposalsWatcher } from './proposals-watcher';
 import { startLibraryReportWatcher, type LibraryReportWatcher } from './library/library-report-watcher';
 import { shutdownLibraryEmbedder } from './library/library-embedder';
+import { LibraryRescanCoordinator } from './library/library-rescan-coordinator';
+import { createLibraryMainWindowInteractiveBarrier, startLibraryStartupCatchup, type LibraryStartupCatchup } from './library/library-startup-catchup';
+import { publishLibraryBroadcast, setProductionLibraryRescanCoordinator } from './library/library-ipc';
 import { runProposalScan } from './proposal-scan';
 import {
   BadgeInvalidationCoordinator,
@@ -365,6 +368,9 @@ let apiServer: ApiServer | null = null;
 let activeDevDiscoveryFile: string | null = null;
 let proposalsWatcher: ProposalsWatcher | null = null;
 let libraryReportWatcher: LibraryReportWatcher | null = null;
+let libraryRescanCoordinator: LibraryRescanCoordinator | null = null;
+let libraryStartupCatchup: LibraryStartupCatchup | null = null;
+let libraryMainWindowInteractive: Promise<void> | null = null;
 let badgeInvalidationCoordinator: BadgeInvalidationCoordinator<ReturnType<typeof setTimeout>> | null = null;
 let orchestration: OrchestrationService | null = null;
 let browserManager: BrowserManager | null = null;
@@ -558,6 +564,9 @@ function createWindow(): void {
   // The shell carries the dashboard preload — mark it trusted now that its
   // webContents exists (the constructingShell flag covered its construction).
   trustedContents.add(mainWindow.webContents);
+  if (libraryMainWindowInteractive === null) {
+    libraryMainWindowInteractive = createLibraryMainWindowInteractiveBarrier(mainWindow.webContents);
+  }
   try {
     session.defaultSession.setSpellCheckerLanguages(['en-US']);
   } catch {
@@ -988,6 +997,11 @@ app.whenReady().then(async () => {
       }
     })();
 
+    libraryRescanCoordinator = new LibraryRescanCoordinator({
+      resolveWorkspace: (workspaceId) => getWorkspace(workspaceId),
+      publish: publishLibraryBroadcast,
+    });
+    setProductionLibraryRescanCoordinator(libraryRescanCoordinator);
     createWindow();
     // Detached-window deps (detachable-file-tabs-plan §4 1.3/1.4). devServerUrl
     // and theme are read live via getters so a tear-off spawned long after
@@ -1021,9 +1035,23 @@ app.whenReady().then(async () => {
       },
     });
     registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler, scheduleBroadcast);
-    void startLibraryReportWatcher()
-      .then((watcher) => { libraryReportWatcher = watcher; })
+    const watcherAttached = startLibraryReportWatcher({
+      onAutomaticFailure: (workspaceId, attemptCount) => {
+        libraryRescanCoordinator?.onAutomaticFailure(workspaceId, attemptCount);
+      },
+    });
+    void watcherAttached
+      .then((watcher) => {
+        if (shutdownStarted) watcher.stop();
+        else libraryReportWatcher = watcher;
+      })
       .catch((error) => console.error('[library-report-watcher] startup failed:', error));
+    libraryStartupCatchup = startLibraryStartupCatchup({
+      watcherAttached,
+      mainWindowInteractive: libraryMainWindowInteractive!,
+      listWorkspaceIds: () => getWorkspaces().map(({ id }) => id),
+      coordinator: libraryRescanCoordinator,
+    });
     registerResolveOpenableWorkspacePathIpc();
     supervisor.start();
     // Runtime ~/.claude.json repair watcher. MUST be armed here — BEFORE
@@ -1515,7 +1543,11 @@ async function shutdownApp(): Promise<void> {
   drainCompleted = true;
   apiServer?.stop();
   proposalsWatcher?.stop();
+  libraryStartupCatchup?.stop();
+  const libraryCoordinatorDrain = libraryRescanCoordinator?.stop();
   libraryReportWatcher?.stop();
+  await libraryCoordinatorDrain;
+  setProductionLibraryRescanCoordinator(null);
   await shutdownLibraryEmbedder();
   wsServer?.stop();
   disposeKernelClient();

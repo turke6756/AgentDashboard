@@ -59,6 +59,7 @@ export interface LibraryReportWatcherOptions {
   publish?: (event: LibraryBroadcastEvent) => void;
   ensureDirectory?: (directory: string, pathType: PathType) => void;
   log?: (message: string, error?: unknown) => void;
+  onAutomaticFailure?: (workspaceId: string, attemptCount?: number) => unknown;
 }
 
 const realScheduler: LibraryReportWatcherScheduler = {
@@ -75,7 +76,7 @@ const relPath = (root: LibraryReportRoot, child: string): string => normalizeLib
 const tupleMatches = (a: ObservedTuple, size: number, mtimeMs: number): boolean => a.size === size && a.mtimeMs === mtimeMs;
 
 export class LibraryReportWatcher {
-  private readonly options: Required<Pick<LibraryReportWatcherOptions, 'now' | 'scheduler' | 'getWorkspaces' | 'subscribe' | 'inventory' | 'openStore' | 'closeStore' | 'listDocuments' | 'deleteDocuments' | 'ingest' | 'publish' | 'ensureDirectory' | 'log'>>;
+  private readonly options: Required<Pick<LibraryReportWatcherOptions, 'now' | 'scheduler' | 'getWorkspaces' | 'subscribe' | 'inventory' | 'openStore' | 'closeStore' | 'listDocuments' | 'deleteDocuments' | 'ingest' | 'publish' | 'ensureDirectory' | 'log' | 'onAutomaticFailure'>>;
   private readonly states = new Map<string, WorkspaceState>();
   private refreshTimer: unknown | null = null;
   private started = false;
@@ -99,6 +100,7 @@ export class LibraryReportWatcher {
       publish: options.publish ?? publishLibraryBroadcast,
       ensureDirectory: options.ensureDirectory ?? ((directory, pathType) => { if (pathType === 'windows') fs.mkdirSync(directory, { recursive: true }); }),
       log: options.log ?? ((message, error) => error === undefined ? console.log(`[library-report-watcher] ${message}`) : console.error(`[library-report-watcher] ${message}`, error)),
+      onAutomaticFailure: options.onAutomaticFailure ?? (() => undefined),
     };
   }
 
@@ -310,7 +312,12 @@ export class LibraryReportWatcher {
             await this.options.ingest({ workspaceId: state.workspace.id, workspaceRoot: state.workspace.path, store, sourcePath: candidate.sourcePath, trigger: 'report-arrival' });
           } catch (error) {
             candidate.tuple.ingested = true;
-            throw error;
+            const failedRow = this.options.listDocuments(store, { include_untrusted: true })
+              .find((row) => normalizeLibraryReportKey(row.source_rel_path) === candidate.key);
+            try { this.options.onAutomaticFailure(state.workspace.id, failedRow?.attempt_count); }
+            catch (notificationError) { this.options.log(`retry notification failed for ${candidate.key}`, notificationError); }
+            this.options.log(`ingest failed for ${candidate.key}`, error);
+            continue;
           }
           candidate.tuple.ingested = true;
           this.options.publish({ type: 'library:shelf-changed', workspace_id: state.workspace.id });
