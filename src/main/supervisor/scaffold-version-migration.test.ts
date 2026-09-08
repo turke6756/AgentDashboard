@@ -48,6 +48,7 @@ import {
   SUPERVISOR_RUN_ORCHESTRATION_SKILL_V7_HASH,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH,
   LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
+  LAND_WORK_PACKAGE_SKILL_MD_V9_HASH,
   WORKER_CLAUDE_MD_V8_HASH,
   WORKER_CODEX_AGENTS_MD_V1_HASH,
   GUARD_GIT_DISCARD_MJS_V1_HASH,
@@ -252,6 +253,7 @@ import {
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3,
   LAND_WORK_PACKAGE_SKILL_MD,
   LAND_WORK_PACKAGE_SKILL_MD_V8,
+  LAND_WORK_PACKAGE_SKILL_MD_V9,
   WORKER_CLAUDE_MD,
   WORKER_CLAUDE_MD_V1,
   WORKER_CLAUDE_MD_V8,
@@ -6738,11 +6740,21 @@ test('WP-7 scaffold bodies describe the named-OID gate and identity/audit split'
   assert.match(LAND_WORK_PACKAGE_SKILL_MD, /Other trailer keys are tolerated/);
   assert.match(LAND_WORK_PACKAGE_SKILL_MD, /## Temporary-index commit transaction/);
   assert.notEqual(LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V8);
+  assert.notEqual(LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V9);
+  // v10 (stale-index incident 2026-09-07): single-invocation transaction,
+  // real-index guard before read-tree, and post-landing real-index resync.
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /Run the WHOLE transaction \(steps 1-9\) inside ONE shell\s+invocation/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /differs from `<git rev-parse --absolute-git-dir>\/index`; abort\s+otherwise/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /9\. After the ref advances, resync the REAL index for exactly the frozen paths/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD, /`git reset -q -- <every frozen path>`/);
+  assert.doesNotMatch(LAND_WORK_PACKAGE_SKILL_MD, /2\. Set `GIT_INDEX_FILE` to the absolute temporary path/);
+  assert.match(LAND_WORK_PACKAGE_SKILL_MD_V9, /2\. Set `GIT_INDEX_FILE` to the absolute temporary path/);
 });
 
 test('REACHABILITY:scaffold-version-migration WP-7 deploys both v3 gate and both v8 land skill copies cumulatively', () => {
   assert.equal(sha256Hex(SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3), SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH);
   assert.equal(sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V8), LAND_WORK_PACKAGE_SKILL_MD_V8_HASH);
+  assert.equal(sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V9), LAND_WORK_PACKAGE_SKILL_MD_V9_HASH);
 
   const gateCases = [
     {
@@ -6810,11 +6822,18 @@ test('REACHABILITY:scaffold-version-migration WP-7 deploys both v3 gate and both
       fs.mkdirSync(path.dirname(sidecarPath(workDir)), { recursive: true });
       fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [entry.key]: 8 }, null, 2) + '\n', 'utf-8');
       supervisor.ensureWorkerScaffold(workDir, entry.provider, 'windows');
-      assert.equal(managed?.version, 9);
-      assert.deepEqual(Object.keys(managed?.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6, 7, 8]);
+      assert.equal(managed?.version, 10);
+      assert.deepEqual(Object.keys(managed?.previousHashes ?? {}).map(Number), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
       assert.equal(managed?.previousHashes?.[8], LAND_WORK_PACKAGE_SKILL_MD_V8_HASH);
+      assert.equal(managed?.previousHashes?.[9], LAND_WORK_PACKAGE_SKILL_MD_V9_HASH);
       assert.equal(fs.readFileSync(full, 'utf-8'), LAND_WORK_PACKAGE_SKILL_MD);
-      assert.equal(readSidecar(workDir)[entry.key], 9);
+      assert.equal(readSidecar(workDir)[entry.key], 10);
+      // A workspace already on v9 (the pre-incident body) must also migrate cleanly.
+      fs.writeFileSync(full, LAND_WORK_PACKAGE_SKILL_MD_V9, 'utf-8');
+      fs.writeFileSync(sidecarPath(workDir), JSON.stringify({ [entry.key]: 9 }, null, 2) + '\n', 'utf-8');
+      supervisor.ensureWorkerScaffold(workDir, entry.provider, 'windows');
+      assert.equal(fs.readFileSync(full, 'utf-8'), LAND_WORK_PACKAGE_SKILL_MD);
+      assert.equal(readSidecar(workDir)[entry.key], 10);
       assert.equal(fs.readdirSync(path.dirname(full)).filter((name) => name.startsWith('SKILL.md.bak.')).length, 0);
     } finally {
       cleanup();

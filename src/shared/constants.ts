@@ -10321,7 +10321,7 @@ export const LAND_WORK_PACKAGE_SKILL_MD_V8 = LAND_WORK_PACKAGE_SKILL_MD_V7.repla
 
 // WP-7 (plan_640966a4) — preserve the prepared-index transaction while making
 // the named verifier's identity/audit split explicit.
-export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V8.replace(
+export const LAND_WORK_PACKAGE_SKILL_MD_V9 = LAND_WORK_PACKAGE_SKILL_MD_V8.replace(
   `For a plan-bound worker, \`Plan\`, \`WP\`, and \`Verified\` are mandatory;
 \`Scope-omitted\` is optional. Use exact brief values:
 \`Plan: plan_[0-9a-f]{8}\` and \`WP: <exact briefed identifier>\`. Do not impose
@@ -10352,3 +10352,46 @@ fail the named-OID gate. Other trailer keys are tolerated by that verifier and
 must not be reported as an identity failure. The stricter canonical block is
 still this worker's landing and audit contract.`,
 );
+
+// v10 — stale-index incident (2026-09-07): the real .git/index was found frozen
+// at a 5-day-old tree with 514 phantom staged changes. Two hardening rules:
+// (a) the whole temporary-index transaction runs in ONE shell invocation with
+// GIT_INDEX_FILE asserted to differ from the real index before read-tree
+// (agent-driven PowerShell drops $env: between tool calls, so a split
+// transaction rewrites the real index); (b) after the ref advances, resync the
+// real index for exactly the frozen paths so status stops going stale by design.
+export const LAND_WORK_PACKAGE_SKILL_MD = LAND_WORK_PACKAGE_SKILL_MD_V9
+  .replace(
+    `The temporary index is mandatory. The real shared index is never read as staging
+authority or modified. Save the prior \`GIT_INDEX_FILE\` state, use an absolute
+temporary path, then restore or unset it and remove the temporary file on exit.`,
+    `The temporary index is mandatory. The real shared index is never read as staging
+authority or modified. Run the WHOLE transaction (steps 1-9) inside ONE shell
+invocation: one script file or one tool call. Never spread it across separate
+tool calls: agent-driven PowerShell drops \`$env:\` between calls, so a later
+\`git read-tree\` silently rewrites the REAL index. Prefer scoping the variable
+per command (Git Bash: \`GIT_INDEX_FILE="$TMP_INDEX" git read-tree "$BASE"\`)
+over ambient shell state. Save the prior \`GIT_INDEX_FILE\` state, use an
+absolute temporary path, then restore or unset it and remove the temporary file
+on exit.`,
+  )
+  .replace(
+    `2. Set \`GIT_INDEX_FILE\` to the absolute temporary path and run
+   \`git read-tree BASE\`. Every index mutation below runs under that environment.`,
+    `2. Choose an absolute temporary path \`TMP_INDEX\`. Immediately before
+   \`git read-tree\`, assert that \`GIT_INDEX_FILE\` is set, equals \`TMP_INDEX\`,
+   and differs from \`<git rev-parse --absolute-git-dir>/index\`; abort
+   otherwise. Then run \`git read-tree BASE\` under \`GIT_INDEX_FILE=TMP_INDEX\`.
+   Every index mutation below runs under that environment.`,
+  )
+  .replace(
+    `   temporary index was seeded. Read the branch ref back and require equality
+   with \`CANDIDATE\`.`,
+    `   temporary index was seeded. Read the branch ref back and require equality
+   with \`CANDIDATE\`.
+9. After the ref advances, resync the REAL index for exactly the frozen paths
+   so \`git status\` does not accumulate phantom staged changes: with
+   \`GIT_INDEX_FILE\` unset, run \`git reset -q -- <every frozen path>\` (a
+   pathspec-scoped mixed reset; the worktree is untouched). Never run a bare
+   \`git reset\`, \`git read-tree\`, or \`git commit\` against the real index.`,
+  );

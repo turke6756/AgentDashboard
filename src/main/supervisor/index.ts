@@ -53,7 +53,7 @@ import {
   WRITE_PROPOSAL_SKILL_MD,
   WRITE_PROPOSAL_SKILL_MD_V2, WRITE_PROPOSAL_SKILL_MD_V3,
   WRITE_RESEARCH_REPORT_SKILL_MD, WRITE_RESEARCH_REPORT_SKILL_MD_V1,
-  LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V1, LAND_WORK_PACKAGE_SKILL_MD_V2, LAND_WORK_PACKAGE_SKILL_MD_V3, LAND_WORK_PACKAGE_SKILL_MD_V4, LAND_WORK_PACKAGE_SKILL_MD_V5, LAND_WORK_PACKAGE_SKILL_MD_V6, LAND_WORK_PACKAGE_SKILL_MD_V7, LAND_WORK_PACKAGE_SKILL_MD_V8,
+  LAND_WORK_PACKAGE_SKILL_MD, LAND_WORK_PACKAGE_SKILL_MD_V1, LAND_WORK_PACKAGE_SKILL_MD_V2, LAND_WORK_PACKAGE_SKILL_MD_V3, LAND_WORK_PACKAGE_SKILL_MD_V4, LAND_WORK_PACKAGE_SKILL_MD_V5, LAND_WORK_PACKAGE_SKILL_MD_V6, LAND_WORK_PACKAGE_SKILL_MD_V7, LAND_WORK_PACKAGE_SKILL_MD_V8, LAND_WORK_PACKAGE_SKILL_MD_V9,
   SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V1, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V2, SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3,
   READ_PLANNING_SURFACE_SKILL_MD as READ_PLANNING_SURFACE_SKILL_MD_V2,
   PROVE_PRODUCTION_ENTRY_POINT_SKILL,
@@ -1421,6 +1421,7 @@ export const PROPOSAL_TO_PLAN_ACTIVITY_ORIENT_MD_V1_HASH = '78823a68f465874f05e7
 export const PROPOSAL_TO_PLAN_SCRIPT_PLAN_MANIFEST_MJS_V1_HASH = 'bee85a7aacc0efa624c12108c79100859f5fb640cedfc61ab29c912d84a64577';
 export const SUPERVISOR_GATE_LANDED_WORK_PACKAGE_SKILL_V3_HASH = '8e42037e24de514340063905fcb86a098d1d4357b0b8c2bb2a974ddfe4aff511';
 export const LAND_WORK_PACKAGE_SKILL_MD_V8_HASH = '5f6feded35ec281a3a5f59e24fe615c9032135915dfe2a32258bc4af9993306e';
+export const LAND_WORK_PACKAGE_SKILL_MD_V9_HASH = '012a332415580b01f39b296492811cd2a6e756025e3967febcf418a28048c9f5';
 
 // WP-SKILLBUMP — SHA-256 hex of the PRE-ca7ce2b bodies of the two proposal-to-plan
 // carrier files whose content ca7ce2b (manifest-sync: claim-marker reclaim in the
@@ -4472,7 +4473,7 @@ export class AgentSupervisor extends EventEmitter {
     ...proveProductionEntryPointEntry('.lares/workers/claude/.claude/skills/prove-the-production-entry-point'),
     [`.lares/workers/claude/.claude/skills/land-work-package/SKILL.md`]: {
       content: LAND_WORK_PACKAGE_SKILL_MD,
-      version: 9,
+      version: 10, // v10 single-invocation temp-index transaction + real-index resync (stale-index incident 2026-09-07)
       previousHashes: {
         1: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V1),
         2: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V2),
@@ -4482,6 +4483,7 @@ export class AgentSupervisor extends EventEmitter {
         6: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V6),
         7: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V7),
         8: LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
+        9: LAND_WORK_PACKAGE_SKILL_MD_V9_HASH,
       },
     },
     [`.lares/workers/claude/CLAUDE.md`]:                       {
@@ -4729,7 +4731,7 @@ export class AgentSupervisor extends EventEmitter {
         ...proveProductionEntryPointEntry('.lares/workers/codex/.agents/skills/prove-the-production-entry-point'),
         [`.lares/workers/codex/.agents/skills/land-work-package/SKILL.md`]: {
           content: LAND_WORK_PACKAGE_SKILL_MD,
-          version: 9,
+          version: 10, // v10 single-invocation temp-index transaction + real-index resync (stale-index incident 2026-09-07)
           previousHashes: {
             1: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V1),
             2: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V2),
@@ -4739,6 +4741,7 @@ export class AgentSupervisor extends EventEmitter {
             6: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V6),
             7: sha256Hex(LAND_WORK_PACKAGE_SKILL_MD_V7),
             8: LAND_WORK_PACKAGE_SKILL_MD_V8_HASH,
+            9: LAND_WORK_PACKAGE_SKILL_MD_V9_HASH,
           },
         },
         [`.lares/workers/codex/.codex/config.toml`]: {

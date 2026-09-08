@@ -1479,13 +1479,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v1 skill must upgrade byte-exactly to v10`,
       );
       const migratedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(migratedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v1 to v9`);
+      assert.equal(migratedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v1 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1502,13 +1502,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v2 skill must upgrade byte-exactly to v10`,
       );
       const v6Sidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v6Sidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v2 to v9`);
+      assert.equal(v6Sidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v2 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1525,13 +1525,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v3 skill must upgrade byte-exactly to v10`,
       );
       const upgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(upgradedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v3 to v9`);
+      assert.equal(upgradedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v3 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1548,13 +1548,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v4 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v4 skill must upgrade byte-exactly to v10`,
       );
       const v4UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v4UpgradedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v4 to v9`);
+      assert.equal(v4UpgradedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v4 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1571,13 +1571,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v5 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v5 skill must upgrade byte-exactly to v10`,
       );
       const v5UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v5UpgradedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v5 to v9`);
+      assert.equal(v5UpgradedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v5 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1594,13 +1594,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v6 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v6 skill must upgrade byte-exactly to v10`,
       );
       const v6UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v6UpgradedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v6 to v9`);
+      assert.equal(v6UpgradedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v6 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
@@ -1617,13 +1617,13 @@ as both entries: the old path expected absent and the new path expected present.
       assert.deepEqual(
         fs.readFileSync(migration.skillPath),
         Buffer.from(LAND_WORK_PACKAGE_SKILL_MD),
-        `${marker}: pristine ${migration.provider} v7 skill must upgrade byte-exactly to v9`,
+        `${marker}: pristine ${migration.provider} v7 skill must upgrade byte-exactly to v10`,
       );
       const v7UpgradedSidecar = JSON.parse(
         fs.readFileSync(sidecarPath, 'utf-8'),
       ) as Record<string, number>;
-      assert.equal(v7UpgradedSidecar[migration.sidecarKey], 9,
-        `${marker}: ${migration.provider} sidecar must advance from v7 to v9`);
+      assert.equal(v7UpgradedSidecar[migration.sidecarKey], 10,
+        `${marker}: ${migration.provider} sidecar must advance from v7 to v10`);
       assert.equal(
         fs.readdirSync(path.dirname(migration.skillPath))
           .some((name) => name.startsWith('SKILL.md.bak.')),
