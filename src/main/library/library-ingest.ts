@@ -9,7 +9,8 @@ import type {
   LibraryProgressEvent,
   LibraryTrust,
 } from '../../shared/library';
-import { CHUNKER_VERSION, TOKENIZER_VERSION, chunkDocument } from './library-chunker';
+import { CHUNKER_VERSION, TOKENIZER_VERSION } from './library-chunker';
+import { chunkDocumentOffThread } from './library-chunk-runner';
 import { extractDocx } from './docx-extractor';
 import { extractPdf } from './pdf-extractor';
 import { embedLibraryTexts, encodeLibraryEmbedding } from './library-embedder';
@@ -34,6 +35,8 @@ export interface LibraryIngestResult {
   document: LibraryDocumentRow;
   reused: boolean;
   chunk_ids: string[];
+  /** True when an unchanged source in `error` was left alone; Rescan is the explicit retry path. */
+  skipped_error?: true;
 }
 
 export interface LibraryIngestDependencies {
@@ -127,6 +130,13 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       ).all(id) as Array<{ id: string }>;
       return { document: existing, reused: true, chunk_ids: rows.map((row) => row.id) };
     }
+    // A report that already failed on this exact content is not retried by the
+    // passive watcher: every app start would otherwise re-run the same failing
+    // ingest for every error row. Explicit Rescan/add/drop still retry.
+    if (input.trigger === 'report-arrival' && existing?.source_hash === sourceHash
+      && existing.status === 'error' && currentContract) {
+      return { document: existing, reused: false, chunk_ids: [], skipped_error: true };
+    }
 
     const type = input.type ?? folderDefaults?.type ?? existing?.type ?? inferType(absolute);
     const base: LibraryDocumentRow = {
@@ -160,11 +170,11 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
       if (type === 'pdf') {
         const extracted = await extractPdf(absolute);
         base.page_count = extracted.page_count;
-        chunks = chunkDocument({ document_id: id, source_hash: sourceHash, kind: 'pdf', pages: extracted.pages });
+        chunks = await chunkDocumentOffThread({ document_id: id, source_hash: sourceHash, kind: 'pdf', pages: extracted.pages });
       } else if (type === 'docx') {
         const extracted = await extractDocx(deps.workspaceRoot, absolute, id);
         base.reader_rel_path = extracted.reader_rel_path;
-        chunks = chunkDocument({
+        chunks = await chunkDocumentOffThread({
           document_id: id,
           source_hash: sourceHash,
           kind: 'docx-markdown',
@@ -173,7 +183,7 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
           include_byte_map: true,
         });
       } else {
-        chunks = chunkDocument({
+        chunks = await chunkDocumentOffThread({
           document_id: id,
           source_hash: sourceHash,
           kind: 'text',

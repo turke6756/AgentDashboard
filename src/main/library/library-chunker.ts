@@ -7,7 +7,7 @@ import type {
   LibraryTextQuoteSelector,
 } from '../../shared/library';
 
-export const CHUNKER_VERSION = 'paragraph-window-v1';
+export const CHUNKER_VERSION = 'paragraph-window-v2';
 export const TOKENIZER_VERSION = 'cl100k_base-js-tiktoken-1.0.21';
 export const CHUNK_TARGET_TOKENS = 350;
 export const CHUNK_MAX_TOKENS = 400;
@@ -83,60 +83,115 @@ function tokenCount(text: string): number {
   return tokenizer.encode(text).length;
 }
 
-function safeCharBoundary(text: string, offset: number): number {
-  if (offset > 0 && offset < text.length) {
-    const code = text.charCodeAt(offset);
-    if (code >= 0xdc00 && code <= 0xdfff) return offset - 1;
-  }
-  return offset;
+/**
+ * One unit of chunk placement: a run of non-whitespace together with the
+ * whitespace that precedes it (`/\s*\S+/`), or a trailing whitespace-only tail.
+ *
+ * Attaching the LEADING whitespace mirrors cl100k's own pre-tokenizer, which
+ * glues a leading space onto the following word (" world" is one token). That
+ * keeps the per-atom token count an accurate, slightly pessimistic estimate of
+ * the count cl100k would produce for the same span, so we can place every
+ * boundary from cumulative sums without re-tokenizing the document per probe.
+ *
+ * `\S+` never splits a surrogate pair, so atom edges are always safe char
+ * boundaries. Chunk content starts at `textStart` (after the leading
+ * whitespace) and ends at the next atom's `start`, so inter-chunk whitespace
+ * belongs to neither chunk and paragraph breaks land exactly between atoms.
+ */
+interface Atom {
+  start: number;      // first char of the atom (leading whitespace included)
+  textStart: number;  // first non-whitespace char
+  end: number;        // exclusive
+  tokens: number;     // cl100k count of text.slice(start, end)
+  paragraphBreak: boolean; // leading whitespace contains a blank line
+  sentenceEnd: boolean;    // preceding atom ended a sentence and this one follows whitespace
 }
 
-function furthestWithin(text: string, start: number, maxTokens: number): number {
-  let lo = Math.min(text.length, start + 1);
-  let hi = text.length;
-  let best = lo;
-  while (lo <= hi) {
-    const mid = safeCharBoundary(text, (lo + hi) >>> 1);
-    const count = tokenCount(text.slice(start, mid));
-    if (count <= maxTokens) { best = mid; lo = mid + 1; }
-    else hi = mid - 1;
+const ATOM = /\s*\S+|\s+$/g;
+const SENTENCE_END = /[.!?]$/;
+
+function atomize(text: string): Atom[] {
+  const atoms: Atom[] = [];
+  let previousWord = '';
+  for (const match of text.matchAll(ATOM)) {
+    const start = match.index ?? 0;
+    const piece = match[0];
+    const end = start + piece.length;
+    const leadLength = piece.length - piece.trimStart().length;
+    const lead = piece.slice(0, leadLength);
+    const word = piece.slice(leadLength);
+    atoms.push({
+      start,
+      textStart: start + leadLength,
+      end,
+      tokens: tokenCount(piece),
+      paragraphBreak: lead.includes('\n\n'),
+      sentenceEnd: leadLength > 0 && SENTENCE_END.test(previousWord),
+    });
+    previousWord = word;
   }
-  return Math.max(start + 1, safeCharBoundary(text, best));
+  return atoms;
 }
 
-function preferredEnd(text: string, start: number): number {
-  const hard = furthestWithin(text, start, CHUNK_MAX_TOKENS);
-  if (hard >= text.length || tokenCount(text.slice(start, hard)) <= CHUNK_TARGET_TOKENS) return hard;
-  const target = furthestWithin(text, start, CHUNK_TARGET_TOKENS);
-  const before = text.slice(start, target);
-  const paragraph = Math.max(before.lastIndexOf('\n\n') + 2, 0);
-  if (paragraph > 0) return start + paragraph;
-  const sentence = Math.max(before.lastIndexOf('. ') + 2, before.lastIndexOf('! ') + 2, before.lastIndexOf('? ') + 2);
-  if (sentence > 1) return start + sentence;
+/** Prefix sums so any atom span's token estimate is one subtraction. */
+function prefixTokens(atoms: Atom[]): number[] {
+  const prefix = new Array<number>(atoms.length + 1);
+  prefix[0] = 0;
+  for (let i = 0; i < atoms.length; i += 1) prefix[i + 1] = prefix[i] + atoms[i].tokens;
+  return prefix;
+}
+
+/** Largest atom index `e > s` with estimate(atoms[s..e)) <= maxTokens. */
+function furthestWithin(prefix: number[], s: number, maxTokens: number): number {
+  let e = s + 1;
+  while (e < prefix.length - 1 && prefix[e + 1] - prefix[s] <= maxTokens) e += 1;
+  return e;
+}
+
+/** Where to end the chunk that starts at atom `s`; mirrors paragraph-window-v1's preferences. */
+function preferredEnd(atoms: Atom[], prefix: number[], s: number): number {
+  const hard = furthestWithin(prefix, s, CHUNK_MAX_TOKENS);
+  if (hard >= atoms.length || prefix[hard] - prefix[s] <= CHUNK_TARGET_TOKENS) return hard;
+  const target = furthestWithin(prefix, s, CHUNK_TARGET_TOKENS);
+  for (let k = target; k > s + 1; k -= 1) if (atoms[k].paragraphBreak) return k;
+  for (let k = target; k > s + 1; k -= 1) if (atoms[k].sentenceEnd) return k;
   return target;
 }
 
-function overlapStart(text: string, priorStart: number, end: number): number {
-  let lo = priorStart;
-  let hi = end;
-  let best = end;
-  while (lo <= hi) {
-    const mid = safeCharBoundary(text, (lo + hi) >>> 1);
-    if (tokenCount(text.slice(mid, end)) <= CHUNK_OVERLAP_TOKENS) { best = mid; hi = mid - 1; }
-    else lo = mid + 1;
-  }
-  return best;
+/** Smallest atom index in (s, e] whose tail up to `e` fits the overlap budget. */
+function overlapStart(prefix: number[], s: number, e: number): number {
+  let m = e;
+  while (m > s + 1 && prefix[e] - prefix[m - 1] <= CHUNK_OVERLAP_TOKENS) m -= 1;
+  return m;
 }
 
+/** Shrink `[s, e)` by whole atoms until cl100k agrees it fits CHUNK_MAX_TOKENS. */
+function enforceMax(text: string, atoms: Atom[], s: number, e: number): number {
+  while (e > s + 1 && tokenCount(text.slice(atoms[s].textStart, atoms[e - 1].end)) > CHUNK_MAX_TOKENS) e -= 1;
+  return e;
+}
+
+/**
+ * Chunk ranges as `[charStart, charEnd)` pairs over canonical text.
+ *
+ * Linear in document length: the document is tokenized once, atom by atom,
+ * and every boundary decision is a prefix-sum lookup plus one confirming
+ * `encode` of the finished chunk. (v1 re-tokenized up to the whole remaining
+ * document ~50 times per chunk, which froze the main process for minutes on a
+ * 50 KB report.)
+ */
 function rangesFor(text: string): Array<[number, number]> {
+  const atoms = atomize(text);
+  const prefix = prefixTokens(atoms);
   const ranges: Array<[number, number]> = [];
-  let start = 0;
-  while (start < text.length) {
-    const end = preferredEnd(text, start);
-    ranges.push([start, end]);
-    if (end === text.length) break;
-    const next = overlapStart(text, start, end);
-    start = next > start ? next : end;
+  let s = 0;
+  while (s < atoms.length) {
+    if (atoms[s].textStart >= atoms[s].end) break; // whitespace-only tail
+    const e = enforceMax(text, atoms, s, preferredEnd(atoms, prefix, s));
+    ranges.push([atoms[s].textStart, atoms[e - 1].end]);
+    if (e >= atoms.length) break;
+    const next = overlapStart(prefix, s, e);
+    s = next > s ? next : e;
   }
   return ranges;
 }

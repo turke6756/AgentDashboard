@@ -39,8 +39,18 @@ function readResponse(response: WorkerResponse): LibraryEmbeddingBatch {
 }
 
 /** Run model work outside Electron's main process. Remote model fetches are refused by the worker. */
+export const EMBED_TIMEOUT_BASE_MS = 30_000;
+export const EMBED_TIMEOUT_PER_TEXT_MS = 1_500;
+export const EMBED_TIMEOUT_MAX_MS = 10 * 60_000;
+
+/** Model load plus a per-chunk allowance: a 48 KB report is ~35 chunks and legitimately takes >30 s on single-thread wasm. */
+export function embedTimeoutMs(textCount: number): number {
+  return Math.min(EMBED_TIMEOUT_MAX_MS, EMBED_TIMEOUT_BASE_MS + EMBED_TIMEOUT_PER_TEXT_MS * textCount);
+}
+
 export function embedLibraryTexts(texts: string[], modelRoot = resolveLibraryModelRoot()): Promise<LibraryEmbeddingBatch> {
   if (texts.length === 0) return Promise.resolve({ vectors: [], load_ms: 0, embed_ms: 0 });
+  const timeoutMs = embedTimeoutMs(texts.length);
   const workerPath = path.join(__dirname, 'library-embedder-worker.js');
   return new Promise((resolve, reject) => {
     const electronChild = utilityProcess?.fork
@@ -52,8 +62,8 @@ export function embedLibraryTexts(texts: string[], modelRoot = resolveLibraryMod
     child.stderr?.on('data', (chunk: Buffer | string) => { stderr += String(chunk); });
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('Library embedder timed out after 30 seconds'));
-    }, 30_000);
+      reject(new Error(`Library embedder timed out after ${Math.round(timeoutMs / 1000)} seconds (${texts.length} chunks)`));
+    }, timeoutMs);
     child.once('spawn', () => {
       if (electronChild) electronChild.postMessage({ id: 1, modelRoot, texts });
       else nodeChild!.send({ id: 1, modelRoot, texts });

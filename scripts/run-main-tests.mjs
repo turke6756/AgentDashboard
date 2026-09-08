@@ -383,6 +383,7 @@ const TESTS = [
   'dist/main/main/library/library-rescan.test.js',
   'dist/main/main/library/library-report-watcher.test.js',
   'dist/main/main/library/library-chunker.test.js',
+  'dist/main/main/library/library-chunk-runner.test.js',
   'dist/main/main/library/pdf-extractor.test.js',
   'dist/main/main/library/docx-extractor.test.js',
   'dist/main/main/library/library-ingest.test.js',

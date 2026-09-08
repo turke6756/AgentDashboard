@@ -156,3 +156,33 @@ test('production IPC entry registers ingest, rescan, list, and progress-capable 
     assert.ok(registered.has(channel), `REACHABILITY:registerIpcHandlers:library:ingest missing ${channel}`);
   }
 });
+
+test('report-arrival leaves an unchanged error row alone; rescan remains the retry path', async () => {
+  const root = workspace();
+  const source = path.join(root, '.lares', 'library', 'inbox', 'flaky.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, '# Flaky\n\nContent that fails to embed once. '.repeat(10));
+  const store = openLibraryStore(root);
+  let fail = true;
+  let embedCalls = 0;
+  const embedTexts = async (texts: string[]) => {
+    embedCalls += 1;
+    if (fail) throw new Error('embedder down');
+    return fakeEmbeddings(texts);
+  };
+  try {
+    const ingest = createLibraryIngestor({ workspaceRoot: root, store, embedTexts });
+    await assert.rejects(ingest({ source_path: source, trigger: 'report-arrival' }), /embedder down/);
+    fail = false;
+    const skipped = await ingest({ source_path: source, trigger: 'report-arrival' });
+    assert.equal(skipped.skipped_error, true);
+    assert.equal(skipped.document.status, 'error');
+    assert.equal(embedCalls, 1, 'the passive watcher must not re-run a known-failing ingest');
+    const retried = await ingest({ source_path: source, trigger: 'rescan' });
+    assert.equal(retried.document.status, 'ready');
+    assert.equal(embedCalls, 2);
+    fs.appendFileSync(source, ' changed');
+    fail = true;
+    await assert.rejects(ingest({ source_path: source, trigger: 'report-arrival' }), /embedder down/, 'changed content is always retried');
+  } finally { closeLibraryStore(store); }
+});
