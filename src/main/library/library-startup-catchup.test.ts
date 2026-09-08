@@ -4,6 +4,7 @@ import test from 'node:test';
 import { publishLibraryBroadcast, registerProductionLibraryIpc, resetLibraryBroadcastForTests } from './library-ipc';
 import {
   createLibraryMainWindowInteractiveBarrier,
+  forwardLibraryAutomaticFailureAfterCatchup,
   startLibraryStartupCatchup,
   type LibraryStartupScheduler,
 } from './library-startup-catchup';
@@ -42,15 +43,38 @@ test('startup catch-up waits for both barriers, runs once, and isolates workspac
     coordinator: { run: async (id, initiator) => { calls.push({ id, initiator }); if (id === 'broken') throw new Error('poison'); return { scanned: 0, ingested: 0, skipped: 0, failed: 0 }; } },
     log: (message) => logs.push(message),
   });
+  assert.equal(catchup.isDone(), false, 'watcher retry scheduling must remain gated while catch-up is waiting');
   watcher.resolve(); await flush();
   assert.deepEqual(calls, [], 'REACHABILITY:library:startup-catchup must wait for main-window interactivity');
   interactive.resolve(); await catchup.done;
+  assert.equal(catchup.isDone(), true, 'watcher retry scheduling may resume only after catch-up settles');
   assert.deepEqual(calls, [
     { id: 'one', initiator: 'automatic' },
     { id: 'broken', initiator: 'automatic' },
     { id: 'two', initiator: 'automatic' },
   ], 'REACHABILITY:library:startup-catchup must enter automatic coordinator runs after both barriers');
   assert.equal(logs.length, 1);
+});
+
+test('watcher failures are ignored until startup catch-up settles', async () => {
+  const interactive = deferred();
+  const forwarded: Array<{ workspaceId: string; attemptCount?: number }> = [];
+  const catchup = startLibraryStartupCatchup({
+    watcherAttached: Promise.resolve(),
+    mainWindowInteractive: interactive.promise,
+    listWorkspaceIds: () => ['workspace-1'],
+    coordinator: { run: async () => ({ scanned: 1, ingested: 0, skipped: 0, failed: 1 }) },
+  });
+  const retryCoordinator = {
+    onAutomaticFailure: (workspaceId: string, attemptCount?: number) => forwarded.push({ workspaceId, attemptCount }),
+  };
+
+  forwardLibraryAutomaticFailureAfterCatchup(catchup, retryCoordinator, 'workspace-1', 1);
+  assert.deepEqual(forwarded, [], 'a live watcher failure must not stack a retry ahead of catch-up');
+  interactive.resolve();
+  await catchup.done;
+  forwardLibraryAutomaticFailureAfterCatchup(catchup, retryCoordinator, 'workspace-1', 2);
+  assert.deepEqual(forwarded, [{ workspaceId: 'workspace-1', attemptCount: 2 }], 'watcher retry policy resumes after catch-up');
 });
 
 test('failed load and diagnostic timeout do not release the interactive barrier, but a later success does', async () => {

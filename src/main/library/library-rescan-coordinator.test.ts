@@ -88,7 +88,10 @@ test('coalesces retryable rows to one earliest workspace timer and publishes the
   const coordinator = new LibraryRescanCoordinator({
     resolveWorkspace: (id) => ({ id: `${id}-resolved`, path: 'C:\\repo' }), scheduler, now: () => scheduler.now,
     openStore: () => store, closeStore: () => undefined, publish: (event) => published.push(event),
-    rescan: async ({ publish }) => { publish({ document_id: 'doc', status: 'queued', attempt_count: 1 }); return result([2, 1, 2]); },
+    rescan: async ({ initiator, publish }) => {
+      publish({ document_id: 'doc', status: 'queued', attempt_count: 1 });
+      return initiator === 'manual' ? result([]) : result([2, 1, 2]);
+    },
   });
   await coordinator.run('workspace-1', 'automatic');
   assert.deepEqual(scheduler.delays(), [1_000]);
@@ -98,6 +101,44 @@ test('coalesces retryable rows to one earliest workspace timer and publishes the
   assert.equal(published[0].workspace_id, 'workspace-1-resolved');
   await coordinator.run('workspace-1', 'manual');
   assert.deepEqual(scheduler.delays(), [], 'manual work must cancel the pending automatic retry');
+  await coordinator.stop();
+});
+
+test('manual queued during an automatic failure suppresses its retry and schedules only from the manual result', async () => {
+  const scheduler = new FakeScheduler();
+  let releaseAutomatic!: () => void;
+  let releaseManual!: () => void;
+  let manualEntered!: () => void;
+  const automaticGate = new Promise<void>((resolve) => { releaseAutomatic = resolve; });
+  const manualGate = new Promise<void>((resolve) => { releaseManual = resolve; });
+  const enteredManual = new Promise<void>((resolve) => { manualEntered = resolve; });
+  let manualRetryable = false;
+  const coordinator = new LibraryRescanCoordinator({
+    resolveWorkspace: (id) => ({ id, path: 'C:\\repo' }), scheduler, now: () => scheduler.now,
+    openStore: () => store, closeStore: () => undefined,
+    rescan: async ({ initiator }) => {
+      if (initiator === 'automatic') {
+        await automaticGate;
+        return result([1]);
+      }
+      manualEntered();
+      await manualGate;
+      return result(manualRetryable ? [1] : []);
+    },
+  });
+
+  const automatic = coordinator.run('workspace-1', 'automatic');
+  const manual = coordinator.run('workspace-1', 'manual');
+  releaseAutomatic();
+  await enteredManual;
+  assert.deepEqual(scheduler.delays(), [], 'the completed automatic run must not arm a retry ahead of queued manual work');
+  releaseManual();
+  await Promise.all([automatic, manual]);
+  assert.deepEqual(scheduler.delays(), [], 'a successful manual run must leave no automatic retry behind');
+
+  manualRetryable = true;
+  await coordinator.run('workspace-1', 'manual');
+  assert.deepEqual(scheduler.delays(), [LIBRARY_RETRY_DELAYS_MS[0]], 'a failed manual run must schedule from its post-clear attempt one');
   await coordinator.stop();
 });
 
@@ -122,7 +163,7 @@ test('manual queued behind an automatic run has priority and every executed run 
   assert.equal(opens, 3, 'REACHABILITY:rescanCoordinator every execution must open one store');
   assert.equal(closes, 3, 'REACHABILITY:rescanCoordinator every execution must close its store');
   await assert.rejects(coordinator.run('missing', 'automatic'), /workspace not found/);
-  assert.equal(opens, closes, 'missing workspace must not create an uncloseable store');
+  assert.deepEqual({ opens, closes }, { opens: 3, closes: 3 }, 'an unresolved workspace has no path to open and must not affect paired store runs');
   await coordinator.stop();
 });
 

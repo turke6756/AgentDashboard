@@ -19,6 +19,16 @@ export interface LibraryStartupCoordinator {
 export interface LibraryStartupCatchup {
   stop(): void;
   done: Promise<void>;
+  isDone(): boolean;
+}
+
+export function forwardLibraryAutomaticFailureAfterCatchup(
+  catchup: Pick<LibraryStartupCatchup, 'isDone'> | null,
+  coordinator: { onAutomaticFailure(workspaceId: string, attemptCount?: number): void } | null,
+  workspaceId: string,
+  attemptCount?: number,
+): void {
+  if (catchup?.isDone()) coordinator?.onAutomaticFailure(workspaceId, attemptCount);
 }
 
 const realScheduler: LibraryStartupScheduler = {
@@ -59,6 +69,7 @@ export function startLibraryStartupCatchup(options: {
   log?: (message: string, error?: unknown) => void;
 }): LibraryStartupCatchup {
   let stopped = false;
+  let settled = false;
   const log = options.log ?? ((message, error) => error === undefined
     ? console.log(`[library-startup] ${message}`)
     : console.error(`[library-startup] ${message}`, error));
@@ -71,6 +82,7 @@ export function startLibraryStartupCatchup(options: {
         catch (error) { log(`catch-up failed for ${workspaceId}`, error); }
       }
     })
-    .catch((error) => log('startup barrier failed', error));
-  return { stop: () => { stopped = true; }, done };
+    .catch((error) => log('startup barrier failed', error))
+    .finally(() => { settled = true; });
+  return { stop: () => { stopped = true; }, done, isDone: () => settled };
 }

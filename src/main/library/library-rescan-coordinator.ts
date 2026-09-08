@@ -133,6 +133,8 @@ export class LibraryRescanCoordinator {
   }
 
   private async execute(workspaceId: string, initiator: LibraryRescanInitiator): Promise<LibraryRescanResult> {
+    const state = this.stateFor(workspaceId);
+    if (initiator === 'manual') this.cancelRetry(state);
     const workspace = this.deps.resolveWorkspace(workspaceId);
     if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
     const store = this.deps.openStore(workspace.path);
@@ -143,7 +145,7 @@ export class LibraryRescanCoordinator {
         initiator,
         publish: (event) => this.deps.publish({ ...event, workspace_id: workspace.id }),
       });
-      if (initiator === 'automatic') this.scheduleRetry(workspaceId, result);
+      this.scheduleRetry(workspaceId, result);
       return publicSummary(result);
     } finally {
       this.deps.closeStore(store);
@@ -152,6 +154,8 @@ export class LibraryRescanCoordinator {
 
   private scheduleRetry(workspaceId: string, result: LibraryRescanExecutionResult): void {
     if (this.stopped) return;
+    const state = this.stateFor(workspaceId);
+    if (state.queued.some(({ initiator }) => initiator === 'manual')) return;
     const delays = result.retryable_failures
       .filter(({ attempt_count }) => attempt_count > 0 && attempt_count < LIBRARY_MAX_AUTOMATIC_ATTEMPTS)
       .map(({ attempt_count }) => LIBRARY_RETRY_DELAYS_MS[attempt_count - 1]);

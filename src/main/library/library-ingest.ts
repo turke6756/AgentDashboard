@@ -212,7 +212,12 @@ export function createLibraryIngestor(deps: LibraryIngestDependencies) {
           update.run(encodeLibraryEmbedding(embedded.vectors[index]), chunks[index].id);
         }
       })();
-      setLibraryDocumentStatus(deps.store, id, 'ready');
+      deps.store.database.transaction(() => {
+        setLibraryDocumentStatus(deps.store, id, 'ready');
+        deps.store.database.prepare(`UPDATE library_documents SET attempt_count = 0 WHERE id = ?`).run(id);
+      })();
+      attemptCount = 0;
+      base.attempt_count = 0;
       publish(id, 'ready');
       return { document: { ...base, status: 'ready' }, reused: false, chunk_ids: chunks.map((chunk) => chunk.id) };
     } catch (error) {

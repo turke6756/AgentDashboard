@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { LIBRARY_EMBEDDING_DIMENSIONS } from './library-embedder';
 import { LIBRARY_CHANNELS, registerProductionLibraryIpc } from './library-ipc';
+import { LibraryRescanCoordinator } from './library-rescan-coordinator';
 import { rescanLibraryReports, rescanLibraryReportsDetailed } from './library-rescan';
 import { closeLibraryStore, listLibraryDocuments, openLibraryStore, upsertLibraryDocument } from './library-store';
 
@@ -35,11 +36,21 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
   };
 
   const handlers = new Map<string, (...args: any[]) => unknown>();
+  let opens = 0;
+  let closes = 0;
+  const coordinator = new LibraryRescanCoordinator({
+    resolveWorkspace: (workspaceId) => workspaceId === 'workspace-1' ? { id: workspaceId, path: workspaceRoot } : null,
+    openStore: (root) => { opens += 1; return openLibraryStore(root); },
+    closeStore: (store) => { closes += 1; closeLibraryStore(store); },
+    rescan: (deps) => rescanLibraryReportsDetailed({ ...deps, embedTexts }),
+  });
   registerProductionLibraryIpc(
     { handle: (channel, listener) => handlers.set(channel, listener) },
     (workspaceId) => workspaceId === 'workspace-1' ? { id: workspaceId, path: workspaceRoot } : null,
     () => undefined,
     (deps) => rescanLibraryReports({ ...deps, embedTexts }),
+    undefined,
+    coordinator,
   );
   const handler = handlers.get(LIBRARY_CHANNELS.rescan);
   assert.ok(handler, 'REACHABILITY:library:rescan production registration missing');
@@ -56,6 +67,7 @@ test('rescan walks both report roots serially and is idempotent on an unchanged 
 
   const second = await secondPromise;
   assert.deepEqual(second, { scanned: 2, ingested: 0, skipped: 2, failed: 0 });
+  assert.deepEqual({ opens, closes }, { opens: 2, closes: 2 }, 'each production coordinator run must pair one store open and close');
 
   const store = openLibraryStore(workspaceRoot);
   try {
@@ -112,5 +124,6 @@ test('automatic rescan honors the cap while manual rescan clears and retries fro
   fail = false;
   const recovered = await rescanLibraryReports({ workspaceRoot, store, embedTexts });
   assert.deepEqual(recovered, { scanned: 1, ingested: 1, skipped: 0, failed: 0 }, 'manual Rescan must remain the explicit recovery path');
-  assert.equal((store.database.prepare(`SELECT attempt_count, status FROM library_documents`).get() as { attempt_count: number; status: string }).attempt_count, 1);
+  assert.equal((store.database.prepare(`SELECT attempt_count, status FROM library_documents`).get() as { attempt_count: number; status: string }).attempt_count, 0,
+    'successful manual recovery resets the consecutive-failure ledger');
 });

@@ -63,7 +63,12 @@ import { startProposalsWatcher, type ProposalsWatcher } from './proposals-watche
 import { startLibraryReportWatcher, type LibraryReportWatcher } from './library/library-report-watcher';
 import { shutdownLibraryEmbedder } from './library/library-embedder';
 import { LibraryRescanCoordinator } from './library/library-rescan-coordinator';
-import { createLibraryMainWindowInteractiveBarrier, startLibraryStartupCatchup, type LibraryStartupCatchup } from './library/library-startup-catchup';
+import {
+  createLibraryMainWindowInteractiveBarrier,
+  forwardLibraryAutomaticFailureAfterCatchup,
+  startLibraryStartupCatchup,
+  type LibraryStartupCatchup,
+} from './library/library-startup-catchup';
 import { publishLibraryBroadcast, setProductionLibraryRescanCoordinator } from './library/library-ipc';
 import { runProposalScan } from './proposal-scan';
 import {
@@ -1037,7 +1042,12 @@ app.whenReady().then(async () => {
     registerIpcHandlers(supervisor, mainWindow!, detachedWindowDeps, apiConnectionGate, agentScheduler, scheduleBroadcast);
     const watcherAttached = startLibraryReportWatcher({
       onAutomaticFailure: (workspaceId, attemptCount) => {
-        libraryRescanCoordinator?.onAutomaticFailure(workspaceId, attemptCount);
+        forwardLibraryAutomaticFailureAfterCatchup(
+          libraryStartupCatchup,
+          libraryRescanCoordinator,
+          workspaceId,
+          attemptCount,
+        );
       },
     });
     void watcherAttached
