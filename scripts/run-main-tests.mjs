@@ -392,6 +392,7 @@ const TESTS = [
   'dist/main/main/library/library-query-integration.test.js',
   'dist/main/main/library/library-embedder.test.js',
   'dist/main/main/library/library-hybrid.test.js',
+  // MCP Library contract: match-centered multi-excerpt projection with fair quote budgeting.
   'scripts/mcp-tools-library.test.js',
   // Lares-rename regression: legacy-cwd agents regain their hook scaffold at launch.
   'dist/main/main/supervisor/legacy-state-dir-heal.test.js',
