@@ -63,7 +63,7 @@ function patchDb(workspacePath: string | null, agents: Agent[], events: Array<{ 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const db = require('../database') as Record<string, unknown>;
   const keys = [
-    'getWorkspace', 'createAgent', 'updateAgentStatus', 'applyStatusTransition', 'updateAgentPid',
+    'getWorkspace', 'createAgent', 'updateAgentStatus', 'applyStatusTransition', 'updateAgentHookStatus', 'updateAgentPid',
     'getAgent', 'getAgentsByWorkspace', 'addEvent', 'updateAgentLastOutput', 'updateAgentExitCode',
     'getActiveAgents', 'getAllAgents', 'getSupervisorAgent',
     'addFileActivity', 'updateAgentResumeSessionId', 'getTeamMembership',
@@ -79,6 +79,7 @@ function patchDb(workspacePath: string | null, agents: Agent[], events: Array<{ 
     const a = agents.find(x => x.id === id);
     if (a) (a as unknown as { status: string }).status = status;
   };
+  db.updateAgentHookStatus = () => {};
   db.updateAgentPid = () => {};
   db.getAgent = (id: string) => agents.find(a => a.id === id) ?? null;
   db.getAgentsByWorkspace = (wsId: string) => agents.filter(a => a.workspaceId === wsId);
@@ -275,6 +276,49 @@ test('a queued message is staged AFTER stop with the get_my_context preamble and
 }));
 
 // ── ownership gate: null → fail closed, no stop/relaunch ─────────────────────────
+
+test('revive_agent message for Codex uses the current-launch readiness gate', () => withHarness(async (h) => {
+  const agent = terminalWorker(h.workspacePath, {
+    provider: 'codex',
+    resumeSessionId: '0199a000-0000-7000-8000-000000000001',
+  });
+  h.agents.push(agent);
+  (h.supervisor as unknown as { resolveCodexResumeSessionId: unknown }).resolveCodexResumeSessionId = () => agent.resumeSessionId;
+  spyLifecycle(h.supervisor, { outcome: 'already_stopped' });
+  const delivered: string[] = [];
+  (h.supervisor as unknown as { sendInputWithOutcome: unknown }).sendInputWithOutcome = (
+    _id: string, text: string,
+  ) => {
+    delivered.push(text);
+    return Promise.resolve({
+      disposition: 'confirmed', agentId: agent.id, delivered: true,
+      confirmationSource: 'hook', completedAt: Date.now(),
+    });
+  };
+
+  const res = await revive(h.supervisor, agent.id, { message: 'wake through readiness' });
+  assert.ok(res.ok && res.result.queued);
+  (h.supervisor as unknown as { recordRunnerLaunchStarted: (a: Agent) => void })
+    .recordRunnerLaunchStarted(agent);
+  const epoch = (h.supervisor as unknown as { launchStartedAt: Map<string, number> })
+    .launchStartedAt.get(agent.id)!;
+  (h.supervisor as unknown as { windowsRunners: Map<string, unknown> })
+    .windowsRunners.set(agent.id, {});
+  agent.status = 'idle';
+  (h.supervisor as unknown as { maybeDeliverInitialUserPrompt: (id: string, status: string) => void })
+    .maybeDeliverInitialUserPrompt(agent.id, 'idle');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(delivered.length, 0, 'revive wake remains pending on launch-settle idle');
+
+  assert.equal(h.supervisor.applyHookStatusEvent(agent.id, {
+    state: 'active', hookEventName: 'SessionStart',
+    sessionId: '0199a000-0000-7000-8000-000000000001',
+    ts: epoch + 1, source: 'hook-session-start',
+  }, 'http'), 'applied');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(delivered.length, 1, 'current-launch SessionStart releases the revive wake');
+  assert.match(delivered[0], /wake through readiness/);
+}));
 
 test('reconcileGate === null → revive-ownership-unverified (503), no stop/relaunch', () => withHarness(async (h) => {
   const agent = terminalWorker(h.workspacePath);

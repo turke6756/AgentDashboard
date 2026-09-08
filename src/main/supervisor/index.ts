@@ -2350,6 +2350,14 @@ const CODEX_DISCOVERY_GRACE_MS = DEFAULT_SQL_POLL_TIMEOUT_MS + 10_000;
 // discovery never settles still can't wedge the per-home queue past this.
 const CODEX_LAUNCH_GATE_HARD_CAP_MS = DEFAULT_SQL_POLL_TIMEOUT_MS + 10_000;
 
+// A pending Codex launch/revive prompt waits for SessionStart from the current
+// launch before any bytes reach the TUI. Reuse the launch-gate hard cap: it is
+// already sized to outlast the 25 s launch-settle timer and the 35 s Codex
+// session-discovery window, while remaining well inside the 10 min prompt TTL.
+// If hooks never arrive, this bounded backstop delivers with an explicit
+// codex-readiness-timeout warning rather than silently dropping the prompt.
+const CODEX_INITIAL_PROMPT_READINESS_TIMEOUT_MS = CODEX_LAUNCH_GATE_HARD_CAP_MS;
+
 // Stale-rollout hardening (sibling bug in
 // docs/BUG_claude-child-session-env-poisoning.md): when recovery finds no
 // rollout fresher than the agent's launch, it polls for one on this cadence
@@ -2691,6 +2699,12 @@ export class AgentSupervisor extends EventEmitter {
   // pane and is rejected as 'stale'. Distinct from the monitor's BUG-23
   // `launchedAt`, which is cleared on promotion and therefore not durable.
   private launchStartedAt = new Map<string, number>();
+  // Issue 3 — readiness is scoped to the exact launchStartedAt epoch. A
+  // launch-settle idle is only a wallclock promotion; it cannot populate this
+  // map. SessionStart for the current epoch does, and the bounded timer below
+  // is the hooks-broken fallback.
+  private codexInitialPromptReadyEpoch = new Map<string, number>();
+  private codexInitialPromptReadinessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Stale-rollout hardening: agent ids with an active bounded poll waiting for
   // a fresh-enough codex rollout (see startCodexSidRecoveryPoll). Guards
   // against stacking concurrent polls when chat reads retrigger recovery.
@@ -5687,6 +5701,66 @@ export class AgentSupervisor extends EventEmitter {
     } satisfies StatusChangedEvent);
   }
 
+  /** Stamp the shared launch epoch and arm the Codex initial-prompt readiness
+   *  backstop at the last synchronous point before runner.launch(). */
+  private recordRunnerLaunchStarted(agent: Agent): void {
+    const epoch = Date.now();
+    this.launchStartedAt.set(agent.id, epoch);
+    this.codexInitialPromptReadyEpoch.delete(agent.id);
+    const priorTimer = this.codexInitialPromptReadinessTimers.get(agent.id);
+    if (priorTimer) clearTimeout(priorTimer);
+    this.codexInitialPromptReadinessTimers.delete(agent.id);
+    if (agent.provider !== 'codex' || !this.pendingInitialPrompts.has(agent.id)) return;
+
+    const timer = setTimeout(() => {
+      this.onCodexInitialPromptReadinessTimeout(agent.id, epoch);
+    }, CODEX_INITIAL_PROMPT_READINESS_TIMEOUT_MS);
+    timer.unref?.();
+    this.codexInitialPromptReadinessTimers.set(agent.id, timer);
+  }
+
+  /** Hooks-broken fallback. The epoch equality makes an old launch's timer a
+   *  no-op after restart/revive. Kept as a method so tests can exercise the
+   *  real deadline behavior without sleeping for 45 seconds. */
+  private onCodexInitialPromptReadinessTimeout(agentId: string, epoch: number): void {
+    if (this.launchStartedAt.get(agentId) !== epoch) return;
+    const pending = this.pendingInitialPrompts.get(agentId);
+    if (!pending) {
+      this.clearCodexInitialPromptReadiness(agentId);
+      return;
+    }
+    console.warn(
+      `[initial-prompt] Delivering pending prompt for ${agentId}: ` +
+      `reason=codex-readiness-timeout after ${CODEX_INITIAL_PROMPT_READINESS_TIMEOUT_MS}ms`,
+    );
+    this.maybeDeliverInitialUserPrompt(
+      agentId,
+      getAgent(agentId)?.status ?? 'idle',
+      'codex-readiness-timeout',
+    );
+  }
+
+  private clearCodexInitialPromptReadiness(agentId: string): void {
+    const timer = this.codexInitialPromptReadinessTimers.get(agentId);
+    if (timer) clearTimeout(timer);
+    this.codexInitialPromptReadinessTimers.delete(agentId);
+    this.codexInitialPromptReadyEpoch.delete(agentId);
+  }
+
+  /** Mark readiness only for a SessionStart whose provider timestamp belongs
+   *  to the current launch epoch, then retry delivery if launch-settle already
+   *  left the agent in an accepting status. */
+  private noteCodexInitialPromptReadiness(agentId: string, eventTs: number): void {
+    const epoch = this.launchStartedAt.get(agentId);
+    if (epoch === undefined || eventTs < epoch - TMUX_OPTION_LAUNCH_SKEW_MS) return;
+    this.codexInitialPromptReadyEpoch.set(agentId, epoch);
+    const timer = this.codexInitialPromptReadinessTimers.get(agentId);
+    if (timer) clearTimeout(timer);
+    this.codexInitialPromptReadinessTimers.delete(agentId);
+    const agent = getAgent(agentId);
+    if (agent) this.maybeDeliverInitialUserPrompt(agentId, agent.status);
+  }
+
   private async launchWindowsAgent(agent: Agent, resume = false, agentMdPrompt?: string | null, sessionId?: string, overrideArgs?: string[], freshSession = false, firstUserMessagePrefix?: string | null, preMintedToken?: string): Promise<void> {
     // WP0.5 — resolve EXACTLY ONE per-agent capability token at method entry,
     // before ANY environment or command construction. `mint()` rotates, so the
@@ -6231,7 +6305,7 @@ export class AgentSupervisor extends EventEmitter {
     // P1 §2 step 4a(iii) — current-launch stamp for the tmux-option freshness
     // gate. Set IMMEDIATELY BEFORE the actual runner launch so no event this
     // launch produces can predate the stamp.
-    this.launchStartedAt.set(agent.id, Date.now());
+    this.recordRunnerLaunchStarted(agent);
     refuseUnrestrictedLaunchProviderHomes([
       extraEnv.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
       extraEnv.CODEX_HOME ?? process.env.CODEX_HOME,
@@ -7220,7 +7294,7 @@ export class AgentSupervisor extends EventEmitter {
     // P1 §2 step 4a(iii) — current-launch stamp for the tmux-option freshness
     // gate. Set IMMEDIATELY BEFORE the actual runner launch so no event this
     // launch produces can predate the stamp.
-    this.launchStartedAt.set(agent.id, Date.now());
+    this.recordRunnerLaunchStarted(agent);
     // §3a — WSL fresh-launch guard. The WSL launch path renders `command` as a
     // shell STRING, so a stray `resume` subcommand sneaking into a fresh
     // (non-resume) codex launch would silently attach to the wrong session.
@@ -8113,6 +8187,7 @@ export class AgentSupervisor extends EventEmitter {
     this.appliedHookEvents.delete(agentId);
     this.lastAppliedHookTs.delete(agentId);
     this.launchStartedAt.delete(agentId);
+    this.clearCodexInitialPromptReadiness(agentId);
     this.lastInvalidHookWarnAt.delete(agentId);
     this.clearSubagentWarnings(agentId);
     this.releaseSpoolTailer(agentId);
@@ -8799,12 +8874,20 @@ export class AgentSupervisor extends EventEmitter {
    *  entry. Async delivery failures ride the existing
    *  'agent:send-input-error' renderer flow via the 'sendInputError'
    *  supervisor event (forwarded in ipc-handlers.ts). */
-  private maybeDeliverInitialUserPrompt(agentId: string, status: AgentStatus): void {
-    if (status !== 'idle' && status !== 'waiting' && status !== 'done') return;
+  private maybeDeliverInitialUserPrompt(
+    agentId: string,
+    status: AgentStatus,
+    reason?: 'codex-readiness-timeout',
+  ): void {
+    if (
+      reason !== 'codex-readiness-timeout'
+      && status !== 'idle' && status !== 'waiting' && status !== 'done'
+    ) return;
     const pending = this.pendingInitialPrompts.get(agentId);
     if (!pending) return;
     if (Date.now() > pending.expiresAt) {
       this.pendingInitialPrompts.delete(agentId);
+      this.clearCodexInitialPromptReadiness(agentId);
       if (pending.continuation) {
         this.beginContinuationOrientation(agentId, pending.continuation);
         this.failContinuationOrientation(agentId, 'kickoff-prompt-expired');
@@ -8812,13 +8895,39 @@ export class AgentSupervisor extends EventEmitter {
       console.warn(`[initial-prompt] Pending initial prompt for ${agentId} expired undelivered`);
       return;
     }
+    const agent = getAgent(agentId);
+    if (agent?.provider === 'codex' && reason !== 'codex-readiness-timeout') {
+      const epoch = this.launchStartedAt.get(agentId);
+      if (epoch === undefined || this.codexInitialPromptReadyEpoch.get(agentId) !== epoch) {
+        return;
+      }
+    }
     // No live runner (e.g. a runner-exit 'done') — keep the entry; a restart
     // inside the TTL window can still deliver it, and stop/delete clear it.
     if (!this.hasRunner(agentId)) return;
     this.pendingInitialPrompts.delete(agentId);
+    this.clearCodexInitialPromptReadiness(agentId);
     if (pending.continuation) this.beginContinuationOrientation(agentId, pending.continuation);
-    this.sendInput(agentId, pending.text, {}, pending.dispatch)
-      .then(() => { reconcilePackageDispatches(); })
+    const delivery = agent?.provider === 'codex'
+      ? this.sendInputWithOutcome(
+          agentId,
+          pending.text,
+          {},
+          pending.dispatch,
+          { forceSubmitConfirmationRetries: 1 },
+        )
+      : this.sendInput(agentId, pending.text, {}, pending.dispatch).then(() => null);
+    delivery
+      .then((outcome) => {
+        if (agent?.provider === 'codex' && outcome?.disposition === 'delivered-unconfirmed') {
+          void this.bridge.onHandoffFailed({
+            agent,
+            attempts: 2,
+            message: 'Pending initial prompt was typed, but no turn-start evidence arrived after one Enter retry.',
+          });
+        }
+        reconcilePackageDispatches();
+      })
       .catch((err: Error) => {
         if (pending.continuation) this.failContinuationOrientation(agentId, err.message);
         console.error(`[initial-prompt] Delivery to ${agentId} failed:`, err);
@@ -9168,6 +9277,7 @@ export class AgentSupervisor extends EventEmitter {
       event.sessionId.length > 0
     ) {
       this.bindCodexSessionFromHook(agentId, event.sessionId);
+      this.noteCodexInitialPromptReadiness(agentId, event.ts);
     }
     return 'applied';
   }
@@ -9612,6 +9722,7 @@ export class AgentSupervisor extends EventEmitter {
     text: string,
     opts: { submit?: boolean } = {},
     dispatch?: DispatchContext,
+    internal?: { forceSubmitConfirmationRetries?: number },
   ): Promise<SendOutcome> {
     if (!this.windowsRunners.get(agentId) && !this.wslRunners.get(agentId)) {
       return Promise.reject(new Error(`No runner for agent ${agentId}`));
@@ -9621,7 +9732,7 @@ export class AgentSupervisor extends EventEmitter {
     const previous = this.inputQueues.get(agentId) || Promise.resolve();
     const ours: Promise<SendOutcome> = previous
       .catch(() => undefined) // a prior failed send must not poison the queue
-      .then(() => this._deliverAndConfirm(agentId, text, submit, dispatch));
+      .then(() => this._deliverAndConfirm(agentId, text, submit, dispatch, internal));
     this.inputQueues.set(agentId, ours);
     // Clear in-flight only when the chain has fully drained for this agent.
     void ours
@@ -9642,6 +9753,7 @@ export class AgentSupervisor extends EventEmitter {
     text: string,
     submit: boolean,
     dispatch?: DispatchContext,
+    internal?: { forceSubmitConfirmationRetries?: number },
   ): Promise<SendOutcome> {
     const agent = getAgent(agentId);
     // Insert before checkpoint's fail-open block. The health observer is itself
@@ -9732,7 +9844,13 @@ export class AgentSupervisor extends EventEmitter {
       });
     }
 
-    const source = await this.awaitSendConfirmation(agentId, agent, baselineStartHook, evidenceBaseline);
+    const source = await this.awaitSendConfirmation(
+      agentId,
+      agent,
+      baselineStartHook,
+      evidenceBaseline,
+      internal?.forceSubmitConfirmationRetries,
+    );
     if (source) {
       return this.recordSendOutcome({
         disposition: 'confirmed', agentId, delivered: true,
@@ -9781,14 +9899,19 @@ export class AgentSupervisor extends EventEmitter {
     agent: Agent | null,
     baselineStartHook: number,
     evidenceBaseline: import('./turn-evidence').TurnEvidenceBaseline,
+    forceSubmitConfirmationRetries?: number,
   ): Promise<SendOutcome['confirmationSource'] | null> {
     // Evidence may already be present the instant we return from delivery.
     const immediate = this.readFallbackConfirmation(agentId, baselineStartHook, evidenceBaseline);
     if (immediate) return immediate;
 
-    if (agent && this.usesSubmitConfirmation(agent)) {
+    if (agent && (forceSubmitConfirmationRetries !== undefined || this.usesSubmitConfirmation(agent))) {
       // Hook path + submit-only re-press across the confirm windows.
-      const confirmed = await this.monitor.confirmSubmission(agentId, baselineStartHook);
+      const confirmed = await this.monitor.confirmSubmission(
+        agentId,
+        baselineStartHook,
+        forceSubmitConfirmationRetries,
+      );
       if (confirmed) {
         // Re-read the full invariant: a timestamp alone is not confirmation if
         // the hook failed to drive the row through working.

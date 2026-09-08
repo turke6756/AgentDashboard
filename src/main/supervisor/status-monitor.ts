@@ -690,7 +690,11 @@ export class StatusMonitor extends EventEmitter {
    *
    *  While running, the agent is flagged `confirmInFlight` so the reactive
    *  resend/silence pollers stand down (no double-press, no spurious warn). */
-  async confirmSubmission(agentId: string, priorStartHookAt: number): Promise<boolean> {
+  async confirmSubmission(
+    agentId: string,
+    priorStartHookAt: number,
+    maxRetries: number = MAX_SUBMIT_RETRIES,
+  ): Promise<boolean> {
     this.confirmInFlight.add(agentId);
     try {
       // First (widest) window — the initial body+Enter was already issued by
@@ -701,7 +705,7 @@ export class StatusMonitor extends EventEmitter {
       // Retry loop: submit-only re-press, then poll the (tighter) retry window.
       // The final iteration is polled before the loop exits, so we never throw
       // on an unconfirmed last press (§2.3).
-      for (let attempt = 1; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           this.resubmit?.(agentId);
         } catch (err) {

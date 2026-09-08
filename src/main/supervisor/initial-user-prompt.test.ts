@@ -29,7 +29,7 @@ import * as path from 'node:path';
 import { AgentSupervisor } from './index';
 import { WindowsRunner } from './windows-runner';
 import { makeAgent } from './test-helpers/fake-bridge-deps';
-import type { Agent, AgentProvider, AgentStatus, LaunchAgentInput, Workspace } from '../../shared/types';
+import type { Agent, AgentProvider, AgentStatus, LaunchAgentInput, SendOutcome, Workspace } from '../../shared/types';
 import type { StatusChangedEvent } from './status-events';
 
 interface TestCase {
@@ -156,6 +156,8 @@ interface Harness {
   capturedMdPrompts: Array<string | null | undefined>;
   /** sendInput calls captured by the instance stub. */
   sendInputCalls: Array<{ agentId: string; text: string }>;
+  /** Codex initial-prompt outcome calls captured by the instance stub. */
+  sendOutcomeCalls: Array<{ agentId: string; text: string; forceSubmitConfirmationRetries?: number }>;
   /** 'sendInputError' supervisor emissions. */
   sendInputErrors: Array<{ agentId: string; error: string }>;
   /** Direct map access for expiry manipulation / assertions. */
@@ -165,7 +167,11 @@ interface Harness {
   cleanup(): void;
 }
 
-function setup(opts: { stubLaunch?: boolean; sendInputError?: Error } = {}): Harness {
+function setup(opts: {
+  stubLaunch?: boolean;
+  sendInputError?: Error;
+  codexOutcome?: SendOutcome;
+} = {}): Harness {
   const stubLaunch = opts.stubLaunch !== false;
   const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-p2-'));
   const workspace: Workspace = {
@@ -209,6 +215,27 @@ function setup(opts: { stubLaunch?: boolean; sendInputError?: Error } = {}): Har
     sendInputCalls.push({ agentId, text });
     return opts.sendInputError ? Promise.reject(opts.sendInputError) : Promise.resolve(true);
   };
+  const sendOutcomeCalls: Harness['sendOutcomeCalls'] = [];
+  priv.sendInputWithOutcome = (
+    agentId: string,
+    text: string,
+    _sendOpts: unknown,
+    _dispatch: unknown,
+    internal?: { forceSubmitConfirmationRetries?: number },
+  ): Promise<SendOutcome> => {
+    sendOutcomeCalls.push({
+      agentId,
+      text,
+      forceSubmitConfirmationRetries: internal?.forceSubmitConfirmationRetries,
+    });
+    return Promise.resolve(opts.codexOutcome ?? {
+      disposition: 'confirmed',
+      agentId,
+      delivered: true,
+      confirmationSource: 'hook',
+      completedAt: Date.now(),
+    });
+  };
 
   const sendInputErrors: Array<{ agentId: string; error: string }> = [];
   supervisor.on('sendInputError', (payload: { agentId: string; error: string }) => {
@@ -221,6 +248,7 @@ function setup(opts: { stubLaunch?: boolean; sendInputError?: Error } = {}): Har
     workspace,
     capturedMdPrompts,
     sendInputCalls,
+    sendOutcomeCalls,
     sendInputErrors,
     pendingMap: () =>
       (supervisor as unknown as { pendingInitialPrompts: Map<string, { text: string; expiresAt: number }> })
@@ -249,6 +277,24 @@ function setup(opts: { stubLaunch?: boolean; sendInputError?: Error } = {}): Har
       try { fs.rmSync(wsRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
     },
   };
+}
+
+function markCodexLaunchStarted(h: Harness, agent: Agent): number {
+  (h.supervisor as unknown as { recordRunnerLaunchStarted: (a: Agent) => void })
+    .recordRunnerLaunchStarted(agent);
+  return (h.supervisor as unknown as { launchStartedAt: Map<string, number> })
+    .launchStartedAt.get(agent.id)!;
+}
+
+function signalCodexSessionStart(h: Harness, agent: Agent, ts: number): void {
+  const result = h.supervisor.applyHookStatusEvent(agent.id, {
+    state: 'active',
+    hookEventName: 'SessionStart',
+    sessionId: '0199a000-0000-7000-8000-000000000003',
+    ts,
+    source: 'hook-session-start',
+  }, 'http');
+  assert.equal(result, 'applied');
 }
 
 function launchInput(h: Harness, provider: AgentProvider, extra: Partial<LaunchAgentInput> = {}): LaunchAgentInput {
@@ -321,6 +367,106 @@ test('(a2) accepting transition with no live runner keeps the entry for a later 
 });
 
 // ── (b) expiry ───────────────────────────────────────────────────────
+
+test('codex launch-settle idle before readiness retains the pending prompt', async () => {
+  const h = setup();
+  try {
+    const agent = await h.supervisor.launchAgent(
+      launchInput(h, 'codex', { initialUserPrompt: INITIAL_PROMPT }),
+    );
+    markCodexLaunchStarted(h, agent);
+    h.injectWindowsRunner(agent.id);
+    h.emitStatus(agent.id, 'idle');
+    await flushMicrotasks();
+    assert.equal(h.sendOutcomeCalls.length, 0, 'timer-idle is not Codex readiness');
+    assert.equal(h.pendingMap().has(agent.id), true, 'prompt remains pending');
+  } finally { h.cleanup(); }
+});
+
+test('current-launch Codex SessionStart releases the pending prompt exactly once', async () => {
+  const h = setup();
+  try {
+    const agent = await h.supervisor.launchAgent(
+      launchInput(h, 'codex', { initialUserPrompt: INITIAL_PROMPT }),
+    );
+    const epoch = markCodexLaunchStarted(h, agent);
+    h.injectWindowsRunner(agent.id);
+    agent.status = 'idle';
+    signalCodexSessionStart(h, agent, epoch + 1);
+    await flushMicrotasks();
+    assert.equal(h.sendOutcomeCalls.length, 1);
+    assert.equal(h.sendOutcomeCalls[0].text, INITIAL_PROMPT);
+    assert.equal(h.sendOutcomeCalls[0].forceSubmitConfirmationRetries, 1);
+    assert.equal(h.pendingMap().has(agent.id), false);
+    h.emitStatus(agent.id, 'idle');
+    await flushMicrotasks();
+    assert.equal(h.sendOutcomeCalls.length, 1, 'later idle cannot redeliver');
+  } finally { h.cleanup(); }
+});
+
+test('Codex readiness timeout delivers with the named warning', async () => {
+  const h = setup();
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    const agent = await h.supervisor.launchAgent(
+      launchInput(h, 'codex', { initialUserPrompt: INITIAL_PROMPT }),
+    );
+    const epoch = markCodexLaunchStarted(h, agent);
+    h.injectWindowsRunner(agent.id);
+    agent.status = 'idle';
+    (h.supervisor as unknown as {
+      onCodexInitialPromptReadinessTimeout: (id: string, launchEpoch: number) => void;
+    }).onCodexInitialPromptReadinessTimeout(agent.id, epoch);
+    await flushMicrotasks();
+    assert.equal(h.sendOutcomeCalls.length, 1, 'fallback deadline delivers');
+    assert.ok(warnings.some((line) => line.includes('codex-readiness-timeout')));
+  } finally {
+    console.warn = originalWarn;
+    h.cleanup();
+  }
+});
+
+test('Claude delivery remains gated only by the first accepting status', async () => {
+  const h = setup();
+  try {
+    const agent = await h.supervisor.launchAgent(
+      launchInput(h, 'claude', { initialUserPrompt: INITIAL_PROMPT }),
+    );
+    h.injectWindowsRunner(agent.id);
+    h.emitStatus(agent.id, 'idle');
+    await flushMicrotasks();
+    assert.equal(h.sendInputCalls.length, 1, 'Claude still delivers on first idle');
+  } finally { h.cleanup(); }
+});
+
+test('unconfirmed Codex initial prompt emits handoff_failed after one retry policy', async () => {
+  const h = setup({
+    codexOutcome: {
+      disposition: 'delivered-unconfirmed', agentId: 'agent-1', delivered: true,
+      reason: 'confirmation-timeout', completedAt: Date.now(),
+    },
+  });
+  const failures: Array<{ attempts: number; message: string }> = [];
+  try {
+    const bridge = (h.supervisor as unknown as {
+      bridge: { onHandoffFailed: (input: { attempts: number; message: string }) => Promise<void> };
+    }).bridge;
+    bridge.onHandoffFailed = async (input) => { failures.push(input); };
+    const agent = await h.supervisor.launchAgent(
+      launchInput(h, 'codex', { initialUserPrompt: INITIAL_PROMPT }),
+    );
+    const epoch = markCodexLaunchStarted(h, agent);
+    h.injectWindowsRunner(agent.id);
+    agent.status = 'idle';
+    signalCodexSessionStart(h, agent, epoch + 1);
+    await flushMicrotasks();
+    assert.equal(h.sendOutcomeCalls[0].forceSubmitConfirmationRetries, 1);
+    assert.deepEqual(failures.map((failure) => failure.attempts), [2]);
+    assert.match(failures[0].message, /no turn-start evidence/);
+  } finally { h.cleanup(); }
+});
 
 test('(b) expired entry is dropped, never delivered', async () => {
   const h = setup();
