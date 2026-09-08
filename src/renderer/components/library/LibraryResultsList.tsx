@@ -22,7 +22,6 @@ export default function LibraryResultsList({ excerpts, highlights, documents, on
           }}>
             <span className="line-clamp-3 text-gray-300">{excerpt.quote}</span><span className="mt-1 block text-accent-blue">{excerpt.citation}</span>
           </button>
-          {excerpt.trust === 'untrusted' && <span className="text-amber-400">Untrusted</span>}
         </div>
       ))}
     </aside>

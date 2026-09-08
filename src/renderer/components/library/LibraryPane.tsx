@@ -6,7 +6,7 @@ import LibraryFilters, { EMPTY_LIBRARY_FILTERS, type LibraryFilterState } from '
 import LibraryQueryBox from './LibraryQueryBox';
 import LibraryResultsList from './LibraryResultsList';
 import LibraryShelf from './LibraryShelf';
-import type { LibraryDocumentHighlightsView, LibraryDocumentView, LibraryQueryExcerptView } from './library-result-navigation';
+import { openLibraryDocument, type LibraryDocumentHighlightsView, type LibraryDocumentView, type LibraryQueryExcerptView } from './library-result-navigation';
 
 type LibraryApi = {
   listShelf: (workspaceId: string) => Promise<ShelfRow[]>;
@@ -33,7 +33,7 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   const [documents, setDocuments] = useState<ShelfRow[]>([]);
   const [filters, setFilters] = useState<LibraryFilterState>({ ...EMPTY_LIBRARY_FILTERS, types: initialType ? [initialType] : [] });
   const [sort, setSort] = useState<'newest' | 'title' | 'type'>('newest');
-  const [includeUntrusted, setIncludeUntrusted] = useState(false);
+  const [draftQuery, setDraftQuery] = useState('');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ excerpts: LibraryQueryExcerptView[]; document_highlights?: LibraryDocumentHighlightsView }>({ excerpts: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -86,7 +86,6 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   const filtered = useMemo(() => documents.filter((document) => {
     const topics = (() => { try { return JSON.parse(document.topics_json) as string[]; } catch { return []; } })();
     return (!filters.types.length || filters.types.includes(document.type))
-      && (!filters.trusts.length || filters.trusts.includes(document.trust))
       && (!filters.dateFrom || document.created >= filters.dateFrom)
       && (!filters.dateTo || document.created <= `${filters.dateTo}T23:59:59`)
       && (!filters.topic || topics.some((topic) => topic.toLowerCase().includes(filters.topic.toLowerCase())))
@@ -99,11 +98,11 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
     setQuery(nextQuery); setSelected(new Set());
     if (!workspaceId || !nextQuery) { setResults({ excerpts: [] }); return; }
     const docIds = filtered.filter((document) => document.shelf_status === 'ready').map((document) => document.id);
-    const hasShelfFilter = filters.types.length > 0 || filters.trusts.length > 0 || Boolean(filters.dateFrom || filters.dateTo || filters.topic || filters.provider || filters.status || filters.title);
+    const hasShelfFilter = filters.types.length > 0 || Boolean(filters.dateFrom || filters.dateTo || filters.topic || filters.provider || filters.status || filters.title);
     if (hasShelfFilter && docIds.length === 0) { setResults({ excerpts: [] }); return; }
-    const next = await libraryApi().query(workspaceId, { query: nextQuery, mode: 'hybrid', doc_ids: docIds, types: filters.types, topics: filters.topic ? [filters.topic] : undefined, include_untrusted: includeUntrusted, highlight_doc_id: results.document_highlights?.doc_id });
+    const next = await libraryApi().query(workspaceId, { query: nextQuery, mode: 'hybrid', doc_ids: docIds, types: filters.types, topics: filters.topic ? [filters.topic] : undefined, include_untrusted: true, highlight_doc_id: results.document_highlights?.doc_id });
     setResults(next);
-  }, [workspaceId, filtered, filters, includeUntrusted, results.document_highlights?.doc_id]);
+  }, [workspaceId, filtered, filters, results.document_highlights?.doc_id]);
 
   const addFiles = async (files: File[], trigger: 'add' | 'drop') => {
     if (!workspaceId) return;
@@ -126,9 +125,9 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
         await reload();
       }} />
       <LibraryFilters value={filters} onChange={setFilters} />
-      <LibraryQueryBox onQuery={runQuery} includeUntrusted={includeUntrusted} onIncludeUntrusted={setIncludeUntrusted} />
+      <LibraryQueryBox value={draftQuery} onChange={setDraftQuery} onQuery={runQuery} />
       {message && <p role="status" className="text-xs text-amber-400">{message}</p>}
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] gap-4 overflow-auto"><LibraryShelf documents={filtered} /><div><LibraryResultsList excerpts={results.excerpts} highlights={results.document_highlights} documents={documents} onError={setMessage} selected={selected} onSelectedChange={setSelected} />{selected.size > 0 && <button className="ui-btn mt-2" onClick={() => workspaceId && void libraryApi().saveNote(workspaceId, { query, chunk_ids: [...selected] }).then(() => setMessage('Note saved.'))}>Save as Note</button>}</div></div>
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] gap-4 overflow-auto"><LibraryShelf documents={filtered} onOpen={(document) => { const outcome = openLibraryDocument(document); if (!outcome.ok) setMessage(outcome.error); }} /><div><LibraryResultsList excerpts={results.excerpts} highlights={results.document_highlights} documents={documents} onError={setMessage} selected={selected} onSelectedChange={setSelected} />{selected.size > 0 && <button className="ui-btn mt-2" onClick={() => workspaceId && void libraryApi().saveNote(workspaceId, { query, chunk_ids: [...selected] }).then(() => setMessage('Note saved.'))}>Save as Note</button>}</div></div>
     </section>
   );
 }

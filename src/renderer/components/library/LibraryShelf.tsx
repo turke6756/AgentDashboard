@@ -45,22 +45,33 @@ function IndexBadge({ document }: { document: ShelfRow }) {
   return <span aria-label="Re-index needed" className="rounded bg-white/5 px-1.5 py-0.5 text-gray-400">Needs re-index</span>;
 }
 
-export default function LibraryShelf({ documents }: { documents: ShelfRow[] }) {
+export default function LibraryShelf({ documents, onOpen }: { documents: ShelfRow[]; onOpen: (document: ShelfRow) => void }) {
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3" data-testid="library-shelf">
       {documents.map((document) => {
         const Glyph = glyphs[document.type];
         const topics = (() => { try { return JSON.parse(document.topics_json) as string[]; } catch { return []; } })();
         return (
-          <article key={document.id} className="ui-card min-h-40 border-l-4 border-l-accent-blue p-3" data-document-id={document.id} data-shelf-status={document.shelf_status}>
-            <div className="flex items-start gap-2"><Glyph className="h-4 w-4 shrink-0" /><h3 className="line-clamp-2 text-sm font-semibold">{document.title}</h3></div>
-            <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-gray-400"><span>{new Date(document.created).toLocaleDateString()}</span><span>{document.trust}</span>{document.provider && <span data-testid="provider-glyph">{document.provider}</span>}</div>
-            <p className="mt-2 truncate text-xs text-gray-400">{document.summary || 'No summary yet'}</p>
-            <div className="mt-2 flex flex-wrap gap-1">{topics.map((topic) => <span key={topic} className="rounded bg-white/5 px-1 text-[10px]">{topic}</span>)}</div>
-            <div className="mt-3 flex items-center gap-1 text-[11px]">
-              <IndexBadge document={document} />
-              {document.trust === 'untrusted' && <span aria-label="Untrusted research report" className="rounded bg-amber-400/15 px-1.5 py-0.5 text-amber-400">untrusted · inbox</span>}
-            </div>
+          <article key={document.id} className="ui-card min-h-40 border-l-4 border-l-accent-blue p-1" data-document-id={document.id} data-shelf-status={document.shelf_status}>
+            <button
+              type="button"
+              className="h-full w-full rounded p-2 text-left outline-none transition hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-accent-blue disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!document.reader_rel_path.trim()}
+              aria-describedby={!document.reader_rel_path.trim() ? `library-unavailable-${document.id}` : undefined}
+              onClick={() => onOpen(document)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                onOpen(document);
+              }}
+            >
+              <div className="flex items-start gap-2"><Glyph className="h-4 w-4 shrink-0" /><h3 className="line-clamp-2 text-sm font-semibold">{document.title}</h3></div>
+              <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-gray-400"><span>{new Date(document.created).toLocaleDateString()}</span>{document.provider && <span data-testid="provider-glyph">{document.provider}</span>}</div>
+              <p className="mt-2 truncate text-xs text-gray-400">{document.summary || 'No summary yet'}</p>
+              <div className="mt-2 flex flex-wrap gap-1">{topics.map((topic) => <span key={topic} className="rounded bg-white/5 px-1 text-[10px]">{topic}</span>)}</div>
+              <div className="mt-3 flex items-center gap-1 text-[11px]"><IndexBadge document={document} /></div>
+              {!document.reader_rel_path.trim() && <span id={`library-unavailable-${document.id}`} className="mt-2 block text-[11px] text-gray-400">This item is still being added.</span>}
+            </button>
           </article>
         );
       })}

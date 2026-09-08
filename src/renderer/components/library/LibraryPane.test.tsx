@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShelfRow } from '../../../shared/library';
 import type { Workspace } from '../../../shared/types';
 import { useDashboardStore } from '../../stores/dashboard-store';
-import { openLibraryResult, type LibraryQueryExcerptView } from './library-result-navigation';
+import { openLibraryDocument, openLibraryResult, resolveWorkspaceRelativePath, type LibraryQueryExcerptView } from './library-result-navigation';
 import LibraryPane from './LibraryPane';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -92,6 +92,26 @@ describe('openLibraryResult production seam', () => {
   });
 });
 
+describe('openLibraryDocument production seam', () => {
+  it('resolves a workspace-relative reader path and opens it without guessing from the source path', () => {
+    const openTab = vi.spyOn(useDashboardStore.getState(), 'openTab');
+    expect(resolveWorkspaceRelativePath('C:\\repo', '.lares/library/cleared/report.md')).toBe('C:\\repo\\.lares\\library\\cleared\\report.md');
+    expect(openLibraryDocument({ reader_rel_path: '.lares/library/cleared/report.md' })).toEqual({ ok: true });
+    expect(openTab, 'REACHABILITY:library:browse-open').toHaveBeenCalledWith(
+      'C:\\repo\\.lares\\library\\cleared\\report.md', 'C:\\repo', 'windows', undefined, 'ws',
+    );
+  });
+
+  it('reports missing path and workspace failures without opening a tab', () => {
+    const openTab = vi.spyOn(useDashboardStore.getState(), 'openTab');
+    openTab.mockClear();
+    expect(openLibraryDocument({ reader_rel_path: '  ' })).toEqual({ ok: false, error: 'This item is still being added.' });
+    useDashboardStore.setState({ selectedWorkspaceId: null });
+    expect(openLibraryDocument({ reader_rel_path: 'report.md' })).toEqual({ ok: false, error: 'Select a workspace first.' });
+    expect(openTab).not.toHaveBeenCalled();
+  });
+});
+
 describe('LibraryPane shelf', () => {
   it('exposes the pane as a labelled Workspace Library region', async () => {
     installLibraryApi([]);
@@ -109,7 +129,7 @@ describe('LibraryPane shelf', () => {
     expect(api.listShelf).toHaveBeenCalledTimes(2);
   });
 
-  it('renders ready and failed ingest states unmistakably while preserving shelf filters', async () => {
+  it('renders ingest states without exposing trust controls or shelf metadata', async () => {
     const { listShelf } = installLibraryApi([
       shelfRow('pending', 'pending', 'untrusted'), shelfRow('stale', 'stale', 'untrusted'),
       shelfRow('indexing', 'indexing'), shelfRow('ready', 'ready'), shelfRow('error', 'error'),
@@ -121,11 +141,52 @@ describe('LibraryPane shelf', () => {
     expect(pane.querySelector('[aria-label="Not indexed yet; press Rescan to index"]')?.textContent).toContain('Not indexed yet');
     expect(pane.querySelectorAll('[aria-label="Ingest in progress"]')).toHaveLength(1);
     expect(pane.querySelector('[aria-label="Re-index needed"]')).not.toBeNull();
-    expect(pane.querySelectorAll('[aria-label="Untrusted research report"]')).toHaveLength(2);
+    expect(pane.querySelector('[aria-label="Trust"]')).toBeNull();
+    expect(pane.textContent).not.toContain('untrusted');
+    expect(pane.textContent).not.toContain('Include untrusted');
     expect(Array.from(pane.querySelector<HTMLSelectElement>('[aria-label="Processing state"]')!.options).map((option) => [option.value, option.text])).toEqual([
       ['', 'All states'], ['pending', 'Not indexed yet'], ['stale', 'Needs re-index'],
       ['indexing', 'Working'], ['ready', 'Ready to search'], ['error', 'Ingest failed'],
     ]);
+  });
+
+  it('opens every shelf status with a reader path by click and keyboard, but disables queued rows', async () => {
+    const rows = [
+      shelfRow('ready', 'ready'), shelfRow('pending', 'pending'), shelfRow('stale', 'stale'),
+      shelfRow('indexing', 'indexing'), shelfRow('error', 'error'), shelfRow('keyboard', 'ready'),
+    ];
+    const queued = shelfRow('queued:item', 'indexing', 'untrusted');
+    queued.reader_rel_path = '';
+    installLibraryApi([...rows, queued]);
+    const openTab = vi.spyOn(useDashboardStore.getState(), 'openTab');
+    openTab.mockClear();
+    const pane = await renderPane();
+
+    for (const row of rows.slice(0, 5)) {
+      const button = pane.querySelector<HTMLElement>(`[data-document-id="${row.id}"] button`)!;
+      await act(async () => { button.click(); });
+    }
+    const keyboardButton = pane.querySelector<HTMLElement>('[data-document-id="keyboard"] button')!;
+    expect(keyboardButton.className).toContain('focus-visible:ring-2');
+    await act(async () => { keyboardButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await act(async () => { keyboardButton.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })); });
+
+    expect(openTab).toHaveBeenCalledTimes(7);
+    const queuedButton = pane.querySelector<HTMLButtonElement>('[data-document-id="queued:item"] button')!;
+    expect(queuedButton.disabled).toBe(true);
+    expect(queuedButton.getAttribute('aria-describedby')).toBe('library-unavailable-queued:item');
+    expect(pane.querySelector('#library-unavailable-queued\\:item')?.textContent).toContain('still being added');
+    expect(queuedButton.querySelector('button, input, select, textarea, a[href]')).toBeNull();
+    await act(async () => { queuedButton.click(); });
+    expect(openTab).toHaveBeenCalledTimes(7);
+  });
+
+  it('surfaces browse navigation failures in the pane status', async () => {
+    installLibraryApi([shelfRow('readable', 'pending')]);
+    const pane = await renderPane();
+    useDashboardStore.setState({ selectedWorkspaceId: null });
+    await act(async () => { pane.querySelector<HTMLButtonElement>('[data-document-id="readable"] button')!.click(); });
+    expect(pane.querySelector('[role="status"]')?.textContent).toBe('Select a workspace first.');
   });
 
   it('ignores a stale reload that resolves after a newer shelf response', async () => {
@@ -163,19 +224,47 @@ describe('LibraryPane shelf', () => {
     expect(pane.querySelector('[data-shelf-status="indexing"]')).not.toBeNull();
   });
 
-  it('passes only ready shelf ids to query and short-circuits an empty filtered eligible set', async () => {
-    const { query } = installLibraryApi([shelfRow('ready-doc', 'ready'), shelfRow('stale-doc', 'stale')]);
+  it('updates controlled typing immediately, defers trimmed queries, includes untrusted ready rows, and clears synchronously', async () => {
+    const untrusted = shelfRow('untrusted-ready', 'ready', 'untrusted');
+    const query = vi.fn().mockResolvedValue({ excerpts: [{
+      chunk_id: 'result', doc_id: untrusted.id, document_hash: untrusted.source_hash, title: 'Result', type: 'research', trust: 'untrusted',
+      source_rel_path: untrusted.source_rel_path, reader_rel_path: untrusted.reader_rel_path, quote: 'match', citation: 'report.md:1-1',
+      locator: { version: 1, kind: 'text', encoding: 'utf-8', line_start: 1, line_end: 1, start: { line: 1, utf16_column: 0 }, end: { line: 1, utf16_column: 5 }, canonical_char_start: 0, canonical_char_end: 5, quote: { exact: 'match', prefix: '', suffix: '' } },
+    }] });
+    installLibraryApi([untrusted, shelfRow('stale-doc', 'stale')], query);
     const pane = await renderPane();
     const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
     const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { valueSetter.call(search, 'first'); search.dispatchEvent(new Event('input', { bubbles: true })); });
-    await settle(300);
-    expect(query, 'REACHABILITY:LibraryPane:list-shelf').toHaveBeenCalledWith('ws', expect.objectContaining({ doc_ids: ['ready-doc'] }));
-    const state = pane.querySelector<HTMLSelectElement>('[aria-label="Processing state"]')!;
-    await act(async () => { state.value = 'stale'; state.dispatchEvent(new Event('change', { bubbles: true })); });
+    await act(async () => { valueSetter.call(search, '  first  '); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    expect(search.value).toBe('  first  ');
+    expect(query).not.toHaveBeenCalled();
+    await settle(200);
+    expect(query).not.toHaveBeenCalled();
+    await settle(70);
+    expect(query).toHaveBeenCalledWith('ws', expect.objectContaining({ query: 'first', doc_ids: ['untrusted-ready'], include_untrusted: true }));
+    expect(pane.textContent).not.toContain('Untrusted');
+
     query.mockClear();
     await act(async () => { valueSetter.call(search, 'second'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    const clear = pane.querySelector<HTMLButtonElement>('[aria-label="Clear library search"]')!;
+    await act(async () => { clear.click(); });
+    expect(search.value).toBe('');
+    expect(query).not.toHaveBeenCalled();
+    expect(pane.querySelector('[aria-label="Clear library search"]')).toBeNull();
     await settle(300);
+    expect(query).not.toHaveBeenCalled();
+    expect(pane.querySelector('[data-document-id="untrusted-ready"]')).not.toBeNull();
+  });
+
+  it('short-circuits a query when metadata filters leave no eligible ready rows', async () => {
+    const { query } = installLibraryApi([shelfRow('ready-doc', 'ready'), shelfRow('stale-doc', 'stale')]);
+    const pane = await renderPane();
+    const state = pane.querySelector<HTMLSelectElement>('[aria-label="Processing state"]')!;
+    await act(async () => { state.value = 'stale'; state.dispatchEvent(new Event('change', { bubbles: true })); });
+    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { valueSetter.call(search, 'second'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle(250);
     expect(query).not.toHaveBeenCalled();
   });
 });

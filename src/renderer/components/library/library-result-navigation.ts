@@ -38,9 +38,24 @@ export interface LibraryDocumentHighlightsView {
   spans: LibraryHighlightSpan[];
 }
 
-function absolutePath(root: string, relPath: string): string {
+export function resolveWorkspaceRelativePath(root: string, relPath: string): string {
   const separator = root.includes('\\') ? '\\' : '/';
   return `${root.replace(/[\\/]$/, '')}${separator}${relPath.replace(/^[\\/]/, '').replace(/[\\/]/g, separator)}`;
+}
+
+export function openLibraryDocument(document: Pick<LibraryDocumentView, 'reader_rel_path'>): { ok: true } | { ok: false; error: string } {
+  if (!document.reader_rel_path.trim()) return { ok: false, error: 'This item is still being added.' };
+  const state = useDashboardStore.getState();
+  const workspace = state.workspaces.find((item) => item.id === state.selectedWorkspaceId);
+  if (!workspace) return { ok: false, error: 'Select a workspace first.' };
+  state.openTab(
+    resolveWorkspaceRelativePath(workspace.path, document.reader_rel_path),
+    workspace.path,
+    workspace.pathType,
+    undefined,
+    workspace.id,
+  );
+  return { ok: true };
 }
 
 function isPdfSource(source: LibraryHighlightSpan['source']): source is LibraryPdfSourceRange {
@@ -77,7 +92,7 @@ export function openLibraryResult(
         selector: span.source.selector,
       }));
     state.openTab(
-      absolutePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
+      resolveWorkspaceRelativePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
       undefined, workspace.id, undefined,
       {
         pageIndex: excerpt.locator.page_index,
@@ -92,7 +107,7 @@ export function openLibraryResult(
       .filter((span): span is LibraryHighlightSpan & { source: LibraryTextSourceRange } => isTextSource(span.source))
       .map((span) => ({ id: span.id, kind: span.kind, start: span.source.start, end: span.source.end }));
     state.openTab(
-      absolutePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
+      resolveWorkspaceRelativePath(workspace.path, excerpt.reader_rel_path), workspace.path, workspace.pathType,
       undefined, workspace.id,
       {
         lineStart: excerpt.locator.start.line,

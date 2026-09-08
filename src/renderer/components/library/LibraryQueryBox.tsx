@@ -1,15 +1,35 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
-export default function LibraryQueryBox({ onQuery, includeUntrusted, onIncludeUntrusted }: { onQuery: (query: string) => void; includeUntrusted: boolean; onIncludeUntrusted: (value: boolean) => void }) {
-  const [value, setValue] = useState('');
-  useEffect(() => {
-    const timer = window.setTimeout(() => onQuery(value.trim()), 250);
-    return () => window.clearTimeout(timer);
-  }, [value, onQuery]);
+export default function LibraryQueryBox({ value, onChange, onQuery }: {
+  value: string;
+  onChange: (text: string) => void;
+  onQuery: (trimmedQuery: string) => void;
+}) {
+  const timerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => {
+    if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+  }, []);
+
+  const change = (text: string) => {
+    onChange(text);
+    if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = undefined;
+      onQuery(text.trim());
+    }, 250);
+  };
+
+  const clear = () => {
+    if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    onChange('');
+    onQuery('');
+  };
+
   return (
     <div className="flex items-center gap-3">
-      <input aria-label="Search library" className="ui-input flex-1" placeholder="Search words or a phrase" value={value} onChange={(event) => setValue(event.target.value)} />
-      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={includeUntrusted} onChange={(event) => onIncludeUntrusted(event.target.checked)} />Include untrusted</label>
+      <input aria-label="Search library" className="ui-input flex-1" placeholder="Search words or a phrase" value={value} onChange={(event) => change(event.target.value)} />
+      {value.length > 0 && <button type="button" className="ui-btn" aria-label="Clear library search" onClick={clear}>Clear</button>}
     </div>
   );
 }
