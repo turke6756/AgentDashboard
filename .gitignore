@@ -160,3 +160,15 @@ experiments/
 /.dashboard/tmp-*
 /.lares/*.log
 /.dashboard/*.log
+
+# >>> workshop-vs-app boundary (2026-09-08) >>>
+# The app's live workspace state and the developer's planning scratchpad are NOT
+# product source. Product persona/skill/scaffold defaults live in src/shared/constants.ts
+# and are written into .lares/ on launch. Nothing under these paths ships or gates.
+/.lares/
+/.dashboard/
+/plans/
+/research/
+/reachability-mutations/
+/probe-artifacts/
+# <<< workshop-vs-app boundary <<<
