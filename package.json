@@ -1,6 +1,6 @@
 {
   "name": "lares-app",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "An agent-native workspace for orchestrating AI agents across terminals, files, browsers, documents, and notebooks.",
   "main": "dist/main/main/bootstrap.js",
   "scripts": {
