@@ -166,6 +166,7 @@ experiments/
 # product source. Product persona/skill/scaffold defaults live in src/shared/constants.ts
 # and are written into .lares/ on launch. Nothing under these paths ships or gates.
 /.lares/
+/.lares-runtime/
 /.dashboard/
 /plans/
 /research/
