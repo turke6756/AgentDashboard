@@ -20,6 +20,8 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 
 const SCRIPT = path.join(__dirname, 'check-edr-patterns.mjs');
+const packagedScripts = require('./packaged-scripts-allowlist.json').files
+  .map((file) => `scripts/${file}`);
 
 let failed = 0;
 function run(name, args) {
@@ -35,7 +37,7 @@ function run(name, args) {
 }
 
 run('self-test fixtures pass', ['--self-test']);
-run('real tree lints clean', []);
+run('release surface lints clean', ['--paths', 'src', 'docs', 'package.json', ...packagedScripts]);
 
 if (failed > 0) {
   console.error(`check-edr-patterns.test: FAIL (${failed})`);

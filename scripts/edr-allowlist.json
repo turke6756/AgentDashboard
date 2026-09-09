@@ -182,6 +182,18 @@
       "owner": "browser"
     },
     {
+      "file": "src/main/library/library-chunk-runner.ts",
+      "lineContext": "created.unref()",
+      "purpose": "worker_threads Worker must not keep the Electron process alive at shutdown; it is re-ref'd while work is pending.",
+      "owner": "library"
+    },
+    {
+      "file": "src/main/library/library-chunk-runner.ts",
+      "lineContext": "active.unref()",
+      "purpose": "worker_threads Worker must not keep the Electron process alive at shutdown; it is re-ref'd while work is pending.",
+      "owner": "library"
+    },
+    {
       "file": "scripts/wsl-boundary-check.js",
       "lineContext": "windowsHide: true",
       "purpose": "Dev-only boundary-check harness: bounded `wsl.exe bash -lc` probe with 20s timeout; not shipped (P0.4 allowlist excludes it).",

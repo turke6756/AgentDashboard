@@ -53,6 +53,7 @@
 //
 // Usage:
 //   node scripts/check-edr-patterns.mjs              lint the tree (exit 1 on violations)
+//   node scripts/check-edr-patterns.mjs --paths ...  lint only the listed files/directories
 //   node scripts/check-edr-patterns.mjs --self-test  run built-in fixture tests
 //   node scripts/check-edr-patterns.mjs --packaged   additionally run the P0.4
 //                                                    packaged-scripts manifest check
@@ -179,8 +180,18 @@ function walkTree(absDir, relDir, out) {
   return out;
 }
 
-function collectFiles(rootDir, scanRoots, extraFiles) {
+function collectFiles(rootDir, scanRoots, extraFiles, explicitPaths = null) {
   const files = [];
+  if (explicitPaths) {
+    for (const rel of explicitPaths) {
+      const abs = path.join(rootDir, rel);
+      if (!fs.existsSync(abs)) throw new Error(`EDR scan path does not exist: ${rel}`);
+      const stat = fs.statSync(abs);
+      if (stat.isDirectory()) walkTree(abs, rel.replace(/\/$/, ''), files);
+      else if (stat.isFile() && !SELF_FILES.has(rel)) files.push(rel);
+    }
+    return [...new Set(files)];
+  }
   for (const r of scanRoots) {
     const abs = path.join(rootDir, r);
     if (fs.existsSync(abs)) walkTree(abs, r, files);
@@ -214,8 +225,8 @@ function allowlistMatch(entries, file, lineText) {
 }
 
 /** Scan `rootDir`. Returns {violations, warnings, allowlisted, usedEntries}. */
-function scan(rootDir, allowlistEntries, { scanRoots = SCAN_ROOTS, extraFiles = EXTRA_FILES } = {}) {
-  const files = collectFiles(rootDir, scanRoots, extraFiles);
+function scan(rootDir, allowlistEntries, { scanRoots = SCAN_ROOTS, extraFiles = EXTRA_FILES, paths = null } = {}) {
+  const files = collectFiles(rootDir, scanRoots, extraFiles, paths);
   const violations = [];
   const warnings = [];
   const allowlisted = [];
@@ -280,10 +291,10 @@ function printHits(label, hits, stream) {
   }
 }
 
-function runLint({ verbose = false } = {}) {
+function runLint({ verbose = false, paths = null } = {}) {
   const allowlistPath = path.join(ROOT, 'scripts', 'edr-allowlist.json');
   const entries = loadAllowlist(allowlistPath);
-  const { violations, warnings, allowlisted, usedEntries, fileCount } = scan(ROOT, entries);
+  const { violations, warnings, allowlisted, usedEntries, fileCount } = scan(ROOT, entries, { paths });
 
   const stale = entries.filter((e) => !usedEntries.has(e));
 
@@ -352,6 +363,8 @@ function selfTest() {
     write('package.json', '{"scripts": {"v": "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1"}}');
     // Clean file.
     write('src/ok.ts', 'export const fine = 1;');
+    write('scripts/shipped.js', 'export const shipped = true;');
+    write('scripts/dev-only.js', 'spawn(x, { shell: true });');
 
     const r1 = scan(tmp, []);
     const got = (file, pattern) => r1.violations.some((v) => v.file === file && v.pattern === pattern);
@@ -374,6 +387,9 @@ function selfTest() {
     check('__fixtures__ NOT scanned', !r1.violations.some((v) => v.file.includes('__fixtures__')));
     check('ExecutionPolicy Bypass is warn-only', !r1.violations.some((v) => v.pattern === 'executionpolicy-bypass')
       && r1.warnings.some((w) => w.pattern === 'executionpolicy-bypass'));
+
+    const scoped = scan(tmp, [], { paths: ['src/ok.ts', 'scripts/shipped.js'] });
+    check('--paths scans only selected files', scoped.fileCount === 2 && scoped.violations.length === 0);
 
     // Allowlist behavior: listed occurrence passes, and only that one.
     const allow = [
@@ -401,7 +417,21 @@ const argv = process.argv.slice(2);
 if (argv.includes('--self-test')) {
   process.exit(selfTest());
 }
-let code = runLint({ verbose: argv.includes('--verbose') });
+const pathsIndex = argv.indexOf('--paths');
+const paths = pathsIndex === -1
+  ? null
+  : argv.slice(pathsIndex + 1).filter((arg) => !arg.startsWith('--'));
+if (pathsIndex !== -1 && paths.length === 0) {
+  console.error('check-edr-patterns: --paths requires at least one file or directory');
+  process.exit(2);
+}
+let code;
+try {
+  code = runLint({ verbose: argv.includes('--verbose'), paths });
+} catch (error) {
+  console.error(`check-edr-patterns: ${error instanceof Error ? error.message : String(error)}`);
+  code = 2;
+}
 if (code === 0 && argv.includes('--packaged')) {
   code = runPackaged();
 }
