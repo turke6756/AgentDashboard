@@ -42,7 +42,6 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
   const [results, setResults] = useState<QueryResult>({ excerpts: [] });
   const [queryState, setQueryState] = useState<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle');
   const [queryError, setQueryError] = useState('');
-  const [queryAttempt, setQueryAttempt] = useState(0);
   const [openingDocumentId, setOpeningDocumentId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const reloadGeneration = useRef(0);
@@ -120,10 +119,6 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
       && (!filters.status || document.shelf_status === filters.status)
       && document.title.toLowerCase().includes(filters.title.toLowerCase());
   }).sort((a, b) => session.sort === 'title' ? a.title.localeCompare(b.title) : session.sort === 'type' ? a.type.localeCompare(b.type) : b.created.localeCompare(a.created)), [documents, session.filters, session.sort]);
-  const readyDocumentIdsKey = useMemo(() => JSON.stringify(filtered
-    .filter((document) => document.shelf_status === 'ready')
-    .map((document) => document.id)
-    .sort()), [filtered]);
 
   useEffect(() => {
     const query = session.executedQuery;
@@ -131,8 +126,8 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
     setResults({ excerpts: [] });
     setQueryError('');
     if (!workspaceId || !query) { setQueryState('idle'); return; }
-    const docIds = JSON.parse(readyDocumentIdsKey) as string[];
-    if (docIds.length === 0) { setQueryState('empty'); return; }
+    const docIds = filtered.filter((document) => document.shelf_status === 'ready').map((document) => document.id);
+    if (hasFilters(session.filters) && docIds.length === 0) { setQueryState('empty'); return; }
     setQueryState('loading');
     const snapshot = session.filters;
     void libraryApi().query(workspaceId, { query, mode: 'hybrid', doc_ids: docIds, types: snapshot.types,
@@ -147,7 +142,7 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
       setQueryState('error');
     });
     return () => { queryGeneration.current += 1; };
-  }, [workspaceId, readyDocumentIdsKey, session.executedQuery, session.filters, queryAttempt]);
+  }, [workspaceId, filtered, session.executedQuery, session.filters]);
 
   const groupedResults = useMemo(() => groupLibraryResults(filtered, results.excerpts), [filtered, results.excerpts]);
   const populationKey = session.executedQuery ? groupedResults.groups.map((group) => group.document.id).join('|') : filtered.map((document) => document.id).join('|');
@@ -188,12 +183,12 @@ export default function LibraryPane({ initialType }: { initialType?: 'research' 
     }
   };
 
-  const retry = () => setQueryAttempt((attempt) => attempt + 1);
+  const retry = () => updateSession({ filters: { ...session.filters } });
   const clearSearch = () => updateSession({ draftQuery: '', executedQuery: '', selectedChunkIds: [] });
   const selected = new Set(session.selectedChunkIds);
-  const emptyCopy = session.executedQuery ? `No documents match “${session.executedQuery}”`
-    : documents.length === 0 ? 'Add or drop reports to build your Library'
-      : 'No documents match these filters';
+  const emptyCopy = documents.length === 0 ? 'Add or drop reports to build your Library'
+    : hasFilters(session.filters) && filtered.length === 0 ? 'No documents match these filters'
+      : `No documents match “${session.executedQuery}”`;
 
   return (
     <section role="region" aria-label="Workspace Library" className="flex h-full min-h-0 flex-col gap-3 bg-surface-0 p-4" data-testid="library-pane">

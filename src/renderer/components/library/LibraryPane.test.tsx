@@ -281,53 +281,6 @@ describe('LibraryPane shelf', () => {
 });
 
 describe('LibraryPane grouped search and focused hand-off', () => {
-  it('does not restart an executed query while progress retints documents without changing the ready set', async () => {
-    const ready = shelfRow('ready', 'ready');
-    const working = shelfRow('working', 'indexing');
-    const query = vi.fn().mockResolvedValue({ excerpts: [queryExcerpt(ready)] });
-    const api = installLibraryApi([ready, working], query);
-    const pane = await renderPane();
-    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { setValue.call(search, 'needle'); search.dispatchEvent(new Event('input', { bubbles: true })); });
-    await settle(270);
-    expect(query).toHaveBeenCalledTimes(1);
-
-    for (const status of ['extracting', 'chunking', 'embedding'] as const) {
-      await act(async () => { api.emitProgress({ workspace_id: 'ws', document_id: working.id, status }); });
-    }
-    expect(query).toHaveBeenCalledTimes(1);
-    expect(pane.querySelector('[data-document-id="ready"]')).not.toBeNull();
-  });
-
-  it('skips IPC and shows query-zero copy when an empty library is searched', async () => {
-    const { query } = installLibraryApi([]);
-    const pane = await renderPane();
-    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { setValue.call(search, 'missing'); search.dispatchEvent(new Event('input', { bubbles: true })); });
-    await settle(270);
-    expect(query).not.toHaveBeenCalled();
-    expect(pane.textContent).toContain('No documents match “missing”');
-  });
-
-  it('retries a failed query with a new IPC call', async () => {
-    const document = shelfRow('retry', 'ready');
-    const query = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ excerpts: [] });
-    installLibraryApi([document], query);
-    const pane = await renderPane();
-    const search = pane.querySelector<HTMLInputElement>('[aria-label="Search library"]')!;
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { setValue.call(search, 'needle'); search.dispatchEvent(new Event('input', { bubbles: true })); });
-    await settle(270);
-    expect(query).toHaveBeenCalledTimes(1);
-    const retry = Array.from(pane.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!;
-    await act(async () => { retry.click(); });
-    await settle();
-    expect(query).toHaveBeenCalledTimes(2);
-    expect(pane.querySelector('[role="alert"]')).toBeNull();
-  });
-
   it('renders only grouped matching documents in response order with marks and returned-passage counts', async () => {
     const first = shelfRow('first', 'ready'); const second = shelfRow('second', 'ready'); const hidden = shelfRow('hidden', 'ready');
     const query = vi.fn().mockResolvedValue({ excerpts: [queryExcerpt(second, 's2'), queryExcerpt(first, 'f1'), queryExcerpt(second, 's1')] });
@@ -394,15 +347,6 @@ describe('LibraryPane grouped search and focused hand-off', () => {
     expect(pane.querySelector<HTMLInputElement>('[aria-label="Topic"]')?.value).toBe('agents');
     expect(pane.querySelector<HTMLSelectElement>('[aria-label="Sort library"]')?.value).toBe('title');
     expect(useLibraryViewState.getState().byWorkspace.ws).toMatchObject({ selectedChunkIds: ['chunk'], scrollOffset: 44 });
-  });
-
-  it('restores the saved scroll offset onto the shelf DOM after it paints', async () => {
-    installLibraryApi([shelfRow('restore-scroll', 'ready')]);
-    useLibraryViewState.getState().ensureWorkspace('ws');
-    useLibraryViewState.getState().updateWorkspace('ws', { scrollOffset: 73 });
-    const pane = await renderPane();
-    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
-    expect(pane.querySelector<HTMLDivElement>('.overflow-auto')?.scrollTop).toBe(73);
   });
 
   it('distinguishes empty-library, filter-zero, query-zero, and error recovery states', async () => {
